@@ -357,10 +357,13 @@ func validateMacroUses(value any, path, modelID, fieldPath string, allowPID bool
 			if macroName == "PID" && allowPID {
 				continue
 			}
+			if path == "modelScan.cmdTemplate" && (macroName == "PORT" || macroName == "MODEL_ID" || macroName == "MODEL_PATH") {
+				continue
+			}
 			if modelID != "" {
 				switch fieldPath {
 				case "cmd", "cmdStop", "proxy", "checkEndpoint", "filters.stripParams", "name", "description":
-					if macroName == "PORT" || macroName == "MODEL_ID" {
+					if macroName == "PORT" || macroName == "MODEL_ID" || macroName == "MODEL_PATH" {
 						return fmt.Errorf("macro '${%s}' should have been substituted in %s.%s", macroName, modelID, fieldPath)
 					}
 					return fmt.Errorf("unknown macro '${%s}' found in %s.%s", macroName, modelID, fieldPath)

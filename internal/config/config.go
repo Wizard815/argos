@@ -211,6 +211,10 @@ type Config struct {
 	// upstream controls behaviour of the /upstream passthrough endpoint
 	Upstream UpstreamConfig `yaml:"upstream"`
 
+	// ModelScan configures directory-based model auto-discovery. See
+	// internal/modelscan. Local fork addition, not upstream llama-swap.
+	ModelScan ModelScanConfig `yaml:"modelScan"`
+
 	// tailcatEnabled records whether this process started a Tailcat listener.
 	// It is runtime state, not user configuration, so it must never appear in
 	// rendered configuration output.

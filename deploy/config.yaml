@@ -1,0 +1,45 @@
+# Starter config for the modelscan fork. Mount this over /app/config.yaml
+# (see README-DEPLOY.md) — it is NOT baked into the image, so editing it
+# here and restarting the container is all that's needed to change it.
+
+healthCheckTimeout: 120
+logLevel: info
+
+# Confirmed via `docker exec mx-llamacpp-ssh ps aux | grep llama-server`
+# while Cookbook had Qwen3.6-35B-A3B-MTP-GGUF loaded:
+#
+#   llama-server --model <path> --host 0.0.0.0 --port 8000 -ngl 99 -c 262144
+#     --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --fit off
+#     --split-mode layer --spec-type draft-mtp --spec-draft-n-max 3 --jinja
+#
+# NOTE: --spec-type draft-mtp --spec-draft-n-max 3 are speculative-decoding
+# flags specific to that one MTP-variant model's architecture — they were
+# deliberately left OUT of the shared macro below, since applying them to
+# every scanned model (Gemma, plain Qwen, embeddings, whisper, etc.) would
+# likely make most of them fail to start. If you want MTP flags applied only
+# to filenames containing "MTP", say so and the scanner can be extended to
+# match on filename pattern; for now, add them by hand-editing that one
+# model's generated entry, or via a model-level `macros:` override.
+macros:
+  rocm-llama-server: >
+    llama-server --host 0.0.0.0 --port ${PORT}
+    -ngl 99 -c 262144 --flash-attn on
+    --cache-type-k q8_0 --cache-type-v q8_0
+    --fit off --split-mode layer --jinja
+
+modelScan:
+  enabled: true
+  # Confirmed via `docker inspect mx-llamacpp-ssh` — /app/models is the only
+  # mounted models path (host: /mnt/user/OnePiece/HomeLab/LLMBin), and the
+  # scan is recursive, so subfolders like HFCache/hub are covered already.
+  dirs:
+    - /app/models
+  outputFile: /app/config.d/models.generated.yaml
+  cmdTemplate: >
+    ${rocm-llama-server} -m ${MODEL_PATH}
+
+# Everything below /app/config.d (including modelScan's own generated
+# models.generated.yaml) is merged in automatically — see -config-dir in the
+# ENTRYPOINT. Any hand-written models: entries can live in their own .yaml
+# file here too, alongside the generated one; just don't reuse the same
+# model name in both, the merge rejects duplicates.

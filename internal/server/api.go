@@ -136,6 +136,12 @@ func filterCappedMetadata(md map[string]any) map[string]any {
 // handleListModels serves the OpenAI-compatible model listing: local models
 // (with optional aliases) plus peer models.
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	// Every OpenAI-compatible client's "refresh models" action calls this
+	// endpoint, so it doubles as the trigger for keeping the generated
+	// modelscan fragment current. Fire-and-forget: it must not add latency
+	// to, or fail, an ordinary model listing request. See modelscan_api.go.
+	s.triggerBackgroundModelScan()
+
 	created := time.Now().Unix()
 	data := make([]modelRecord, 0, len(s.cfg.Models)+len(s.cfg.Selectors))
 	running := s.local.RunningModels()
