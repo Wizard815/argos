@@ -125,6 +125,15 @@ func Scan(opts Options) ([]byte, []string, error) {
 				return nil
 			}
 			base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+
+			// mmproj files are vision-projector weights meant to be passed
+			// via llama-server's --mmproj flag alongside a main model's -m,
+			// not run standalone — skip them so they don't show up as
+			// selectable models of their own.
+			if strings.Contains(strings.ToLower(base), "mmproj") {
+				return nil
+			}
+
 			id := opts.NamePrefix + sanitizeName(base)
 
 			if n, dup := seen[id]; dup {
