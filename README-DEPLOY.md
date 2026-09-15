@@ -33,7 +33,7 @@ for how to add them back for just that model if you want.
 cd /mnt/user/OnePiece/HomeLab/llamaswap
 docker build \
   -f docker/llama-swap-source.Containerfile \
-  -t llama-swap-modelscan:local \
+  -t llama-swap-rescan:local \
   .
 ```
 
@@ -54,7 +54,7 @@ docker run -d \
   -v /mnt/user/OnePiece/HomeLab/llamaswap/deploy/config.d:/app/config.d \
   -v /mnt/user/OnePiece/HomeLab/LLMBin:/app/models \
   --restart unless-stopped \
-  llama-swap-modelscan:local
+  llama-swap-rescan:local
 ```
 
 Notes:
