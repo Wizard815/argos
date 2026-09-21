@@ -52,6 +52,54 @@ models:
 	}
 }
 
+// TestConfig_ModelScanGroupCmdTemplateAllowsReservedMacros guards the
+// modelScan.groups[N].cmdTemplate field path: PORT/MODEL_ID/MODEL_PATH must
+// be accepted there exactly as they already are in the primary
+// modelScan.cmdTemplate, since modelscan.Scan only ever substitutes
+// MODEL_PATH itself and deliberately leaves the rest for llama-swap to
+// resolve once the generated fragment is loaded as real models: entries.
+// Regression coverage for the "unknown macro '${PORT}'" config-load failure
+// a group's cmdTemplate previously hit (isModelScanCmdTemplatePath only
+// recognized the exact string "modelScan.cmdTemplate").
+func TestConfig_ModelScanGroupCmdTemplateAllowsReservedMacros(t *testing.T) {
+	content := `
+macros:
+  chat: "llama-server --port ${PORT}"
+  embed: "llama-server --port ${PORT} --embedding"
+
+modelScan:
+  enabled: true
+  dirs: ["/app/models"]
+  cmdTemplate: "${chat} -m ${MODEL_PATH}"
+  outputFile: "/app/config.d/models.generated.yaml"
+  groups:
+    - dirs: ["/app/models"]
+      match: "embed"
+      cmdTemplate: "${embed} -m ${MODEL_PATH}"
+      outputFile: "/app/config.d/models.embeddings.generated.yaml"
+`
+	_, err := LoadConfigFromReader(strings.NewReader(content))
+	require.NoError(t, err)
+}
+
+func TestConfig_ModelScanGroupCmdTemplateRejectsUnknownMacro(t *testing.T) {
+	content := `
+modelScan:
+  enabled: true
+  dirs: ["/app/models"]
+  cmdTemplate: "llama-server -m ${MODEL_PATH}"
+  outputFile: "/app/config.d/models.generated.yaml"
+  groups:
+    - dirs: ["/app/models"]
+      match: "embed"
+      cmdTemplate: "llama-server -m ${MODEL_PATH} ${NOT_A_REAL_MACRO}"
+      outputFile: "/app/config.d/models.embeddings.generated.yaml"
+`
+	_, err := LoadConfigFromReader(strings.NewReader(content))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "modelScan.groups[0].cmdTemplate: unknown macro '${NOT_A_REAL_MACRO}'")
+}
+
 func TestConfig_ModelMacroDoesNotLeakToOtherModels(t *testing.T) {
 	content := `
 models:

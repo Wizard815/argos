@@ -348,6 +348,22 @@ func validateConfigMacroUses(raw map[string]any) error {
 	return nil
 }
 
+// modelScanGroupCmdTemplateRegex matches the path validateConfigMacroUses
+// builds while recursing into modelScan.groups[N].cmdTemplate (see the
+// path=path+"["+i+"]" / path+"."+field construction below).
+var modelScanGroupCmdTemplateRegex = regexp.MustCompile(`^modelScan\.groups\[\d+\]\.cmdTemplate$`)
+
+// isModelScanCmdTemplatePath reports whether path is a modelScan CmdTemplate
+// field — the primary one, or one of ModelScan.Groups's — the only places
+// PORT/MODEL_ID/MODEL_PATH are legitimately unresolved at config-load time:
+// modelscan.Scan only ever substitutes ${MODEL_PATH} itself, deliberately
+// leaving ${PORT} and any macro name for llama-swap to resolve once the
+// generated fragment is loaded as real models: entries (see
+// internal/modelscan/scan.go).
+func isModelScanCmdTemplatePath(path string) bool {
+	return path == "modelScan.cmdTemplate" || modelScanGroupCmdTemplateRegex.MatchString(path)
+}
+
 func validateMacroUses(value any, path, modelID, fieldPath string, allowPID bool) error {
 	switch v := value.(type) {
 	case string:
@@ -357,7 +373,7 @@ func validateMacroUses(value any, path, modelID, fieldPath string, allowPID bool
 			if macroName == "PID" && allowPID {
 				continue
 			}
-			if path == "modelScan.cmdTemplate" && (macroName == "PORT" || macroName == "MODEL_ID" || macroName == "MODEL_PATH") {
+			if isModelScanCmdTemplatePath(path) && (macroName == "PORT" || macroName == "MODEL_ID" || macroName == "MODEL_PATH") {
 				continue
 			}
 			if modelID != "" {
