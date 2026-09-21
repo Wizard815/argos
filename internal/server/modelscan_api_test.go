@@ -100,3 +100,77 @@ func TestServer_RunModelScan_Groups(t *testing.T) {
 		t.Errorf("second runModelScan() wrote = true, want false (nothing changed on disk)")
 	}
 }
+
+// TestServer_RunModelScan_GroupSharesDirsWithMatch covers the real-world
+// case that motivated Match: an embedding GGUF living inside the SAME
+// directory tree as chat models (e.g. a shared HF-cache download folder),
+// rather than its own separate folder. The group's Match pattern must claim
+// only the embedding file, and the primary scan must automatically exclude
+// anything a group's Match claims — otherwise the same file would be
+// registered twice, once correctly (with --embedding) and once wrongly
+// (launched with the chat CmdTemplate, which never serves /v1/embeddings).
+func TestServer_RunModelScan_GroupSharesDirsWithMatch(t *testing.T) {
+	dir := t.TempDir()
+	modelsDir := filepath.Join(dir, "models", "HFCache", "hub")
+	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modelsDir, "gemma-4-12b.gguf"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modelsDir, "nomic-embed-text-v2-moe.Q8_0.gguf"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	chatOut := filepath.Join(dir, "models.generated.yaml")
+	embedOut := filepath.Join(dir, "models.embeddings.generated.yaml")
+
+	s := &Server{
+		cfg: config.Config{
+			ModelScan: config.ModelScanConfig{
+				Enabled:     true,
+				Dirs:        []string{filepath.Join(dir, "models")},
+				CmdTemplate: "llama-server -m ${MODEL_PATH} --port ${PORT}",
+				OutputFile:  chatOut,
+				Groups: []config.ModelScanGroup{
+					{
+						Dirs:        []string{filepath.Join(dir, "models")},
+						Match:       "embed",
+						CmdTemplate: "llama-server -m ${MODEL_PATH} --port ${PORT} --embedding --pooling mean",
+						OutputFile:  embedOut,
+					},
+				},
+			},
+		},
+	}
+
+	_, count, err := s.runModelScan()
+	if err != nil {
+		t.Fatalf("runModelScan() error = %v", err)
+	}
+	if count != 2 {
+		t.Errorf("runModelScan() count = %d, want 2 (1 chat + 1 embedding model)", count)
+	}
+
+	chatData, err := os.ReadFile(chatOut)
+	if err != nil {
+		t.Fatalf("reading chat output: %v", err)
+	}
+	if !strings.Contains(string(chatData), "gemma-4-12b") {
+		t.Errorf("chat output missing gemma model:\n%s", chatData)
+	}
+	if strings.Contains(string(chatData), "nomic-embed") {
+		t.Errorf("chat output should exclude the embedding model (claimed by the group's Match):\n%s", chatData)
+	}
+
+	embedData, err := os.ReadFile(embedOut)
+	if err != nil {
+		t.Fatalf("reading embedding output: %v", err)
+	}
+	if !strings.Contains(string(embedData), "--embedding") {
+		t.Errorf("embedding output missing --embedding flag:\n%s", embedData)
+	}
+	if strings.Contains(string(embedData), "gemma") {
+		t.Errorf("embedding output should not contain the chat model:\n%s", embedData)
+	}
+}

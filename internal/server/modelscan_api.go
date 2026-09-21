@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/mostlygeek/llama-swap/internal/modelscan"
 )
@@ -25,16 +26,31 @@ func (s *Server) runModelScan() (wrote bool, count int, err error) {
 	}
 
 	// Primary target, plus one additional Scan+write per group (e.g. a
-	// separate embedding-models directory with its own --embedding
-	// CmdTemplate) — each group is independent, so one group's error does
-	// not prevent the others (or the primary target) from being written.
+	// --embedding CmdTemplate for embedding GGUFs) — each group is
+	// independent, so one group's error does not prevent the others (or the
+	// primary target) from being written.
+	//
+	// A group's own Match pattern is what it uses to claim files as its
+	// own; those same patterns are collected here and excluded from the
+	// primary scan, so a group sharing Dirs with the primary target (e.g.
+	// an embedding GGUF sitting in the same HF-cache folder as chat models)
+	// doesn't also get picked up by the primary scan and launched with the
+	// wrong CmdTemplate.
+	groupMatches := make([]string, 0, len(cfg.Groups))
+	for _, g := range cfg.Groups {
+		if strings.TrimSpace(g.Match) != "" {
+			groupMatches = append(groupMatches, g.Match)
+		}
+	}
+
 	targets := make([]modelscan.Options, 0, 1+len(cfg.Groups))
 	targets = append(targets, modelscan.Options{
-		Dirs:        cfg.Dirs,
-		Extensions:  cfg.Extensions,
-		CmdTemplate: cfg.CmdTemplate,
-		NamePrefix:  cfg.NamePrefix,
-		OutputPath:  cfg.OutputFile,
+		Dirs:            cfg.Dirs,
+		Extensions:      cfg.Extensions,
+		CmdTemplate:     cfg.CmdTemplate,
+		NamePrefix:      cfg.NamePrefix,
+		OutputPath:      cfg.OutputFile,
+		ExcludePatterns: groupMatches,
 	})
 	for _, g := range cfg.Groups {
 		targets = append(targets, modelscan.Options{
@@ -43,6 +59,7 @@ func (s *Server) runModelScan() (wrote bool, count int, err error) {
 			CmdTemplate: g.CmdTemplate,
 			NamePrefix:  g.NamePrefix,
 			OutputPath:  g.OutputFile,
+			NamePattern: g.Match,
 		})
 	}
 

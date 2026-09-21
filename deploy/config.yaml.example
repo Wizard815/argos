@@ -1,6 +1,9 @@
-# Starter config for the modelscan fork. Mount this over /app/config.yaml
-# (see README-DEPLOY.md) — it is NOT baked into the image, so editing it
-# here and restarting the container is all that's needed to change it.
+# Starter config for the modelscan fork. Copy this to deploy/config.yaml
+# (gitignored — see README-DEPLOY.md) and edit the copy; deploy/config.yaml
+# is your real, live config and `git pull` will never touch or overwrite it.
+# Mount deploy/config.yaml over /app/config.yaml — it is NOT baked into the
+# image, so editing it and restarting the container is all that's needed to
+# change it.
 
 healthCheckTimeout: 120
 logLevel: info
@@ -51,13 +54,19 @@ modelScan:
 
   # Additional scan target for embedding models, written to its own file so
   # it never collides with (or gets overwritten by) the chat-model scan
-  # above. Point this at wherever the nomic-embed-text-*-GGUF files live —
-  # e.g. a dedicated subfolder such as /app/models/embeddings — so they
-  # don't also get picked up by the primary scan and launched with the
-  # chat CmdTemplate (which lacks --embedding).
+  # above. The nomic-embed-text-*-GGUF files live inside the SAME HF-cache
+  # tree as the chat models (e.g.
+  # /app/models/HFCache/hub/models--nomic-ai--nomic-embed-text-v2-moe-GGUF/...),
+  # not a separate folder, so `dirs` is deliberately identical to the
+  # primary scan's above — `match` is what actually separates them: any
+  # filename containing "embed" (case-insensitive) is claimed by this group
+  # and launched with rocm-llama-server-embed instead, and is automatically
+  # excluded from the primary scan so it's never also registered (and
+  # launched without --embedding) there.
   groups:
     - dirs:
-        - /app/models/embeddings
+        - /app/models
+      match: embed
       outputFile: /app/config.d/models.embeddings.generated.yaml
       cmdTemplate: >
         ${rocm-llama-server-embed} -m ${MODEL_PATH}

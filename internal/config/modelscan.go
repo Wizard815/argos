@@ -42,9 +42,12 @@ type ModelScanConfig struct {
 	// usually a --pooling mode), which would break a normal chat model if
 	// applied to it, and vice versa — a chat CmdTemplate omits --embedding,
 	// so an embedding GGUF launched with it never serves /v1/embeddings.
-	// A group with its own Dirs pointed at an embedding-models folder and
-	// its own CmdTemplate (or macro) including --embedding solves this
-	// without touching the primary chat-model scan at all.
+	// A group with its own CmdTemplate (or macro) including --embedding
+	// solves this without touching the primary chat-model scan at all —
+	// either by pointing its Dirs at a separate embedding-models folder, or,
+	// when embeddings live inside the same directory tree as chat models
+	// (e.g. a shared HF-cache download folder), by sharing Dirs with the
+	// primary scan and using Match to pick out just the embedding files.
 	//
 	// Each group's OutputFile must be distinct from the primary OutputFile
 	// and every other group's, since each is written independently.
@@ -52,15 +55,29 @@ type ModelScanConfig struct {
 }
 
 // ModelScanGroup is one additional scan target under ModelScanConfig.Groups.
-// It mirrors the primary target's fields exactly, scanned and written
-// independently via its own OutputFile.
+// It mirrors the primary target's fields, scanned and written independently
+// via its own OutputFile.
 type ModelScanGroup struct {
-	// Dirs are the directories to scan, recursively, for model files.
+	// Dirs are the directories to scan, recursively, for model files. May be
+	// the same directories as the primary target's (or another group's) —
+	// Match (below) is what actually separates which files land in which
+	// group when they share a directory tree, e.g. an embedding GGUF sitting
+	// in the same HF-cache folder as chat models.
 	Dirs []string `yaml:"dirs"`
 
 	// Extensions are the file extensions to treat as models. Defaults to
 	// [".gguf"] when empty.
 	Extensions []string `yaml:"extensions"`
+
+	// Match is a case-insensitive regular expression tested against each
+	// discovered file's full path. When set, only matching files are
+	// included in this group — and, since a group's models are meant to run
+	// with a CmdTemplate the primary scan's models must NOT get (e.g.
+	// --embedding), any file matched by a group's Match is automatically
+	// excluded from the primary scan too, even when they share Dirs. Leave
+	// empty to include every file found in Dirs (only useful when this
+	// group's Dirs don't overlap the primary scan's or another group's).
+	Match string `yaml:"match"`
 
 	// CmdTemplate is the ModelConfig.Cmd to use for every model discovered
 	// in this group. See ModelScanConfig.CmdTemplate for macro substitution

@@ -5,6 +5,36 @@ source checkout of llama-swap with the `modelscan` fork changes
 (`internal/modelscan/`, `internal/config/modelscan.go`,
 `internal/server/modelscan_api.go`, plus the wiring in `api.go`/`server.go`).
 
+## `deploy/config.yaml` is now gitignored (one-time migration)
+
+`deploy/config.yaml` used to be tracked in git as if it were sample
+content, but on a live box it's actually your real, live config (real
+paths, `globalTTL`, etc.) — every `git pull` collided with it. It's now
+gitignored; `deploy/config.yaml.example` is the tracked template instead.
+
+**If you already have a real `deploy/config.yaml` on this box from before
+this change** (i.e. you're pulling this update onto an existing
+deployment), do this once:
+
+```bash
+cd /mnt/user/OnePiece/HomeLab/llamaswap
+cp deploy/config.yaml deploy/config.yaml.mine   # back up your real config
+git checkout -- deploy/config.yaml               # drop local edits so pull doesn't conflict
+git pull wizard <branch>                         # picks up the config.yaml -> config.yaml.example rename
+cp deploy/config.yaml.example deploy/config.yaml # recreate it (now gitignored, untracked)
+```
+
+Then manually copy your real values from `deploy/config.yaml.mine` back
+into the new `deploy/config.yaml` (dirs, any custom macros, `globalTTL`,
+etc.) — the `.example` already has the `modelScan.groups` embedding-model
+support built in, so you mainly just need to re-apply your own path/setting
+tweaks on top of it, not redo the whole file. Once confirmed working,
+`rm deploy/config.yaml.mine`.
+
+**On a fresh deployment**, just `cp deploy/config.yaml.example
+deploy/config.yaml` and edit the copy — `git pull` will never touch it
+again.
+
 ## Confirmed from RaidLab (2026-09-13)
 
 - Base image: `mx-llamacpp-mx-llamacpp-ssh:latest` (18.5GB, built 4 days ago)

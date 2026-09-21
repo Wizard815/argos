@@ -46,6 +46,21 @@ type Options struct {
 	// passed as -config-dir so llama-swap's config-dir merge (and, with
 	// -watch-config, its file watcher) picks it up.
 	OutputPath string
+
+	// NamePattern, when non-empty, is a case-insensitive regular expression
+	// tested against each candidate file's full path. Only matching files
+	// are included in this scan. Used by a config.ModelScanGroup to pick
+	// out its own files (e.g. embedding GGUFs) from a directory tree it
+	// otherwise shares with another scan target.
+	NamePattern string
+
+	// ExcludePatterns are case-insensitive regular expressions tested
+	// against each candidate file's full path; a file matching any of them
+	// is skipped. Used by the primary scan to exclude files a
+	// config.ModelScanGroup's own NamePattern has already claimed, so a
+	// shared directory tree doesn't register the same file twice under two
+	// different (and possibly conflicting) CmdTemplates.
+	ExcludePatterns []string
 }
 
 // generatedModel mirrors the subset of config.ModelConfig fields this
@@ -95,6 +110,26 @@ func Scan(opts Options) ([]byte, []string, error) {
 		return nil, nil, fmt.Errorf("modelscan: CmdTemplate must not be empty")
 	}
 
+	var namePattern *regexp.Regexp
+	if strings.TrimSpace(opts.NamePattern) != "" {
+		re, err := regexp.Compile("(?i)" + opts.NamePattern)
+		if err != nil {
+			return nil, nil, fmt.Errorf("modelscan: compiling NamePattern %q: %w", opts.NamePattern, err)
+		}
+		namePattern = re
+	}
+	excludePatterns := make([]*regexp.Regexp, 0, len(opts.ExcludePatterns))
+	for _, p := range opts.ExcludePatterns {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		re, err := regexp.Compile("(?i)" + p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("modelscan: compiling ExcludePatterns %q: %w", p, err)
+		}
+		excludePatterns = append(excludePatterns, re)
+	}
+
 	type found struct {
 		id   string
 		path string
@@ -132,6 +167,15 @@ func Scan(opts Options) ([]byte, []string, error) {
 			// selectable models of their own.
 			if strings.Contains(strings.ToLower(base), "mmproj") {
 				return nil
+			}
+
+			if namePattern != nil && !namePattern.MatchString(path) {
+				return nil
+			}
+			for _, ex := range excludePatterns {
+				if ex.MatchString(path) {
+					return nil
+				}
 			}
 
 			id := opts.NamePrefix + sanitizeName(base)
