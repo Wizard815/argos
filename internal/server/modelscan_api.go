@@ -24,22 +24,50 @@ func (s *Server) runModelScan() (wrote bool, count int, err error) {
 		return false, 0, nil
 	}
 
-	data, names, err := modelscan.Scan(modelscan.Options{
+	// Primary target, plus one additional Scan+write per group (e.g. a
+	// separate embedding-models directory with its own --embedding
+	// CmdTemplate) — each group is independent, so one group's error does
+	// not prevent the others (or the primary target) from being written.
+	targets := make([]modelscan.Options, 0, 1+len(cfg.Groups))
+	targets = append(targets, modelscan.Options{
 		Dirs:        cfg.Dirs,
 		Extensions:  cfg.Extensions,
 		CmdTemplate: cfg.CmdTemplate,
 		NamePrefix:  cfg.NamePrefix,
 		OutputPath:  cfg.OutputFile,
 	})
-	if err != nil {
-		return false, 0, err
+	for _, g := range cfg.Groups {
+		targets = append(targets, modelscan.Options{
+			Dirs:        g.Dirs,
+			Extensions:  g.Extensions,
+			CmdTemplate: g.CmdTemplate,
+			NamePrefix:  g.NamePrefix,
+			OutputPath:  g.OutputFile,
+		})
 	}
 
-	wrote, err = modelscan.WriteIfChanged(cfg.OutputFile, data)
-	if err != nil {
-		return false, len(names), err
+	var firstErr error
+	for _, opts := range targets {
+		data, names, scanErr := modelscan.Scan(opts)
+		if scanErr != nil {
+			if firstErr == nil {
+				firstErr = scanErr
+			}
+			continue
+		}
+
+		w, writeErr := modelscan.WriteIfChanged(opts.OutputPath, data)
+		if writeErr != nil {
+			if firstErr == nil {
+				firstErr = writeErr
+			}
+			continue
+		}
+		wrote = wrote || w
+		count += len(names)
 	}
-	return wrote, len(names), nil
+
+	return wrote, count, firstErr
 }
 
 // handleAPIRescanModels is the explicit, synchronous trigger: POST

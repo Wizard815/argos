@@ -27,6 +27,17 @@ macros:
     --cache-type-k q8_0 --cache-type-v q8_0
     --fit off --split-mode layer --jinja
 
+  # Separate macro for embedding-only GGUFs (e.g. nomic-embed-text-v1.5,
+  # nomic-embed-text-v2-moe) — --embedding switches llama-server into
+  # embeddings-only mode (it stops serving /v1/chat/completions), and
+  # --pooling mean matches what these nomic models were trained/released
+  # with. Deliberately NOT merged into rocm-llama-server above: applying
+  # --embedding to a normal chat model would break it, and applying a chat
+  # CmdTemplate to an embedding model never serves /v1/embeddings at all.
+  rocm-llama-server-embed: >
+    llama-server --host 0.0.0.0 --port ${PORT}
+    -ngl 99 --embedding --pooling mean
+
 modelScan:
   enabled: true
   # Confirmed via `docker inspect mx-llamacpp-ssh` — /app/models is the only
@@ -37,6 +48,19 @@ modelScan:
   outputFile: /app/config.d/models.generated.yaml
   cmdTemplate: >
     ${rocm-llama-server} -m ${MODEL_PATH}
+
+  # Additional scan target for embedding models, written to its own file so
+  # it never collides with (or gets overwritten by) the chat-model scan
+  # above. Point this at wherever the nomic-embed-text-*-GGUF files live —
+  # e.g. a dedicated subfolder such as /app/models/embeddings — so they
+  # don't also get picked up by the primary scan and launched with the
+  # chat CmdTemplate (which lacks --embedding).
+  groups:
+    - dirs:
+        - /app/models/embeddings
+      outputFile: /app/config.d/models.embeddings.generated.yaml
+      cmdTemplate: >
+        ${rocm-llama-server-embed} -m ${MODEL_PATH}
 
 # Everything below /app/config.d (including modelScan's own generated
 # models.generated.yaml) is merged in automatically — see -config-dir in the

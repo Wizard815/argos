@@ -33,4 +33,44 @@ type ModelScanConfig struct {
 	// the directory passed as -config-dir so llama-swap's config-dir merge
 	// (and, with -watch-config, its file watcher) picks it up.
 	OutputFile string `yaml:"outputFile"`
+
+	// Groups are additional scan targets, each with its own Dirs/CmdTemplate/
+	// NamePrefix/OutputFile, scanned alongside the primary target above.
+	//
+	// This exists because one CmdTemplate cannot serve every kind of model:
+	// an embedding-only GGUF needs llama-server's --embedding flag (and
+	// usually a --pooling mode), which would break a normal chat model if
+	// applied to it, and vice versa — a chat CmdTemplate omits --embedding,
+	// so an embedding GGUF launched with it never serves /v1/embeddings.
+	// A group with its own Dirs pointed at an embedding-models folder and
+	// its own CmdTemplate (or macro) including --embedding solves this
+	// without touching the primary chat-model scan at all.
+	//
+	// Each group's OutputFile must be distinct from the primary OutputFile
+	// and every other group's, since each is written independently.
+	Groups []ModelScanGroup `yaml:"groups"`
+}
+
+// ModelScanGroup is one additional scan target under ModelScanConfig.Groups.
+// It mirrors the primary target's fields exactly, scanned and written
+// independently via its own OutputFile.
+type ModelScanGroup struct {
+	// Dirs are the directories to scan, recursively, for model files.
+	Dirs []string `yaml:"dirs"`
+
+	// Extensions are the file extensions to treat as models. Defaults to
+	// [".gguf"] when empty.
+	Extensions []string `yaml:"extensions"`
+
+	// CmdTemplate is the ModelConfig.Cmd to use for every model discovered
+	// in this group. See ModelScanConfig.CmdTemplate for macro substitution
+	// rules.
+	CmdTemplate string `yaml:"cmdTemplate"`
+
+	// NamePrefix is prepended to every generated model ID in this group.
+	NamePrefix string `yaml:"namePrefix"`
+
+	// OutputFile is the generated YAML fragment's path for this group. Must
+	// be distinct from the primary OutputFile and every other group's.
+	OutputFile string `yaml:"outputFile"`
 }
