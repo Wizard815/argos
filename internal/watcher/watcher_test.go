@@ -1,10 +1,13 @@
 package configwatcher
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -169,6 +172,69 @@ func TestWatcher_FileMissingThenReturns(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(path, []byte("b"), 0o644))
 	require.True(t, waitForCount(t, &n, 1, time.Second), "callback should fire when file returns")
+}
+
+// blockingParentPath returns a path whose parent component is itself a
+// regular file (not a directory), so os.Stat(path) fails with a "not a
+// directory"-class error on every call — reliably NOT fs.ErrNotExist, on
+// every OS, with no need to fake a real broken NFS/bind-mount handle. A
+// stand-in for a persistent, non-recoverable-by-retry stat error like
+// ESTALE (#configwatcher log-spam bug: identical error logged every single
+// poll forever, since os.Stat does a fresh syscall each call and a broken
+// mount keeps failing the same way).
+func blockingParentPath(t *testing.T, dir string) (blocker, path string) {
+	t.Helper()
+	blocker = filepath.Join(dir, "blocker")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o644))
+	return blocker, filepath.Join(blocker, "config.yaml")
+}
+
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prevOutput, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOutput)
+		log.SetFlags(prevFlags)
+	})
+	return &buf
+}
+
+func TestWatcher_DedupesRepeatedPersistentStatErrors(t *testing.T) {
+	dir := t.TempDir()
+	_, path := blockingParentPath(t, dir)
+	buf := captureLog(t)
+
+	stop := startWatcher(t, &Watcher{Path: path, Interval: testInterval})
+	time.Sleep(testInterval * 10)
+	stop()
+
+	lines := strings.Count(buf.String(), "configwatcher: stat")
+	require.Equal(t, 1, lines,
+		"an identical persistent stat error across ~10 polls must log once, not every poll:\n%s", buf.String())
+}
+
+func TestWatcher_LogsRecoveryAfterPersistentStatError(t *testing.T) {
+	dir := t.TempDir()
+	blocker, path := blockingParentPath(t, dir)
+	buf := captureLog(t)
+
+	stop := startWatcher(t, &Watcher{Path: path, Interval: testInterval})
+	time.Sleep(testInterval * 3)
+	require.Contains(t, buf.String(), "configwatcher: stat", "should have logged the initial error")
+
+	// Recover: replace the blocking file with a real directory, then create
+	// the config file the watcher has been polling for all along.
+	require.NoError(t, os.Remove(blocker))
+	require.NoError(t, os.MkdirAll(blocker, 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("a"), 0o644))
+
+	time.Sleep(testInterval * 5)
+	stop()
+
+	require.Contains(t, buf.String(), "recovered")
 }
 
 func TestWatcher_ContextCancelStopsRun(t *testing.T) {

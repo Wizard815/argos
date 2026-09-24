@@ -38,7 +38,8 @@ func (w *Watcher) Run(ctx context.Context) {
 		interval = DefaultInterval
 	}
 
-	prev := stat(w.Path)
+	var lastErrMsg string
+	prev := stat(w.Path, &lastErrMsg)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -48,7 +49,7 @@ func (w *Watcher) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cur := stat(w.Path)
+			cur := stat(w.Path, &lastErrMsg)
 			if changed(prev, cur) && w.OnChange != nil {
 				w.OnChange()
 			}
@@ -57,19 +58,36 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
-func stat(path string) snapshot {
+// stat calls os.Stat and logs at most once per distinct, persistent error
+// (e.g. ESTALE from a bind-mount/NFS handle outliving the underlying file —
+// os.Stat does a fresh syscall every call, so an identical error repeating
+// forever means the mount itself is broken, not a bug this process can fix
+// by retrying) plus once on recovery, instead of flooding the log every
+// poll interval for as long as the underlying issue persists. A plain
+// "file does not exist" is the expected steady state while a config is
+// mid-write and is never logged, matching the previous behavior.
+func stat(path string, lastErrMsg *string) snapshot {
 	fi, err := os.Stat(path)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("configwatcher: stat %s: %v", path, err)
+	if err == nil {
+		if *lastErrMsg != "" {
+			log.Printf("configwatcher: stat %s: recovered", path)
+			*lastErrMsg = ""
 		}
+		return snapshot{
+			exists:  true,
+			modTime: fi.ModTime(),
+			size:    fi.Size(),
+		}
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		*lastErrMsg = ""
 		return snapshot{}
 	}
-	return snapshot{
-		exists:  true,
-		modTime: fi.ModTime(),
-		size:    fi.Size(),
+	if msg := err.Error(); msg != *lastErrMsg {
+		log.Printf("configwatcher: stat %s: %v", path, err)
+		*lastErrMsg = msg
 	}
+	return snapshot{}
 }
 
 func changed(prev, cur snapshot) bool {
