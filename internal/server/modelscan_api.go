@@ -51,6 +51,8 @@ func (s *Server) runModelScan() (wrote bool, count int, err error) {
 		NamePrefix:      cfg.NamePrefix,
 		OutputPath:      cfg.OutputFile,
 		ExcludePatterns: groupMatches,
+		Env:             cfg.Env,
+		TTL:             cfg.TTL,
 	})
 	for _, g := range cfg.Groups {
 		targets = append(targets, modelscan.Options{
@@ -60,6 +62,8 @@ func (s *Server) runModelScan() (wrote bool, count int, err error) {
 			NamePrefix:  g.NamePrefix,
 			OutputPath:  g.OutputFile,
 			NamePattern: g.Match,
+			Env:         g.Env,
+			TTL:         g.TTL,
 		})
 	}
 

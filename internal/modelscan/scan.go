@@ -61,16 +61,37 @@ type Options struct {
 	// shared directory tree doesn't register the same file twice under two
 	// different (and possibly conflicting) CmdTemplates.
 	ExcludePatterns []string
+
+	// Env is the ModelConfig.Env list written onto every model this scan
+	// produces. Lets a scan target set per-model environment (e.g.
+	// "HIP_VISIBLE_DEVICES=0" to pin a group of models to one GPU) without
+	// hand-writing every model entry. Matches llama-swap's own Env format:
+	// a plain "KEY=value" list, appended to the container's environment.
+	Env []string
+
+	// TTL is the ModelConfig.UnloadAfter value (seconds) written onto every
+	// model this scan produces. A pointer so that "not set" is
+	// distinguishable from 0: llama-swap treats ttl: 0 as "never unload
+	// this model", while -1 means "use globalTTL", so an unset TTL must not
+	// be written as either.
+	TTL *int
 }
 
 // generatedModel mirrors the subset of config.ModelConfig fields this
 // package writes, kept local to avoid an import of internal/config (which
 // would otherwise be a natural dependency, but pulls in the full config
-// validation/macro package for no benefit here — this package only ever
-// writes cmd, so a small local struct with matching yaml tags is enough
-// and keeps modelscan buildable/testable independent of config).
+// validation/macro package for no benefit here — this package writes only
+// cmd unless a scan target asks for more, so a small local struct with
+// matching yaml tags is enough and keeps modelscan buildable/testable
+// independent of config).
+//
+// The yaml tags must stay in sync with config.ModelConfig's tags for the
+// fields named here, since llama-swap parses the generated file with that
+// struct.
 type generatedModel struct {
-	Cmd string `yaml:"cmd"`
+	Cmd string   `yaml:"cmd"`
+	Env []string `yaml:"env,omitempty"`
+	TTL *int     `yaml:"ttl,omitempty"`
 }
 
 type generatedFile struct {
@@ -202,7 +223,11 @@ func Scan(opts Options) ([]byte, []string, error) {
 	names := make([]string, 0, len(all))
 	for _, f := range all {
 		cmd := strings.ReplaceAll(opts.CmdTemplate, "${MODEL_PATH}", f.path)
-		models[f.id] = generatedModel{Cmd: cmd}
+		models[f.id] = generatedModel{
+			Cmd: cmd,
+			Env: opts.Env,
+			TTL: opts.TTL,
+		}
 		names = append(names, f.id)
 	}
 

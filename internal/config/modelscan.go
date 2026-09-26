@@ -34,6 +34,23 @@ type ModelScanConfig struct {
 	// (and, with -watch-config, its file watcher) picks it up.
 	OutputFile string `yaml:"outputFile"`
 
+	// Env is the ModelConfig.Env list written onto every model in this
+	// scan, letting a scan target set per-model environment (e.g.
+	// "HIP_VISIBLE_DEVICES=0" to pin a set of models to one GPU) without
+	// hand-writing each model entry. Same format as llama-swap's own Env:
+	// a plain "KEY=value" list appended to the container environment.
+	//
+	// This exists because modelscan otherwise only ever writes `cmd`, so a
+	// per-model env var had no route into a generated model at all.
+	Env []string `yaml:"env"`
+
+	// TTL is the ModelConfig.UnloadAfter value, in seconds, written onto
+	// every model in this scan. Pointer-typed so that unset is distinct
+	// from 0: llama-swap reads ttl: 0 as "never unload this model" while
+	// -1 means "inherit globalTTL", and an unset value must become neither.
+	// Use 0 to keep a set of models (e.g. embeddings) permanently resident.
+	TTL *int `yaml:"ttl"`
+
 	// Groups are additional scan targets, each with its own Dirs/CmdTemplate/
 	// NamePrefix/OutputFile, scanned alongside the primary target above.
 	//
@@ -90,4 +107,14 @@ type ModelScanGroup struct {
 	// OutputFile is the generated YAML fragment's path for this group. Must
 	// be distinct from the primary OutputFile and every other group's.
 	OutputFile string `yaml:"outputFile"`
+
+	// Env is written onto every model this group produces. See
+	// ModelScanConfig.Env. Set on a group when only that group's models
+	// need the variable (e.g. pinning the single-card group to one GPU).
+	Env []string `yaml:"env"`
+
+	// TTL is written onto every model this group produces; see
+	// ModelScanConfig.TTL. 0 means "never unload", which is what a group of
+	// always-resident embedding models wants.
+	TTL *int `yaml:"ttl"`
 }
