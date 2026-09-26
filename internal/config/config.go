@@ -215,6 +215,11 @@ type Config struct {
 	// internal/modelscan. Local fork addition, not upstream llama-swap.
 	ModelScan ModelScanConfig `yaml:"modelScan"`
 
+	// Odysseus wires llama-swap to an Odysseus instance so Odysseus can own a
+	// model's launch command while llama-swap owns the process. See
+	// internal/odysseus. Local fork addition, not upstream llama-swap.
+	Odysseus *OdysseusConfig `yaml:"odysseus"`
+
 	// tailcatEnabled records whether this process started a Tailcat listener.
 	// It is runtime state, not user configuration, so it must never appear in
 	// rendered configuration output.

@@ -313,6 +313,11 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		return Config{}, err
 	}
 
+	config.Odysseus.SetDefaults()
+	if err := config.Odysseus.Validate(); err != nil {
+		return Config{}, err
+	}
+
 	return config, nil
 }
 

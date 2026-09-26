@@ -141,6 +141,10 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	// modelscan fragment current. Fire-and-forget: it must not add latency
 	// to, or fail, an ordinary model listing request. See modelscan_api.go.
 	s.triggerBackgroundModelScan()
+	// Same idea for the Odysseus integration: keep the generated profiles
+	// current off the endpoint clients already poll, without adding latency
+	// here. Coalesced internally so a burst of listings causes at most one call.
+	s.triggerBackgroundOdysseusRefresh()
 
 	created := time.Now().Unix()
 	data := make([]modelRecord, 0, len(s.cfg.Models)+len(s.cfg.Selectors))
@@ -209,6 +213,16 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		internalMetadata := map[string]any{"type": "model"}
 		if len(mc.Aliases) > 0 {
 			internalMetadata["aliases"] = mc.Aliases
+		}
+		// Expose the launch configuration so the UI can show exactly what will
+		// be run for this model, and so a client can confirm that an active
+		// profile rewrote the ID to the right variant. cmd still carries
+		// llama-swap's own ${PORT} macro, which is how it is written in config.
+		if strings.TrimSpace(mc.Cmd) != "" {
+			internalMetadata["cmd"] = mc.Cmd
+		}
+		if len(mc.Env) > 0 {
+			internalMetadata["env"] = mc.Env
 		}
 		data = append(data, newRecord(id, mc.Name, mc.Description, mc.Metadata, mc.Capabilities, status, internalMetadata))
 

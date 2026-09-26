@@ -56,6 +56,17 @@ type Server struct {
 	profileMu     sync.RWMutex
 	activeProfile string
 
+	// cfgPath and cfgDir are the -config and -config-dir paths, recorded by
+	// main via SetConfigPaths. The Odysseus integration needs them to enumerate
+	// the other config sources when guarding a generated fragment against
+	// duplicate identity keys.
+	cfgPath string
+	cfgDir  string
+
+	// odysseus holds the integration's runtime bookkeeping (last run, counts,
+	// last error) and serialises refreshes.
+	odysseus odysseusState
+
 	local router.LocalRouter
 	peer  router.Router
 
@@ -252,6 +263,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 
 	s.routes()
 	s.startPreload()
+	s.startOdysseusRefresh()
 	return s, nil
 }
 
@@ -374,6 +386,8 @@ func (s *Server) routes() {
 	mux.Handle("POST /api/models/unload", apiChain.ThenFunc(s.handleAPIUnloadAll))
 	mux.Handle("POST /api/models/unload/{model...}", apiChain.ThenFunc(s.handleAPIUnloadModel))
 	mux.Handle("POST /api/models/rescan", apiChain.ThenFunc(s.handleAPIRescanModels))
+	mux.Handle("POST /api/odysseus/refresh", apiChain.ThenFunc(s.handleAPIOdysseusRefresh))
+	mux.Handle("GET /api/odysseus/status", apiChain.ThenFunc(s.handleAPIOdysseusStatus))
 	mux.Handle("GET /api/profiles", apiChain.ThenFunc(s.handleAPIProfiles))
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
 	mux.Handle("POST /api/inflight/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelInflight))

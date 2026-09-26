@@ -246,6 +246,9 @@ func main() {
 		initialStore.Close()
 		os.Exit(1)
 	}
+	// The Odysseus integration guards its generated fragment against duplicate
+	// identity keys, which means it has to see the other config sources.
+	initialSrv.SetConfigPaths(*flagConfig, *flagConfigDir)
 
 	// activeSrv is swapped atomically during hot reload.
 	var activeMu sync.RWMutex
@@ -355,6 +358,7 @@ func main() {
 			return
 		}
 
+		newSrv.SetConfigPaths(*flagConfig, *flagConfigDir)
 		if currentTailcat != nil {
 			newSrv.SetTailcatAddress(currentTailcat.Address())
 		}

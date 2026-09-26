@@ -28,6 +28,10 @@ export interface Model {
   strategy?: string;
   targets?: string[];
   spillover?: number;
+  // launch configuration, from the v1/models llamaswap metadata. cmd still
+  // contains llama-swap's ${PORT} macro, exactly as written in config.
+  cmd?: string;
+  env?: string[];
 }
 
 export interface Profile {

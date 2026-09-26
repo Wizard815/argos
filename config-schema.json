@@ -8,6 +8,24 @@
         "models"
     ],
     "definitions": {
+        "odysseus": {
+            "type": "object",
+            "description": "Integrate an Odysseus instance so Odysseus owns a model's launch command while llama-swap owns the process. Odysseus records each launched command in cookbook_state.json; llama-swap polls it and generates one variant model per command plus a profile whose pins rewrite the base model ID to that variant. The base models, and therefore llama-swap's default launch, are untouched, so with no profile active nothing changes. Local fork addition.",
+            "properties": {
+                "enabled": {"type": "boolean", "default": false, "description": "Turn the integration on. Off by default so existing configs are unaffected."},
+                "baseURL": {"type": "string", "description": "Odysseus root URL, e.g. http://192.168.20.5:7005 from the host or http://odysseus:7000 on a shared Docker network. Required when enabled."},
+                "token": {"type": "string", "description": "Value of ODYSSEUS_INTERNAL_TOKEN in the Odysseus container, sent as the X-Odysseus-Internal-Token header. Prefer token: \"${env.ODYSSEUS_INTERNAL_TOKEN}\" so the secret stays in the environment."},
+                "tokenEnv": {"type": "string", "description": "Name of an environment variable to read the token from at refresh time."},
+                "tokenFile": {"type": "string", "description": "Path to a file containing the token."},
+                "refreshSeconds": {"type": "integer", "minimum": 0, "default": 300, "description": "Polling interval. 0 disables the timer; refreshes then happen only at startup, on GET /v1/models and on POST /api/odysseus/refresh."},
+                "profilePrefix": {"type": "string", "default": "ody", "description": "Names the generated profiles so they are distinct from hand-written ones."},
+                "statuses": {"type": "array", "items": {"type": "string"}, "description": "Which Odysseus task statuses to consider. Empty means both running and stopped."},
+                "outputFile": {"type": "string", "description": "Generated config fragment. Must live in the -config-dir so the merge and the -watch-config watcher pick it up. Required when enabled."},
+                "ensureDio": {"type": "boolean", "default": true, "description": "Inject -lm dio into any command that has no load mode. FEATURES.md calls it required on this stack. Set false to inject nothing."},
+                "timeoutSeconds": {"type": "integer", "minimum": 1, "default": 20, "description": "Timeout for one HTTP call to Odysseus."}
+            },
+            "additionalProperties": false
+        },
         "macros": {
             "type": "object",
             "additionalProperties": {
@@ -158,6 +176,7 @@
         }
     },
     "properties": {
+        "odysseus": {"$ref": "#/definitions/odysseus"},
         "healthCheckTimeout": {
             "type": "integer",
             "minimum": 15,
