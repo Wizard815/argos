@@ -25,6 +25,12 @@ type RefreshResult struct {
 	// Warnings are per-task advisories (a skipped vLLM task, a command with no
 	// port, and so on) plus anything the guard wanted to say that was not fatal.
 	Warnings []string
+
+	// ProfileName is the union profile the refresh generated, empty when no
+	// per-model choices are set.
+	ProfileName string
+	// ChoicesResolved maps model ID -> variant ID for each choice that resolved.
+	ChoicesResolved map[string]string
 }
 
 // Refresh fetches Odysseus' cookbook state, renders the llama-swap fragment and
@@ -40,6 +46,16 @@ type RefreshResult struct {
 func Refresh(ctx context.Context, opts Options, outPath string, otherSources []string) (RefreshResult, error) {
 	var rr RefreshResult
 
+	// per-model choices live beside the fragment; load them so a refresh
+	// regenerates the union profile with whatever the operator last picked.
+	if opts.ChoicesPath != "" {
+		cs, err := LoadChoices(opts.ChoicesPath)
+		if err != nil {
+			return rr, err
+		}
+		opts.Choices = cs.Choices
+	}
+
 	state, err := FetchState(ctx, opts)
 	if err != nil {
 		return rr, err
@@ -48,6 +64,8 @@ func Refresh(ctx context.Context, opts Options, outPath string, otherSources []s
 	if err != nil {
 		return rr, err
 	}
+	rr.ProfileName = res.ProfileName
+	rr.ChoicesResolved = res.ChoicesResolved
 	rr.Warnings = res.Warnings
 
 	otherModels, otherProfiles, err := SourceKeys(otherSources, outPath)

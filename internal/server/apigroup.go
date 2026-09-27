@@ -29,11 +29,16 @@ type apiModel struct {
 	Capabilities  map[string]any `json:"capabilities,omitempty"`
 	ContextLength int            `json:"context_length,omitempty"`
 	// Cmd and Env are the launch configuration, surfaced so the UI's model
-	// detail view can show what will actually be run for this model and
-	// therefore which profile variant it resolves to. Cmd still carries
-	// llama-swap's ${PORT} macro, exactly as written in config.
-	Cmd string   `json:"cmd,omitempty"`
-	Env []string `json:"env,omitempty"`
+	// detail view can show what will actually be run for this model. When the
+	// model has an Odysseus per-model choice, these come from the chosen
+	// variant -- the effective launch -- and Profile names the choice. Cmd
+	// still carries llama-swap's ${PORT} macro, exactly as written in config.
+	Cmd     string   `json:"cmd,omitempty"`
+	Env     []string `json:"env,omitempty"`
+	Profile string   `json:"profile,omitempty"`
+	// Available lists the Odysseus saved-config labels this model can switch
+	// to (its unlisted variants), so the detail view can offer a picker.
+	Available []string `json:"available,omitempty"`
 }
 
 type apiProfile struct {
@@ -119,6 +124,18 @@ func (s *Server) modelStatus() []apiModel {
 			state = string(st)
 		}
 		_, capsMap, _, ctxLen := renderCapabilities(mc.Capabilities)
+
+		// Effective launch: when the model has an Odysseus per-model choice and
+		// its variant exists, report the variant's command and name the choice.
+		// This is what the detail view renders, so what you see is what will run.
+		cmd, env := mc.Cmd, mc.Env
+		chosen := s.odysseus.choices[id]
+		if chosen != "" {
+			if variant, ok := s.cfg.Models[id+"--"+chosen]; ok {
+				cmd, env = variant.Cmd, variant.Env
+			}
+		}
+
 		models = append(models, apiModel{
 			Id:            id,
 			Name:          mc.Name,
@@ -128,8 +145,10 @@ func (s *Server) modelStatus() []apiModel {
 			Aliases:       mc.Aliases,
 			Capabilities:  capsMap,
 			ContextLength: ctxLen,
-			Cmd:           mc.Cmd,
-			Env:           mc.Env,
+			Cmd:           cmd,
+			Env:           env,
+			Profile:       chosen,
+			Available:     s.odysseusAvailableLabels(id),
 		})
 	}
 
@@ -140,6 +159,23 @@ func (s *Server) modelStatus() []apiModel {
 	}
 
 	return models
+}
+
+// odysseusAvailableLabels lists the saved-config labels a model can switch to:
+// the unlisted variants named <base>--<label> the last refresh generated.
+func (s *Server) odysseusAvailableLabels(modelID string) []string {
+	if s.cfg.Odysseus == nil || !s.cfg.Odysseus.Enabled {
+		return nil
+	}
+	prefix := modelID + "--"
+	labels := make([]string, 0, 4)
+	for id := range s.cfg.Models {
+		if strings.HasPrefix(id, prefix) {
+			labels = append(labels, strings.TrimPrefix(id, prefix))
+		}
+	}
+	sort.Strings(labels)
+	return labels
 }
 
 // handleAPIUnloadAll stops every running local process.

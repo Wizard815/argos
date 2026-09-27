@@ -17,6 +17,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/hw"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/mcptools"
+	"github.com/mostlygeek/llama-swap/internal/odysseus"
 	"github.com/mostlygeek/llama-swap/internal/perf"
 	"github.com/mostlygeek/llama-swap/internal/router"
 	"github.com/mostlygeek/llama-swap/internal/store"
@@ -261,6 +262,16 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	}
 	s.tools = tools
 
+	// Per-model Odysseus choices must be known before the first modelStatus is
+	// served, so the detail view shows the effective launch on first render.
+	if s.cfg.Odysseus != nil && s.cfg.Odysseus.ChoicesPath != "" {
+		if cs, err := odysseus.LoadChoices(s.cfg.Odysseus.ChoicesPath); err == nil {
+			s.odysseus.choices = cs.Choices
+		} else {
+			proxylog.Warnf("odysseus: loading choices: %v", err)
+		}
+	}
+
 	s.routes()
 	s.startPreload()
 	s.startOdysseusRefresh()
@@ -388,6 +399,8 @@ func (s *Server) routes() {
 	mux.Handle("POST /api/models/rescan", apiChain.ThenFunc(s.handleAPIRescanModels))
 	mux.Handle("POST /api/odysseus/refresh", apiChain.ThenFunc(s.handleAPIOdysseusRefresh))
 	mux.Handle("GET /api/odysseus/status", apiChain.ThenFunc(s.handleAPIOdysseusStatus))
+	mux.Handle("GET /api/odysseus/model/{model}/profile", apiChain.ThenFunc(s.handleAPIOdysseusModelProfiles))
+	mux.Handle("PUT /api/odysseus/model/{model}/profile", apiChain.ThenFunc(s.handleAPIOdysseusModelProfile))
 	mux.Handle("GET /api/profiles", apiChain.ThenFunc(s.handleAPIProfiles))
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
 	mux.Handle("POST /api/inflight/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelInflight))

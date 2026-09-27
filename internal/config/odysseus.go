@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 )
 
@@ -71,6 +72,11 @@ type OdysseusConfig struct {
 	// "explicitly false" are distinguishable.
 	EnsureDio *bool `yaml:"ensureDio"`
 
+	// ChoicesPath persists per-model profile choices (model ID -> Odysseus
+	// preset label). Must live in the -config-dir so it survives reloads and
+	// restarts. Defaults to odysseus-choices.json beside OutputFile.
+	ChoicesPath string `yaml:"choicesPath"`
+
 	// StateFile reads cookbook_state.json straight off disk instead of calling
 	// the API -- bind-mount Odysseus' data directory read-only into llama-swap.
 	// Preferred over the API: Odysseus restricts the X-Odysseus-Internal-Token
@@ -102,6 +108,9 @@ func (o *OdysseusConfig) SetDefaults() {
 	}
 	if strings.TrimSpace(o.ProfilePrefix) == "" {
 		o.ProfilePrefix = DefaultOdysseusProfilePrefix
+	}
+	if strings.TrimSpace(o.ChoicesPath) == "" && strings.TrimSpace(o.OutputFile) != "" {
+		o.ChoicesPath = strings.TrimSuffix(o.OutputFile, filepath.Ext(o.OutputFile)) + "-choices.json"
 	}
 	if o.TimeoutSeconds == 0 {
 		o.TimeoutSeconds = DefaultOdysseusTimeoutSeconds

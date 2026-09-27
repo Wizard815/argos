@@ -268,6 +268,37 @@ export async function refreshOdysseus(): Promise<OdysseusRefreshResult> {
   return result;
 }
 
+export interface OdysseusModelState {
+  enabled: boolean;
+  model?: string;
+  labels?: string[];
+  chosen?: string;
+}
+
+// fetchOdysseusModelState lists the saved-config labels a model can switch to,
+// plus the model's current choice.
+export async function fetchOdysseusModelState(model: string): Promise<OdysseusModelState> {
+  const response = await fetch(`/api/odysseus/model/${encodeURIComponent(model)}/profile`);
+  if (!response.ok) throw new Error(`Failed to load Odysseus state: ${response.status}`);
+  return await response.json() as OdysseusModelState;
+}
+
+// setOdysseusModelProfile pins a model to one of its saved Odysseus configs, or
+// clears the choice when label is null. The server persists the choice and
+// regenerates the profile fragment; the modelStatus event then carries the new
+// effective command.
+export async function setOdysseusModelProfile(model: string, label: string | null): Promise<void> {
+  const response = await fetch(`/api/odysseus/model/${encodeURIComponent(model)}/profile`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  const result = await response.json() as { ok?: boolean; error?: string };
+  if (!response.ok || result.ok === false) {
+    throw new Error(result.error || `Failed to set profile: ${response.status}`);
+  }
+}
+
 // Fetch version info when connected
 connectionState.subscribe(async (status) => {
   if (status === "connected") {

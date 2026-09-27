@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Model } from "../../lib/types";
   import { capabilityLabels } from "../../lib/capabilities";
+  import { fetchOdysseusModelState, setOdysseusModelProfile } from "../../stores/api";
   import * as Card from "$lib/components/ui/card/index.js";
+  import * as Select from "$lib/components/ui/select/index.js";
   import Tag from "../Tag.svelte";
 
   interface Props {
@@ -14,21 +16,87 @@
     const caps = model?.capabilities ?? {};
     return Object.entries(caps).filter(([, v]) => v);
   });
+
+  // ---- Odysseus per-model profile picker ----
+  // The model's `profile` field is its current choice and `cmd`/`env` are the
+  // EFFECTIVE launch (the chosen variant's), so what this card shows is what
+  // llama-swap will actually run.
+  let odysseus = $state<{ labels: string[]; chosen: string } | null>(null);
+  let saving = $state(false);
+  let saveError = $state("");
+  const NONE = "__none__";
+
+  async function loadOdysseusState(id: string): Promise<void> {
+    odysseus = null;
+    saveError = "";
+    try {
+      const state = await fetchOdysseusModelState(id);
+      if (state.enabled && (state.labels?.length ?? 0) > 0) {
+        odysseus = { labels: state.labels ?? [], chosen: state.chosen ?? "" };
+      }
+    } catch {
+      // the integration being off is normal; stay quiet
+    }
+  }
+
+  $effect(() => {
+    if (model?.id) void loadOdysseusState(model.id);
+  });
+
+  async function handleProfileChange(value: string): Promise<void> {
+    if (!model?.id) return;
+    saving = true;
+    saveError = "";
+    try {
+      await setOdysseusModelProfile(model.id, value === NONE ? null : value);
+      // the modelStatus event refreshes cmd/env/profile; re-read the label list
+      // in case this was the first choice for the model
+      await loadOdysseusState(model.id);
+    } catch (e) {
+      saveError = e instanceof Error ? e.message : String(e);
+    } finally {
+      saving = false;
+    }
+  }
 </script>
 
 <Card.Root class="shrink-0 gap-0 overflow-hidden py-0">
   <Card.Header class="border-b px-4 py-2">
-    <Card.Title class="text-sm font-semibold">Capabilities</Card.Title>
+    <Card.Title class="text-sm font-semibold">Odysseus launch profile</Card.Title>
   </Card.Header>
   <Card.Content class="p-3">
-    {#if capabilities.length === 0}
-      <span class="text-muted-foreground text-sm">No capabilities reported.</span>
-    {:else}
-      <div class="flex flex-wrap gap-1.5">
-        {#each capabilities as [key] (key)}
-          <Tag>{capabilityLabels[key] ?? key}</Tag>
-        {/each}
+    {#if odysseus}
+      <div class="flex items-center gap-2">
+        <Select.Root
+          type="single"
+          value={model.profile || NONE}
+          onValueChange={(value) => value && void handleProfileChange(value)}
+        >
+          <Select.Trigger class="w-56" aria-label="Odysseus launch profile" disabled={saving}>
+            {model.profile || "llama-swap default"}
+          </Select.Trigger>
+          <Select.Content>
+            <Select.Item value={NONE}>llama-swap default</Select.Item>
+            {#each odysseus.labels as label (label)}
+              <Select.Item value={label}>{label}</Select.Item>
+            {/each}
+          </Select.Content>
+        </Select.Root>
+        {#if saving}
+          <span class="text-muted-foreground text-xs">saving…</span>
+        {/if}
       </div>
+      <p class="text-muted-foreground mt-2 text-xs">
+        Pick which of this model's saved Odysseus configs it launches with.
+        Other models are unaffected.
+      </p>
+      {#if saveError}
+        <p class="text-destructive mt-2 text-xs">{saveError}</p>
+      {/if}
+    {:else}
+      <span class="text-muted-foreground text-sm">
+        No saved Odysseus configs for this model.
+      </span>
     {/if}
   </Card.Content>
 </Card.Root>
@@ -39,6 +107,11 @@
   </Card.Header>
   <Card.Content class="p-3">
     {#if model.cmd}
+      {#if model.profile}
+        <p class="text-muted-foreground mb-2 text-xs">
+          Effective launch for profile <strong>{model.profile}</strong>:
+        </p>
+      {/if}
       <pre
         class="bg-muted overflow-x-auto rounded-md p-2 text-xs leading-relaxed break-all whitespace-pre-wrap">{model.cmd}</pre>
     {:else}

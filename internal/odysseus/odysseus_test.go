@@ -195,16 +195,10 @@ func TestBuild_GroupsTasksIntoProfiles(t *testing.T) {
 	if len(res.Models) != 2 {
 		t.Fatalf("got %d variant models, want 2: %v", len(res.Models), keys(res.Models))
 	}
-	// Both models contribute to ONE profile named after the prefix. That is the
-	// intended shape: a profile is a mode applied across every model that has a
-	// command, which is what llama-swap's single-active-profile rule rewards.
-	// A model's second distinct command would land in "<prefix>-2".
-	if len(res.Profiles) != 1 {
-		t.Fatalf("got %d profiles, want 1: %v", len(res.Profiles), keys(res.Profiles))
-	}
-	pins := res.Profiles["ody"]["pins"].(map[string]any)
-	if len(pins) != 2 {
-		t.Errorf("profile 'ody' has %d pins, want 2: %v", len(pins), pins)
+	// No profile is generated without per-model choices: variants exist, and a
+	// choice later pins exactly the models the operator picked.
+	if len(res.Profiles) != 0 || res.ProfileName != "" {
+		t.Errorf("profiles generated without choices: %v (name %q)", keys(res.Profiles), res.ProfileName)
 	}
 	for want := range map[string]bool{
 		"qwen3.6-35b-a3b-ud-q6_k_xl--ody": true,
@@ -237,17 +231,12 @@ func TestBuild_SecondCommandBecomesODy2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := res.Profiles["ody"]; !ok {
-		t.Errorf("newest command should own the bare prefix; have %v", keys(res.Profiles))
+	// newest command gets the bare suffix, the older distinct one gets -2
+	if _, ok := res.Models["qwen3.8-27b-ud-q6_k_xl--ody"]; !ok {
+		t.Errorf("newest command should own the bare suffix; have %v", keys(res.Models))
 	}
-	if _, ok := res.Profiles["ody-2"]; !ok {
-		t.Errorf("older command should own <prefix>-2; have %v", keys(res.Profiles))
-	}
-	// the newest command must be the one pinned by the bare prefix
-	pins := res.Profiles["ody"]["pins"].(map[string]any)
-	pinned := pins["qwen3.8-27b-ud-q6_k_xl"].(string)
-	if strings.Contains(res.Models[pinned]["cmd"].(string), "-c 8192") {
-		t.Errorf("bare prefix pinned the older command: %s", pinned)
+	if _, ok := res.Models["qwen3.8-27b-ud-q6_k_xl--ody-2"]; !ok {
+		t.Errorf("older command should own <prefix>-2; have %v", keys(res.Models))
 	}
 }
 
@@ -273,7 +262,12 @@ func TestGeneratedFragmentLoadsAsConfig(t *testing.T) {
 	res, err := Build(State{Tasks: []Task{
 		task("a", "running", 2000, "unsloth/Qwen3.6-35B-A3B-MTP-GGUF", cmdMTP),
 		task("b", "running", 2001, "unsloth/Qwen3VL-30B-A3B", cmdVision),
-	}}, Options{ProfilePrefix: "ody", EnsureDio: true})
+	}}, Options{
+		ProfilePrefix: "ody",
+		EnsureDio:     true,
+		// only the 35B is chosen: the union profile must pin exactly that model
+		Choices: map[string]string{"qwen3.6-35b-a3b-ud-q6_k_xl": "ody"},
+	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -315,10 +309,15 @@ models:
 	}
 	prof, ok := cfg.Profiles["ody"]
 	if !ok {
-		t.Fatalf("profile 'ody' missing; have %v", keys(cfg.Profiles))
+		t.Fatalf("union profile missing; have %v", keys(cfg.Profiles))
 	}
+	// the chosen model is pinned to its variant
 	if prof.Pins["qwen3.6-35b-a3b-ud-q6_k_xl"] != "qwen3.6-35b-a3b-ud-q6_k_xl--ody" {
 		t.Errorf("pin not rewritten: %v", prof.Pins)
+	}
+	// the UNCHOSEN model must not be pinned -- no carry-over between models
+	if _, carried := prof.Pins["qwen3vl-30b-a3b-thinking-q4_k_m"]; carried {
+		t.Errorf("the unchosen vision model was pinned: %v", prof.Pins)
 	}
 	// the multimodal command must keep its projector through the round trip
 	vc := cfg.Models["qwen3vl-30b-a3b-thinking-q4_k_m--ody"]

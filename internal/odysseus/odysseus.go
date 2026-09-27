@@ -78,6 +78,16 @@ type Options struct {
 	// Statuses filters tasks by task.status. Empty means running + stopped.
 	Statuses []string
 
+	// Choices maps a llama-swap base model ID to the Odysseus preset label the
+	// operator picked for it. When set, Build emits a single union profile whose
+	// pins cover ONLY the chosen models, so a model without a choice keeps
+	// llama-swap's own launch and nothing carries over between models.
+	Choices map[string]string
+
+	// ChoicesPath is where per-model choices are persisted, so they survive
+	// reloads and restarts. Read back into Options by the caller.
+	ChoicesPath string
+
 	// EnsureDio injects "-lm dio" into any command that lacks a load mode.
 	// FEATURES.md: "Always pass -lm dio (--load-mode dio). mmap on the model
 	// file hangs on this stack."
@@ -427,18 +437,36 @@ type Result struct {
 	Profiles map[string]map[string]any
 	Routing  map[string][]string
 	Warnings []string
+
+	// ProfileName is the single union profile Build generates from Choices, or
+	// empty when no choices were given. One profile, pins only for chosen
+	// models -- that is what makes the behaviour per-model rather than global.
+	ProfileName string
+	// ChoicesResolved maps model ID -> the variant ID its choice resolved to.
+	ChoicesResolved map[string]string
+}
+
+// ProfileName is the name of the union profile. The operator's profilePrefix
+// keeps generated names recognisable; "odysseus" is the fallback.
+func (o Options) ProfileName() string {
+	if strings.TrimSpace(o.ProfilePrefix) != "" {
+		return strings.TrimSpace(o.ProfilePrefix)
+	}
+	return "odysseus"
 }
 
 // Build converts Odysseus' saved launch configs and currently-tracked tasks
-// into llama-swap models and profiles.
+// into llama-swap variant models, plus -- when the operator has picked a preset
+// for specific models -- one union profile whose pins cover only those models.
 //
-// Presets come first and own the descriptive names: a preset carries the label
-// you gave it in the Cookbook, so it becomes the profile "<prefix>-<label>".
-// That is the nearest thing Odysseus has to a per-model profile -- activating
-// "ody-fast" applies the config labelled "fast" to every model that has one.
+// Variant names carry the Odysseus label verbatim (sanitised to a safe ID), so
+// a config saved as "turbo4" becomes the variant "<base>--turbo4" and the
+// profile pin points the base model at exactly that.
 //
-// Tasks are the fallback, since a task only holds a command while it exists.
-// They become "<prefix>" (newest first) and "<prefix>-N".
+// Models without a choice get no pin, so they keep llama-swap's own launch:
+// nothing carries over between models. This is what makes the feature
+// per-model, where llama-swap's own profile engine alone would make one active
+// profile rewrite every pinned model at once.
 func Build(state State, opts Options) (*Result, error) {
 	prefix := opts.ProfilePrefix
 	if prefix == "" {
@@ -453,23 +481,33 @@ func Build(state State, opts Options) (*Result, error) {
 		allowed["stopped"] = true
 	}
 
+	profileName := ""
+	if len(opts.Choices) > 0 {
+		profileName = opts.ProfileName()
+	}
 	res := &Result{
-		Models:   map[string]map[string]any{},
-		Profiles: map[string]map[string]any{},
-		Routing:  map[string][]string{},
+		Models:          map[string]map[string]any{},
+		Profiles:        map[string]map[string]any{},
+		Routing:         map[string][]string{},
+		ProfileName:     profileName,
+		ChoicesResolved: map[string]string{},
 	}
 
-	seen := map[string]map[string]string{} // model -> command key -> profile name
+	// seen: model -> command key -> variant ID, so the same command is not
+	// registered twice for one model.
+	seen := map[string]map[string]string{}
+	variantIDFor := func(modelID, suffix string) string { return modelID + "--" + suffix }
 
-	// register adds a variant model and its profile pin, skipping a command
-	// already registered for that model.
-	register := func(p Parsed, name, desc, warnSource string) {
-		if _, dup := seen[p.ModelID][p.Argv0Key()]; dup {
-			return
+	register := func(p Parsed, suffix, warnSource string) (string, bool) {
+		if seen[p.ModelID] == nil {
+			seen[p.ModelID] = map[string]string{}
 		}
-		seen[p.ModelID][p.Argv0Key()] = name
+		if _, dup := seen[p.ModelID][p.Argv0Key()]; dup {
+			return "", false
+		}
+		id := variantIDFor(p.ModelID, suffix)
+		seen[p.ModelID][p.Argv0Key()] = id
 
-		variantID := p.ModelID + "--" + name
 		entry := map[string]any{
 			"cmd":      SplitCommand(p.Argv),
 			"unlisted": true,
@@ -477,18 +515,12 @@ func Build(state State, opts Options) (*Result, error) {
 		if len(p.Env) > 0 {
 			entry["env"] = p.Env
 		}
-		res.Models[variantID] = entry
-
-		prof := res.Profiles[name]
-		if prof == nil {
-			prof = map[string]any{"description": desc, "pins": map[string]any{}}
-			res.Profiles[name] = prof
-		}
-		prof["pins"].(map[string]any)[p.ModelID] = variantID
-
+		res.Models[id] = entry
 		res.Warnings = append(res.Warnings, prefixWarnings(warnSource, p.Warnings)...)
+		return id, true
 	}
 
+	// presets first: they are the durable, user-named source.
 	for i, pr := range state.Presets {
 		cmd := strings.TrimSpace(pr.Cmd)
 		if cmd == "" {
@@ -499,20 +531,14 @@ func Build(state State, opts Options) (*Result, error) {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("preset %q: %v", pr.Label, err))
 			continue
 		}
-		if seen[p.ModelID] == nil {
-			seen[p.ModelID] = map[string]string{}
-		}
 		label := SanitizeProfileLabel(pr.Label)
 		if label == "" {
 			label = fmt.Sprintf("saved-%d", i+1)
 		}
-		desc := fmt.Sprintf("Odysseus saved config %q", pr.Label)
-		if pr.Model != "" {
-			desc = fmt.Sprintf("Odysseus saved config %q for %s", pr.Label, pr.Model)
-		}
-		register(p, prefix+"-"+label, desc, "preset "+pr.Label)
+		register(p, label, "preset "+pr.Label)
 	}
 
+	// tasks are the fallback: a task only holds a command while it is tracked.
 	tasks := append([]Task(nil), state.Tasks...)
 	sort.SliceStable(tasks, func(i, j int) bool { return tasks[i].TS > tasks[j].TS })
 	for _, t := range tasks {
@@ -528,28 +554,95 @@ func Build(state State, opts Options) (*Result, error) {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("task %s: %v", t.ID, err))
 			continue
 		}
-		if seen[p.ModelID] == nil {
-			seen[p.ModelID] = map[string]string{}
-		}
-		if _, dup := seen[p.ModelID][p.Argv0Key()]; dup {
-			continue // already covered by a preset, or an earlier task
-		}
 		n := len(seen[p.ModelID]) + 1
-		name := prefix
+		suffix := prefix
 		if n > 1 {
-			name = fmt.Sprintf("%s-%d", prefix, n)
+			suffix = fmt.Sprintf("%s-%d", prefix, n)
 		}
-		desc := fmt.Sprintf("Odysseus command for %s", p.ModelID)
-		if t.Payload.RepoID != "" {
-			desc = fmt.Sprintf("Odysseus %s", t.Payload.RepoID)
+		register(p, suffix, t.ID)
+	}
+
+	// the union profile: one pin per model the operator actually chose.
+	if len(opts.Choices) > 0 {
+		pins := map[string]any{}
+		for modelID, label := range opts.Choices {
+			label = SanitizeProfileLabel(label)
+			variant := variantIDFor(modelID, label)
+			mc, ok := res.Models[variant]
+			if !ok {
+				res.Warnings = append(res.Warnings, fmt.Sprintf(
+					"choice for %s: no variant %q exists (label %q has no saved config for this model) -- ignored",
+					modelID, variant, label))
+				continue
+			}
+			pins[modelID] = variant
+			res.ChoicesResolved[modelID] = variant
+			_ = mc
 		}
-		if t.Status != "" {
-			desc += " [" + t.Status + "]"
+		if len(pins) > 0 {
+			res.Profiles[profileName] = map[string]any{
+				"description": fmt.Sprintf(
+					"Per-model launch overrides chosen in llama-swap from Odysseus saved configs (%d model(s))",
+					len(pins)),
+				"pins": pins,
+			}
+		} else {
+			res.ProfileName = ""
 		}
-		register(p, name, desc, t.ID)
 	}
 
 	return res, nil
+}
+
+// ---------- per-model choice persistence ----------
+
+// ChoiceState is the on-disk record of per-model profile choices. Stored beside
+// the generated fragment (i.e. in -config-dir, which is a mounted volume), so
+// choices survive config reloads and container restarts.
+type ChoiceState struct {
+	// Model -> Odysseus preset label. An empty or missing entry means "use
+	// llama-swap's own launch for this model".
+	Choices map[string]string `json:"choices"`
+}
+
+// LoadChoices reads the choice file. A missing file is not an error -- it just
+// means nothing has been chosen yet.
+func LoadChoices(path string) (ChoiceState, error) {
+	var cs ChoiceState
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ChoiceState{Choices: map[string]string{}}, nil
+		}
+		return cs, fmt.Errorf("reading choices %s: %w", path, err)
+	}
+	if err := json.Unmarshal(raw, &cs); err != nil {
+		return cs, fmt.Errorf("parsing choices %s: %w", path, err)
+	}
+	if cs.Choices == nil {
+		cs.Choices = map[string]string{}
+	}
+	return cs, nil
+}
+
+// SaveChoices writes the choice file atomically, so a reader never sees a
+// half-written file.
+func SaveChoices(path string, cs ChoiceState) error {
+	if cs.Choices == nil {
+		cs.Choices = map[string]string{}
+	}
+	data, err := json.MarshalIndent(cs, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating choices dir: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("writing choices %s: %w", path, err)
+	}
+	return os.Rename(tmp, path)
 }
 
 // Argv0Key returns a stable identity for a parsed command, used to skip

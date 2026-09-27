@@ -29,9 +29,13 @@ export interface Model {
   targets?: string[];
   spillover?: number;
   // launch configuration, from the v1/models llamaswap metadata. cmd still
-  // contains llama-swap's ${PORT} macro, exactly as written in config.
+  // contains llama-swap's ${PORT} macro, exactly as written in config. When the
+  // model has an Odysseus per-model choice, this is the CHOSEN variant's
+  // command -- the effective launch -- and profile names that choice.
   cmd?: string;
   env?: string[];
+  profile?: string;
+  available?: string[];
 }
 
 export interface Profile {

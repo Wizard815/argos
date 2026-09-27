@@ -5,11 +5,9 @@ import (
 	"testing"
 )
 
-// TestOdysseus_BuildFromPresets covers the durable source: the Cookbook's saved
-// launch configs. A task only holds a command while it is tracked -- once
-// Odysseus stops it the entry moves to removedTasks, which keeps only an id and
-// a timestamp -- so presets are what survive, and they carry the user's own
-// label, which becomes the profile name.
+// TestOdysseus_BuildFromPresets covers variant naming: the Odysseus label is
+// used verbatim (sanitised) as the variant suffix, so a config saved as "fast"
+// becomes "<base>--fast".
 func TestOdysseus_BuildFromPresets(t *testing.T) {
 	second := strings.Replace(cmdTurbo4, "-c 4096", "-c 8192", 1)
 
@@ -22,27 +20,24 @@ func TestOdysseus_BuildFromPresets(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	// one profile per label, shared across every model that has that label
-	fast, ok := res.Profiles["ody-fast"]
-	if !ok {
-		t.Fatalf("profile ody-fast missing; have %v", keys(res.Profiles))
-	}
-	if pins := fast["pins"].(map[string]any); len(pins) != 2 {
-		t.Errorf("ody-fast has %d pins, want 2 (one per model): %v", len(pins), pins)
-	}
-
-	// the label is sanitised for use as a profile name
-	if _, ok := res.Profiles["ody-long-ctx"]; !ok {
-		t.Errorf("label 'long ctx' should become ody-long-ctx; have %v", keys(res.Profiles))
+	// no global profile without choices -- that is the whole point
+	if len(res.Profiles) != 0 || res.ProfileName != "" {
+		t.Errorf("profiles generated without choices: %v (name %q)", keys(res.Profiles), res.ProfileName)
 	}
 
 	if len(res.Models) != 3 {
-		t.Errorf("got %d variant models, want 3: %v", len(res.Models), keys(res.Models))
+		t.Fatalf("got %d variant models, want 3: %v", len(res.Models), keys(res.Models))
+	}
+	for _, want := range []string{
+		"qwen3.8-27b-ud-q6_k_xl--fast",
+		"qwen3.6-35b-a3b-ud-q6_k_xl--fast",
+		"qwen3.8-27b-ud-q6_k_xl--long-ctx",
+	} {
+		if _, ok := res.Models[want]; !ok {
+			t.Errorf("variant %q missing; have %v", want, keys(res.Models))
+		}
 	}
 	for id, m := range res.Models {
-		if !strings.Contains(id, "--ody-") {
-			t.Errorf("variant %q is not namespaced under the prefix", id)
-		}
 		if !strings.Contains(m["cmd"].(string), "${PORT}") {
 			t.Errorf("variant %q lost the port macro: %s", id, m["cmd"])
 		}
@@ -52,26 +47,95 @@ func TestOdysseus_BuildFromPresets(t *testing.T) {
 	}
 }
 
-// TestOdysseus_PresetBeatsTaskForTheSameCommand keeps one variant, not two, when
-// a preset and a still-tracked task describe the identical command.
-func TestOdysseus_PresetBeatsTaskForTheSameCommand(t *testing.T) {
-	state := State{
-		Presets: []Preset{{Name: "m", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "fast", Cmd: cmdTurbo4}},
-		Tasks:   []Task{task("live", "running", 5000, "unsloth/Qwen3.8-27B-GGUF", cmdTurbo4)},
+// TestOdysseus_ChoicesBuildOneUnionProfile is the core of the per-model design:
+// choosing a preset for SOME models pins only those models. A model without a
+// choice gets no pin, so it keeps llama-swap's own launch and nothing carries
+// over between models.
+func TestOdysseus_ChoicesBuildOneUnionProfile(t *testing.T) {
+	res, err := Build(State{Presets: []Preset{
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "fast", Cmd: cmdTurbo4},
+		{Name: "Qwen3.6-35B", Model: "unsloth/Qwen3.6-35B-A3B-MTP-GGUF", Label: "fast", Cmd: cmdMTP},
+	}}, Options{
+		ProfilePrefix: "ody",
+		EnsureDio:     true,
+		Choices: map[string]string{
+			"qwen3.8-27b-ud-q6_k_xl": "fast", // chosen
+			// the 35B deliberately has no choice
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
 	}
-	res, err := Build(state, Options{ProfilePrefix: "ody", EnsureDio: true})
+
+	if res.ProfileName != "ody" {
+		t.Fatalf("ProfileName = %q, want %q", res.ProfileName, "ody")
+	}
+	prof, ok := res.Profiles["ody"]
+	if !ok {
+		t.Fatalf("union profile missing; have %v", keys(res.Profiles))
+	}
+	pins := prof["pins"].(map[string]any)
+	if len(pins) != 1 {
+		t.Fatalf("union profile has %d pins, want exactly the 1 chosen model: %v", len(pins), pins)
+	}
+	if pins["qwen3.8-27b-ud-q6_k_xl"] != "qwen3.8-27b-ud-q6_k_xl--fast" {
+		t.Errorf("pin points at %v, want the --fast variant", pins)
+	}
+	if _, carried := pins["qwen3.6-35b-a3b-ud-q6_k_xl"]; carried {
+		t.Error("the unchosen model was pinned -- it must keep llama-swap's own launch")
+	}
+	if res.ChoicesResolved["qwen3.8-27b-ud-q6_k_xl"] != "qwen3.8-27b-ud-q6_k_xl--fast" {
+		t.Errorf("ChoicesResolved = %v", res.ChoicesResolved)
+	}
+}
+
+// TestOdysseus_ChoiceForUnknownLabelWarns covers picking a label the model has
+// no saved config for: warn and skip, never emit a dangling pin.
+func TestOdysseus_ChoiceForUnknownLabelWarns(t *testing.T) {
+	res, err := Build(State{Presets: []Preset{
+		{Label: "fast", Model: "unsloth/Qwen3.8-27B-GGUF", Cmd: cmdTurbo4},
+	}}, Options{
+		ProfilePrefix: "ody",
+		EnsureDio:     true,
+		Choices:       map[string]string{"qwen3.8-27b-ud-q6_k_xl": "no-such-label"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Models) != 1 {
-		t.Errorf("got %d variants, want 1 -- the preset and the task are the same command: %v",
-			len(res.Models), keys(res.Models))
+	if len(res.Profiles) != 0 || res.ProfileName != "" {
+		t.Errorf("a dangling choice generated a profile: %v (name %q)", keys(res.Profiles), res.ProfileName)
 	}
-	if _, ok := res.Profiles["ody-fast"]; !ok {
-		t.Errorf("the preset's name should win; have %v", keys(res.Profiles))
+	joined := strings.Join(res.Warnings, "\n")
+	if !strings.Contains(joined, "no-such-label") {
+		t.Errorf("warning does not name the bad label: %v", res.Warnings)
 	}
-	if _, ok := res.Profiles["ody"]; ok {
-		t.Errorf("a bare-prefix profile should not have been created too")
+}
+
+// TestOdysseus_ChoicePersistence round-trips the choice file.
+func TestOdysseus_ChoicePersistence(t *testing.T) {
+	path := t.TempDir() + "/odysseus-choices.json"
+
+	// a missing file is not an error -- it means nothing chosen yet
+	cs, err := LoadChoices(path)
+	if err != nil {
+		t.Fatalf("LoadChoices on a missing file: %v", err)
+	}
+	if len(cs.Choices) != 0 {
+		t.Errorf("expected empty choices, got %v", cs.Choices)
+	}
+
+	cs.Choices["model-a"] = "fast"
+	cs.Choices["model-b"] = "long ctx"
+	if err := SaveChoices(path, cs); err != nil {
+		t.Fatalf("SaveChoices: %v", err)
+	}
+
+	back, err := LoadChoices(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Choices["model-a"] != "fast" || back.Choices["model-b"] != "long ctx" {
+		t.Errorf("round-trip lost data: %v", back.Choices)
 	}
 }
 
@@ -101,8 +165,8 @@ func TestOdysseus_BuildPresetSkipsNonLlamaCpp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Models) != 0 || len(res.Profiles) != 0 {
-		t.Errorf("a non-llama.cpp preset produced output: %v %v", keys(res.Models), keys(res.Profiles))
+	if len(res.Models) != 0 {
+		t.Errorf("a non-llama.cpp preset produced variants: %v", keys(res.Models))
 	}
 	if len(res.Warnings) == 0 || !strings.Contains(strings.Join(res.Warnings, " "), "vllm") {
 		t.Errorf("expected a warning naming the preset, got %v", res.Warnings)
