@@ -114,6 +114,18 @@ no load mode, because `FEATURES.md` requires it: mmap on the model file hangs on
 this stack. `--mmproj` and `--image-max-tokens` pass through untouched, so
 multimodal models keep their projector.
 
+Because the `export` lines become that model's `env` list, per-model variables
+are the right place for launch tuning that varies by model --
+`HIP_VISIBLE_DEVICES`, `GGML_ENABLE_CUSTOM_AR`, `HSA_FORCE_FINE_GRAIN_PCIE`,
+`LLAMA_ENABLE_MTP_OPT`, `GPU_MAX_HW_QUEUES` and so on. Do **not** set those in the
+container's `environment:`; that applies them to every model, including the ones
+llama-swap launches with its own defaults. The only variable llama-swap itself
+needs in the container environment is the Odysseus token.
+
+Precedence works in the per-model direction: llama-swap spawns a model with
+`append(cmd.Environ(), model.Env...)`, so a per-model entry is appended after the
+container's and wins for the same key.
+
 Tasks that are not llama.cpp (a vLLM command, say) have no `.gguf` path to map, so
 they are skipped with a warning rather than guessed at.
 
