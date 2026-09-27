@@ -28,6 +28,12 @@ type apiModel struct {
 	Aliases       []string       `json:"aliases,omitempty"`
 	Capabilities  map[string]any `json:"capabilities,omitempty"`
 	ContextLength int            `json:"context_length,omitempty"`
+	// Cmd and Env are the launch configuration, surfaced so the UI's model
+	// detail view can show what will actually be run for this model and
+	// therefore which profile variant it resolves to. Cmd still carries
+	// llama-swap's ${PORT} macro, exactly as written in config.
+	Cmd string   `json:"cmd,omitempty"`
+	Env []string `json:"env,omitempty"`
 }
 
 type apiProfile struct {
@@ -122,6 +128,8 @@ func (s *Server) modelStatus() []apiModel {
 			Aliases:       mc.Aliases,
 			Capabilities:  capsMap,
 			ContextLength: ctxLen,
+			Cmd:           mc.Cmd,
+			Env:           mc.Env,
 		})
 	}
 
