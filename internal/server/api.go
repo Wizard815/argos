@@ -164,6 +164,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		caps config.ModelCapConfig,
 		status string,
 		internalMetadata map[string]any,
+		contextFromCmd int,
 	) modelRecord {
 		rec := modelRecord{
 			ID:          id,
@@ -175,6 +176,13 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			Status:      map[string]any{"value": status},
 		}
 		rec.Architecture, rec.Capabilities, rec.SupportedParameters, rec.ContextLength = renderCapabilities(caps)
+		// A scanned model declares no capabilities, so the window its command
+		// allocates is the only number llama-swap has before the child runs.
+		// Without it a client cannot size its prompts against the real window
+		// and substitutes a guess of its own.
+		if rec.ContextLength == 0 {
+			rec.ContextLength = contextFromCmd
+		}
 		// context_window mirrors context_length for OpenAI-compatible gateways
 		// (e.g. Bifrost) that read the context size from this field name.
 		rec.ContextWindow = rec.ContextLength
@@ -224,7 +232,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if len(mc.Env) > 0 {
 			internalMetadata["env"] = mc.Env
 		}
-		data = append(data, newRecord(id, mc.Name, mc.Description, mc.Metadata, mc.Capabilities, status, internalMetadata))
+		data = append(data, newRecord(id, mc.Name, mc.Description, mc.Metadata, mc.Capabilities, status, internalMetadata, config.ContextSizeFromCommand(s.effectiveCommand(id, mc.Cmd))))
 
 		if s.cfg.IncludeAliasesInList {
 			for _, alias := range mc.Aliases {
@@ -237,6 +245,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 						mc.Capabilities,
 						status,
 						map[string]any{"type": "alias", "modelID": id},
+						config.ContextSizeFromCommand(s.effectiveCommand(id, mc.Cmd)),
 					))
 				}
 			}
@@ -259,6 +268,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 				config.ModelCapConfig{},
 				"unloaded",
 				map[string]any{"type": "peer", "peerID": peerID},
+				0,
 			))
 		}
 	}
@@ -297,6 +307,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			config.ModelCapConfig{},
 			status,
 			internalMetadata,
+			0,
 		))
 	}
 
@@ -316,6 +327,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 				config.ModelCapConfig{},
 				"unloaded",
 				map[string]any{"type": "profile"},
+				0,
 			))
 		}
 	}

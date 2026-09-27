@@ -40,6 +40,26 @@ func CreateProfileMiddleware(s *Server) chain.Middleware {
 	}
 }
 
+// effectiveCommand returns the command that will actually run for a model id.
+// An active profile's pin rewrites the request to a variant id before the
+// pipeline resolves the model, so the pinned variant's command — not the base
+// model's — decides the context window the client will be given.
+func (s *Server) effectiveCommand(id, cmd string) string {
+	profile, ok := s.cfg.Profiles[s.ActiveProfile()]
+	if !ok {
+		return cmd
+	}
+	target, pinned := profile.Pins[id]
+	if !pinned {
+		return cmd
+	}
+	variant, ok := s.cfg.Models[target]
+	if !ok || strings.TrimSpace(variant.Cmd) == "" {
+		return cmd
+	}
+	return variant.Cmd
+}
+
 func upstreamProfilePin(upstreamPath string, pins map[string]string) (model, replacement string, found bool) {
 	upstreamPath = strings.TrimPrefix(upstreamPath, "/")
 	matchedPin := ""
