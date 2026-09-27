@@ -242,6 +242,32 @@ export async function setActiveProfile(name: string | null): Promise<void> {
   if (profileRevision === revision) activeProfile.set(state.active);
 }
 
+export interface OdysseusRefreshResult {
+  ok: boolean;
+  models?: number;
+  profiles?: number;
+  changed?: boolean;
+  warnings?: string[] | null;
+  error?: string;
+}
+
+// refreshOdysseus asks the server to re-read Odysseus' saved launch configs,
+// regenerate the profile fragment, and then re-reads the stores that result can
+// affect. The same work happens on a timer and on GET /v1/models; this is the
+// explicit trigger for when you have just saved a config in Odysseus and would
+// rather not wait for the next tick.
+export async function refreshOdysseus(): Promise<OdysseusRefreshResult> {
+  const response = await fetch("/api/odysseus/refresh", { method: "POST" });
+  const result = await response.json() as OdysseusRefreshResult;
+  if (!response.ok || !result.ok) {
+    throw new Error(result.error || `Refresh failed: ${response.status}`);
+  }
+  // A profile appearing changes both the header dropdown and the models page's
+  // mapping list, so refresh both rather than guessing which one moved.
+  await Promise.all([fetchProfiles(), fetchPlaygroundModels()]);
+  return result;
+}
+
 // Fetch version info when connected
 connectionState.subscribe(async (status) => {
   if (status === "connected") {

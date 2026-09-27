@@ -10,11 +10,14 @@
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import { Separator } from "$lib/components/ui/separator/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { RefreshCw } from "@lucide/svelte";
   import {
     activeProfile,
     checkPerformanceEnabled,
     enableAPIEvents,
     profiles,
+    refreshOdysseus,
     setActiveProfile,
   } from "./stores/api";
   import { initScreenWidth, initSystemThemeListener, isDarkMode, themeName, appTitle, connectionState } from "./stores/theme";
@@ -87,6 +90,29 @@
     }
   }
 
+  let refreshing = $state(false);
+  let refreshMessage = $state("");
+
+  // Re-reads Odysseus' saved launch configs and rebuilds the generated profiles.
+  // The integration does this on a timer too; this is for when you have just hit
+  // Save in Odysseus and do not want to wait for the next tick.
+  async function handleRefresh(): Promise<void> {
+    refreshing = true;
+    refreshMessage = "";
+    try {
+      const result = await refreshOdysseus();
+      const models = result.models ?? 0;
+      const profileCount = result.profiles ?? 0;
+      refreshMessage = profileCount
+        ? `${models} config${models === 1 ? "" : "s"} in ${profileCount} profile${profileCount === 1 ? "" : "s"}`
+        : "no saved configs found in Odysseus";
+    } catch (error) {
+      refreshMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      refreshing = false;
+    }
+  }
+
   function handleRouteLoaded(event: { detail: { route: string | RegExp; location?: string } }) {
     const route = event.detail.route;
     // Prefer the actual URL path so parameterised routes (e.g. /models/:id)
@@ -148,8 +174,26 @@
         <Sidebar.Trigger class="-ml-1" />
         <Separator orientation="vertical" class="mr-2 !h-4" />
         <h2 class="truncate pb-0 text-sm font-semibold">{sectionTitle}</h2>
-        {#if $profiles.length > 0}
-          <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-2">
+          {#if refreshMessage}
+            <span
+              class="text-muted-foreground hidden max-w-72 truncate text-xs sm:inline"
+              title={refreshMessage}
+            >
+              {refreshMessage}
+            </span>
+          {/if}
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={() => void handleRefresh()}
+            disabled={refreshing}
+            title="Re-read Odysseus' saved launch configs and rebuild the llama-swap profiles"
+          >
+            <RefreshCw class={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+          {#if $profiles.length > 0}
             <span class="text-muted-foreground hidden text-xs sm:inline">Profile</span>
             <Select.Root
               type="single"
@@ -170,8 +214,8 @@
                 {/each}
               </Select.Content>
             </Select.Root>
-          </div>
-        {/if}
+          {/if}
+        </div>
       </header>
 
       <main class="min-h-0 flex-1 overflow-auto p-4">
