@@ -48,6 +48,36 @@ odysseus:
 `-watch-config` watcher see it. Without `-watch-config` the file is still written,
 but nothing picks it up until a restart or another reload trigger.
 
+## What it reads: presets first, then live tasks
+
+`cookbook_state.json` holds two things worth having, and they are not equally
+durable.
+
+**`presets`** are the Cookbook's *Save* button (at most five per model). Each
+carries the label you gave it and the full launch command:
+
+```json
+{"name": "Qwen3.8-27B", "model": "unsloth/Qwen3.8-27B-GGUF",
+ "label": "fast", "cmd": "llama-server --model /app/models/... --port 8000 ..."}
+```
+
+These become profiles named `<prefix>-<label>`, so activating `ody-fast` applies
+the config you labelled `fast` to every model that has one. This is what makes
+the integration a per-model profile switch rather than a snapshot of whatever
+happened to be running.
+
+**`tasks`** are the currently-tracked launches, and they are the fallback: a task
+only carries a command while it exists. Stop the model in the Cookbook and the
+entry moves to `removedTasks`, which records only an id and a timestamp — the
+command is gone. Those become `<prefix>` (newest first) and `<prefix>-N`.
+
+When a preset and a live task describe the same command, the preset's name wins
+and only one variant is generated.
+
+Practical consequence: if `models` comes back `0`, check the file has presets or
+live tasks. An empty `tasks` with only `removedTasks` maps to nothing, which is
+not a wiring problem.
+
 ## Choose a source: the state file, or the API
 
 **Prefer `odysseus.stateFile`.** Odysseus gates `/api/cookbook/state` behind

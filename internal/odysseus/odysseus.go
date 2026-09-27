@@ -137,9 +137,41 @@ type Task struct {
 	Payload Payload `json:"payload"`
 }
 
+// Preset is one entry in cookbook_state.json's `presets` list: the Cookbook's
+// "Save" button, capped at five per model. This is the durable source -- a task
+// only carries a command while it is tracked, and once Odysseus stops it the
+// entry moves to removedTasks, which records only an id and a timestamp.
+//
+// The shape is built in static/js/cookbookServe.js (_saveCurrentConfig):
+//
+//	{name, model, cmd, remoteHost, port, label, fields}
+//
+// and _redactStoredCommand only masks tokens, so cmd arrives verbatim.
+type Preset struct {
+	Name       string `json:"name"`
+	Model      string `json:"model"`
+	Cmd        string `json:"cmd"`
+	RemoteHost string `json:"remoteHost"`
+	Port       string `json:"port"`
+	Label      string `json:"label"`
+}
+
 // State is the part of cookbook_state.json this package reads.
 type State struct {
-	Tasks []Task `json:"tasks"`
+	Tasks   []Task   `json:"tasks"`
+	Presets []Preset `json:"presets"`
+}
+
+// SanitizeProfileLabel turns an Odysseus preset label into a llama-swap profile
+// name fragment: lowercase, alphanumerics, dot, dash and underscore only.
+func SanitizeProfileLabel(label string) string {
+	l := strings.ToLower(strings.TrimSpace(label))
+	l = reNonID.ReplaceAllString(l, "-")
+	l = strings.Trim(l, "-")
+	if len(l) > 40 {
+		l = strings.Trim(l[:40], "-")
+	}
+	return l
 }
 
 // FetchState reads cookbook_state.json over the Odysseus HTTP API.
@@ -397,13 +429,16 @@ type Result struct {
 	Warnings []string
 }
 
-// Build converts Odysseus tasks into llama-swap models and profiles.
+// Build converts Odysseus' saved launch configs and currently-tracked tasks
+// into llama-swap models and profiles.
 //
-// Tasks are processed newest-first per model, so the most recent command a
-// model was launched with becomes "<prefix>" and older distinct ones become
-// "<prefix>-2", "<prefix>-3", and so on. Odysseus has no named-profile concept,
-// so generating a name is the only honest option; rename them in the source if
-// you want a different one.
+// Presets come first and own the descriptive names: a preset carries the label
+// you gave it in the Cookbook, so it becomes the profile "<prefix>-<label>".
+// That is the nearest thing Odysseus has to a per-model profile -- activating
+// "ody-fast" applies the config labelled "fast" to every model that has one.
+//
+// Tasks are the fallback, since a task only holds a command while it exists.
+// They become "<prefix>" (newest first) and "<prefix>-N".
 func Build(state State, opts Options) (*Result, error) {
 	prefix := opts.ProfilePrefix
 	if prefix == "" {
@@ -424,10 +459,62 @@ func Build(state State, opts Options) (*Result, error) {
 		Routing:  map[string][]string{},
 	}
 
+	seen := map[string]map[string]string{} // model -> command key -> profile name
+
+	// register adds a variant model and its profile pin, skipping a command
+	// already registered for that model.
+	register := func(p Parsed, name, desc, warnSource string) {
+		if _, dup := seen[p.ModelID][p.Argv0Key()]; dup {
+			return
+		}
+		seen[p.ModelID][p.Argv0Key()] = name
+
+		variantID := p.ModelID + "--" + name
+		entry := map[string]any{
+			"cmd":      SplitCommand(p.Argv),
+			"unlisted": true,
+		}
+		if len(p.Env) > 0 {
+			entry["env"] = p.Env
+		}
+		res.Models[variantID] = entry
+
+		prof := res.Profiles[name]
+		if prof == nil {
+			prof = map[string]any{"description": desc, "pins": map[string]any{}}
+			res.Profiles[name] = prof
+		}
+		prof["pins"].(map[string]any)[p.ModelID] = variantID
+
+		res.Warnings = append(res.Warnings, prefixWarnings(warnSource, p.Warnings)...)
+	}
+
+	for i, pr := range state.Presets {
+		cmd := strings.TrimSpace(pr.Cmd)
+		if cmd == "" {
+			continue
+		}
+		p, err := ParseCommand(cmd, opts.EnsureDio)
+		if err != nil {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("preset %q: %v", pr.Label, err))
+			continue
+		}
+		if seen[p.ModelID] == nil {
+			seen[p.ModelID] = map[string]string{}
+		}
+		label := SanitizeProfileLabel(pr.Label)
+		if label == "" {
+			label = fmt.Sprintf("saved-%d", i+1)
+		}
+		desc := fmt.Sprintf("Odysseus saved config %q", pr.Label)
+		if pr.Model != "" {
+			desc = fmt.Sprintf("Odysseus saved config %q for %s", pr.Label, pr.Model)
+		}
+		register(p, prefix+"-"+label, desc, "preset "+pr.Label)
+	}
+
 	tasks := append([]Task(nil), state.Tasks...)
 	sort.SliceStable(tasks, func(i, j int) bool { return tasks[i].TS > tasks[j].TS })
-
-	seen := map[string]map[string]string{} // model -> command -> profile name
 	for _, t := range tasks {
 		cmd := strings.TrimSpace(t.Payload.Cmd)
 		if cmd == "" {
@@ -445,25 +532,13 @@ func Build(state State, opts Options) (*Result, error) {
 			seen[p.ModelID] = map[string]string{}
 		}
 		if _, dup := seen[p.ModelID][p.Argv0Key()]; dup {
-			continue // same command already registered for this model
+			continue // already covered by a preset, or an earlier task
 		}
 		n := len(seen[p.ModelID]) + 1
 		name := prefix
 		if n > 1 {
 			name = fmt.Sprintf("%s-%d", prefix, n)
 		}
-		seen[p.ModelID][p.Argv0Key()] = name
-
-		variantID := p.ModelID + "--" + name
-		entry := map[string]any{
-			"cmd":      SplitCommand(p.Argv),
-			"unlisted": true,
-		}
-		if len(p.Env) > 0 {
-			entry["env"] = p.Env
-		}
-		res.Models[variantID] = entry
-
 		desc := fmt.Sprintf("Odysseus command for %s", p.ModelID)
 		if t.Payload.RepoID != "" {
 			desc = fmt.Sprintf("Odysseus %s", t.Payload.RepoID)
@@ -471,15 +546,9 @@ func Build(state State, opts Options) (*Result, error) {
 		if t.Status != "" {
 			desc += " [" + t.Status + "]"
 		}
-		prof := res.Profiles[name]
-		if prof == nil {
-			prof = map[string]any{"description": desc, "pins": map[string]any{}}
-			res.Profiles[name] = prof
-		}
-		prof["pins"].(map[string]any)[p.ModelID] = variantID
-
-		res.Warnings = append(res.Warnings, prefixWarnings(t.ID, p.Warnings)...)
+		register(p, name, desc, t.ID)
 	}
+
 	return res, nil
 }
 
