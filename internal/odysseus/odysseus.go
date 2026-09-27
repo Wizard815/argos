@@ -83,6 +83,18 @@ type Options struct {
 	// file hangs on this stack."
 	EnsureDio bool
 
+	// StateFile reads cookbook_state.json directly off disk instead of over
+	// HTTP, for when both containers can see the same file. Preferred, because
+	// Odysseus gates /api/cookbook/state behind require_admin AND an
+	// AuthMiddleware that only honours the internal tool header for direct
+	// loopback clients (app.py:385, _is_trusted_loopback). A request from
+	// another container is therefore rejected with 401 however correct the
+	// token is, and the bearer-token path authenticates as "api" which then
+	// fails the admin check. Reading the file needs no credential at all.
+	//
+	// When set, BaseURL and the token are unused.
+	StateFile string
+
 	Timeout time.Duration
 }
 
@@ -133,6 +145,19 @@ type State struct {
 // FetchState reads cookbook_state.json over the Odysseus HTTP API.
 func FetchState(ctx context.Context, opts Options) (State, error) {
 	var st State
+
+	// File source: no credential, no network, no middleware.
+	if f := strings.TrimSpace(opts.StateFile); f != "" {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			return st, fmt.Errorf("reading odysseus.stateFile %s: %w", f, err)
+		}
+		if err := json.Unmarshal(raw, &st); err != nil {
+			return st, fmt.Errorf("parsing odysseus.stateFile %s: %w", f, err)
+		}
+		return st, nil
+	}
+
 	token, err := opts.ResolveToken()
 	if err != nil {
 		return st, err

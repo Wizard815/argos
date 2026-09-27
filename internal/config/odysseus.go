@@ -71,6 +71,16 @@ type OdysseusConfig struct {
 	// "explicitly false" are distinguishable.
 	EnsureDio *bool `yaml:"ensureDio"`
 
+	// StateFile reads cookbook_state.json straight off disk instead of calling
+	// the API -- bind-mount Odysseus' data directory read-only into llama-swap.
+	// Preferred over the API: Odysseus restricts the X-Odysseus-Internal-Token
+	// bypass to direct loopback clients (app.py:385, _is_trusted_loopback), so a
+	// request from another container gets 401 however correct the token is, and
+	// the bearer-token path authenticates as "api" which fails require_admin's
+	// admin check. Reading the file needs no credential. When set, baseURL and
+	// the token are unused.
+	StateFile string `yaml:"stateFile"`
+
 	// TimeoutSeconds bounds a single HTTP call to Odysseus. Defaults to 20.
 	TimeoutSeconds int `yaml:"timeoutSeconds"`
 }
@@ -119,6 +129,20 @@ func (o *OdysseusConfig) Validate() error {
 	if o == nil || !o.Enabled {
 		return nil
 	}
+	// A state file needs neither a URL nor a credential.
+	if strings.TrimSpace(o.StateFile) != "" {
+		if o.RefreshSeconds < 0 {
+			return fmt.Errorf("odysseus.refreshSeconds must be >= 0")
+		}
+		if o.TimeoutSeconds < 1 {
+			return fmt.Errorf("odysseus.timeoutSeconds must be >= 1")
+		}
+		if strings.ContainsAny(o.ProfilePrefix, " \t") {
+			return fmt.Errorf("odysseus.profilePrefix cannot contain whitespace")
+		}
+		return nil
+	}
+
 	if strings.TrimSpace(o.BaseURL) == "" {
 		return fmt.Errorf("odysseus.baseURL is required when odysseus.enabled is true")
 	}
@@ -140,9 +164,9 @@ func (o *OdysseusConfig) Validate() error {
 		}
 	}
 	if creds == 0 {
-		return fmt.Errorf("odysseus needs a credential: set odysseus.token, odysseus.tokenEnv or odysseus.tokenFile. " +
-			"Note Odysseus only exposes a stable token if ODYSSEUS_INTERNAL_TOKEN is set in its container -- " +
-			"otherwise its token is random per process and cannot be read from outside")
+		return fmt.Errorf("odysseus needs a credential (token, tokenEnv or tokenFile), or set odysseus.stateFile " +
+			"to read cookbook_state.json off disk instead. Note the token path only works from a loopback " +
+			"client: Odysseus restricts X-Odysseus-Internal-Token to direct loopback (app.py:385)")
 	}
 	if creds > 1 {
 		return fmt.Errorf("odysseus: set only one of token, tokenEnv, tokenFile")

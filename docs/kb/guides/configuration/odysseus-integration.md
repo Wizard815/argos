@@ -3,7 +3,7 @@ title: Odysseus integration
 summary: Let Odysseus own a model's launch command and switch to it with a profile, without changing llama-swap's defaults.
 category: guides
 tags: [odysseus, profiles, integration, launch, commands, cookbook]
-config_keys: [odysseus, odysseus.enabled, odysseus.baseURL, odysseus.token, odysseus.tokenEnv, odysseus.tokenFile, odysseus.refreshSeconds, odysseus.profilePrefix, odysseus.statuses, odysseus.outputFile, odysseus.ensureDio, odysseus.timeoutSeconds]
+config_keys: [odysseus, odysseus.enabled, odysseus.stateFile, odysseus.baseURL, odysseus.token, odysseus.tokenEnv, odysseus.tokenFile, odysseus.refreshSeconds, odysseus.profilePrefix, odysseus.statuses, odysseus.outputFile, odysseus.ensureDio, odysseus.timeoutSeconds]
 updated: 2026-09-26
 ---
 
@@ -47,6 +47,52 @@ odysseus:
 `outputFile` must live in the `-config-dir` so llama-swap's merge and the
 `-watch-config` watcher see it. Without `-watch-config` the file is still written,
 but nothing picks it up until a restart or another reload trigger.
+
+## Choose a source: the state file, or the API
+
+**Prefer `odysseus.stateFile`.** Odysseus gates `/api/cookbook/state` behind
+`require_admin` *and* an `AuthMiddleware` whose internal-tool bypass is
+restricted to direct loopback clients:
+
+```python
+# app.py:385
+if _hdr and secrets.compare_digest(_hdr, _ITT) and _is_trusted_loopback(request):
+# _is_trusted_loopback: request.client.host must be 127.0.0.1 or ::1
+```
+
+That bypass exists for Odysseus's own in-process tool layer. A llama-swap in a
+different container connects from the Docker network, so the branch is skipped and
+the request falls through to the session-cookie check -- `401 Not authenticated`,
+whatever the token says. The bearer-token path authenticates, but as the
+synthetic user `"api"`, and `is_admin("api")` is false, so `require_admin` then
+answers 403.
+
+The way through is the file. Odysseus persists its state to
+`DATA_DIR/cookbook_state.json`, which is `/app/data/cookbook_state.json` in the
+container and `${APP_DATA_DIR}/cookbook_state.json` on the host. Mount that
+directory read-only into llama-swap and point `odysseus.stateFile` at it:
+
+```yaml
+# llama-swap's compose
+volumes:
+  - /mnt/user/appdata/odysseus/data:/app/odysseus-data:ro
+```
+
+```yaml
+odysseus:
+  enabled: true
+  stateFile: "/app/odysseus-data/cookbook_state.json"
+  refreshSeconds: 300
+  profilePrefix: "ody"
+  outputFile: "/app/config.d/odysseus.generated.yaml"
+  ensureDio: true
+```
+
+No credential, no network call, no middleware. `baseURL` and the token are
+unused when `stateFile` is set, and config validation does not require them.
+
+The API source still works where the caller *is* loopback -- `odysseus.baseURL`
+plus `odysseus.token`.
 
 ## Authentication
 

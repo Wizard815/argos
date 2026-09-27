@@ -806,5 +806,10 @@ odysseus:
   refreshSeconds: 300                      # 0 disables the timer
   profilePrefix: "ody"
   outputFile: "/app/config.d/odysseus.generated.yaml"   # must be in -config-dir
+  # Preferred over baseURL+token: read cookbook_state.json off disk, by
+  # bind-mounting Odysseus' data directory read-only into this container.
+  # Odysseus only honours the internal token for direct loopback clients, so a
+  # request from another container is rejected with 401 regardless of the token.
+  # stateFile: /app/odysseus-data/cookbook_state.json
   ensureDio: true                          # inject -lm dio where missing
   # statuses: [running, stopped]           # which Odysseus tasks to consider

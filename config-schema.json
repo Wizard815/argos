@@ -22,6 +22,7 @@
                 "statuses": {"type": "array", "items": {"type": "string"}, "description": "Which Odysseus task statuses to consider. Empty means both running and stopped."},
                 "outputFile": {"type": "string", "description": "Generated config fragment. Must live in the -config-dir so the merge and the -watch-config watcher pick it up. Required when enabled."},
                 "ensureDio": {"type": "boolean", "default": true, "description": "Inject -lm dio into any command that has no load mode. FEATURES.md calls it required on this stack. Set false to inject nothing."},
+                "stateFile": {"type": "string", "description": "Read cookbook_state.json straight off disk instead of calling the API -- bind-mount Odysseus' data directory read-only into llama-swap. Preferred: Odysseus restricts the X-Odysseus-Internal-Token bypass to direct loopback clients (app.py:385, _is_trusted_loopback), so a request from another container gets 401 however correct the token is, and the bearer-token path authenticates as \"api\" which fails require_admin's admin check. Reading the file needs no credential. When set, baseURL and the token are unused."},
                 "timeoutSeconds": {"type": "integer", "minimum": 1, "default": 20, "description": "Timeout for one HTTP call to Odysseus."}
             },
             "additionalProperties": false

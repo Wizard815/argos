@@ -53,6 +53,7 @@ func (s *Server) odysseusOptions() odysseus.Options {
 		TokenFile:     o.TokenFile,
 		ProfilePrefix: o.ProfilePrefix,
 		Statuses:      o.Statuses,
+		StateFile:     o.StateFile,
 		EnsureDio:     o.DioEnabled(),
 		Timeout:       time.Duration(o.TimeoutSeconds) * time.Second,
 	}
