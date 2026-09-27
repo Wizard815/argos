@@ -123,6 +123,103 @@ Base URL at `http://<unraid-ip>:8642/v1` and click "Refresh models" — that
 now also triggers a scan in the background, per the earlier change to
 `handleListModels`.
 
+## The tuned config, and the two-step first application
+
+`deploy/config.yaml.example` is now the tuned deploy config: `healthCheckTimeout`
+300 (was 120), `logToStdout: both`, `-c 32768` and `-lm dio` in the shared macro
+with `--fit off` removed, the per-group `modelScan` targets (12B quick search,
+MTP, GPU 0, GPU 1, embeddings) and the `routing` groups (`gpu0`, `gpu1`,
+`heavy`, `services`). It is tracked, so a pull updates the template;
+`deploy/config.yaml` itself is gitignored and a pull never touches it, so the
+live file still has to be re-copied or merged by hand.
+
+Do **not** put any of these keys in a tracked file under `deploy/config.d/`
+instead: the config-dir merge refuses a key two sources set differently
+(`conflict at "healthCheckTimeout": ... sets a different value than a previous
+source`) and the container will not start at all.
+
+**The first application takes two steps**, because the routing groups name models
+that only exist after the new `modelScan` groups have run, and a group member
+with no model config aborts startup:
+
+```
+$ llama-swap -config deploy/config.yaml -config-dir deploy/config.d
+ERROR failed to create server error="creating group router: no model config for \"gemma4-coding-q2_k\""
+```
+
+1. Comment out `routing:` and restart, then generate the fragments:
+
+   ```bash
+   curl -X POST http://192.168.20.5:8642/api/models/rescan
+   ```
+
+   One trigger does not always finish every group — check that
+   `models.gpu1.generated.yaml` and `models.embeddings.generated.yaml` exist and
+   re-run the rescan if they do not. Then confirm no model was claimed twice:
+
+   ```bash
+   cd /mnt/user/appdata/llamaswap/deploy/config.d
+   grep -hE '^  [a-z0-9]' models.*.generated.yaml | sort | uniq -d
+   ```
+
+   (Nothing printed = clean. Duplicates fail the config load.)
+
+2. Uncomment `routing:` and restart. Later restarts need only this step, since
+   the generated fragments stay on disk.
+
+The group members were checked against the GGUF files actually present in
+`/app/models`: the five `gemma4-coding-*` models an earlier draft of the tuning
+listed are gone from the model directory, so they are not group members here. A
+member with no backing model blocks startup completely — re-add each one
+together with its file.
+
+## Pulling this update onto the box
+
+```bash
+cd /mnt/user/OnePiece/HomeLab/llamaswap
+git stash push deploy/docker-compose.yml   # the local odysseus-mount edit is committed upstream now
+git pull wizard main
+git stash pop || git checkout -- deploy/docker-compose.yml
+docker build -f docker/llama-swap-source.Containerfile -t llama-swap-rescan:local .
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+The rebuild is what picks up the Go change below; `-watch-config` reloads a
+config change without it.
+
+## What the Go change does
+
+`internal/config/context_size.go` reads the allocated context window (`-c`,
+`--ctx-size`, including `--ctx-size=N` and commands prefixed with `VAR=value`)
+out of a model's launch command, and the model listing reports it as
+`meta.n_ctx` / `context_length` / `context_window` when the model declares no
+`capabilities.context`. Under an active profile the pinned variant's command is
+used, since that is the command the request will really run.
+
+Before it, a scanned model reported no window at all until it was loaded —
+`/props` answers only for a running child — so a client substituted a guess of
+its own. Hermes logged
+
+```
+WARNING agent.model_metadata: Could not determine context length for model
+'ornith-1.0-35b-...-imatrix' (base_url=http://192.168.20.5:8642/v1)
+— falling back to 256,000 tokens
+```
+
+and then sent prompts the child rejected with `Context size has been exceeded`.
+
+## Odysseus state file permissions
+
+```bash
+ls -ld /mnt/user/appdata/odysseus/data   # must be traversable by the container uid
+chmod 711 /mnt/user/appdata/odysseus/data
+docker logs --since 5m llama-swap | grep odysseus
+```
+
+Empty output after a refresh cycle means the integration can read
+`cookbook_state.json` again and the `ody` profile will show up in
+`GET /api/profiles`.
+
 ## Once it's confirmed working
 
 Commit and push from wherever's easiest (locally, or directly on the Unraid

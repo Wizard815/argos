@@ -14,3 +14,13 @@ services:
       - ${CONFIG_FILE}:/app/config.yaml:ro
       - ${CONFIG_DIR}:/app/config.d
       - ${MODELS_DIR}:/app/models
+      # Odysseus' shared state, read-only: llama-swap's Odysseus integration
+      # reads cookbook_state.json to build the per-model launch profiles that the
+      # `ody` profile pins. The directory must be traversable by the uid this
+      # container runs as, or every refresh logs "reading odysseus.stateFile
+      # ... permission denied" and the profiles never appear (`GET /api/profiles`
+      # reports active: null):
+      #   chmod 711 /mnt/user/appdata/odysseus/data
+      - /mnt/user/appdata/odysseus/data:/app/odysseus-data:ro
+    environment:
+      - ODYSSEUS_INTERNAL_TOKEN=${ODYSSEUS_INTERNAL_TOKEN}
