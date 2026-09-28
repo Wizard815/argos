@@ -337,6 +337,17 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 	if len(argv) == 0 {
 		return p, fmt.Errorf("empty command")
 	}
+
+	// The environment is also written inline, as
+	// `HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_VISIBLE_DEVICES=0,1 llama-server ...`.
+	// llama-swap runs the command with no shell, so a leading assignment left in
+	// argv becomes argv[0] and the model cannot start at all: move them to env,
+	// where the export lines above already go, so the device pinning they carry
+	// survives too.
+	argv, p.Env = takeEnvPrefixes(argv, p.Env)
+	if len(argv) == 0 {
+		return p, fmt.Errorf("command is only environment assignments")
+	}
 	if argv[0] != "llama-server" {
 		p.Warnings = append(p.Warnings, fmt.Sprintf("command starts with %q, not 'llama-server'", argv[0]))
 	}
@@ -379,6 +390,20 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 	}
 	p.Argv = argv
 	return p, nil
+}
+
+// takeEnvPrefixes moves the leading VAR=value arguments off argv and onto env,
+// preserving their order. The same ^[A-Z_][A-Z0-9_]*= rule the export lines are
+// held to applies here, so anything that is not a valid llama-swap env entry --
+// a lowercase name, a flag like --model=x.gguf (whose name is not uppercase) --
+// stays in argv and is still reported as a command that does not start with
+// llama-server, rather than being silently treated as environment.
+func takeEnvPrefixes(argv, env []string) ([]string, []string) {
+	for len(argv) > 0 && reEnvKey.MatchString(argv[0]) {
+		env = append(env, argv[0])
+		argv = argv[1:]
+	}
+	return argv, env
 }
 
 // SplitCommand joins argv back into a llama-swap cmd string, quoting only what

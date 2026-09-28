@@ -31,6 +31,12 @@ type odysseusState struct {
 	// label), loaded at construction and kept current by refreshes. modelStatus
 	// reads it to report each model's effective launch configuration.
 	choices map[string]string
+
+	// lastWarnings is the warning set the previous refresh produced, so the log
+	// only carries what changed: refreshes run on a timer and on every
+	// /v1/models listing, and an unmappable preset would otherwise repeat the
+	// same line indefinitely.
+	lastWarnings []string
 }
 
 // odysseusMinTriggerInterval coalesces the /v1/models trigger. That endpoint is
@@ -124,9 +130,10 @@ func (s *Server) runOdysseusRefresh(ctx context.Context) (odysseus.RefreshResult
 		return rr, err
 	}
 	s.odysseus.lastErr = ""
-	for _, w := range rr.Warnings {
+	for _, w := range odysseus.NewWarnings(s.odysseus.lastWarnings, rr.Warnings) {
 		s.proxylog.Warnf("odysseus: %s", w)
 	}
+	s.odysseus.lastWarnings = rr.Warnings
 	return rr, nil
 }
 

@@ -345,6 +345,108 @@ func TestRenderOmitsEmptySections(t *testing.T) {
 	}
 }
 
+// The task presets are written with the environment inline instead of as export
+// lines. llama-swap execs the command with no shell, so a leading assignment
+// left in argv becomes argv[0]: the variant is generated but can never start.
+func TestParseCommand_InlineEnvPrefix(t *testing.T) {
+	const cmd = `HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_VISIBLE_DEVICES=0,1 llama-server \
+--model /app/models/HFCache/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf \
+--host 0.0.0.0 --port 8000 -ngl 99 -c 32768 --jinja`
+
+	p, err := ParseCommand(cmd, true)
+	if err != nil {
+		t.Fatalf("ParseCommand: %v", err)
+	}
+	env := strings.Join(p.Env, " ")
+	for _, want := range []string{"HSA_OVERRIDE_GFX_VERSION=9.0.6", "HIP_VISIBLE_DEVICES=0,1"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("inline assignment %q did not reach env: %q", want, env)
+		}
+	}
+	if p.Argv[0] != "llama-server" {
+		t.Errorf("argv[0] = %q, want llama-server", p.Argv[0])
+	}
+	if p.ModelID != "qwen3.6-35b-a3b-ud-q6_k_xl" {
+		t.Errorf("ModelID = %q", p.ModelID)
+	}
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "not 'llama-server'") {
+			t.Errorf("warned about a command that only looked prefixed: %v", p.Warnings)
+		}
+	}
+}
+
+// Only llama-swap's env shape (^[A-Z_][A-Z0-9_]*=) may be lifted out of argv. A
+// lowercase name is not env, so the command must still be reported as not
+// starting with llama-server rather than silently gaining an env entry.
+func TestParseCommand_InlineEnvPrefixKeepsNonEnvArgument(t *testing.T) {
+	p, err := ParseCommand("lowercase=1 llama-server --model /app/models/a/b.gguf --port 8000", true)
+	if err != nil {
+		t.Fatalf("ParseCommand: %v", err)
+	}
+	if len(p.Env) != 0 {
+		t.Errorf("a non-env leading argument was treated as env: %v", p.Env)
+	}
+	found := false
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "not 'llama-server'") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the command to be reported as not starting with llama-server: %v", p.Warnings)
+	}
+}
+
+func TestParseCommand_OnlyEnvIsAnError(t *testing.T) {
+	if _, err := ParseCommand("A=1 B=2", true); err == nil {
+		t.Error("expected an error for a command that is nothing but assignments")
+	}
+}
+
+// The rendered fragment must carry the inline environment as `env:`, with a cmd
+// that starts at llama-server -- anything else is a variant that cannot launch.
+func TestBuild_InlineEnvPrefixBecomesEnv(t *testing.T) {
+	const cmd = "HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_VISIBLE_DEVICES=0,1 llama-server " +
+		"--model /app/models/HFCache/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf " +
+		"--host 0.0.0.0 --port 8000 -ngl 99 -c 32768 --jinja"
+
+	res, err := Build(State{Tasks: []Task{
+		task("t", "running", 2000, "unsloth/Qwen3.6-35B-A3B-MTP-GGUF", cmd),
+	}}, Options{ProfilePrefix: "ody", EnsureDio: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Models) != 1 {
+		t.Fatalf("got %d variants, want 1: %v", len(res.Models), keys(res.Models))
+	}
+	for id, entry := range res.Models {
+		env, _ := entry["env"].([]string)
+		if len(env) != 2 {
+			t.Errorf("%s: env = %v, want the two inline assignments", id, entry["env"])
+		}
+		cmdStr, _ := entry["cmd"].(string)
+		if !strings.HasPrefix(cmdStr, "llama-server") {
+			t.Errorf("%s: cmd = %q, want it to begin at llama-server", id, cmdStr)
+		}
+	}
+}
+
+// A refresh runs on a timer and again on every /v1/models listing, so an
+// unmappable preset would repeat one line forever. Only the changes are logged.
+func TestNewWarnings(t *testing.T) {
+	prev := []string{"a", "b"}
+	if got := NewWarnings(prev, []string{"b", "c", "c", "a"}); len(got) != 1 || got[0] != "c" {
+		t.Errorf("NewWarnings = %v, want [c]: new entries only, repeats collapsed", got)
+	}
+	if got := NewWarnings(prev, prev); len(got) != 0 {
+		t.Errorf("an unchanged set was re-reported: %v", got)
+	}
+	if got := NewWarnings(nil, nil); got != nil {
+		t.Errorf("NewWarnings(nil, nil) = %v, want nil", got)
+	}
+}
+
 func keys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

@@ -90,6 +90,33 @@ func Refresh(ctx context.Context, opts Options, outPath string, otherSources []s
 	return rr, nil
 }
 
+// NewWarnings returns the entries of cur that were not already reported, in
+// order and without repeats inside cur.
+//
+// Refreshes run on a timer and again on every /v1/models listing, so a preset
+// that cannot be mapped re-produces the identical warning every few seconds.
+// Callers keep the previous result and log only what changed: a preset that is
+// fixed and later breaks again is reported again, because the intermediates
+// drop it from the previous set.
+func NewWarnings(prev, cur []string) []string {
+	if len(cur) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(prev))
+	for _, w := range prev {
+		seen[w] = struct{}{}
+	}
+	var out []string
+	for _, w := range cur {
+		if _, reported := seen[w]; reported {
+			continue
+		}
+		seen[w] = struct{}{} // also collapses repeats inside cur
+		out = append(out, w)
+	}
+	return out
+}
+
 // SourceKeys reads the identity keys a set of YAML config sources define,
 // returning key -> source path for the `models` and `profiles` maps.
 //
