@@ -173,6 +173,36 @@ listed are gone from the model directory, so they are not group members here. A
 member with no backing model blocks startup completely — re-add each one
 together with its file.
 
+## Context windows: what each model gets, and the 400 that follows
+
+`-c` deliberately comes from two places:
+
+| where | which models | window |
+|---|---|---|
+| `macros.rocm-llama-server` | the primary scan — everything no group claims, i.e. the 35B-119B `heavy` class | 262144 |
+| each `modelScan` group's own `cmdTemplate` | 12B search, MTP (16384), embeddings (8192) | 16384 / 8192 |
+
+The heavy models are `swap: true, exclusive: true`, so a large window there costs
+load time and VRAM only — it cannot break coexistence. The small models keep
+small windows, which is what lets them stay resident alongside each other.
+
+A client that sends more than the window gets a 400 from the child, which
+llama-swap records as `status=400`:
+
+```
+E srv send_error: task id = 0, error: request (175224 tokens) exceeds the
+  available context size (32768 tokens), try increasing it
+```
+
+That is a real agent session (Hermes/Studio history), not a malformed request.
+Two ways out:
+
+- size the heavy window for the longest conversation you run — 262144 above, which
+  is what these sessions were sized against before, or
+- lower it and let the client compact: in Hermes that is `compression.enabled:
+  true` with a `threshold` well under the window, so the history is summarised
+  before it is sent instead of being rejected.
+
 ## Pulling this update onto the box
 
 ```bash

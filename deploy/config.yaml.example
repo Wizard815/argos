@@ -55,10 +55,28 @@ logToStdout: both
 # reaches Unraid's /logterminal/llama-swap.log/. `both` = proxy + upstream.
 # Source: internal/server/log.go NewLoggers().
 
+# -c is the context window llama-server allocates for every launch that uses this
+# macro, and the whole KV cache for it is allocated at load.
+#
+# This macro feeds the PRIMARY scan only, which claims the models that need both
+# cards (the 35B-119B classes in the `heavy` routing group). They never coexist
+# with anything -- heavy is swap+exclusive -- so a large window costs load time
+# and VRAM, not concurrency. Size it for the longest conversation you actually
+# run: at 32768 an agent session was rejected with
+#
+#   request (175224 tokens) exceeds the available context size (32768 tokens)
+#
+# 262144 is the window these sessions were sized against before. 131072 is a fair
+# trade if you also let the client compact (Hermes: compression.enabled) instead
+# of sending the whole history.
+#
+# The small models do not use this macro: every modelScan group below carries its
+# own -c (search12b and MTP at 16384, embeddings at 8192), which is what lets them
+# coexist on one card.
 macros:
   rocm-llama-server: >
     llama-server --host 0.0.0.0 --port ${PORT}
-    -ngl 99 -c 32768
+    -ngl 99 -c 262144
     --flash-attn on
     --cache-type-k q8_0 --cache-type-v q8_0
     -lm dio
@@ -66,10 +84,12 @@ macros:
 
   # --fit off was REMOVED. fit_params defaults to true (common/common.h:482)
   # and --fit off disabled the auto-fitting that shrinks unset args when a
-  # layout does not fit. `-c` was 262144, which with --fit off was allocated
-  # literally on every load, on both cards, for every model including the 2B
-  # one. That is most of why two models could not coexist, and most of why each
-  # swap cost so much.
+  # layout does not fit. Combined with one large -c applied to every model it is
+  # what made a 2B model allocate the same KV as a 35B one, on both cards, on
+  # every load -- most of why two models could not coexist, and most of why each
+  # swap cost so much. With --fit on, the window below only has to be honest
+  # about the heavy models, which is why the small ones are peeled into their own
+  # scan groups with their own -c.
   #
   # -lm dio is REQUIRED on this stack. FEATURES.md: "Always pass -lm dio
   # (--load-mode dio). mmap on the model file hangs on this stack." Your macro
