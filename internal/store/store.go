@@ -469,11 +469,18 @@ func activityWhere(filter ActivityFilter) (string, []any) {
 		}
 	}
 	if len(models) > 0 {
-		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(models)), ", ")
-		conditions = append(conditions, "model_id IN ("+placeholders+")")
+		// An exact match plus the model's profile variants. The odysseus
+		// integration names a variant <base>--<label>, and the activity row
+		// carries the id that actually served - the variant - so filtering on
+		// the base model would leave the model's own activity page empty. The
+		// bounded lexical range is the same literal-prefix trick used for src:
+		// SQL wildcard characters in the prefix stay data.
+		terms := make([]string, 0, len(models))
 		for _, model := range models {
-			args = append(args, model)
+			terms = append(terms, "(model_id = ? OR (model_id >= ? AND model_id < ?))")
+			args = append(args, model, model+"--", model+"--\U0010FFFF")
 		}
+		conditions = append(conditions, "("+strings.Join(terms, " OR ")+")")
 	}
 
 	if !filter.Start.IsZero() {

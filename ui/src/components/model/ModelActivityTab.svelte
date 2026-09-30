@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import type { ActivityLogEntry } from "../../lib/types";
-  import { activityRevision, getActivity, inflightRequestEntries } from "../../stores/api";
+  import { activityRevision, getActivity, inflightRequestEntries, models } from "../../stores/api";
   import { connectionState } from "../../stores/theme";
   import { persistentStore } from "../../stores/persistent";
   import {
@@ -36,8 +36,19 @@
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   let lastRefresh = 0;
 
+  // Rows carry the id that actually serves. For a pinned model that is its
+  // variant (<base>--<label>), so the view has to match those as well or a
+  // pinned model's activity and inflight tables both stay empty. The server
+  // applies the same rule to the activity query.
+  let familyIds = $derived.by(() => {
+    const ids = $models
+      .filter((m) => m.id === modelId || m.base_model_id === modelId)
+      .map((m) => m.id);
+    return new Set(ids.length > 0 ? ids : [modelId]);
+  });
+
   let modelInflightRequests = $derived(
-    $inflightRequestEntries.filter((request) => request.model === modelId)
+    $inflightRequestEntries.filter((request) => familyIds.has(request.model))
   );
 
   async function refreshActivity() {
