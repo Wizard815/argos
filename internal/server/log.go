@@ -77,13 +77,23 @@ func (s *Server) getLogger(logMonitorID string) (*logmon.Monitor, error) {
 		return s.upstreamlog, nil
 	default:
 		if _, modelID, _, found := swaputil.FindModelInPath(s.cfg, "/"+logMonitorID); found {
-			// Management endpoints address the concrete model, but the process
-			// that serves it can be its pinned variant: a profile pin (or the
-			// Odysseus choice) rewrites the id before the pipeline resolves it.
-			// Prefer the concrete model's own logger and fall back to the
-			// variant, so a pinned model's panel is no longer empty while its
-			// variant is the process writing the log.
-			for _, candidate := range []string{modelID, s.effectiveModelID(modelID)} {
+			// A model's log panel has to show the process that is writing. With
+			// a pin active that is the variant: the concrete model keeps a stale
+			// logger from its previous run, and preferring it yields an empty
+			// panel. Whichever of the two is running therefore wins, and only
+			// when neither is does the concrete model come first - the rule the
+			// management endpoints follow.
+			candidates := []string{modelID, s.effectiveModelID(modelID)}
+			running := s.local.RunningModels()
+			for _, candidate := range candidates {
+				if _, ok := running[candidate]; !ok {
+					continue
+				}
+				if log, ok := s.local.ProcessLogger(candidate); ok {
+					return log, nil
+				}
+			}
+			for _, candidate := range candidates {
 				if log, ok := s.local.ProcessLogger(candidate); ok {
 					return log, nil
 				}

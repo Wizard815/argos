@@ -66,3 +66,24 @@ func TestServer_UnloadPrefersRunningBaseOverIdlePin(t *testing.T) {
 	assert.Equal(t, []string{"real"}, local.unloadModels,
 		"a directly loaded base model stays stoppable while a pin is active")
 }
+
+func TestServer_LogStreamPrefersTheRunningVariantOverAStaleLogger(t *testing.T) {
+	cfg := profileTestConfig(t) // the coding profile pins real -> hidden
+	local := newStubRouter([]string{"real", "hidden"}, "ok")
+	// What the box actually looks like: the concrete model keeps a logger from
+	// its last run and the variant is the process writing now. Preferring the
+	// concrete logger is what left a pinned model's panel empty.
+	staleLog := logmon.NewWriter(io.Discard)
+	variantLog := logmon.NewWriter(io.Discard)
+	local.loggers = map[string]*logmon.Monitor{"real": staleLog, "hidden": variantLog}
+	local.running = map[string]process.ProcessState{"hidden": process.StateReady}
+	s := profileTestServer(t, cfg, local)
+
+	_, err := s.setActiveProfile("coding")
+	require.NoError(t, err)
+
+	got, err := s.getLogger("real")
+	require.NoError(t, err)
+	assert.Same(t, variantLog, got,
+		"the panel for a pinned model must show the running variant's log")
+}
