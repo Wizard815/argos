@@ -60,6 +60,12 @@ func (s *Server) odysseusOptions() odysseus.Options {
 	if o == nil {
 		return odysseus.Options{}
 	}
+	names := make(map[string]string, len(s.cfg.Models))
+	for id, mc := range s.cfg.Models {
+		if mc.Name != "" {
+			names[id] = mc.Name
+		}
+	}
 	return odysseus.Options{
 		BaseURL:       o.BaseURL,
 		Token:         o.Token,
@@ -67,6 +73,7 @@ func (s *Server) odysseusOptions() odysseus.Options {
 		TokenFile:     o.TokenFile,
 		ProfilePrefix: o.ProfilePrefix,
 		Statuses:      o.Statuses,
+		Names:         names,
 		StateFile:     o.StateFile,
 		ChoicesPath:   o.ChoicesPath,
 		EnsureDio:     o.DioEnabled(),

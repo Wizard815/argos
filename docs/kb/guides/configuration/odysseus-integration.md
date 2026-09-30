@@ -19,7 +19,9 @@ Turn it on with `odysseus.enabled`. llama-swap polls Odysseus, and for each mode
 Odysseus has a command for it generates:
 
 - one **variant model**, id `<base-id>--<profilePrefix>` (and `-2`, `-3` for older
-  distinct commands), carrying that command and its environment;
+  distinct commands), carrying that command and its environment. The variant
+  inherits the base model's display name, so a switch reads as the same model
+  with different flags instead of a second model;
 - one **profile** whose `pins` rewrite the base model ID to that variant.
 
 The base models are never touched. **With no profile active — the state at

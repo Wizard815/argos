@@ -78,6 +78,11 @@ type Options struct {
 	// Statuses filters tasks by task.status. Empty means running + stopped.
 	Statuses []string
 
+	// Names maps a llama-swap base model ID to its configured display name.
+	// Generated variants inherit it, so a profile swap does not read as a
+	// different model in the UI, the activity table or the log panel.
+	Names map[string]string
+
 	// Choices maps a llama-swap base model ID to the Odysseus preset label the
 	// operator picked for it. When set, Build emits a single union profile whose
 	// pins cover ONLY the chosen models, so a model without a choice keeps
@@ -536,6 +541,12 @@ func Build(state State, opts Options) (*Result, error) {
 		entry := map[string]any{
 			"cmd":      SplitCommand(p.Argv),
 			"unlisted": true,
+		}
+		// A variant is the same model with different flags, so it carries the
+		// base model's display name: otherwise a profile swap reads as a
+		// different model in the UI, the activity table and the log panel.
+		if name := opts.Names[p.ModelID]; name != "" {
+			entry["name"] = name
 		}
 		if len(p.Env) > 0 {
 			entry["env"] = p.Env
