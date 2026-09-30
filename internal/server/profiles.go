@@ -80,6 +80,21 @@ func (s *Server) effectiveModelID(id string) string {
 	return id
 }
 
+// baseModelID returns the model a variant belongs to, or "" when the id is not a
+// variant of a configured model. The odysseus integration names variants
+// <base>--<label>, and the UI links a variant back to its base model so a
+// profile swap reads as one model instead of a second one.
+func (s *Server) baseModelID(id string) string {
+	base, _, ok := strings.Cut(id, "--")
+	if !ok || base == "" {
+		return ""
+	}
+	if _, exists := s.cfg.Models[base]; !exists {
+		return ""
+	}
+	return base
+}
+
 func upstreamProfilePin(upstreamPath string, pins map[string]string) (model, replacement string, found bool) {
 	upstreamPath = strings.TrimPrefix(upstreamPath, "/")
 	matchedPin := ""

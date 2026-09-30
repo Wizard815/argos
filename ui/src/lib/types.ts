@@ -35,6 +35,9 @@ export interface Model {
   cmd?: string;
   env?: string[];
   profile?: string;
+  // the model this entry is a variant of (Odysseus variants are <base>--<label>),
+  // so the UI links a variant back to the one model it belongs to
+  base_model_id?: string;
   available?: string[];
 }
 

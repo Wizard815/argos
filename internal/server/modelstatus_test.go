@@ -1,8 +1,10 @@
 package server
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/mostlygeek/llama-swap/internal/config"
 	"github.com/mostlygeek/llama-swap/internal/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,4 +52,29 @@ func TestServer_ModelStatusFallsBackToBaseModel(t *testing.T) {
 
 	assert.Equal(t, "ready", stateOf(t, s, "real"),
 		"a directly loaded model stays up while a pin is active")
+}
+
+func TestServer_ModelStatus_ReportsTheBaseModelForAVariant(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+models:
+  ornith:
+    cmd: echo ${PORT}
+    name: Ornith 1.5 35B
+  ornith--fast:
+    cmd: echo ${PORT}
+    name: Ornith 1.5 35B
+    unlisted: true
+`))
+	require.NoError(t, err)
+	s := profileTestServer(t, cfg, newStubRouter([]string{"ornith", "ornith--fast"}, "ok"))
+
+	byID := make(map[string]apiModel)
+	for _, m := range s.modelStatus() {
+		byID[m.Id] = m
+	}
+	require.Contains(t, byID, "ornith--fast")
+	assert.Equal(t, "ornith", byID["ornith--fast"].BaseModelId,
+		"a variant has to name the model it belongs to")
+	assert.Empty(t, byID["ornith"].BaseModelId,
+		"a plain model is not a variant of anything")
 }

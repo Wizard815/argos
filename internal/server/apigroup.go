@@ -36,6 +36,10 @@ type apiModel struct {
 	Cmd     string   `json:"cmd,omitempty"`
 	Env     []string `json:"env,omitempty"`
 	Profile string   `json:"profile,omitempty"`
+	// BaseModelId is set on an Odysseus variant and names the model it is a
+	// variant of, so the UI can link a variant to the one model it belongs to
+	// instead of presenting it as a second model.
+	BaseModelId string `json:"base_model_id,omitempty"`
 	// Available lists the Odysseus saved-config labels this model can switch
 	// to (its unlisted variants), so the detail view can offer a picker.
 	Available []string `json:"available,omitempty"`
@@ -159,6 +163,7 @@ func (s *Server) modelStatus() []apiModel {
 			Cmd:           cmd,
 			Env:           env,
 			Profile:       chosen,
+			BaseModelId:   s.baseModelID(id),
 			Available:     s.odysseusAvailableLabels(id),
 		})
 	}

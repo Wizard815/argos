@@ -8,11 +8,13 @@
 
   let { model }: Props = $props();
 
-  let href = $derived(`/models/${encodeURIComponent(model)}`);
-  // A profile variant has its own id but is the same model underneath: show the
-  // display name whenever the id is a known model, and the raw id only when it
-  // is not.
-  let label = $derived($models.find((m) => m.id === model)?.name || model);
+  let entry = $derived($models.find((m) => m.id === model));
+  // A profile variant has its own id but is the same model underneath: link to
+  // the base model's page and show its display name, so one model stays one row
+  // in the activity table instead of reading as a second model.
+  let target = $derived(entry?.base_model_id || model);
+  let href = $derived(`/models/${encodeURIComponent(target)}`);
+  let label = $derived(entry?.name || model);
 </script>
 
 {#if model}
