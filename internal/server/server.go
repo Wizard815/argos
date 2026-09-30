@@ -125,6 +125,11 @@ func (s *Server) setActiveProfile(name string) (bool, error) {
 
 	s.proxylog.Infof("active profile changed to %q", name)
 	event.Emit(swaputil.ProfileChangedEvent{Active: name})
+	if s.cfg.ProfileStateFile != "" {
+		if err := saveProfileState(s.cfg.ProfileStateFile, name); err != nil {
+			s.proxylog.Warnf("profile state: %v", err)
+		}
+	}
 	return true, nil
 }
 
@@ -250,6 +255,9 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		shutdownCtx:   shutdownCtx,
 		shutdownFn:    shutdownFn,
 	}
+	// Bring back the profile the operator last selected. Without this, a restart
+	// or a container recreate silently falls back to "no profile".
+	s.restoreProfileState()
 	// SysProvider is constructed here because this is where perf and hardware
 	// are in scope; wiring those in later is a change to internal/mcptools.
 	tools, err := mcptools.New(

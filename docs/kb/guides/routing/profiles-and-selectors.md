@@ -3,8 +3,8 @@ title: Profiles and selectors
 summary: Switch model sets at runtime with profiles, or resolve a virtual model ID per request with selectors.
 category: guides
 tags: [profiles, selectors, aliases, routing, virtual-models]
-config_keys: [profiles, profiles.*.pins, selectors, selectors.*.strategy, selectors.*.targets]
-updated: 2026-08-25
+config_keys: [profiles, profiles.*.pins, selectors, selectors.*.strategy, selectors.*.targets, hooks.on_startup.profile, profileStateFile]
+updated: 2026-09-30
 ---
 
 # Profiles and selectors
@@ -42,7 +42,8 @@ different model, with no client-side change.
   is left out of model listings. Existing local, alias and peer IDs stay
   reachable.
 - Pins are applied first, before aliases, filters and routing.
-- Startup and config reload select **no** profile.
+- Startup selects the profile remembered in `profileStateFile`, falling back to
+  `hooks.on_startup.profile` when there is nothing to remember — see below.
 
 Switch at runtime:
 
@@ -51,6 +52,37 @@ $ curl http://localhost:8080/api/profiles
 $ curl -X PUT http://localhost:8080/api/profiles/active -d '{"name":"coding"}'
 $ curl -X PUT http://localhost:8080/api/profiles/active -d '{"name":null}'
 ```
+
+## Remember the active profile across restarts
+
+The active profile is runtime state, so a restart or a container recreate comes
+back with **no** profile active and every client silently falls back to the base
+models. Two settings decide what comes back:
+
+- `hooks.on_startup.profile` names the profile to activate on startup.
+- `profileStateFile` names a JSON file that remembers the profile **last**
+  selected, including "none". A remembered selection wins over the hook; the
+  hook is only the fallback for a first run, a deleted file, or a remembered
+  name that is no longer configured.
+
+```yaml
+profileStateFile: /app/config.d/profile-state.json
+hooks:
+  on_startup:
+    profile: coding
+```
+
+The file holds one key and is safe to delete:
+
+```json
+{
+  "active": "coding"
+}
+```
+
+Point it at somewhere the proxy can write — a mounted config directory, not the
+read-only `config.yaml` mount. Delete the file to fall back to the hook, or
+leave `profileStateFile` empty to disable remembering entirely.
 
 ## Selectors: resolve per request
 

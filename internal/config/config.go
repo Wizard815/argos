@@ -152,8 +152,12 @@ func (c *ProfileConfig) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type Config struct {
-	Tailcat            *TailcatConfig    `yaml:"tailcat"`
-	HealthCheckTimeout int               `yaml:"healthCheckTimeout"`
+	Tailcat            *TailcatConfig `yaml:"tailcat"`
+	HealthCheckTimeout int            `yaml:"healthCheckTimeout"`
+	// ProfileStateFile remembers the active profile across restarts: it is read
+	// on startup and rewritten whenever the active profile changes. Empty
+	// disables it, leaving hooks.on_startup.profile as the only source.
+	ProfileStateFile   string            `yaml:"profileStateFile"`
 	LogRequests        bool              `yaml:"logRequests"`
 	LogLevel           string            `yaml:"logLevel"`
 	LogTimeFormat      string            `yaml:"logTimeFormat"`

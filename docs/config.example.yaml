@@ -212,6 +212,14 @@ upstream:
 # - targets may be a local model, fully qualified peer model, alias, setParamsByID alias, or selector
 # - an empty string or YAML null (~) disables the pin with a 404; it is not
 #   added to model listings, while existing local, alias, or peer IDs remain
+# profileStateFile: remember the active profile across restarts
+# - optional, default: empty (disabled)
+# - the file is read on startup and rewritten whenever the active profile
+#   changes, including when profiles are turned off; a remembered selection
+#   wins over hooks.on_startup.profile, which stays the fallback for a first
+#   run, a deleted file, or a name that is no longer configured
+# - point it at a writable mount, e.g. /app/config.d/profile-state.json
+profileStateFile: ""
 profiles:
   "coding":
     description: "Coding-focused model routing"
