@@ -77,8 +77,15 @@ func (s *Server) getLogger(logMonitorID string) (*logmon.Monitor, error) {
 		return s.upstreamlog, nil
 	default:
 		if _, modelID, _, found := swaputil.FindModelInPath(s.cfg, "/"+logMonitorID); found {
-			if log, ok := s.local.ProcessLogger(modelID); ok {
-				return log, nil
+			// The process that serves this id can be its pinned variant: an
+			// active profile pin (or the Odysseus choice) rewrites the id before
+			// the pipeline resolves it, and the UI asks for the id it displays.
+			// Without this the panel for a pinned model stays empty while its
+			// variant is the process writing the log.
+			for _, candidate := range []string{s.effectiveModelID(modelID), modelID} {
+				if log, ok := s.local.ProcessLogger(candidate); ok {
+					return log, nil
+				}
 			}
 		}
 		return nil, fmt.Errorf("invalid logger. Use 'proxy', 'upstream' or a model's ID")

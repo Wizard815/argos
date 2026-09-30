@@ -204,11 +204,24 @@ func (s *Server) handleAPIUnloadModel(w http.ResponseWriter, r *http.Request) {
 		swaputil.SendResponse(w, r, http.StatusNotFound, "model not found")
 		return
 	}
-	if !s.local.Handles(realName) {
+	// A card with a pin or an Odysseus choice stands for its variant: the
+	// unload has to stop the process that is actually serving, not the base id
+	// that never ran. Whichever of the two is running wins, so a base model
+	// loaded directly is still stoppable while a pin is in effect.
+	target := realName
+	if eff := s.effectiveModelID(realName); eff != realName {
+		running := s.local.RunningModels()
+		if _, ok := running[eff]; ok {
+			target = eff
+		} else if _, ok := running[realName]; !ok {
+			target = eff
+		}
+	}
+	if !s.local.Handles(target) {
 		swaputil.SendResponse(w, r, http.StatusNotFound, "no local server found for requested model")
 		return
 	}
-	s.local.Unload(0, realName)
+	s.local.Unload(0, target)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
