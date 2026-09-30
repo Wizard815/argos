@@ -302,7 +302,7 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 			if !reEnvKey.MatchString(entry) {
 				return p, fmt.Errorf("env %q does not match llama-swap's ^[A-Z_][A-Z0-9_]*=.*$", entry)
 			}
-			p.Env = append(p.Env, entry)
+			p.Env = withEnv(p.Env, entry)
 			continue
 		}
 		if strings.HasPrefix(line, "export ") {
@@ -405,10 +405,28 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 // llama-server, rather than being silently treated as environment.
 func takeEnvPrefixes(argv, env []string) ([]string, []string) {
 	for len(argv) > 0 && reEnvKey.MatchString(argv[0]) {
-		env = append(env, argv[0])
+		env = withEnv(env, argv[0])
 		argv = argv[1:]
 	}
 	return argv, env
+}
+
+// withEnv adds one KEY=value assignment, replacing any existing assignment for
+// the same key. Both the export lines and the inline prefixes land in this list,
+// so a variable written both ways - `export HIP_VISIBLE_DEVICES=0,1` and an
+// inline `HIP_VISIBLE_DEVICES=0,1 llama-server ...` - otherwise reaches
+// llama-swap twice. Replacing matches what a shell does (the later assignment
+// wins) and keeps the first occurrence's position, so the env stays in the order
+// the operator wrote it.
+func withEnv(env []string, entry string) []string {
+	key, _, _ := strings.Cut(entry, "=")
+	for i, existing := range env {
+		if k, _, ok := strings.Cut(existing, "="); ok && k == key {
+			env[i] = entry
+			return env
+		}
+	}
+	return append(env, entry)
 }
 
 // SplitCommand joins argv back into a llama-swap cmd string, quoting only what
