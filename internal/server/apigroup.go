@@ -204,17 +204,18 @@ func (s *Server) handleAPIUnloadModel(w http.ResponseWriter, r *http.Request) {
 		swaputil.SendResponse(w, r, http.StatusNotFound, "model not found")
 		return
 	}
-	// A card with a pin or an Odysseus choice stands for its variant: the
-	// unload has to stop the process that is actually serving, not the base id
-	// that never ran. Whichever of the two is running wins, so a base model
-	// loaded directly is still stoppable while a pin is in effect.
+	// Management endpoints address the concrete model, but with a pin in effect
+	// the process that runs is the variant. Keep the concrete id as the target
+	// and only switch to the variant when the variant is the one actually
+	// running - otherwise the unload button on a pinned card stops a model that
+	// never started and leaves the serving variant up.
 	target := realName
 	if eff := s.effectiveModelID(realName); eff != realName {
 		running := s.local.RunningModels()
-		if _, ok := running[eff]; ok {
-			target = eff
-		} else if _, ok := running[realName]; !ok {
-			target = eff
+		if _, baseRunning := running[realName]; !baseRunning {
+			if _, variantRunning := running[eff]; variantRunning {
+				target = eff
+			}
 		}
 	}
 	if !s.local.Handles(target) {
