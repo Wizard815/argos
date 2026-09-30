@@ -44,6 +44,8 @@ different model, with no client-side change.
 - Pins are applied first, before aliases, filters and routing.
 - Startup selects the profile remembered in `profileStateFile`, falling back to
   `hooks.on_startup.profile` when there is nothing to remember — see below.
+- A pinned model reports the state of its pinned variant, so its card goes green
+  while the variant is loaded even though the base model itself never runs.
 
 Switch at runtime:
 

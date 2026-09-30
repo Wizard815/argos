@@ -60,6 +60,26 @@ func (s *Server) effectiveCommand(id, cmd string) string {
 	return variant.Cmd
 }
 
+// effectiveModelID returns the id a request for this model would actually
+// resolve to: the active profile's pin when one applies, otherwise the Odysseus
+// per-model choice. The variant - not the base model - is the process that
+// serves such a request, so everything the UI reports about that process, the
+// running state above all, has to follow the same resolution as the effective
+// command shown on the same card.
+func (s *Server) effectiveModelID(id string) string {
+	if profile, ok := s.cfg.Profiles[s.ActiveProfile()]; ok {
+		if target, pinned := profile.Pins[id]; pinned && target != "" {
+			return target
+		}
+	}
+	if chosen := s.odysseus.choices[id]; chosen != "" {
+		if _, ok := s.cfg.Models[id+"--"+chosen]; ok {
+			return id + "--" + chosen
+		}
+	}
+	return id
+}
+
 func upstreamProfilePin(upstreamPath string, pins map[string]string) (model, replacement string, found bool) {
 	upstreamPath = strings.TrimPrefix(upstreamPath, "/")
 	matchedPin := ""

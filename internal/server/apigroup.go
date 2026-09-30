@@ -119,9 +119,20 @@ func (s *Server) modelStatus() []apiModel {
 	models := make([]apiModel, 0, len(ids))
 	for _, id := range ids {
 		mc := s.cfg.Models[id]
+
+		// The command on this card already resolves to the chosen variant, so
+		// the state has to come from the same process. An active profile pin (or,
+		// with no profile active, the Odysseus choice) rewrites the id before the
+		// pipeline resolves it, which makes the variant the process that actually
+		// serves - reporting the base model's own state would leave the row grey
+		// while its variant is loaded. The base id stays the fallback so a model
+		// loaded directly still reads as up.
 		state := "stopped"
-		if st, ok := running[id]; ok {
-			state = string(st)
+		for _, candidate := range []string{s.effectiveModelID(id), id} {
+			if st, ok := running[candidate]; ok {
+				state = string(st)
+				break
+			}
 		}
 		_, capsMap, _, ctxLen := renderCapabilities(mc.Capabilities)
 
