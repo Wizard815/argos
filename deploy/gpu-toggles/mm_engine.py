@@ -26,6 +26,10 @@ import dataclasses
 import math
 import shlex
 
+# Each model is in exactly one mode. `standard` is the opt-out: the effective
+# launch runs as-is and neither toggle applies.
+MODES = ("standard", "single_gpu", "multi_model")
+
 
 # --- effective launch parsing ------------------------------------------------
 
@@ -80,6 +84,22 @@ def _as_int(s: str, default: int) -> int:
         return int(s)
     except (TypeError, ValueError):
         return default
+
+
+def resolve_mode(toggles: dict) -> str:
+    """Normalise a toggle record to one of MODES.
+
+    Accepts the canonical {"mode": ...} and, for older records, the legacy
+    {"single_gpu": bool, "multi_model": bool} pair.
+    """
+    mode = toggles.get("mode")
+    if mode in MODES:
+        return mode
+    if toggles.get("multi_model"):
+        return "multi_model"
+    if toggles.get("single_gpu"):
+        return "single_gpu"
+    return "standard"
 
 
 # --- toggle 1: dynamic single-GPU -------------------------------------------
@@ -163,8 +183,7 @@ def plan_multi_model(active_chats: int, parallel: int, free_vram: dict[str, int]
 @dataclasses.dataclass
 class Decision:
     model: str
-    single_gpu: bool
-    multi_model: bool
+    mode: str
     # single_gpu result
     device: str | None
     # multi_model result
@@ -173,36 +192,46 @@ class Decision:
     queued: int
     reason: str
 
+    @property
+    def single_gpu(self) -> bool:
+        return self.mode == "single_gpu"
+
+    @property
+    def multi_model(self) -> bool:
+        return self.mode == "multi_model"
+
     def as_dict(self) -> dict:
-        return dataclasses.asdict(self)
+        d = dataclasses.asdict(self)
+        d["single_gpu"] = self.single_gpu
+        d["multi_model"] = self.multi_model
+        return d
 
 
 def decide(model_id: str, cmd: str, env: list[str] | None, toggles: dict,
            free_vram: dict[str, int], model_gb: int, margin_gb: int = 4,
            active_chats: int = 1, existing_instances: int = 0) -> Decision:
-    """Apply the two toggles to one model's effective launch."""
+    """Apply the model's mode to its effective launch."""
     launch = parse_effective_launch(cmd, env)
-    single = bool(toggles.get("single_gpu"))
-    multi = bool(toggles.get("multi_model"))
+    mode = resolve_mode(toggles)
 
-    if multi:
+    if mode == "standard":
+        # Opt-out: the model is not meant to move or scale. Run as written.
+        return Decision(model=model_id, mode="standard", device=launch.hip_visible,
+                        start_devices=[], instances=1, queued=0,
+                        reason="standard: effective launch used as-is")
+
+    if mode == "multi_model":
         plan = plan_multi_model(active_chats, launch.parallel, free_vram,
                                 model_gb, margin_gb, existing_instances)
-        return Decision(model=model_id, single_gpu=single, multi_model=True,
-                        device=None, start_devices=plan.start,
-                        instances=plan.total_instances, queued=plan.queued,
-                        reason=plan.reason)
+        return Decision(model=model_id, mode="multi_model", device=None,
+                        start_devices=plan.start, instances=plan.total_instances,
+                        queued=plan.queued, reason=plan.reason)
 
-    if single:
-        prefer = launch.pinned_devices[0] if launch.pinned_devices else None
-        dev = single_gpu_pick(free_vram, model_gb, margin_gb, prefer=prefer)
-        reason = (f"single GPU -> {dev} (preferred {prefer})" if dev
-                  else f"no GPU fits {model_gb + margin_gb} GiB; would fail/queue")
-        return Decision(model=model_id, single_gpu=True, multi_model=False,
-                        device=dev, start_devices=[], instances=1 if dev else 0,
-                        queued=0 if dev else active_chats, reason=reason)
-
-    # neither toggle: leave the effective launch as-is (today's behaviour)
-    return Decision(model=model_id, single_gpu=False, multi_model=False,
-                    device=launch.hip_visible, start_devices=[], instances=1,
-                    queued=0, reason="toggles off; effective launch unchanged")
+    # single_gpu
+    prefer = launch.pinned_devices[0] if launch.pinned_devices else None
+    dev = single_gpu_pick(free_vram, model_gb, margin_gb, prefer=prefer)
+    reason = (f"single GPU -> {dev} (preferred {prefer})" if dev
+              else f"no GPU fits {model_gb + margin_gb} GiB; would fail/queue")
+    return Decision(model=model_id, mode="single_gpu", device=dev,
+                    start_devices=[], instances=1 if dev else 0,
+                    queued=0 if dev else active_chats, reason=reason)

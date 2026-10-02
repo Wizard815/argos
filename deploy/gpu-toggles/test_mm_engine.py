@@ -114,6 +114,30 @@ def main():
     d = e.decide("ornith-1.5-35b-q6_k", CMD_384K, ENV_SINGLE, toggles, free_vram=free, model_gb=10)
     check("decide/off-unchanged", d.device == "0" and d.instances == 1, f"device={d.device}")
 
+    # --- mode-based (the explicit per-model opt-out) ---
+    check("resolve/empty-is-standard", e.resolve_mode({}) == "standard", "")
+    check("resolve/legacy-single", e.resolve_mode({"single_gpu": True}) == "single_gpu", "")
+    check("resolve/legacy-multi", e.resolve_mode({"multi_model": True}) == "multi_model", "")
+    check("resolve/canonical", e.resolve_mode({"mode": "standard"}) == "standard", "")
+
+    # standard = opt-out: launch as-is even when nothing else fits
+    d = e.decide("some-embed", CMD_384K, ENV_SINGLE, {"mode": "standard"},
+                 free_vram={"0": 6, "1": 6}, model_gb=30)
+    check("decide/mode-standard-as-is",
+          d.mode == "standard" and d.device == "0" and d.instances == 1
+          and not d.single_gpu and not d.multi_model,
+          f"mode={d.mode} device={d.device}")
+
+    d = e.decide("ornith-1.5-35b-q6_k", CMD_384K, ENV_SINGLE, {"mode": "single_gpu"},
+                 free_vram={"0": 6, "1": 30}, model_gb=10)
+    check("decide/mode-single", d.mode == "single_gpu" and d.device == "1",
+          f"device={d.device}")
+
+    d = e.decide("ornith-1.5-35b-q6_k", CMD_384K, ENV_SINGLE, {"mode": "multi_model"},
+                 free_vram=free, model_gb=10, active_chats=2)
+    check("decide/mode-multi", d.mode == "multi_model" and d.instances == 2,
+          f"instances={d.instances}")
+
     print(f"\n{passed} passed, {failed} failed")
     return 1 if failed else 0
 

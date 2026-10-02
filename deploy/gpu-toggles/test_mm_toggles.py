@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for mm_toggles.py."""
+"""Tests for mm_toggles.py — the per-model mode state."""
 import os
 import sys
 import tempfile
@@ -22,24 +22,48 @@ def check(name, cond, detail=""):
 
 def main():
     p = os.path.join(tempfile.mkdtemp(), "model_toggles.json")
-    check("defaults", mm_toggles.get(mm_toggles.load(p), "m") ==
-          {"single_gpu": False, "multi_model": False}, "both off")
 
-    mm_toggles.set_flag(p, "ornith-1.5-35b-q6_k", single_gpu=True)
-    check("set-single", mm_toggles.get(mm_toggles.load(p), "ornith-1.5-35b-q6_k")["single_gpu"] is True,
-          "")
-    mm_toggles.set_flag(p, "ornith-1.5-35b-q6_k", multi_model=True)
-    g = mm_toggles.get(mm_toggles.load(p), "ornith-1.5-35b-q6_k")
-    check("both-on", g == {"single_gpu": True, "multi_model": True}, f"{g}")
+    # default: standard (the opt-out)
+    check("default-standard",
+          mm_toggles.get(mm_toggles.load(p), "m") ==
+          {"mode": "standard", "single_gpu": False, "multi_model": False},
+          "standard")
 
-    mm_toggles.set_flag(p, "other-model", single_gpu=True)
+    # set single_gpu
+    r = mm_toggles.set_mode(p, "ornith-1.5-35b-q6_k", "single_gpu")
+    check("set-single", r == {"mode": "single_gpu", "single_gpu": True, "multi_model": False},
+          f"{r}")
+
+    # switching mode replaces, does not accumulate
+    r = mm_toggles.set_mode(p, "ornith-1.5-35b-q6_k", "multi_model")
+    check("switch-mode-replaces",
+          r == {"mode": "multi_model", "single_gpu": False, "multi_model": True}, f"{r}")
+
+    # back to the opt-out
+    r = mm_toggles.set_mode(p, "ornith-1.5-35b-q6_k", "standard")
+    check("back-to-standard",
+          r == {"mode": "standard", "single_gpu": False, "multi_model": False}, f"{r}")
+
+    # models are independent
+    mm_toggles.set_mode(p, "other-model", "single_gpu")
     s = mm_toggles.load(p)
-    check("independent-models", mm_toggles.get(s, "other-model")["multi_model"] is False,
-          f"{s}")
+    check("independent-models",
+          mm_toggles.get(s, "ornith-1.5-35b-q6_k")["mode"] == "standard"
+          and mm_toggles.get(s, "other-model")["mode"] == "single_gpu", f"{s}")
 
-    mm_toggles.set_flag(p, "ornith-1.5-35b-q6_k", single_gpu=False)
-    g = mm_toggles.get(mm_toggles.load(p), "ornith-1.5-35b-q6_k")
-    check("turn-off", g["single_gpu"] is False and g["multi_model"] is True, f"{g}")
+    # legacy record (booleans only) still reads correctly
+    s["legacy"] = {"single_gpu": True, "multi_model": False}
+    check("legacy-record", mm_toggles.get(s, "legacy")["mode"] == "single_gpu",
+          f"{mm_toggles.get(s, 'legacy')}")
+    s["legacy2"] = {"single_gpu": False, "multi_model": True}
+    check("legacy-record-mm", mm_toggles.get(s, "legacy2")["mode"] == "multi_model", "")
+
+    # invalid mode rejected
+    try:
+        mm_toggles.set_mode(p, "x", "bogus")
+        check("reject-invalid", False, "no error raised")
+    except ValueError:
+        check("reject-invalid", True, "ValueError")
 
     print(f"\n{passed} passed, {failed} failed")
     return 1 if failed else 0
