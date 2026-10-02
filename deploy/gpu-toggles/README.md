@@ -84,9 +84,12 @@ directory is now reference material and a testbed rather than the deployed path:
 - launch: `internal/process`'s `LaunchEnvPolicy`, installed by the server,
   rewrites `HIP_VISIBLE_DEVICES` at launch for `single_gpu`
 
-Still open: `multi_model`, which needs the proxy below deployed inside the image
-(its HTTP forwarding layer, `serve()`, is still a stub — the scheduling core is
-complete and tested). `standard` leaves the launch untouched.
+`multi_model` is wired too, but with llama-swap's own machinery rather than the
+proxy here: at config load the model is expanded into one copy per GPU
+(`<id>--mm<N>`) fronted by a spillover selector with `spillover` equal to the
+model's `--parallel`. `mm_proxy`'s scheduling core stays the reference design and
+is still useful for experimenting outside llama-swap. `standard` leaves the
+launch untouched.
 
 `pick_gpu.py`, `llama_gpu_launch.sh` and `llama_server.py` here are the
 shell-level equivalent of the Go launch policy; they are what a cmd-template

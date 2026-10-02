@@ -109,23 +109,18 @@ func (s *Server) ModelMode(modelID string) string {
 	return ModeStandard
 }
 
-// restoreModelToggles loads the persisted modes during startup, before the
-// first modelStatus is served, so the detail view renders the right control on
-// first paint.
-func (s *Server) restoreModelToggles() {
-	if s.cfg.ModelTogglesFile == "" {
-		return
-	}
-	modes, err := loadModelToggles(s.cfg.ModelTogglesFile)
-	if err != nil {
-		s.proxylog.Warnf("model toggles: %v", err)
-		return
+// restoreModelToggles records the modes loaded during startup (and possibly
+// extended by applyMultiModel), before the first modelStatus is served, so the
+// detail view renders the right control on first paint.
+func (s *Server) restoreModelToggles(modes map[string]string) {
+	if modes == nil {
+		modes = map[string]string{}
 	}
 	s.modelModesMu.Lock()
 	s.modelModes = modes
 	s.modelModesMu.Unlock()
 	if len(modes) > 0 {
-		s.proxylog.Infof("model toggles: loaded %d mode(s) from %s", len(modes), s.cfg.ModelTogglesFile)
+		s.proxylog.Infof("model toggles: %d mode(s) active from %s", len(modes), s.cfg.ModelTogglesFile)
 	}
 }
 

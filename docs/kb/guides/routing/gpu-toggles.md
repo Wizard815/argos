@@ -53,7 +53,22 @@ no longer fits, the emptiest fitting card wins. If *no* card fits, it binds the
 emptiest one anyway and logs a warning — the same OOM you would get by pinning a
 card that is too small.
 
-`multi_model` is stored and reported, but not yet applied at launch.
+`multi_model` expands the model at load time into one copy per ROCm card and
+fronts them with a spillover selector, so one id serves
+`ceil(chats / parallel)` instances: the first copy fills to `--parallel`
+concurrent chats, then the next copy is started on demand. Copies are named
+`<id>--mm<N>`, are unlisted, each prefers a different card, and live in a
+non-exclusive `multimodel` group so they coexist.
+
+Two things to know:
+
+- The expansion happens when the config loads, and the watcher only watches
+  `*.yml`/`*.yaml`, so switching a model to `multi_model` takes effect on the
+  next config reload — restart llama-swap (or touch a config file).
+- A profile pin rewrites the model id *before* selectors are resolved. If the
+  model is pinned to an Odysseus variant, requests go to that variant and the
+  selector is bypassed. Set the model's Odysseus choice to "llama-swap default"
+  (clear the pin) for `multi_model` to apply.
 
 ## Reading and setting it
 

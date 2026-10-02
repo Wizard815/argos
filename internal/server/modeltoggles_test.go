@@ -27,10 +27,21 @@ models:
 	return cfg
 }
 
+// restoreTogglesFromFile mirrors what New does: load the modes, then hand them
+// to the server.
+func restoreTogglesFromFile(t *testing.T, s *Server, path string) {
+	t.Helper()
+	modes, err := loadModelToggles(path)
+	if err != nil {
+		t.Fatalf("loadModelToggles: %v", err)
+	}
+	s.restoreModelToggles(modes)
+}
+
 func TestServer_ModelModeDefaultsToStandard(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "model-toggles.json")
 	s := profileTestServer(t, modelTogglesTestConfig(t, path), newStubRouter([]string{"real"}, "ok"))
-	s.restoreModelToggles()
+	restoreTogglesFromFile(t, s, path)
 
 	assert.Equal(t, ModeStandard, s.ModelMode("real"))
 	assert.Equal(t, ModeStandard, s.ModelMode("other"))
@@ -56,7 +67,7 @@ func TestServer_ModelModePersistsAndRestores(t *testing.T) {
 
 	// a restart must come back on the same mode
 	fresh := profileTestServer(t, modelTogglesTestConfig(t, path), newStubRouter([]string{"real"}, "ok"))
-	fresh.restoreModelToggles()
+	restoreTogglesFromFile(t, fresh, path)
 	assert.Equal(t, ModeSingleGPU, fresh.ModelMode("real"))
 }
 
@@ -65,7 +76,7 @@ func TestServer_ModelModeStandardClearsEntry(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(`{"modes":{"real":"multi_model"}}`+"\n"), 0o644))
 
 	s := profileTestServer(t, modelTogglesTestConfig(t, path), newStubRouter([]string{"real"}, "ok"))
-	s.restoreModelToggles()
+	restoreTogglesFromFile(t, s, path)
 	require.Equal(t, ModeMultiModel, s.ModelMode("real"))
 
 	w := httptest.NewRecorder()
@@ -105,7 +116,7 @@ func TestServer_ModelModeUnknownModelIs404(t *testing.T) {
 
 func TestServer_ModelModeDisabledWithoutPath(t *testing.T) {
 	s := profileTestServer(t, modelTogglesTestConfig(t, ""), newStubRouter([]string{"real"}, "ok"))
-	s.restoreModelToggles()
+	restoreTogglesFromFile(t, s, "")
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/models/real/mode",

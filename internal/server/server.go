@@ -222,6 +222,16 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	var local router.LocalRouter
 	var err error
 
+	// Load the per-model GPU modes before the routers are built: a multi_model
+	// model is expanded into per-GPU copies fronted by a spillover selector, and
+	// the router has to be created from the expanded config.
+	modes, err := loadModelToggles(cfg.ModelTogglesFile)
+	if err != nil {
+		proxylog.Warnf("model toggles: %v", err)
+		modes = map[string]string{}
+	}
+	applyMultiModel(&cfg, modes, listDRMCards(drmRoot))
+
 	switch cfg.Routing.Router.Use {
 	case "matrix":
 		local, err = router.NewMatrix(cfg, proxylog, upstreamlog)
@@ -288,7 +298,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		}
 	}
 
-	s.restoreModelToggles()
+	s.restoreModelToggles(modes)
 	// Install the launch-time policy that applies each model's GPU mode. It is
 	// consulted just before an upstream starts, so a mode change takes effect
 	// on the next launch without touching the configured command.
