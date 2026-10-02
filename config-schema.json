@@ -330,6 +330,11 @@
             "default": "",
             "description": "Path to a JSON file that remembers the active profile across restarts. The file is read on startup and rewritten whenever the active profile changes, including when profiles are turned off. A remembered selection wins over hooks.on_startup.profile, which remains the fallback for a first run, a deleted file, or a remembered name that is no longer configured. Empty disables the feature."
         },
+        "modelTogglesFile": {
+            "type": "string",
+            "default": "",
+            "description": "Path to a JSON file that remembers each model's GPU toggle mode chosen in the model detail view: standard (run the effective launch as written), single_gpu (bind to a card with enough free VRAM) or multi_model (run one instance per GPU, ceil(chats/parallel)). It must live in the -config-dir so it survives reloads and restarts. Empty disables the detail-view control."
+        },
         "profiles": {
             "type": "object",
             "default": {},

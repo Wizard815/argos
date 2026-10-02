@@ -36,6 +36,10 @@ type apiModel struct {
 	Cmd     string   `json:"cmd,omitempty"`
 	Env     []string `json:"env,omitempty"`
 	Profile string   `json:"profile,omitempty"`
+	// Mode is the model's GPU toggle mode chosen in the detail view
+	// (standard, single_gpu or multi_model). Omitted when standard, which is
+	// the default, so a config with the feature off is unchanged.
+	Mode string `json:"mode,omitempty"`
 	// BaseModelId is set on an Odysseus variant and names the model it is a
 	// variant of, so the UI can link a variant to the one model it belongs to
 	// instead of presenting it as a second model.
@@ -163,6 +167,7 @@ func (s *Server) modelStatus() []apiModel {
 			Cmd:           cmd,
 			Env:           env,
 			Profile:       chosen,
+			Mode:          s.ModelMode(id),
 			BaseModelId:   s.baseModelID(id),
 			Available:     s.odysseusAvailableLabels(id),
 		})

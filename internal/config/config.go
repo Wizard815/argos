@@ -157,7 +157,12 @@ type Config struct {
 	// ProfileStateFile remembers the active profile across restarts: it is read
 	// on startup and rewritten whenever the active profile changes. Empty
 	// disables it, leaving hooks.on_startup.profile as the only source.
-	ProfileStateFile   string            `yaml:"profileStateFile"`
+	ProfileStateFile string `yaml:"profileStateFile"`
+	// ModelTogglesFile persists the per-model GPU toggle mode chosen in the
+	// model detail view (standard, single_gpu or multi_model). It must live
+	// in the -config-dir so it survives reloads and restarts. Empty disables
+	// the detail-view control.
+	ModelTogglesFile   string            `yaml:"modelTogglesFile"`
 	LogRequests        bool              `yaml:"logRequests"`
 	LogLevel           string            `yaml:"logLevel"`
 	LogTimeFormat      string            `yaml:"logTimeFormat"`

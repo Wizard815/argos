@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Model } from "../../lib/types";
   import { capabilityLabels } from "../../lib/capabilities";
-  import { fetchOdysseusModelState, setOdysseusModelProfile } from "../../stores/api";
+  import { fetchOdysseusModelState, setOdysseusModelProfile, setModelMode, MODEL_MODES, type ModelMode } from "../../stores/api";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import Tag from "../Tag.svelte";
@@ -58,7 +58,59 @@
       saving = false;
     }
   }
+
+  // ---- GPU toggle mode ----
+  // standard is the opt-out: the model is not meant to use either toggle, so
+  // its effective launch runs exactly as written.
+  let modeSaving = $state(false);
+  let modeError = $state("");
+  let mode = $derived((model?.mode ?? "standard") as ModelMode);
+
+  async function handleModeChange(next: ModelMode): Promise<void> {
+    if (!model?.id || next === mode) return;
+    modeSaving = true;
+    modeError = "";
+    try {
+      await setModelMode(model.id, next);
+    } catch (e) {
+      modeError = e instanceof Error ? e.message : String(e);
+    } finally {
+      modeSaving = false;
+    }
+  }
 </script>
+
+<Card.Root class="shrink-0 gap-0 overflow-hidden py-0">
+  <Card.Header class="border-b px-4 py-2">
+    <Card.Title class="text-sm font-semibold">GPU mode</Card.Title>
+  </Card.Header>
+  <Card.Content class="p-3">
+    <div class="flex flex-wrap gap-2">
+      {#each MODEL_MODES as opt (opt.value)}
+        <button
+          type="button"
+          class="rounded-md border px-3 py-1.5 text-xs disabled:opacity-50"
+          class:bg-muted={mode === opt.value}
+          class:font-medium={mode === opt.value}
+          disabled={modeSaving}
+          onclick={() => void handleModeChange(opt.value)}
+        >
+          {opt.label}
+        </button>
+      {/each}
+    </div>
+    <p class="text-muted-foreground mt-2 text-xs">
+      {MODEL_MODES.find((m) => m.value === mode)?.hint ?? ""}
+    </p>
+    <p class="text-muted-foreground mt-1 text-xs">
+      <strong>Standard</strong> leaves the launch as written — pick it for a model
+      that is not meant to use either toggle.
+    </p>
+    {#if modeError}
+      <p class="text-destructive mt-2 text-xs">{modeError}</p>
+    {/if}
+  </Card.Content>
+</Card.Root>
 
 <Card.Root class="shrink-0 gap-0 overflow-hidden py-0">
   <Card.Header class="border-b px-4 py-2">

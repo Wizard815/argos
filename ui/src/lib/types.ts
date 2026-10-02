@@ -39,6 +39,9 @@ export interface Model {
   // so the UI links a variant back to the one model it belongs to
   base_model_id?: string;
   available?: string[];
+  // GPU toggle mode chosen in the detail view. standard (the default, and the
+  // opt-out) is omitted by the server, so treat a missing value as "standard".
+  mode?: "standard" | "single_gpu" | "multi_model";
 }
 
 export interface Profile {

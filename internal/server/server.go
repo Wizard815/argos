@@ -57,6 +57,13 @@ type Server struct {
 	profileMu     sync.RWMutex
 	activeProfile string
 
+	// modelModes holds each model's GPU toggle mode (standard, single_gpu or
+	// multi_model) chosen in the model detail view. Guarded by modelModesMu.
+	// Loaded from cfg.ModelTogglesFile at startup and rewritten on every
+	// change, so it survives reloads and restarts.
+	modelModesMu sync.RWMutex
+	modelModes   map[string]string
+
 	// cfgPath and cfgDir are the -config and -config-dir paths, recorded by
 	// main via SetConfigPaths. The Odysseus integration needs them to enumerate
 	// the other config sources when guarding a generated fragment against
@@ -280,6 +287,8 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		}
 	}
 
+	s.restoreModelToggles()
+
 	s.routes()
 	s.startPreload()
 	s.startOdysseusRefresh()
@@ -409,6 +418,8 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/odysseus/status", apiChain.ThenFunc(s.handleAPIOdysseusStatus))
 	mux.Handle("GET /api/odysseus/model/{model}/profile", apiChain.ThenFunc(s.handleAPIOdysseusModelProfiles))
 	mux.Handle("PUT /api/odysseus/model/{model}/profile", apiChain.ThenFunc(s.handleAPIOdysseusModelProfile))
+	mux.Handle("PUT /api/models/{model}/mode", apiChain.ThenFunc(s.handleAPIModelMode))
+	mux.Handle("GET /api/models/modes", apiChain.ThenFunc(s.handleAPIModelModes))
 	mux.Handle("GET /api/profiles", apiChain.ThenFunc(s.handleAPIProfiles))
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
 	mux.Handle("POST /api/inflight/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelInflight))

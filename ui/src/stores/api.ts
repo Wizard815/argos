@@ -299,6 +299,31 @@ export async function setOdysseusModelProfile(model: string, label: string | nul
   }
 }
 
+// GPU toggle modes for the model detail view. `standard` is the opt-out: the
+// model is not meant to use either toggle and its effective launch is run as
+// written.
+export type ModelMode = "standard" | "single_gpu" | "multi_model";
+
+export const MODEL_MODES: { value: ModelMode; label: string; hint: string }[] = [
+  { value: "standard", label: "Standard", hint: "Run the launch as written (opt-out)" },
+  { value: "single_gpu", label: "Single GPU", hint: "Bind to a card with enough free VRAM" },
+  { value: "multi_model", label: "Multi-Model", hint: "One instance per GPU, ceil(chats / parallel)" },
+];
+
+// setModelMode stores a model's GPU toggle mode. The server persists it to its
+// modelTogglesFile and reports it back on the modelStatus event.
+export async function setModelMode(model: string, mode: ModelMode): Promise<void> {
+  const response = await fetch(`/api/models/${encodeURIComponent(model)}/mode`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  const result = await response.json() as { ok?: boolean; error?: string };
+  if (!response.ok || result.ok === false) {
+    throw new Error(result.error || `Failed to set mode: ${response.status}`);
+  }
+}
+
 // Fetch version info when connected
 connectionState.subscribe(async (status) => {
   if (status === "connected") {
