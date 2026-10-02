@@ -99,3 +99,17 @@ func TestServer_ParseROCmSMIVRAMIgnoresOtherLines(t *testing.T) {
 	got := parseROCmSMIVRAM("GPU[0] : GPU Memory Allocated (VRAM%): 94\n")
 	assert.Empty(t, got, "a percentage line must not be read as bytes")
 }
+
+// The box's real `rocm-smi --showmeminfo vram` output, verbatim. GPU[0] is
+// empty and GPU[1] is nearly full, which is the state the log's failed cudaMalloc
+// was taken from.
+func TestServer_ParseROCmSMIVRAMRealOutput(t *testing.T) {
+	out := `GPU[0]          : VRAM Total Memory (B): 34342961152
+GPU[0]          : VRAM Total Used Memory (B): 311345152
+GPU[1]          : VRAM Total Memory (B): 34342961152
+GPU[1]          : VRAM Total Used Memory (B): 32283029504`
+
+	got := parseROCmSMIVRAM(out)
+	require.Equal(t, 31, got["0"], "GPU 0: ~31 GiB free")
+	require.Equal(t, 1, got["1"], "GPU 1: ~1 GiB free")
+}
