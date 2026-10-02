@@ -125,3 +125,35 @@ func TestServer_ModelModeDisabledWithoutPath(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code,
 		"an empty modelTogglesFile disables the control")
 }
+
+// The generated copies are derived state. A stale entry for one re-arms the
+// launch policy on that copy and can put two copies on the same card, so copy
+// ids are dropped on load and never written back.
+func TestServer_ModelTogglesIgnoreGeneratedCopies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "model-toggles.json")
+	require.NoError(t, os.WriteFile(path, []byte(
+		`{"modes":{"real":"single_gpu","real--mm0":"single_gpu","real--mm1":"multi_model"}}`+"\n"), 0o644))
+
+	modes, err := loadModelToggles(path)
+	require.NoError(t, err)
+	assert.Equal(t, "single_gpu", modes["real"])
+	_, has0 := modes["real--mm0"]
+	_, has1 := modes["real--mm1"]
+	assert.False(t, has0, "a generated copy must not be loaded as a mode")
+	assert.False(t, has1)
+
+	s := profileTestServer(t, modelTogglesTestConfig(t, path), newStubRouter([]string{"real"}, "ok"))
+	s.modelModesMu.Lock()
+	s.modelModes = map[string]string{"real": "multi_model", "real--mm0": "single_gpu"}
+	s.modelModesMu.Unlock()
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/models/real/mode",
+		strings.NewReader(`{"mode":"single_gpu"}`)))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"modes":{"real":"single_gpu"}}`, string(data),
+		"the written file must not contain a generated copy")
+}

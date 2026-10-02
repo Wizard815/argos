@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mostlygeek/llama-swap/internal/event"
@@ -50,9 +51,19 @@ type modelTogglesFile struct {
 	Modes map[string]string `json:"modes"`
 }
 
+// multiModelCopyPattern matches the ids applyMultiModel generates for
+// multi_model copies (`<model>--mm0`, `--mm1`, ...). They are derived state, not
+// a user choice, so they are never persisted: a stale entry from an older build
+// would otherwise re-arm the launch policy on a copy and put two copies on one
+// card.
+var multiModelCopyPattern = regexp.MustCompile(`--mm\d+$`)
+
+func isGeneratedCopy(id string) bool { return multiModelCopyPattern.MatchString(id) }
+
 // loadModelToggles reads the persisted modes. A missing file is not an error
 // (first run); an unreadable or malformed one is reported so a bad mount is
-// visible rather than silently treated as "everything standard".
+// visible rather than silently treated as "everything standard". Generated copy
+// ids are dropped — they are not user choices.
 func loadModelToggles(path string) (map[string]string, error) {
 	out := map[string]string{}
 	if path == "" {
@@ -70,7 +81,7 @@ func loadModelToggles(path string) (map[string]string, error) {
 		return out, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	for id, mode := range tf.Modes {
-		if validModelMode(mode) {
+		if validModelMode(mode) && !isGeneratedCopy(id) {
 			out[id] = mode
 		}
 	}
@@ -177,6 +188,9 @@ func (s *Server) handleAPIModelMode(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot := make(map[string]string, len(s.modelModes))
 	for k, v := range s.modelModes {
+		if isGeneratedCopy(k) {
+			continue // derived state, not a user choice
+		}
 		snapshot[k] = v
 	}
 	s.modelModesMu.Unlock()

@@ -85,6 +85,9 @@ Two things to know:
   card by DRM number but sets `HIP_VISIBLE_DEVICES`, which uses the ROCm index;
   those two numberings are not guaranteed to agree, so letting the policy
   re-pick can land both copies on the same card.
+- Generated copies are derived state, never a user choice: their ids are dropped
+  when the file is loaded and never written back. A stale entry for one would
+  re-arm the launch policy on that copy and could put two copies on one card.
 - Ports are allocated at load, which happens before the expansion, so each copy
   is retargeted onto its own port above every port already in use. Without that
   the copies inherit the base's port and the second one fails to bind.
