@@ -96,6 +96,9 @@ func (s *Server) profilePin(model string) (string, bool) {
 // <base>--<label>, and the UI links a variant back to its base model so a
 // profile swap reads as one model instead of a second one.
 func (s *Server) baseModelID(id string) string {
+	if isGeneratedCopy(id) {
+		return "" // a multi_model copy is generated state, not a variant of anything
+	}
 	base, _, ok := strings.Cut(id, "--")
 	if !ok || base == "" {
 		return ""

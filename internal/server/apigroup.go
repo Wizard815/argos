@@ -191,7 +191,9 @@ func (s *Server) odysseusAvailableLabels(modelID string) []string {
 	prefix := modelID + "--"
 	labels := make([]string, 0, 4)
 	for id := range s.cfg.Models {
-		if strings.HasPrefix(id, prefix) {
+		// The multi_model copies are named <base>--mm<N>, which matches the
+		// variant prefix but is derived state, not a saved Odysseus config.
+		if strings.HasPrefix(id, prefix) && !isGeneratedCopy(id) {
 			labels = append(labels, strings.TrimPrefix(id, prefix))
 		}
 	}

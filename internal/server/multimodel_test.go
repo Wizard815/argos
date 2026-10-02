@@ -137,3 +137,21 @@ models:
 	assert.Empty(t, cfg.Models["scaled--mm0"].Aliases, "a copy must not carry the aliases")
 	assert.Len(t, cfg.Models["scaled"].Aliases, 2, "the base keeps them")
 }
+
+// The generated copies are named <base>--mm<N>, which matches the odysseus
+// variant prefix. They are derived state, not saved configs, so they must not
+// be offered as profile labels and must not read as a variant of the base.
+func TestServer_GeneratedCopiesAreNotProfileLabels(t *testing.T) {
+	cfg := modelTogglesTestConfig(t, "")
+	cfg.Odysseus = &config.OdysseusConfig{Enabled: true}
+	s := profileTestServer(t, cfg, newStubRouter([]string{"real"}, "ok"))
+
+	s.cfg.Models["real--saved"] = config.ModelConfig{Cmd: "llama-server --port ${PORT} -m /x.gguf"}
+	s.cfg.Models["real--mm0"] = config.ModelConfig{Cmd: "llama-server --port ${PORT} -m /x.gguf"}
+	s.cfg.Models["real--mm1"] = config.ModelConfig{Cmd: "llama-server --port ${PORT} -m /x.gguf"}
+
+	assert.Equal(t, []string{"saved"}, s.odysseusAvailableLabels("real"),
+		"only real saved configs become labels")
+	assert.Empty(t, s.baseModelID("real--mm0"), "a copy is not a variant of the base")
+	assert.Equal(t, "real", s.baseModelID("real--saved"))
+}
