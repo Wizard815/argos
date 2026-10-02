@@ -73,10 +73,10 @@ Two things to know:
 - A profile pin normally rewrites the model id *before* selectors resolve, which
   would bypass the selector. A `multi_model` model therefore **declines its pin**
   — the selector is used instead, and turning the mode off restores the pin.
-- Free VRAM is read from `mem_info_vram_free`, falling back to
-  `total - used` on kernels that do not expose it. If neither is readable the
-  expansion still runs off the card nodes, and the launch policy skips its fit
-  test.
+- Free VRAM is read with `rocm-smi --showmeminfo vram`, so the ids it reports are
+  ROCm's GPU indices — the numbering `HIP_VISIBLE_DEVICES` takes. The kernel
+  sysfs is only a fallback, and its `/sys/class/drm/cardN` ids do **not** line up
+  with the ROCm index, so the two must never be mixed.
 - The copies run the model's **effective** command — the pinned variant or the
   odysseus choice — so they keep the tuning (context window, KV cache type)
   that makes the model fit a card at all.

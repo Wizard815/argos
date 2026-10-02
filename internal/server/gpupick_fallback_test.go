@@ -44,7 +44,7 @@ func TestServer_ListDRMCardsFallsBackToCardNodes(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "card0"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "card1"), 0o755))
 
-	assert.Equal(t, []string{"0", "1"}, listDRMCards(root))
+	assert.Equal(t, []string{"0", "1"}, listGPUs(root))
 }
 
 // A pin rewrites the model id before selectors resolve, which would bypass the
@@ -76,4 +76,26 @@ profiles:
 
 	_, pinned = s.profilePin("base")
 	assert.False(t, pinned, "multi_model must not be rewritten by a pin")
+}
+
+// The ids must be ROCm's GPU indices, because they are handed straight back as
+// HIP_VISIBLE_DEVICES values.
+func TestServer_ParseROCmSMIVRAM(t *testing.T) {
+	out := `============================ ROCm System Management Interface ============================
+=================================== Memory Info (VRAM) ===================================
+GPU[0]          : VRAM Total Memory (B): 34359738368
+GPU[0]          : VRAM Total Used Memory (B): 0
+GPU[1]          : VRAM Total Memory (B): 34359738368
+GPU[1]          : VRAM Total Used Memory (B): 32212254720
+==========================================================================================
+================================== End of ROCm SMI Log ===================================`
+
+	got := parseROCmSMIVRAM(out)
+	require.Equal(t, 32, got["0"], "GPU 0 is empty")
+	require.Equal(t, 2, got["1"], "GPU 1 is 30/32 GiB used")
+}
+
+func TestServer_ParseROCmSMIVRAMIgnoresOtherLines(t *testing.T) {
+	got := parseROCmSMIVRAM("GPU[0] : GPU Memory Allocated (VRAM%): 94\n")
+	assert.Empty(t, got, "a percentage line must not be read as bytes")
 }

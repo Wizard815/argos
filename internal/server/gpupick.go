@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The single_gpu half of the GPU toggle mode is applied here, at launch time:
@@ -25,10 +28,24 @@ var drmRoot = "/sys/class/drm"
 
 var cardPattern = regexp.MustCompile(`^card(\d+)$`)
 
-// readFreeVRAMGiB returns {gpu id: free GiB}. Cards whose driver exposes
-// neither mem_info_vram_free nor the total/used pair (an Intel iGPU, say) are
-// skipped, so an empty result means "no ROCm card with readable memory found".
+// readFreeVRAMGiB returns {gpu id: free GiB}.
+//
+// rocm-smi is preferred, because it reports in ROCm's GPU numbering — the same
+// numbering HIP_VISIBLE_DEVICES uses — so a caller can feed an id straight back
+// as a device. The sysfs fallback uses /sys/class/drm/cardN ids, which are NOT
+// guaranteed to line up with the ROCm index, so it is only used when rocm-smi
+// is unavailable.
 func readFreeVRAMGiB(root string) map[string]int {
+	if out := freeVRAMFromROCmSMI(); len(out) > 0 {
+		return out
+	}
+	return freeVRAMFromSysfs(root)
+}
+
+// freeVRAMFromSysfs reads the kernel sysfs directly. Its ids are DRM card
+// numbers. Cards whose driver exposes neither mem_info_vram_free nor the
+// total/used pair (an Intel iGPU, say) are skipped.
+func freeVRAMFromSysfs(root string) map[string]int {
 	out := map[string]int{}
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -69,6 +86,74 @@ func readCounter(path string) int64 {
 		return -1
 	}
 	return v
+}
+
+// rocmSMIVRAMArgs is the rocm-smi invocation used to read VRAM. A var so a test
+// can point it at a fixture.
+var rocmSMIVRAMArgs = []string{"rocm-smi", "--showmeminfo", "vram"}
+
+// freeVRAMFromROCmSMI runs rocm-smi and parses its per-GPU total/used VRAM.
+// Returns nil when rocm-smi is missing, errors, or reports nothing usable, so
+// the caller can fall back to sysfs.
+func freeVRAMFromROCmSMI() map[string]int {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, rocmSMIVRAMArgs[0], rocmSMIVRAMArgs[1:]...).Output()
+	if err != nil {
+		return nil
+	}
+	return parseROCmSMIVRAM(string(out))
+}
+
+// rocmGPULine matches a rocm-smi line like
+//
+//	GPU[1]      : VRAM Total Used Memory (B): 32212254720
+var rocmGPULine = regexp.MustCompile(`^GPU\[(\d+)\]\s*:\s*(.+?):\s*(\d+)\s*$`)
+
+// parseROCmSMIVRAM reads `rocm-smi --showmeminfo vram` output into free GiB per
+// GPU. The ids are ROCm's GPU indices — the numbering HIP_VISIBLE_DEVICES takes
+// — which is the whole point of preferring rocm-smi over /sys/class/drm.
+func parseROCmSMIVRAM(text string) map[string]int {
+	type mem struct{ total, used int64 }
+	perGPU := map[string]*mem{}
+	var order []string
+
+	for _, line := range strings.Split(text, "\n") {
+		m := rocmGPULine.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		id, label := m[1], strings.ToLower(m[2])
+		value, err := strconv.ParseInt(m[3], 10, 64)
+		if err != nil {
+			continue
+		}
+		if perGPU[id] == nil {
+			perGPU[id] = &mem{}
+			order = append(order, id)
+		}
+		// "used" is checked first: the used label also contains "total".
+		switch {
+		case strings.Contains(label, "used"):
+			perGPU[id].used = value
+		case strings.Contains(label, "total"):
+			perGPU[id].total = value
+		}
+	}
+
+	out := map[string]int{}
+	for _, id := range order {
+		g := perGPU[id]
+		if g.total <= 0 {
+			continue
+		}
+		free := g.total - g.used
+		if free < 0 {
+			free = 0
+		}
+		out[id] = int(free / (1024 * 1024 * 1024))
+	}
+	return out
 }
 
 // modelPathFromArgv finds the -m / --model value in an expanded command.

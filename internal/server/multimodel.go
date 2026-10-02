@@ -250,9 +250,10 @@ func retargetPort(mc config.ModelConfig, port int) config.ModelConfig {
 	return mc
 }
 
-// listDRMCards returns the ids of the cards, sorted, so copies get a
-// deterministic card each.
-func listDRMCards(root string) []string {
+// listGPUs returns the GPU ids, sorted, so copies get a deterministic device
+// each. The ids come from readFreeVRAMGiB, which prefers rocm-smi so they are
+// ROCm's indices — the numbering HIP_VISIBLE_DEVICES accepts.
+func listGPUs(root string) []string {
 	ids := make([]string, 0, 2)
 	for id := range readFreeVRAMGiB(root) {
 		ids = append(ids, id)

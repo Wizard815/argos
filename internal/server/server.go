@@ -244,7 +244,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 			pins = p.Pins
 		}
 	}
-	applyMultiModel(&cfg, modes, pins, choices, listDRMCards(drmRoot))
+	applyMultiModel(&cfg, modes, pins, choices, listGPUs(drmRoot))
 
 	switch cfg.Routing.Router.Use {
 	case "matrix":
