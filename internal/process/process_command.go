@@ -511,12 +511,13 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 	cmd := exec.CommandContext(cmdCtx, args[0], args[1:]...)
 	cmd.Stderr = p.processLogger
 	cmd.Stdout = p.processLogger
-	cmd.Env = append(cmd.Environ(), p.config.Env...)
+	launchEnv := applyLaunchEnvPolicy(p.id, args, p.config.Env)
+	cmd.Env = append(cmd.Environ(), launchEnv...)
 	cmd.Cancel = func() error { return p.sendStopSignal(cmd) }
 	cmd.WaitDelay = p.waitDelay
 	setProcAttributes(cmd)
 
-	p.proxyLogger.Debugf("<%s> Executing start command: %s, env: %s", p.id, strings.Join(args, " "), strings.Join(p.config.Env, ", "))
+	p.proxyLogger.Debugf("<%s> Executing start command: %s, env: %s", p.id, strings.Join(args, " "), strings.Join(launchEnv, ", "))
 
 	cmdDone := make(chan struct{})
 	if err := cmd.Start(); err != nil {

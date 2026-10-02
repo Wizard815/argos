@@ -44,6 +44,17 @@ The mode is read from the model's **effective launch** — the resolved `cmd` an
 So `single_gpu` needs no new config on the model; it only changes which card the
 existing command binds to.
 
+`single_gpu` is applied **at launch**: just before the upstream starts, its
+`HIP_VISIBLE_DEVICES` is rewritten to the chosen card, so a mode change takes
+effect the next time the model loads. It reads free VRAM from
+`/sys/class/drm/*/device/mem_info_vram_free`, takes the weight size from the
+command's `-m`, and leaves a 4 GiB margin for the KV cache. If the pinned card
+no longer fits, the emptiest fitting card wins. If *no* card fits, it binds the
+emptiest one anyway and logs a warning — the same OOM you would get by pinning a
+card that is too small.
+
+`multi_model` is stored and reported, but not yet applied at launch.
+
 ## Reading and setting it
 
 ```console

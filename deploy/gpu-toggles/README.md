@@ -73,17 +73,21 @@ python3 test_pick_gpu.py      #  9
 
 All are pure-logic; they run on a host with no GPU (fake sysfs + fake start).
 
-## Wiring (not done yet)
+## Wiring
 
-The toggles still need to be exposed in llama-swap itself:
+`standard` and `single_gpu` are wired into llama-swap itself (Go), so this
+directory is now reference material and a testbed rather than the deployed path:
 
-1. **state** — load a `togglesPath` beside `choicesPath` on startup.
-2. **API** — `PUT /api/models/{model}/toggles` `{"mode": "standard" | "single_gpu" | "multi_model"}`.
-3. **UI** — a one-of-three mode control in
-   `ui/src/components/model/ModelDetailsTab.svelte` (Standard / Single GPU /
-   Multi-Model), so a model that is not meant to use either toggle can be left
-   on **Standard**.
-4. **launch** — `single_gpu` routes the cmd through `llama_gpu_launch.sh`;
-   `multi_model` makes the cmd `mm_proxy` (whose HTTP forwarding layer,
-   `serve()`, is still a stub — the scheduling core is complete and tested);
-   `standard` leaves the effective launch untouched.
+- state: `modelTogglesFile`
+- API: `PUT /api/models/{model}/mode`, `GET /api/models/modes`
+- UI: the GPU mode control in `ModelDetailsTab.svelte`
+- launch: `internal/process`'s `LaunchEnvPolicy`, installed by the server,
+  rewrites `HIP_VISIBLE_DEVICES` at launch for `single_gpu`
+
+Still open: `multi_model`, which needs the proxy below deployed inside the image
+(its HTTP forwarding layer, `serve()`, is still a stub — the scheduling core is
+complete and tested). `standard` leaves the launch untouched.
+
+`pick_gpu.py`, `llama_gpu_launch.sh` and `llama_server.py` here are the
+shell-level equivalent of the Go launch policy; they are what a cmd-template
+approach would use, and stay useful for testing outside llama-swap.

@@ -19,6 +19,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/mcptools"
 	"github.com/mostlygeek/llama-swap/internal/odysseus"
 	"github.com/mostlygeek/llama-swap/internal/perf"
+	"github.com/mostlygeek/llama-swap/internal/process"
 	"github.com/mostlygeek/llama-swap/internal/router"
 	"github.com/mostlygeek/llama-swap/internal/store"
 	"github.com/mostlygeek/llama-swap/internal/swaputil"
@@ -288,6 +289,10 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	}
 
 	s.restoreModelToggles()
+	// Install the launch-time policy that applies each model's GPU mode. It is
+	// consulted just before an upstream starts, so a mode change takes effect
+	// on the next launch without touching the configured command.
+	process.SetLaunchEnvPolicy(s.launchEnv)
 
 	s.routes()
 	s.startPreload()
