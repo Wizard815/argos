@@ -47,8 +47,9 @@ func TestServer_ApplyMultiModelExpandsCopiesAndSelector(t *testing.T) {
 		require.True(t, ok, "copy %s should exist", id)
 		assert.True(t, cp.Unlisted, "copies should not clutter the model list")
 		assert.Equal(t, card, envValue(cp.Env, "HIP_VISIBLE_DEVICES"))
-		assert.Equal(t, ModeSingleGPU, modes[id],
-			"copies run as single_gpu so the launch policy can move them")
+		_, hasMode := modes[id]
+		assert.False(t, hasMode,
+			"copies stay off single_gpu so their own per-card pin is respected")
 	}
 
 	g, ok := cfg.Routing.Router.Settings.Groups[multiModelGroupID]

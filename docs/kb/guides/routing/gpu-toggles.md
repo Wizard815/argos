@@ -80,6 +80,11 @@ Two things to know:
 - The copies run the model's **effective** command — the pinned variant or the
   odysseus choice — so they keep the tuning (context window, KV cache type)
   that makes the model fit a card at all.
+- Each copy is hard-pinned to its own card (`--mm0` to the first, `--mm1` to the
+  second) and deliberately left **off** `single_gpu`. The launch policy picks a
+  card by DRM number but sets `HIP_VISIBLE_DEVICES`, which uses the ROCm index;
+  those two numberings are not guaranteed to agree, so letting the policy
+  re-pick can land both copies on the same card.
 - Ports are allocated at load, which happens before the expansion, so each copy
   is retargeted onto its own port above every port already in use. Without that
   the copies inherit the base's port and the second one fails to bind.

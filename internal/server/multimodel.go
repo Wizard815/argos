@@ -92,12 +92,14 @@ func applyMultiModel(cfg *config.Config, modes map[string]string,
 				cp = retargetPort(cp, nextPort)
 				nextPort++
 			}
-			// Prefer this card, but keep the copy on single_gpu so the launch
-			// policy can move it if the card is already taken.
+			// Hard-pin the copy to its card, and leave it off single_gpu. The
+			// whole point is one copy per card; letting the launch policy re-pick
+			// can put two copies on the same card, because the policy reads free
+			// VRAM by DRM card number, which is not necessarily the index
+			// HIP_VISIBLE_DEVICES uses.
 			cp.Env = setEnvValue(env, "HIP_VISIBLE_DEVICES", card)
 			cp.Unlisted = true
 			cfg.Models[copyID] = cp
-			modes[copyID] = ModeSingleGPU
 			targets = append(targets, copyID)
 		}
 
