@@ -44,6 +44,14 @@ healthCheckTimeout: 300
 # timed out after 2m0s` -- llama-swap was killing models that were still
 # loading. 300s is a working load plus margin.
 
+# modelTogglesFile remembers each model's GPU mode chosen in the model detail
+# view: standard (run the effective launch as written -- the default and the
+# opt-out), single_gpu (bind to a card with enough free VRAM) or multi_model
+# (one instance per GPU, ceil(chats/parallel)). It must live in the config.d
+# mount so it survives reloads and container recreates. Leave it unset and the
+# detail-view control is hidden and every model stays standard.
+modelTogglesFile: /app/config.d/model_toggles.json
+
 globalTTL: 900
 
 logLevel: info
