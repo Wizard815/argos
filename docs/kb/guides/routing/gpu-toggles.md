@@ -77,6 +77,12 @@ Two things to know:
   `total - used` on kernels that do not expose it. If neither is readable the
   expansion still runs off the card nodes, and the launch policy skips its fit
   test.
+- The copies run the model's **effective** command — the pinned variant or the
+  odysseus choice — so they keep the tuning (context window, KV cache type)
+  that makes the model fit a card at all.
+- Ports are allocated at load, which happens before the expansion, so each copy
+  is retargeted onto its own port above every port already in use. Without that
+  the copies inherit the base's port and the second one fails to bind.
 
 ## Reading and setting it
 

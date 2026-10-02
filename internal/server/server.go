@@ -230,7 +230,21 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		proxylog.Warnf("model toggles: %v", err)
 		modes = map[string]string{}
 	}
-	applyMultiModel(&cfg, modes, listDRMCards(drmRoot))
+	// The expansion builds the copies from the model's effective launch, so the
+	// odysseus choices and the remembered active profile have to be known first.
+	choices := map[string]string{}
+	if cfg.Odysseus != nil && cfg.Odysseus.ChoicesPath != "" {
+		if cs, err := odysseus.LoadChoices(cfg.Odysseus.ChoicesPath); err == nil {
+			choices = cs.Choices
+		}
+	}
+	pins := map[string]string{}
+	if active, _, _ := loadProfileState(cfg.ProfileStateFile); active != "" {
+		if p, ok := cfg.Profiles[active]; ok {
+			pins = p.Pins
+		}
+	}
+	applyMultiModel(&cfg, modes, pins, choices, listDRMCards(drmRoot))
 
 	switch cfg.Routing.Router.Use {
 	case "matrix":

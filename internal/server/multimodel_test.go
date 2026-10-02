@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestServer_ApplyMultiModelExpandsCopiesAndSelector(t *testing.T) {
 	cfg := multiModelTestConfig(t)
 	modes := map[string]string{"scaled": ModeMultiModel}
 
-	applyMultiModel(&cfg, modes, []string{"0", "1"})
+	applyMultiModel(&cfg, modes, nil, nil, []string{"0", "1"})
 
 	_, stillAModel := cfg.Models["scaled"]
 	assert.True(t, stillAModel,
@@ -61,7 +62,7 @@ func TestServer_ApplyMultiModelLeavesOtherModesAlone(t *testing.T) {
 	cfg := multiModelTestConfig(t)
 	modes := map[string]string{"plain": ModeSingleGPU}
 
-	applyMultiModel(&cfg, modes, []string{"0", "1"})
+	applyMultiModel(&cfg, modes, nil, nil, []string{"0", "1"})
 
 	_, stillAModel := cfg.Models["plain"]
 	assert.True(t, stillAModel, "a model without multi_model must be untouched")
@@ -74,7 +75,7 @@ func TestServer_ApplyMultiModelWithoutCardsIsNoop(t *testing.T) {
 	cfg := multiModelTestConfig(t)
 	modes := map[string]string{"scaled": ModeMultiModel}
 
-	applyMultiModel(&cfg, modes, nil)
+	applyMultiModel(&cfg, modes, nil, nil, nil)
 
 	_, stillAModel := cfg.Models["scaled"]
 	assert.True(t, stillAModel, "with no cards there is nothing to spread across")
@@ -86,4 +87,33 @@ func TestServer_ParallelFromCmd(t *testing.T) {
 	assert.Equal(t, 1, parallelFromCmd("llama-server -m x"))
 	assert.Equal(t, 4, parallelFromCmd("srv -np 4 -m x"))
 	assert.Equal(t, 1, parallelFromCmd(""))
+}
+
+// Ports are allocated at load, before the expansion, so without retargeting
+// every copy inherits the base's port and the second one cannot bind it — which
+// is exactly what happened on the box ("couldn't bind HTTP server socket ...
+// port: 5825").
+func TestServer_ApplyMultiModelGivesEachCopyItsOwnPort(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+startPort: 5800
+models:
+  scaled:
+    cmd: llama-server --port ${PORT} -m /x.gguf
+    proxy: http://localhost:${PORT}
+`))
+	require.NoError(t, err)
+
+	basePort := modelPort(cfg.Models["scaled"])
+	require.NotZero(t, basePort, "the loader substitutes ${PORT} at load")
+
+	modes := map[string]string{"scaled": ModeMultiModel}
+	applyMultiModel(&cfg, modes, nil, nil, []string{"0", "1"})
+
+	p0 := modelPort(cfg.Models["scaled--mm0"])
+	p1 := modelPort(cfg.Models["scaled--mm1"])
+	assert.NotEqual(t, basePort, p0, "a copy must move off the base's port")
+	assert.NotEqual(t, basePort, p1)
+	assert.NotEqual(t, p0, p1, "each copy needs its own port")
+	assert.Contains(t, cfg.Models["scaled--mm0"].Cmd, strconv.Itoa(p0))
+	assert.Equal(t, "http://localhost:"+strconv.Itoa(p0), cfg.Models["scaled--mm0"].Proxy)
 }
