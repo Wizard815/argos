@@ -65,10 +65,13 @@ Two things to know:
 - The expansion happens when the config loads, and the watcher only watches
   `*.yml`/`*.yaml`, so switching a model to `multi_model` takes effect on the
   next config reload — restart llama-swap (or touch a config file).
-- A profile pin rewrites the model id *before* selectors are resolved. If the
-  model is pinned to an Odysseus variant, requests go to that variant and the
-  selector is bypassed. Set the model's Odysseus choice to "llama-swap default"
-  (clear the pin) for `multi_model` to apply.
+- A profile pin normally rewrites the model id *before* selectors resolve, which
+  would bypass the selector. A `multi_model` model therefore **declines its pin**
+  — the selector is used instead, and turning the mode off restores the pin.
+- Free VRAM is read from `mem_info_vram_free`, falling back to
+  `total - used` on kernels that do not expose it. If neither is readable the
+  expansion still runs off the card nodes, and the launch policy skips its fit
+  test.
 
 ## Reading and setting it
 

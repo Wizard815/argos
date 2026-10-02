@@ -25,9 +25,9 @@ var drmRoot = "/sys/class/drm"
 
 var cardPattern = regexp.MustCompile(`^card(\d+)$`)
 
-// readFreeVRAMGiB returns {gpu id: free GiB}. Cards whose driver does not
-// expose mem_info_vram_free (an Intel iGPU, say) are skipped, so an empty
-// result means "no ROCm card found".
+// readFreeVRAMGiB returns {gpu id: free GiB}. Cards whose driver exposes
+// neither mem_info_vram_free nor the total/used pair (an Intel iGPU, say) are
+// skipped, so an empty result means "no ROCm card with readable memory found".
 func readFreeVRAMGiB(root string) map[string]int {
 	out := map[string]int{}
 	entries, err := os.ReadDir(root)
@@ -39,17 +39,36 @@ func readFreeVRAMGiB(root string) map[string]int {
 		if m == nil {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(root, e.Name(), "device", "mem_info_vram_free"))
-		if err != nil {
+		dev := filepath.Join(root, e.Name(), "device")
+		free := readCounter(filepath.Join(dev, "mem_info_vram_free"))
+		if free < 0 {
+			// Older kernels expose only the total/used pair.
+			total := readCounter(filepath.Join(dev, "mem_info_vram_total"))
+			used := readCounter(filepath.Join(dev, "mem_info_vram_used"))
+			if total >= 0 && used >= 0 {
+				free = total - used
+			}
+		}
+		if free < 0 {
 			continue
 		}
-		b, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-		if err != nil || b < 0 {
-			continue
-		}
-		out[m[1]] = int(b / (1024 * 1024 * 1024))
+		out[m[1]] = int(free / (1024 * 1024 * 1024))
 	}
 	return out
+}
+
+// readCounter reads a non-negative integer from a sysfs file, or -1 when it is
+// missing or malformed.
+func readCounter(path string) int64 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return -1
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil || v < 0 {
+		return -1
+	}
+	return v
 }
 
 // modelPathFromArgv finds the -m / --model value in an expanded command.

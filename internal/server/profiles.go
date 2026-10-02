@@ -19,11 +19,12 @@ func CreateProfileMiddleware(s *Server) chain.Middleware {
 				var pinned bool
 				if strings.HasPrefix(r.URL.Path, "/upstream/") {
 					model, replacement, pinned = upstreamProfilePin(r.PathValue("upstreamPath"), profile.Pins)
+					if pinned && s.ModelMode(model) == ModeMultiModel {
+						replacement, pinned = "", false
+					}
 				} else {
 					model, _ = swaputil.ExtractModel(r)
-					if model != "" {
-						replacement, pinned = profile.Pins[model]
-					}
+					replacement, pinned = s.profilePin(model)
 				}
 				if pinned {
 					updated, err := swaputil.ReplaceRequestModel(r, model, replacement)
@@ -45,11 +46,7 @@ func CreateProfileMiddleware(s *Server) chain.Middleware {
 // pipeline resolves the model, so the pinned variant's command — not the base
 // model's — decides the context window the client will be given.
 func (s *Server) effectiveCommand(id, cmd string) string {
-	profile, ok := s.cfg.Profiles[s.ActiveProfile()]
-	if !ok {
-		return cmd
-	}
-	target, pinned := profile.Pins[id]
+	target, pinned := s.profilePin(id)
 	if !pinned {
 		return cmd
 	}
@@ -67,10 +64,8 @@ func (s *Server) effectiveCommand(id, cmd string) string {
 // running state above all, has to follow the same resolution as the effective
 // command shown on the same card.
 func (s *Server) effectiveModelID(id string) string {
-	if profile, ok := s.cfg.Profiles[s.ActiveProfile()]; ok {
-		if target, pinned := profile.Pins[id]; pinned && target != "" {
-			return target
-		}
+	if target, pinned := s.profilePin(id); pinned && target != "" {
+		return target
 	}
 	if chosen := s.odysseus.choices[id]; chosen != "" {
 		if _, ok := s.cfg.Models[id+"--"+chosen]; ok {
@@ -78,6 +73,22 @@ func (s *Server) effectiveModelID(id string) string {
 		}
 	}
 	return id
+}
+
+// profilePin returns the active profile's pin for a model. A multi_model model
+// is served by its spillover selector, and a pin rewrites the id before the
+// selector resolves it — which would bypass the selector entirely — so the pin
+// is declined for those models. Turning the mode off restores the pin.
+func (s *Server) profilePin(model string) (string, bool) {
+	if model == "" || s.ModelMode(model) == ModeMultiModel {
+		return "", false
+	}
+	profile, ok := s.cfg.Profiles[s.ActiveProfile()]
+	if !ok {
+		return "", false
+	}
+	target, pinned := profile.Pins[model]
+	return target, pinned
 }
 
 // baseModelID returns the model a variant belongs to, or "" when the id is not a

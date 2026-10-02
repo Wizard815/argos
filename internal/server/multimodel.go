@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -155,13 +156,25 @@ func parallelFromCmd(cmd string) int {
 	return 1
 }
 
-// listDRMCards returns the ids of the ROCm cards, sorted, so copies get a
+// listDRMCards returns the ids of the cards, sorted, so copies get a
 // deterministic card each.
 func listDRMCards(root string) []string {
-	free := readFreeVRAMGiB(root)
-	ids := make([]string, 0, len(free))
-	for id := range free {
+	ids := make([]string, 0, 2)
+	for id := range readFreeVRAMGiB(root) {
 		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		// Memory is unreadable on this driver or kernel, but the cards still
+		// exist: fall back to the card nodes so copies are still generated.
+		// The launch policy then skips its fit test (unknown free VRAM).
+		entries, err := os.ReadDir(root)
+		if err == nil {
+			for _, e := range entries {
+				if m := cardPattern.FindStringSubmatch(e.Name()); m != nil {
+					ids = append(ids, m[1])
+				}
+			}
+		}
 	}
 	sort.Strings(ids)
 	return ids
