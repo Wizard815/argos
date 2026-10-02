@@ -118,3 +118,22 @@ models:
 	assert.Contains(t, cfg.Models["scaled--mm0"].Cmd, strconv.Itoa(p0))
 	assert.Equal(t, "http://localhost:"+strconv.Itoa(p0), cfg.Models["scaled--mm0"].Proxy)
 }
+
+// Any model can use the modes, including one with aliases. An alias resolves to
+// the base (which the selector rewrites), so a copy must not re-advertise it.
+func TestServer_ApplyMultiModelCopiesDropAliases(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+models:
+  scaled:
+    cmd: llama-server --port ${PORT} -m /x.gguf
+    aliases: [fast-one, quick-one]
+`))
+	require.NoError(t, err)
+	require.Len(t, cfg.Models["scaled"].Aliases, 2)
+
+	modes := map[string]string{"scaled": ModeMultiModel}
+	applyMultiModel(&cfg, modes, nil, nil, []string{"0", "1"})
+
+	assert.Empty(t, cfg.Models["scaled--mm0"].Aliases, "a copy must not carry the aliases")
+	assert.Len(t, cfg.Models["scaled"].Aliases, 2, "the base keeps them")
+}

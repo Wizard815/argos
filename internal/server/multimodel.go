@@ -99,6 +99,10 @@ func applyMultiModel(cfg *config.Config, modes map[string]string,
 			// HIP_VISIBLE_DEVICES uses.
 			cp.Env = setEnvValue(env, "HIP_VISIBLE_DEVICES", card)
 			cp.Unlisted = true
+			// The copies must not advertise the base's aliases: an alias still
+			// resolves to the base, which the selector then rewrites, so a
+			// duplicate here would only add phantom candidates.
+			cp.Aliases = nil
 			cfg.Models[copyID] = cp
 			targets = append(targets, copyID)
 		}
