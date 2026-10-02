@@ -64,12 +64,13 @@ func applyMultiModel(cfg *config.Config, modes map[string]string, cards []string
 			targets = append(targets, copyID)
 		}
 
-		// The base id becomes the selector, so a request for it is resolved to a
-		// copy. Drop the base from the models and from any group it was in, and
-		// put the copies in the models' place.
-		removeFromGroups(cfg, append([]string{modelID}, targets...)...)
+		// The base id fronts the copies: a request for it resolves through the
+		// selector to a copy. The base model entry is KEPT, so the model still
+		// appears in the UI and can still have its mode changed; only the copies
+		// are (re)grouped. The selector rewrites the request to a copy before the
+		// router runs, so the base's own process never starts.
+		removeFromGroups(cfg, targets...)
 		addToGroup(cfg, multiModelGroupID, targets...)
-		delete(cfg.Models, modelID)
 
 		ensureSelectors(cfg)
 		cfg.Selectors[modelID] = config.SelectorConfig{

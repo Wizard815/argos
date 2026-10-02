@@ -60,6 +60,11 @@ concurrent chats, then the next copy is started on demand. Copies are named
 `<id>--mm<N>`, are unlisted, each prefers a different card, and live in a
 non-exclusive `multimodel` group so they coexist.
 
+The base model **stays configured and listed** — the selector sits over it, so
+the model still appears in the UI and its mode can still be changed. Requests
+for the base id are rewritten to a copy before the router runs, so the base's
+own process never starts.
+
 Two things to know:
 
 - The expansion happens when the config loads, and the watcher only watches

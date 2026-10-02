@@ -31,7 +31,8 @@ func TestServer_ApplyMultiModelExpandsCopiesAndSelector(t *testing.T) {
 	applyMultiModel(&cfg, modes, []string{"0", "1"})
 
 	_, stillAModel := cfg.Models["scaled"]
-	assert.False(t, stillAModel, "the base id should stop being a model")
+	assert.True(t, stillAModel,
+		"the base stays a model so the UI can still list it and change its mode")
 
 	sel, isSelector := cfg.Selectors["scaled"]
 	require.True(t, isSelector, "the base id should become a selector")
