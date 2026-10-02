@@ -64,15 +64,25 @@
   // its effective launch runs exactly as written.
   let modeSaving = $state(false);
   let modeError = $state("");
-  let mode = $derived((model?.mode ?? "standard") as ModelMode);
+  // Optimistic highlight: light the clicked button immediately, and fall back
+  // to the mode the server reports. Cleared as soon as the server agrees, so a
+  // second client stays in sync.
+  let optimistic = $state<ModelMode | null>(null);
+  let mode = $derived(optimistic ?? ((model?.mode ?? "standard") as ModelMode));
+
+  $effect(() => {
+    if (optimistic !== null && model?.mode === optimistic) optimistic = null;
+  });
 
   async function handleModeChange(next: ModelMode): Promise<void> {
     if (!model?.id || next === mode) return;
+    optimistic = next;
     modeSaving = true;
     modeError = "";
     try {
       await setModelMode(model.id, next);
     } catch (e) {
+      optimistic = null; // revert to whatever the server still reports
       modeError = e instanceof Error ? e.message : String(e);
     } finally {
       modeSaving = false;

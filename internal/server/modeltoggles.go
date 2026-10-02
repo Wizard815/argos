@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mostlygeek/llama-swap/internal/event"
+	"github.com/mostlygeek/llama-swap/internal/swaputil"
 )
 
 // A model's GPU toggle mode is per-model runtime state chosen in the model
@@ -189,6 +192,11 @@ func (s *Server) handleAPIModelMode(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+
+	// The model list carries each model's mode, so tell the SSE listeners to
+	// re-send it. Without this the detail view keeps the previous highlight
+	// until some unrelated event happens to refresh the list.
+	event.Emit(swaputil.ConfigFileChangedEvent{State: swaputil.ReloadingStateEnd})
 
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "model": real, "mode": mode})
 }
