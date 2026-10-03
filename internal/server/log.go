@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,7 +119,7 @@ func (s *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {
 		logMonitorID = logMonitorID[:idx]
 	}
 
-	logger, err := s.getLogger(logMonitorID)
+	logger, err := s.logSourceFor(logMonitorID)
 	if err != nil {
 		swaputil.SendResponse(w, r, http.StatusBadRequest, err.Error())
 		return
@@ -289,4 +290,89 @@ func CreateRequestLogMiddleware(proxylog *logmon.Monitor) chain.Middleware {
 				ip, method, path, proto, rec.status, rec.size, ua, time.Since(start))
 		})
 	}
+}
+
+// logSource is the slice of a *logmon.Monitor the log stream needs, so the
+// stream can also be fed by a merge of several monitors.
+type logSource interface {
+	GetHistory() []byte
+	OnLogData(func([]byte)) context.CancelFunc
+}
+
+// runningCopies returns the ids of modelID's running multi_model copies. A
+// multi_model base id never runs itself — the selector rewrites every request
+// to a copy — so its own log monitor stays empty and its Logs panel shows
+// nothing.
+func (s *Server) runningCopies(modelID string) []string {
+	if s.ModelMode(modelID) != ModeMultiModel {
+		return nil
+	}
+	prefix := modelID + "--mm"
+	ids := make([]string, 0, 2)
+	// Iterate what is running rather than the model list: the copies are the
+	// only ids that can be up under this prefix.
+	for id := range s.local.RunningModels() {
+		if strings.HasPrefix(id, prefix) && isGeneratedCopy(id) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// multiModelLogs fans the running copies into one stream, tagging each chunk
+// with the copy it came from, so the model's own log panel shows what its
+// copies are actually doing.
+type multiModelLogs struct {
+	ids  []string
+	logs []*logmon.Monitor
+}
+
+func (m *multiModelLogs) GetHistory() []byte {
+	var b strings.Builder
+	for i, id := range m.ids {
+		history := m.logs[i].GetHistory()
+		if len(history) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "----- %s -----\n", id)
+		b.Write(history)
+		b.WriteByte('\n')
+	}
+	return []byte(b.String())
+}
+
+func (m *multiModelLogs) OnLogData(cb func([]byte)) context.CancelFunc {
+	cancels := make([]context.CancelFunc, 0, len(m.logs))
+	for i, log := range m.logs {
+		tag := append([]byte("["+m.ids[i]+"] "), nil...)
+		cancels = append(cancels, log.OnLogData(func(data []byte) {
+			cb(append(append([]byte{}, tag...), data...))
+		}))
+	}
+	return func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	}
+}
+
+// logSourceFor resolves a log monitor id to a stream. A multi_model base id
+// resolves to a merge of its running copies; anything else falls back to the
+// single monitor getLogger already picks.
+func (s *Server) logSourceFor(logMonitorID string) (logSource, error) {
+	if ids := s.runningCopies(logMonitorID); len(ids) > 0 {
+		logs := make([]*logmon.Monitor, 0, len(ids))
+		kept := make([]string, 0, len(ids))
+		for _, copyID := range ids {
+			if log, ok := s.local.ProcessLogger(copyID); ok {
+				logs = append(logs, log)
+				kept = append(kept, copyID)
+			}
+		}
+		if len(logs) > 0 {
+			return &multiModelLogs{ids: kept, logs: logs}, nil
+		}
+	}
+	return s.getLogger(logMonitorID)
 }
