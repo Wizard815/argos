@@ -333,3 +333,134 @@ func TestGroup_NonExclusiveDoesNotUnloadExclusive(t *testing.T) {
 		t.Errorf("b.runCalls=%d want 1", got)
 	}
 }
+
+// TestGroup_SwapStopsVariantOfMember verifies that a group member covers the
+// odysseus variants of itself: a request for "<member>--<label>" belongs to the
+// member's group, so swap=true still stops the running sibling.
+func TestGroup_SwapStopsVariantOfMember(t *testing.T) {
+	a := newFakeProcess("a")
+	a.markReady()
+	go a.Run(0)
+
+	v := newFakeProcess("a--tuned")
+	v.autoReady = true
+
+	conf := config.Config{
+		HealthCheckTimeout: 5,
+		Routing: groupRouting(map[string]config.GroupConfig{
+			"g": {Swap: true, Members: []string{"a"}},
+		}),
+	}
+	g := newTestGroup(t, conf, map[string]process.Process{"a": a, "a--tuned": v})
+
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, newRequest("a--tuned"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if got := a.stopCalls.Load(); got != 1 {
+		t.Errorf("a.stopCalls=%d want 1 (variant must resolve to the member's group)", got)
+	}
+	if got := v.runCalls.Load(); got != 1 {
+		t.Errorf("v.runCalls=%d want 1", got)
+	}
+}
+
+// TestGroup_PersistentMemberVariantNotEvicted is the multi-model case: a
+// persistent group lists only the base model id, and a running variant of that
+// base must survive an exclusive group loading alongside it.
+func TestGroup_PersistentMemberVariantNotEvicted(t *testing.T) {
+	v := newFakeProcess("a--tuned")
+	v.markReady()
+	go v.Run(0)
+
+	b := newFakeProcess("b")
+	b.autoReady = true
+
+	conf := config.Config{
+		HealthCheckTimeout: 5,
+		Routing: groupRouting(map[string]config.GroupConfig{
+			"persist": {Swap: true, Exclusive: false, Persistent: true, Members: []string{"a"}},
+			"other":   {Swap: true, Exclusive: true, Members: []string{"b"}},
+		}),
+	}
+	g := newTestGroup(t, conf, map[string]process.Process{"a--tuned": v, "b": b})
+
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, newRequest("b"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if got := v.stopCalls.Load(); got != 0 {
+		t.Errorf("v.stopCalls=%d want 0 (variant of a persistent member must not be evicted)", got)
+	}
+	if got := b.runCalls.Load(); got != 1 {
+		t.Errorf("b.runCalls=%d want 1", got)
+	}
+}
+
+// TestGroup_ExactMemberBeatsPrefix verifies precedence: an id that is both an
+// exact member and a variant of another member resolves to its own group.
+func TestGroup_ExactMemberBeatsPrefix(t *testing.T) {
+	base := newFakeProcess("b")
+	base.markReady()
+	go base.Run(0)
+
+	exact := newFakeProcess("b--v")
+	exact.autoReady = true
+
+	conf := config.Config{
+		HealthCheckTimeout: 5,
+		Routing: groupRouting(map[string]config.GroupConfig{
+			"g1": {Swap: true, Members: []string{"b"}},
+			"g2": {Swap: true, Members: []string{"b--v"}},
+		}),
+	}
+	g := newTestGroup(t, conf, map[string]process.Process{"b": base, "b--v": exact})
+
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, newRequest("b--v"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	// b--v is an exact member of g2, so it does not inherit g1 from "b"; g2 is
+	// not exclusive, so nothing is evicted.
+	if got := base.stopCalls.Load(); got != 0 {
+		t.Errorf("base.stopCalls=%d want 0 (exact membership must win over prefix)", got)
+	}
+}
+
+// TestGroup_LongestPrefixWins verifies that overlapping member ids resolve to
+// the most specific member.
+func TestGroup_LongestPrefixWins(t *testing.T) {
+	outer := newFakeProcess("a")
+	outer.markReady()
+	go outer.Run(0)
+
+	v := newFakeProcess("a--b--v")
+	v.autoReady = true
+
+	conf := config.Config{
+		HealthCheckTimeout: 5,
+		Routing: groupRouting(map[string]config.GroupConfig{
+			"outer": {Swap: true, Members: []string{"a"}},
+			"inner": {Swap: true, Exclusive: true, Members: []string{"a--b"}},
+		}),
+	}
+	g := newTestGroup(t, conf, map[string]process.Process{"a": outer, "a--b--v": v})
+
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, newRequest("a--b--v"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	// a--b--v belongs to inner (the longest member prefix); inner is exclusive,
+	// so the model running in outer is evicted.
+	if got := outer.stopCalls.Load(); got != 1 {
+		t.Errorf("outer.stopCalls=%d want 1 (longest member prefix must win)", got)
+	}
+}

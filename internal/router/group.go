@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/mostlygeek/llama-swap/internal/config"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
@@ -68,7 +69,7 @@ type groupSwapper struct {
 }
 
 func (p *groupSwapper) EvictionFor(target string, running []string) []string {
-	tg := p.modelToGroup[target]
+	tg, _ := p.groupFor(target)
 	tgCfg := p.config.Routing.Router.Settings.Groups[tg]
 
 	seen := make(map[string]struct{})
@@ -80,7 +81,7 @@ func (p *groupSwapper) EvictionFor(target string, running []string) []string {
 		if _, dup := seen[mID]; dup {
 			return
 		}
-		og := p.modelToGroup[mID]
+		og, _ := p.groupFor(mID)
 		switch {
 		case og == tg && tgCfg.Swap:
 			seen[mID] = struct{}{}
@@ -101,6 +102,30 @@ func (p *groupSwapper) EvictionFor(target string, running []string) []string {
 		consider(mID)
 	}
 	return result
+}
+
+// groupFor returns the group that owns modelID.
+//
+// An exact membership wins. Otherwise a member covers every odysseus variant of
+// itself -- models named "<member>--<label>" -- so a group only has to list the
+// base model id to cover every generated variant of it. When members overlap,
+// the longest matching member wins.
+func (p *groupSwapper) groupFor(modelID string) (string, bool) {
+	if gid, ok := p.modelToGroup[modelID]; ok {
+		return gid, true
+	}
+
+	bestGID, bestLen := "", 0
+	for member, gid := range p.modelToGroup {
+		if len(member) <= bestLen || !strings.HasPrefix(modelID, member+"--") {
+			continue
+		}
+		bestGID, bestLen = gid, len(member)
+	}
+	if bestLen == 0 {
+		return "", false
+	}
+	return bestGID, true
 }
 
 func (p *groupSwapper) OnSwapStart(target string, running []string) {}

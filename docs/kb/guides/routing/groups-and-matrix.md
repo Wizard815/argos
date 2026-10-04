@@ -57,7 +57,10 @@ The three flags:
 - **`persistent`** (default `false`) — other groups can never unload this one.
 
 **A model can belong to only one group**, and every member must be a real model
-ID.
+ID. A member also covers the generated variants of itself: a model launched as
+`<member>--<label>` belongs to the member's group, so listing the base model ID
+is enough to cover every variant of it. When members overlap, the longest
+matching member wins.
 
 The classic setup is one exclusive group for the big LLMs and one non-exclusive
 group for small always-useful models like embeddings and rerankers.
