@@ -62,6 +62,15 @@ type baseRouter struct {
 
 	runDone chan struct{}
 
+	// handoverCh carries a reload's process hand-over. Detaching and adopting
+	// mutate the process table, which the run loop owns, so both go through it
+	// rather than being applied from the reload goroutine.
+	handoverCh chan handoverReq
+
+	// carriedCtx records that this router detached processes which still watch
+	// procCtx, so Shutdown must leave that context alone.
+	carriedCtx bool
+
 	// testProcessed, when non-nil, receives one event after each handlerReq
 	// or swapDone has been fully processed by run(). Tests use it to wait
 	// for run() to reach a deterministic state without sleeping. serveDone
@@ -95,6 +104,7 @@ func newBaseRouter(
 		swapDoneCh:  make(chan scheduler.SwapDone),
 		serveDoneCh: make(chan scheduler.ServeDoneEvent),
 		runDone:     make(chan struct{}),
+		handoverCh:  make(chan handoverReq),
 	}
 	sched, err := scheduler.New(conf, name, logger, planner, b)
 	if err != nil {
@@ -130,6 +140,28 @@ func (b *baseRouter) run() {
 		case req := <-b.unloadCh:
 			b.schedule.OnUnload(req.targets, req.timeout)
 			close(req.respond)
+			b.notifyProcessed()
+
+		case req := <-b.handoverCh:
+			detached := make(map[string]process.Process)
+			for _, id := range req.detach {
+				p, found := b.processes[id]
+				if !found {
+					continue
+				}
+				delete(b.processes, id)
+				detached[id] = p
+			}
+			if len(detached) > 0 {
+				// These children are still running and watch procCtx, so the
+				// teardown that follows must not cancel it.
+				b.carriedCtx = true
+			}
+			for id, p := range req.adopt {
+				stopReplaced(b.processes[id], p)
+				b.processes[id] = p
+			}
+			req.detached <- detached
 			b.notifyProcessed()
 
 		case ev := <-b.swapDoneCh:
@@ -324,7 +356,13 @@ func (b *baseRouter) handleShutdown(req shutdownReq) {
 	// Every process is stopped (children reaped via Stop()). Cancel procCtx so
 	// the process run-loop goroutines exit; they are already StateStopped, so
 	// this is a clean no-op kill rather than a forced teardown.
-	b.procCancel()
+	//
+	// A router that handed children over must not do this: those children are
+	// still running and watch this context, so cancelling it would tear down the
+	// very processes the replacement router just adopted.
+	if !b.carriedCtx {
+		b.procCancel()
+	}
 
 	req.respond <- nil
 }

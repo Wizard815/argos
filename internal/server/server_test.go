@@ -56,6 +56,15 @@ func (s *stubRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *stubRouter) RunningModels() map[string]process.ProcessState { return s.running }
+
+// This stub exercises HTTP plumbing, not the reload hand-over, so it satisfies
+// the interface without modelling either side of it.
+func (s *stubRouter) DetachRunning([]string) map[string]process.Process {
+	return map[string]process.Process{}
+}
+
+func (s *stubRouter) Adopt(map[string]process.Process) {}
+
 func (s *stubRouter) Unload(timeout time.Duration, models ...string) {
 	s.unloadCalls.Add(1)
 	s.unloadTimeout = timeout

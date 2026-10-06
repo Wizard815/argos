@@ -610,3 +610,35 @@ func (s *Server) Shutdown(timeout time.Duration) error {
 	wg.Wait()
 	return errors.Join(errs...)
 }
+
+// Config returns the configuration this server was built from.
+func (s *Server) Config() config.Config {
+	return s.cfg
+}
+
+// RunningModels reports the state of every local process that is not stopped or
+// shut down, keyed by model ID.
+func (s *Server) RunningModels() map[string]process.ProcessState {
+	if s.local == nil {
+		return map[string]process.ProcessState{}
+	}
+	return s.local.RunningModels()
+}
+
+// DetachRunning hands back the processes for the named running models without
+// stopping them, so a replacement server can adopt them across a hot reload.
+func (s *Server) DetachRunning(models []string) map[string]process.Process {
+	if s.local == nil {
+		return map[string]process.Process{}
+	}
+	return s.local.DetachRunning(models)
+}
+
+// Adopt registers processes that are already running so this server serves them
+// instead of starting its own. Call it before the server is published.
+func (s *Server) Adopt(models map[string]process.Process) {
+	if s.local == nil || len(models) == 0 {
+		return
+	}
+	s.local.Adopt(models)
+}

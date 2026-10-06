@@ -363,17 +363,29 @@ func main() {
 			newSrv.SetTailcatAddress(currentTailcat.Address())
 		}
 
-		activeMu.Lock()
+		activeMu.RLock()
 		old := activeSrv
 		oldStore := activeStore
-		activeSrv = newSrv
-		activeStore = newStore
-		activeStorePath = newStorePath
-		activeMu.Unlock()
+		activeMu.RUnlock()
 
-		applyLogSettings(newCfg)
-		if perfMon != nil {
-			perfMon.UpdateConfig(newCfg.Performance)
+		// Stop the old server first: its children hold VRAM until reaped, so a request reaching the new one early OOMs on the load.
+		// Carry over the children whose configuration did not change. A reload
+		// otherwise restarts every running model, so an edit that only touches a
+		// sibling entry - an odysseus refresh rewriting the variants file - drops
+		// a warm model and its prompt cache for nothing.
+		oldCfg := old.Config()
+		var carry []string
+		for id := range old.RunningModels() {
+			was, hadOld := oldCfg.Models[id]
+			now, hasNew := newCfg.Models[id]
+			if hadOld && hasNew && config.ModelConfigEqual(was, now) {
+				carry = append(carry, id)
+			}
+		}
+		if len(carry) > 0 {
+			carried := old.DetachRunning(carry)
+			newSrv.Adopt(carried)
+			proxyLog.Infof("reload: carried over %d running model(s) whose config did not change", len(carried))
 		}
 
 		if err := old.Shutdown(shutdownTimeout); err != nil {
@@ -383,6 +395,17 @@ func main() {
 			if err := oldStore.Close(); err != nil {
 				proxyLog.Warnf("error closing old store during reload: %v", err)
 			}
+		}
+
+		activeMu.Lock()
+		activeSrv = newSrv
+		activeStore = newStore
+		activeStorePath = newStorePath
+		activeMu.Unlock()
+
+		applyLogSettings(newCfg)
+		if perfMon != nil {
+			perfMon.UpdateConfig(newCfg.Performance)
 		}
 
 		// Notify UI after a short delay so it can refresh model state.

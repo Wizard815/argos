@@ -41,6 +41,21 @@ type LocalRouter interface {
 	// stopped or shut down, keyed by model ID.
 	RunningModels() map[string]process.ProcessState
 
+	// DetachRunning removes the named models from this router's process table
+	// without stopping them and returns the live processes, so a replacement
+	// router can adopt them. A hot reload uses it to carry over children whose
+	// configuration did not change.
+	//
+	// The detached processes keep watching this router's process context, so a
+	// router that has detached anything must not cancel that context. Shutdown
+	// honours this.
+	DetachRunning(models []string) map[string]process.Process
+
+	// Adopt registers processes that are already running so this router serves
+	// them instead of the instances it created for the same IDs. Call it before
+	// the router serves traffic.
+	Adopt(models map[string]process.Process)
+
 	// Unload stops the named models, or every running model when none are
 	// named. It blocks until each targeted process has stopped. A timeout <= 0
 	// gives each process its configured unloadTimeout to stop gracefully:

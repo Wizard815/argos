@@ -164,8 +164,10 @@ keeps the profiles current for free; the coalescing stops a polling client from
 turning that into traffic.
 
 A refresh only writes when the content changed. That matters: llama-swap reloads
-on any change under `-config-dir`, and a reload restarts every running model, so a
-no-op refresh must not touch the file.
+on any change under `-config-dir`. A reload restarts only the models whose
+configuration changed and carries the rest over untouched, but an unnecessary
+write still costs every model the refresh rewrote - so a no-op refresh must not
+touch the file at all.
 
 ## Duplicate keys
 
