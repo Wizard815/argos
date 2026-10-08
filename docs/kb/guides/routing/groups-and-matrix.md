@@ -56,9 +56,13 @@ The three flags:
   `true` means loading a member unloads everything else.
 - **`persistent`** (default `false`) — other groups can never unload this one.
 
-**A model can belong to only one group**, and every member must be a real model
-ID. A member also covers the generated variants of itself: a model launched as
-`<member>--<label>` belongs to the member's group, so listing the base model ID
+**A model can belong to only one group.** A member that does not resolve to a
+model is skipped with a warning rather than failing the start: the model list
+drifts as models are added and removed, and one stale name should not take every
+other model down with it. Listing a model that is already in another group is
+still an error. A member also covers the generated variants of itself: a model
+launched as `<member>--<label>` belongs to the member's group, so listing the
+base model ID
 is enough to cover every variant of it. When members overlap, the longest
 matching member wins.
 

@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mostlygeek/llama-swap/internal/config"
@@ -14,9 +15,26 @@ type Group struct {
 }
 
 func NewGroup(conf config.Config, proxylog, upstreamlog *logmon.Monitor) (*Group, error) {
+	// Membership is resolved defensively. A group names models in configuration,
+	// and that list drifts: models get added, removed, or rescanned out from
+	// under it. A member with no model config has nothing to route, so skip it
+	// with a warning instead of refusing to build the router, which would take
+	// every other model down with it.
 	modelToGroup := make(map[string]string)
-	for gid, gcfg := range conf.Routing.Router.Settings.Groups {
-		for _, mid := range gcfg.Members {
+	gids := make([]string, 0, len(conf.Routing.Router.Settings.Groups))
+	for gid := range conf.Routing.Router.Settings.Groups {
+		gids = append(gids, gid)
+	}
+	// Sorted so a model listed in two groups resolves to the same group on every
+	// start rather than depending on map iteration order.
+	slices.Sort(gids)
+
+	for _, gid := range gids {
+		for _, mid := range conf.Routing.Router.Settings.Groups[gid].Members {
+			if _, _, found := conf.FindConfig(mid); !found {
+				proxylog.Warnf("routing group %q lists model %q, which has no model config; ignoring it", gid, mid)
+				continue
+			}
 			if existing, dup := modelToGroup[mid]; dup {
 				return nil, fmt.Errorf("model %q is in multiple groups: %q and %q", mid, existing, gid)
 			}
@@ -38,9 +56,10 @@ func NewGroup(conf config.Config, proxylog, upstreamlog *logmon.Monitor) (*Group
 	for mid := range modelToGroup {
 		modelCfg, _, ok := conf.FindConfig(mid)
 		if !ok {
-			base.shutdownFn()
-			base.procCancel()
-			return nil, fmt.Errorf("no model config for %q", mid)
+			// Unreachable: membership above only holds resolvable models. Skip
+			// rather than fail, so a later edit here cannot take the whole
+			// router down over one stale name.
+			continue
 		}
 		procLog := logmon.NewWriter(upstreamlog)
 		p, err := process.New(base.procCtx, mid, modelCfg, procLog, proxylog)
