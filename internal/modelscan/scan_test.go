@@ -42,6 +42,37 @@ func scanAndParse(t *testing.T, opts Options) genFile {
 	return out
 }
 
+// TestScan_SkipsNonFirstShards guards split GGUFs: llama.cpp loads the whole
+// model given the first shard and finds the rest itself, so a tail shard
+// registered on its own is an entry that can never load.
+func TestScan_SkipsNonFirstShards(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeModel(t, dir, "big-00001-of-00003.gguf")
+	writeFakeModel(t, dir, "big-00002-of-00003.gguf")
+	writeFakeModel(t, dir, "big-00003-of-00003.gguf")
+	writeFakeModel(t, dir, "solo.gguf")
+
+	out := scanAndParse(t, Options{
+		Dirs:        []string{dir},
+		CmdTemplate: "llama-server -m ${MODEL_PATH}",
+	})
+
+	if _, ok := out.Models["big-00001-of-00003"]; !ok {
+		t.Fatalf("first shard missing; got %v", out.Models)
+	}
+	if _, ok := out.Models["solo"]; !ok {
+		t.Fatalf("unrelated model missing; got %v", out.Models)
+	}
+	for _, id := range []string{"big-00002-of-00003", "big-00003-of-00003"} {
+		if _, ok := out.Models[id]; ok {
+			t.Errorf("%s should have been skipped", id)
+		}
+	}
+	if len(out.Models) != 2 {
+		t.Fatalf("want 2 models, got %d: %v", len(out.Models), out.Models)
+	}
+}
+
 // TestScan_OmitsEnvAndTTLWhenUnset guards the existing behaviour: a scan that
 // does not ask for env/ttl must not start writing them, because llama-swap
 // reloads (and restarts every running model) whenever the generated file

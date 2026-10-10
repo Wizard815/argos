@@ -112,6 +112,23 @@ func sanitizeName(base string) string {
 	return name
 }
 
+// shardSuffix matches the "-NNNNN-of-MMMMM" tail llama.cpp writes on a split
+// GGUF, capturing the shard index.
+var shardSuffix = regexp.MustCompile(`(?i)-([0-9]+)-of-([0-9]+)$`)
+
+// isNonFirstShard reports whether base (a filename without its extension) is a
+// shard other than the first of a split GGUF. A split model is one model spread
+// over several files: llama.cpp finds the remaining shards given the first, so
+// any other shard registered as its own model produces an entry that can never
+// load. Same reasoning as the mmproj skip in Scan.
+func isNonFirstShard(base string) bool {
+	m := shardSuffix.FindStringSubmatch(base)
+	if m == nil {
+		return false
+	}
+	return strings.TrimLeft(m[1], "0") != "1"
+}
+
 // Scan walks opts.Dirs recursively for files matching opts.Extensions,
 // builds one models: entry per file (name collisions get a short suffix
 // derived from the parent directory to disambiguate), and returns the
@@ -187,6 +204,14 @@ func Scan(opts Options) ([]byte, []string, error) {
 			// not run standalone — skip them so they don't show up as
 			// selectable models of their own.
 			if strings.Contains(strings.ToLower(base), "mmproj") {
+				return nil
+			}
+
+			// Split GGUFs ("-00001-of-00003") are one model spread over
+			// several files. llama.cpp finds the remaining shards from the
+			// first, so registering a tail shard as its own model produces
+			// an entry that can never load.
+			if isNonFirstShard(base) {
 				return nil
 			}
 
