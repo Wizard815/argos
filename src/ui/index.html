@@ -3,593 +3,215 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>llamacpp-profile-builder</title>
-<style>
-  :root{
-    --bg:#0f1420; --panel:#161d2b; --panel2:#1c2536; --line:#2a3550;
-    --txt:#e6ebf5; --muted:#9aa6bf; --accent:#6ea8fe; --ok:#3fb950;
-    --warn:#d29922; --bad:#f85149; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-  header{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
-  header h1{font-size:16px;margin:0;font-weight:600}
-  header .sub{color:var(--muted);font-size:12px}
-  nav{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
-  nav button{background:transparent;color:var(--muted);border:1px solid transparent;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500}
-  nav button:hover{color:var(--txt);background:var(--panel2)}
-  nav button.active{color:#fff;background:var(--accent);border-color:var(--accent)}
-  main{padding:20px;max-width:1240px;margin:0 auto}
-  .tab{display:none}.tab.active{display:block}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
-  .card h2{margin:0 0 6px;font-size:15px;font-weight:600}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-  @media(max-width:760px){.grid{grid-template-columns:1fr}}
-  label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
-  input,textarea,select,button.btn{font-family:inherit}
-  input[type=text],input[type=number],textarea,select{width:100%;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
-  textarea{font-family:var(--mono);font-size:12px;min-height:120px;resize:vertical}
-  button.btn{cursor:pointer;background:var(--accent);color:#fff;border:none;padding:9px 16px;border-radius:8px;font-weight:600;font-size:13px}
-  button.btn:hover{filter:brightness(1.08)}
-  button.btn.secondary{background:var(--panel2);border:1px solid var(--line);color:var(--txt)}
-  button.btn.danger{background:var(--bad)}
-  button.btn.small{padding:5px 10px;font-size:12px}
-  table{width:100%;border-collapse:collapse;font-size:12.5px;display:block;overflow:auto}
-  thead{position:sticky;top:0;z-index:1}
-  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top;background:var(--panel)}
-  tbody tr:nth-child(even) td{background:var(--panel2)}
-  th{color:var(--muted);font-weight:600;text-transform:uppercase;font-size:10.5px;letter-spacing:.4px}
-  code,.mono{font-family:var(--mono);font-size:11.5px;color:#cfe0ff}
-  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
-  .pill.ok{color:var(--ok);border-color:rgba(63,185,80,.4)}
-  .pill.bad{color:var(--bad);border-color:rgba(248,81,73,.4)}
-  .status-dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
-  .dot-on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
-  .dot-off{background:var(--muted)}
-  pre.log{background:#0b0f18;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;font-family:var(--mono);font-size:11.5px;color:#cbd6ea;min-height:80px;white-space:pre-wrap}
-  .hint{color:var(--muted);font-size:12px;margin:6px 0 12px}
-  .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-  .toast{position:fixed;bottom:20px;right:20px;background:var(--panel2);border:1px solid var(--line);padding:12px 16px;border-radius:10px;max-width:360px;z-index:50;display:none}
-  .toast.err{border-color:var(--bad)}
-  .toast.ok{border-color:var(--ok)}
-</style>
+<title>profilebuilder</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e06c75' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='m12 14 4-4'/%3E%3Cpath d='M3.34 19a10 10 0 1 1 17.32 0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+<script>try { if (localStorage.getItem("pb.theme") === "light") document.documentElement.classList.add("light"); } catch (e) {}</script>
 </head>
 <body>
-<header>
-  <h1>llamacpp-profile-builder</h1>
-  <div class="sub">Odysseus cookbooks + llama-swap playground/perf tables in one container</div>
-  <nav id="tabs">
-    <button data-tab="cookbooks" class="active">Cookbooks</button>
-    <button data-tab="catalog">Catalog (MTP/MMJPG)</button>
-    <button data-tab="playground">Playground</button>
-    <button data-tab="perf">Perf Sheet</button>
-    <button data-tab="env">Env Scale Table</button>
-    <button data-tab="logs">Logs</button>
+
+<aside class="sidebar" id="sidebar">
+  <div class="brand"><span class="name"><i data-icon="gauge"></i>profilebuilder</span></div>
+  <nav class="nav" aria-label="Main">
+    <button class="nav-item" data-action="new"><i data-icon="plus"></i>New profile</button>
+    <div class="nav-sep"></div>
+    <button class="nav-item" data-view="builder"><i data-icon="sliders"></i>Builder</button>
+    <button class="nav-item" data-view="profiles"><i data-icon="bookmark"></i>Profiles<span class="meta" id="navProfiles"></span></button>
+    <button class="nav-item" data-view="playground"><i data-icon="play"></i>Playground<span class="meta" id="navPlayground">idle <span class="dot"></span></span></button>
+    <button class="nav-item" data-view="perf"><i data-icon="chart"></i>Perf sheet<span class="meta" id="navPerf"></span></button>
+    <button class="nav-item" data-view="catalog"><i data-icon="package"></i>Catalog</button>
+    <button class="nav-item" data-view="env"><i data-icon="braces"></i>Env flags</button>
+    <button class="nav-item" data-view="integrations"><i data-icon="plug"></i>Integrations<span class="meta" id="navIntegrations"></span></button>
+    <div class="nav-sep"></div>
+    <button class="nav-item" data-action="theme"><i data-icon="palette"></i>Theme<span class="meta" id="themeLabel">dark</span></button>
   </nav>
-</header>
+  <div class="sidebar-foot">llama.cpp launch profiles</div>
+</aside>
+<div class="scrim" data-action="close-nav"></div>
 
-<main>
+<div class="main">
+  <header class="topbar">
+    <button class="icon-btn ghost menu-btn" data-action="open-nav" aria-label="Open menu"><i data-icon="menu"></i></button>
+    <div class="title" id="topTitle">Builder</div>
+  </header>
 
-<!-- COOKBOOKS -->
-<section id="cookbooks" class="tab active">
-  <div class="card">
-    <h2>Cookbook command builder &mdash; copy &amp; paste across models</h2>
-    <p class="hint">Paste an existing llama-server command from your Odysseus cookbook, retarget it at a new base model, and fix only the fields you need. Every other flag carries over verbatim.</p>
-    <div class="grid">
-      <div>
-        <label>Source command</label>
-        <textarea id="srcCmd" placeholder="llama-server --model /models/qwen2-7b-instruct-q4_k_m.gguf --port 8080 --ctx-size 8192 --n-gpu-layers 35 --mmap 1 --flash-attn"></textarea>
+  <div class="content">
+
+    <!-- BUILDER -->
+    <section class="view" id="view-builder">
+      <div id="builderEmpty">
+        <div class="hero">
+          <div class="logo"><i data-icon="gauge"></i>profilebuilder</div>
+          <div class="tag">Tune once. Launch anywhere.</div>
+        </div>
+        <div class="composer">
+          <textarea id="composerInput" spellcheck="false" placeholder="Paste a llama-server command…"></textarea>
+          <div class="bar">
+            <select id="importSelect" aria-label="Import a command"></select>
+            <button class="btn ghost sm" id="blankBtn">Start blank</button>
+            <span class="spacer"></span>
+            <button class="btn primary" id="parseBtn"><i data-icon="arrow-up"></i>Open in builder</button>
+          </div>
+        </div>
+        <div class="tip">Ctrl+Enter opens the command. Saved profiles, Odysseus cookbooks and llama-swap models are under “Import from…”.</div>
       </div>
-      <div>
-        <label>Target base model</label>
-        <input type="text" id="targetModel" placeholder="unsloth/Qwen2.5B-GGUF">
-        <div style="height:10px"></div>
-        <label>Edit flags (one per line: key=value)</label>
-        <textarea id="edits" style="min-height:60px" placeholder="model=/models/qwen2-5b-instruct.q4.gguf&#10;port=9090"></textarea>
+
+      <div id="builderMain" hidden>
+        <div class="view-head">
+          <div class="fields" style="flex:1; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));">
+            <label class="field"><span>Profile name</span><input type="text" id="bName" placeholder="qwen3-8b · fast"></label>
+            <label class="field"><span>Base model</span><input type="text" id="bBase" list="modelList" placeholder="Qwen3-8B-Q4_K_M"></label>
+          </div>
+          <div class="row">
+            <button class="btn primary" id="bSave"><i data-icon="save"></i>Save</button>
+            <button class="btn" id="bSaveNew">Save as new</button>
+            <button class="btn" id="bLaunch"><i data-icon="play"></i>Launch</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <div class="card-head"><h2>Settings</h2><span class="spacer"></span><span class="hint">blank = llama.cpp default</span></div>
+            <div class="fields" id="bFields"></div>
+          </div>
+          <div>
+            <div class="card"><div class="card-head"><h2>Model files</h2></div><div class="fields" id="bFiles"></div></div>
+            <div class="card"><div class="card-head"><h2>Environment</h2><span class="spacer"></span><span class="hint">set before the program</span></div><div class="stack" id="bEnv"></div></div>
+            <div class="card"><div class="card-head"><h2>Other flags</h2></div><div class="stack" id="bOther"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>Command</h2><span class="pill accent" id="bSource" hidden></span>
+            <span class="spacer"></span>
+            <div class="seg" id="bLayout" role="group" aria-label="Layout"><button data-v="multi" class="on">Lines</button><button data-v="single">One line</button></div>
+            <button class="btn sm" id="bCopy"><i data-icon="copy"></i>Copy</button>
+            <button class="btn sm" id="bYaml"><i data-icon="file-code"></i>llama-swap</button>
+            <button class="btn sm" id="bRaw"><i data-icon="pencil"></i>Edit raw</button>
+          </div>
+          <pre class="code" id="bPreview"></pre>
+          <div class="stack" id="bRawBox" hidden>
+            <textarea id="bRawText" rows="9" spellcheck="false"></textarea>
+            <div class="row end"><button class="btn sm" id="bRawCancel">Cancel</button><button class="btn sm primary" id="bRawApply">Apply</button></div>
+          </div>
+        </div>
       </div>
-    </div>
-    <div class="toolbar"><button class="btn" onclick="doCopy()">Generate retargeted command</button></div>
-    <div id="copyResult" style="margin-top:14px;display:none">
-      <label>Generated launch command</label>
-      <pre class="log" id="genCmd"></pre>
-      <div class="toolbar">
-        <button class="btn small secondary" onclick="saveProfile()">Save as profile</button>
-        <button class="btn small secondary" onclick="loadIntoPg()">Load into playground</button>
+    </section>
+
+    <!-- PROFILES -->
+    <section class="view" id="view-profiles">
+      <div class="view-head">
+        <div><h1>Profiles</h1><p class="sub">Saved launch commands. Open one in the builder to retarget it at another model.</p></div>
+        <span class="spacer"></span>
+        <input type="search" id="pSearch" placeholder="Filter…" style="width:200px">
+        <button class="btn primary" data-action="new"><i data-icon="plus"></i>New</button>
       </div>
-    </div>
+      <div class="card"><div class="table-wrap"><table id="pTable"></table></div></div>
+    </section>
+
+    <!-- PLAYGROUND -->
+    <section class="view" id="view-playground">
+      <div class="view-head">
+        <div><h1>Playground</h1><p class="sub">Launch, wait for the server, benchmark. Results land in the perf sheet.</p></div>
+      </div>
+      <div class="grid2">
+        <div>
+          <div class="card">
+            <div class="card-head"><h2>Launch</h2><span class="spacer"></span>
+              <select id="gProfile" style="width:auto; max-width:260px" aria-label="Load a profile"></select></div>
+            <textarea id="gCmd" rows="5" spellcheck="false" placeholder="llama-server -m /models/model.gguf --port ${PORT} -ngl 99"></textarea>
+            <div class="row" style="margin-top:10px">
+              <input type="text" id="gBase" list="modelList" placeholder="Base model (for the perf sheet)" style="flex:1; width:auto">
+              <button class="btn primary" id="gLaunch"><i data-icon="play"></i>Launch</button>
+            </div>
+            <p class="hint">${PORT} is swapped for a free port. Each launch logs to runs/&lt;id&gt;.log.</p>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2 id="gLogTitle">Output</h2><span class="spacer"></span>
+              <label class="row muted mono-sm"><input type="checkbox" id="gFollow" checked> follow</label></div>
+            <pre class="log" id="gLog"></pre>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="card-head"><h2>Launches</h2><span class="spacer"></span><span class="hint">this session</span></div>
+            <div id="gLaunches"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Benchmark</h2><span class="spacer"></span><span id="gState"></span></div>
+            <div class="fields">
+              <label class="field"><span>Prompt</span><select id="gWords">
+                <option value="100">~130 tokens</option>
+                <option value="400" selected>~520 tokens</option>
+                <option value="1600">~2k tokens</option>
+                <option value="6400">~8k tokens</option>
+              </select></label>
+              <label class="field"><span>Generate</span><select id="gNPredict">
+                <option>64</option><option selected>128</option><option>256</option><option>512</option>
+              </select></label>
+            </div>
+            <div class="row" style="margin-top:12px">
+              <button class="btn primary" id="gBench"><i data-icon="zap"></i>Run benchmark</button>
+              <button class="btn" id="gRecord" title="Store the numbers found in the log (llama-cli / llama-bench / earlier requests)"><i data-icon="file-text"></i>Record from log</button>
+              <span class="spacer" style="flex:1"></span>
+              <button class="btn danger" id="gStop"><i data-icon="square"></i>Stop</button>
+            </div>
+            <div class="stats" id="gStats" style="margin-top:12px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PERF -->
+    <section class="view" id="view-perf">
+      <div class="view-head">
+        <div><h1>Perf sheet</h1><p class="sub">Every benchmark and recorded log, so you never re-test what already worked.</p></div>
+        <span class="spacer"></span>
+        <select id="fModel" style="width:auto; max-width:240px" aria-label="Model"></select>
+        <input type="search" id="fSearch" placeholder="Filter…" style="width:160px">
+        <button class="btn" id="fCsv"><i data-icon="download"></i>CSV</button>
+      </div>
+      <div class="card"><div class="card-head"><h2>Best per model</h2><span class="spacer"></span><span class="hint">by generation speed</span></div><div class="best-grid" id="fBest"></div></div>
+      <div class="card"><div class="table-wrap"><table id="fTable"></table></div></div>
+    </section>
+
+    <!-- CATALOG -->
+    <section class="view" id="view-catalog">
+      <div class="view-head">
+        <div><h1>Catalog</h1><p class="sub">Companion files per base model. They show up as suggestions in the builder.</p></div>
+      </div>
+      <div class="cols2" id="cCards"></div>
+    </section>
+
+    <!-- ENV FLAGS -->
+    <section class="view" id="view-env">
+      <div class="view-head">
+        <div><h1>Env flags</h1><p class="sub">Environment variables that matter for llama.cpp, with the last numbers seen when each was set.</p></div>
+        <span class="spacer"></span>
+        <input type="search" id="eSearch" placeholder="Filter…" style="width:200px">
+      </div>
+      <div class="card"><div class="table-wrap"><table id="eTable"></table></div></div>
+    </section>
+
+    <!-- INTEGRATIONS -->
+    <section class="view" id="view-integrations">
+      <div class="view-head">
+        <div><h1>Integrations</h1><p class="sub">Read-only. Commands are imported from these sources, never written back.</p></div>
+        <span class="spacer"></span>
+        <button class="btn" id="iRefresh"><i data-icon="refresh"></i>Refresh</button>
+      </div>
+      <div class="cols2"><div class="card" id="iOdysseus"></div><div class="card" id="iSwap"></div></div>
+    </section>
+
   </div>
+</div>
 
-  <div class="card">
-    <h2>Saved profiles</h2>
-    <p class="hint">Persisted in your browser. Load one to copy/paste it elsewhere, or push straight to the Playground.</p>
-    <div class="toolbar"><button class="btn secondary" onclick="loadProfiles()">Refresh</button></div>
-    <table id="profilesTable"><thead><tr><th>Name</th><th>Base model</th><th>Copied from</th><th>Command</th><th></th></tr></thead><tbody></tbody></table>
-  </div>
-</section>
-
-<!-- CATALOG -->
-<section id="catalog" class="tab">
-  <div class="card">
-    <h2>MTP model files (multi-token prediction)</h2>
-    <p class="hint">Register custom .mtp files so the right draft model is easy to pair with its base model when building commands.</p>
-    <label>Base model</label><input type="text" id="mtp.base" placeholder="qwen2-7B">
-    <div style="height:8px"></div>
-    <label>HuggingFace repo</label><input type="text" id="mtp.hf" placeholder="Wizard815/mtp-qwen2.5b">
-    <div style="height:8px"></div>
-    <label>File path</label><input type="text" id="mtp.path" placeholder="/models/qwen2.5 b-mtp.mtp">
-    <div class="toolbar"><button class="btn" onclick="addMtp()">Add MTP</button></div>
-    <table id="mtpTable"><thead><tr><th>Model</th><th>Name</th><th>HF repo</th><th>Path</th><th></th></tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="card">
-    <h2>Vision files (MMJPG / MMJOG)</h2>
-    <p class="hint">Register vision encoders (.mmjog, .jpg variants) for multimodal models.</p>
-    <label>Base model</label><input type="text" id="mm.base" placeholder="qwen2-7B">
-    <div style="height:8px"></div>
-    <label>Type</label>
-    <select id="mm.type"><option value="mmjog">mmjog</option><option value="mmjpg">mmjpg</option><option value="clip">clip</option></select>
-    <div style="height:8px"></div>
-    <label>HuggingFace repo</label><input type="text" id="mm.hf" placeholder="Wizard815/qwen2.5b-vision">
-    <div style="height:8px"></div>
-    <label>File path</label><input type="text" id="mm.path" placeholder="/models/qwen2.5 b-mm.jpg">
-    <div class="toolbar"><button class="btn" onclick="addMm()">Add Vision File</button></div>
-    <table id="mmTable"><thead><tr><th>Model</th><th>Name</th><th>Type</th><th>Path</th><th></th></tr></thead><tbody></tbody></table>
-  </div>
-</section>
-
-<!-- PLAYGROUND -->
-<section id="playground" class="tab">
-  <div class="card">
-    <h2>Playground &mdash; launch &amp; test a profile</h2>
-    <p class="hint">Run any command (real llama-server, or a fake perf-output script while testing). Logs stream from the captured process.</p>
-    <label>Launch command</label><textarea id="pgCmd" style="min-height:90px"></textarea>
-    <div class="grid" style="margin-top:12px">
-      <div><label>Base model</label><input type="text" id="pgBase" placeholder="qwen2-5B"></div>
-      <div><label>n_predict</label><input type="number" id="pgN" value="512"></div>
-    </div>
-    <div style="height:8px"></div>
-    <label>Env vars (one per line: KEY=VALUE)</label>
-    <textarea id="pgEnv" style="min-height:70px" placeholder="LLAMA_MMAP=1&#10;HIP_VISIBLE_DEVICES=0"></textarea>
-    <div class="toolbar">
-      <button class="btn" onclick="launch()">&nbsp;&nbsp;▶ Launch&nbsp;&nbsp;</button>
-      <button class="btn danger" onclick="stopRun()" id="stopBtn" disabled>&#9632; Stop</button>
-      <span id="runBadge"><span class="status-dot dot-off"></span>idle</span>
-      <span class="hint" id="runInfo"></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Live output logs</h2>
-    <div class="toolbar">
-      <button class="btn small secondary" onclick="refreshLogs()">Refresh now</button>
-      <label style="margin:0;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="autoPoll" checked style="width:auto"> auto-refresh</label>
-      <select id="logSelect" style="max-width:340px" onchange="onLogSelect()"></select>
-    </div>
-    <pre class="log" id="liveLog">No run selected. Launch a profile to stream its output here.</pre>
-  </div>
-</section>
-
-<!-- PERF SHEET -->
-<section id="perf" class="tab">
-  <div class="card">
-    <h2>Perf sheet &mdash; every recorded run, full detail</h2>
-    <p class="hint">Long-form data on GPU %, memory, prompt vs decode tokens/s, load mode, n_gpu_layers, mmap, flash-attn, and MTP/vision files per run. See what works best for each mod without re-testing.</p>
-    <div class="toolbar"><button class="btn secondary" onclick="loadRuns()">Refresh</button></div>
-    <table id="perfTable"><thead><tr>
-      <th>Run id</th><th>Base model</th><th>Date</th>
-      <th>Tokens/s</th><th>Prompt/s</th><th>In/Out</th><th>Dur(ms)</th>
-      <th>GPU %</th><th>Mem(GB)</th><th>Backend</th><th>Load mode</th>
-      <th>n_gpu_layers</th><th>mmap</th><th>Flash-Attn</th><th>MTP</th><th>Vision</th><th></th>
-    </tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="card">
-    <h2>Best launch per base model (summary)</h2>
-    <p class="hint">Quick top-line so you don't re-test what already worked.</p>
-    <table id="bestTable"><thead><tr><th>Base model</th><th>Tokens/s</th><th>Prompt/s</th><th>n_gpu_layers</th></tr></thead><tbody></tbody></table>
-  </div>
-</section>
-
-<!-- ENV SCALE TABLE -->
-<section id="env" class="tab">
-  <div class="card">
-    <h2>Env-var &amp; launch-command scale table</h2>
-    <p class="hint">One big reference: every env var / flag, its recommended value, and &mdash; once you've run profiles against it &mdash; how it performed last time (tokens/s, prompt/s) and which base model.</p>
-    <table id="envTable"><thead><tr>
-      <th>Flag / Env</th><th>Category</th><th>Description</th><th>Recommended</th>
-      <th>Last used for</th><th>Tokens/s</th><th>Prompt/s</th><th>Last run</th>
-    </tr></thead><tbody></tbody></table>
-  </div>
-</section>
-
-<!-- LOGS VIEWER -->
-<section id="logs" class="tab">
-  <div class="card">
-    <h2>Log viewer</h2>
-    <p class="hint">Pick a run to view its full raw captured log.</p>
-    <div class="toolbar">
-      <button class="btn secondary" onclick="loadRuns()">Refresh list</button>
-      <select id="logListSel" style="max-width:360px" onchange="viewSelected()"></select>
-    </div>
-    <pre class="log" id="fullLog">Select a run above to view its raw captured log.</pre>
-  </div>
-</section>
-
-</main>
-
-<div id="toast" class="toast"></div>
-
-<script>
-"use strict";
-var currentRunId = null;
-var autoTimer = null;
-var __RUNS = [];
-
-function toast(msg, kind){
-  var t = document.getElementById("toast");
-  t.textContent = msg;
-  t.className = "toast " + (kind || "");
-  t.style.display = "block";
-  setTimeout(function(){ t.style.display = "none"; }, 3200);
-}
-function api(method, path, body){
-  var opts = { method: method, headers: {} };
-  if(body !== undefined){ opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
-  return fetch(path, opts);
-}
-function kvToObj(txt){
-  var o = {};
-  String(txt || "").split("\n").forEach(function(line){
-    var l = line.trim();
-    if(!l || l.charAt(0) === "#") return;
-    var i = l.indexOf("="); if(i < 0) return;
-    o[l.slice(0, i).trim()] = l.slice(i + 1).trim();
-  });
-  return o;
-}
-function showTab(t){
-  var btns = document.querySelectorAll("nav button");
-  for(var k=0;k<btns.length;k++){ btns[k].classList.toggle("active", btns[k].dataset.tab === t); }
-  var tabs = document.querySelectorAll(".tab");
-  for(var m=0;m<tabs.length;m++){ tabs[m].classList.remove("active"); }
-  document.getElementById(t).classList.add("active");
-}
-function escapeHtml(s){
-  s = (s == null) ? "" : String(s);
-  return s.replace(/[&<>"]/g, function(c){
-    return ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[c];
-  });
-}
-/* All cells go through ONE of these three builders -> no malformed <td> can exist. */
-function cell(v){
-  if(v === null || v === undefined || v === "") return "\u2014";
-  return String(v);
-}
-function c(v){ return "<td>" + cell(v) + "</td>"; }
-function combinedCell(a,b){ return "<td>" + cell(a) + "/" + cell(b) + "</td>"; }
-function btnCell(inner){ return "<td>" + inner + "</td>"; }
-function okBad(v){
-  return v === 0 ? '<span class="pill bad">fail</span>' : '<span class="pill ok">ok</span>';
-}
-function fmtDate(ts){
-  if(!ts) return "\u2014";
-  try { return new Date(ts*1000).toLocaleString(); } catch(e){ return ts; }
-}
-
-/* ---------- COOKBOOKS ---------- */
-function doCopy(){
-  var source_command = document.getElementById("srcCmd").value.trim();
-  var target_base_model = document.getElementById("targetModel").value.trim();
-  if(!source_command || !target_base_model){ toast("Provide a source command and target base model.", "err"); return; }
-  var edits = {};
-  String(document.getElementById("edits").value || "").split("\n").forEach(function(line){
-    var l = line.trim();
-    if(!l) return;
-    var key, val;
-    var ci = l.indexOf(":");
-    if(ci >= 0){ key = l.slice(0, ci).trim(); val = l.slice(ci + 1).trim(); }
-    else { var p = l.split("="); key = p[0].trim(); val = p.slice(1).join("=").trim(); }
-    if(key === "model") edits["model"] = val;
-    else if(key === "port") edits["port"] = val;
-  });
-  api("POST","/api/copy-profile",{ source_command: source_command, target_base_model: target_base_model, edits: edits, copied_from: "odysseus" })
-    .then(function(r){ return r.json().then(function(j){ return {r:r,j:j}; }); })
-    .then(function(o){
-      var j = o.j;
-      if(!o.r.ok || j.error){ toast((j.error)||"copy failed","err"); return; }
-      document.getElementById("genCmd").textContent = j.command;
-      document.getElementById("copyResult").style.display = "block";
-      window.__lastCopy = j;
-      toast("Command generated.", "ok");
-    })
-    .catch(function(e){ toast(String(e), "err"); });
-}
-function loadIntoPg(){
-  if(!window.__lastCopy || !window.__lastCopy.command){ toast("Generate a command first.", "err"); return; }
-  document.getElementById("pgCmd").value = window.__lastCopy.command;
-  document.getElementById("pgBase").value = window.__lastCopy.base_model || "";
-  showTab("playground");
-  toast("Loaded into playground.", "ok");
-}
-function saveProfile(){
-  if(!window.__lastCopy || !window.__lastCopy.command){ toast("Generate a command first.", "err"); return; }
-  var name = prompt("Profile name:", window.__lastCopy.base_model || "profile");
-  if(!name) return;
-  var list = JSON.parse(localStorage.getItem("profiles") || "[]");
-  list.push({ id: Date.now(), name: name, base_model: window.__lastCopy.base_model, copied_from: window.__lastCopy.copied_from, command: window.__lastCopy.command });
-  localStorage.setItem("profiles", JSON.stringify(list));
-  window.PROFILES = list;
-  toast("Saved to browser profiles.", "ok");
-  loadProfiles();
-}
-function loadProfiles(){
-  var raw = localStorage.getItem("profiles") || "[]";
-  try { window.PROFILES = JSON.parse(raw); } catch(e){ window.PROFILES = []; }
-  var tb = document.getElementById("profilesTable").querySelector("tbody");
-  tb.innerHTML = "";
-  if(!window.PROFILES.length){ tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">No saved profiles yet.</td></tr>'; return; }
-  tb.innerHTML = window.PROFILES.map(function(p){
-    return ["<td>"+escapeHtml(p.name)+"</td>",
-            c(p.base_model||""),
-            '<td style="color:var(--muted)">'+escapeHtml(p.copied_from||"")+"</td>",
-            '<code>'+escapeHtml(p.command||"")+"</code>",
-            btnCell('<button onclick="openProfile(' + p.id + ')">Playground</button> <button onclick="deleteProfile(' + p.id + '">Del</button>')].join("");
-  }).join("");
-}
-function openProfile(id){
-  var p = null;
-  (window.PROFILES||[]).forEach(function(x){ if(x.id === id) p = x; });
-  if(!p) return;
-  document.getElementById("pgCmd").value = p.command || "";
-  document.getElementById("pgBase").value = p.base_model || "";
-  showTab("playground");
-  toast("Loaded profile into playground.", "ok");
-}
-function deleteProfile(id){
-  window.PROFILES = (window.PROFILES||[]).filter(function(x){ return x.id !== id; });
-  localStorage.setItem("profiles", JSON.stringify(window.PROFILES));
-  loadProfiles();
-}
-
-/* ---------- CATALOG ---------- */
-function addMtp(){
-  var base = document.getElementById("mtp.base").value.trim();
-  var hf = document.getElementById("mtp.hf").value.trim();
-  var path = document.getElementById("mtp.path").value.trim();
-  if(!base || !path){ toast("base model + file path required for MTP", "err"); return; }
-  api("POST","/api/mtps",{ base_model: base, hf_repo: hf, file_path: path })
-    .then(function(r){ return r.json().then(function(j){ return {r:r,j:j}; }); })
-    .then(function(o){
-      if(o.r.ok){
-        toast("MTP added.", "ok");
-        ["mtp.base","mtp.hf","mtp.path"].forEach(function(id){ document.getElementById(id).value=""; });
-        loadCatalog();
-      } else toast((o.j && o.j.error) || "add failed", "err");
-    })
-    .catch(function(e){ toast(String(e), "err"); });
-}
-function addMm(){
-  var base = document.getElementById("mm.base").value.trim();
-  var hf = document.getElementById("mm.hf").value.trim();
-  var path = document.getElementById("mm.path").value.trim();
-  if(!base || !path){ toast("base model + file path required", "err"); return; }
-  api("POST","/api/mmjogs",{ base_model: base, type: document.getElementById("mm.type").value, hf_repo: hf, file_path: path })
-    .then(function(r){ return r.json().then(function(j){ return {r:r,j:j}; }); })
-    .then(function(o){
-      if(o.r.ok){
-        toast("Vision file added.", "ok");
-        ["mm.base","mm.hf","mm.path"].forEach(function(id){ document.getElementById(id).value=""; });
-        loadCatalog();
-      } else toast((o.j && o.j.error) || "add failed", "err");
-    })
-    .catch(function(e){ toast(String(e), "err"); });
-}
-function delMtp(id){ api("DELETE","/api/mpps/"+id).then(loadCatalog); }
-function delMM(id){ api("DELETE","/api/mmps/"+id).then(loadCatalog); }
-function loadCatalog(){
-  Promise.all([ api("GET","/api/mtps"), api("GET","/api/mmjogs") ])
-    .then(function(rs){ return Promise.all([ rs[0].json(), rs[1].json() ]); })
-    .then(function(js){
-      var tb = document.getElementById("mtpTable").querySelector("tbody");
-      tb.innerHTML = "";
-      (js[0].mtps || []).forEach(function(m){
-        var tr = document.createElement("tr");
-        tr.innerHTML = [c(m.base_model||""), c(m.name||""), c(m.hf_repo||""), '<code>'+escapeHtml(m.file_path||"")+"</code>",
-          btnCell('<button onclick="delMtp('+m.id+')">Del</button>')].join("");
-        tb.appendChild(tr);
-      });
-      var mb = document.getElementById("mmTable").querySelector("tbody");
-      mb.innerHTML = "";
-      (js[1].mmjogs || []).forEach(function(m){
-        var tr = document.createElement("tr");
-        tr.innerHTML = [c(m.base_model||""), c(m.name||""), '<td><span class="pill">'+escapeHtml(m.type||"mmjog")+"</span></td>", '<code>'+escapeHtml(m.file_path||"")+"</code>",
-          btnCell('<button onclick="delMM('+m.id+')">Del</button>')].join("");
-        mb.appendChild(tr);
-      });
-    })
-    .catch(function(e){ toast(String(e), "err"); });
-}
-
-/* ---------- PLAYGROUND ---------- */
-function launch(){
-  var command = document.getElementById("pgCmd").value.trim();
-  if(!command){ toast("A command is required to launch.", "err"); return; }
-  var base = document.getElementById("pgBase").value.trim() || "unknown";
-  var env = kvToObj(document.getElementById("pgEnv").value);
-  var n_predict = parseInt(document.getElementById("pgN").value || "512", 10);
-  api("POST","/api/launch",{ command: command, base_model: base, env_vars: env, n_predict: n_predict, background: true })
-    .then(function(r){ return r.json().then(function(j){ return {r:r,j:j}; }); })
-    .then(function(o){
-      var j = o.j;
-      if(!o.r.ok || !j.ok){ toast((j.error)||"launch failed","err"); return; }
-      currentRunId = j.run_id;
-      document.getElementById("runBadge").innerHTML = '<span class="status-dot dot-on"></span>running';
-      document.getElementById("runInfo").textContent = "run " + j.run_id + (j.log_path ? (" \u00b7 "+j.log_path) : "");
-      document.getElementById("stopBtn").disabled = false;
-      onLogSelect();
-      startAuto();
-    })
-    .catch(function(e){ toast(String(e), "err"); });
-}
-function stopRun(){
-  if(!currentRunId) return;
-  api("POST","/api/stop/"+currentRunId).then(function(r){ return r.json().then(function(j){ return {r:r,j:j}; }); })
-    .then(function(o){
-      document.getElementById("runBadge").innerHTML = '<span class="status-dot dot-off"></span>' + ((o.j && o.j.stopped) ? "stopped" : "unknown");
-      document.getElementById("stopBtn").disabled = true;
-      stopAuto();
-      toast(((o.j&&o.j.stopped)?"Stopped run.":"Stop request failed."), "warn");
-    })
-    .catch(function(e){ toast(String(e), "err"); });
-}
-function statusCheck(){
-  if(!currentRunId) return;
-  api("GET","/api/status/"+currentRunId).then(function(r){ return r.json(); }).then(function(s){
-    var badge = document.getElementById("runBadge");
-    if(s.running){
-      badge.innerHTML = '<span class="status-dot dot-on"></span>running';
-    } else {
-      badge.innerHTML += ' <span class="pill ok">exit '+s.exit_code+'</span>';
-    }
-  }).catch(function(){ /* ignore */ });
-}
-function startAuto(){
-  stopAuto();
-  autoTimer = setInterval(function(){
-    statusCheck();
-    if(document.getElementById("autoPoll").checked) refreshLogs();
-  }, 1500);
-}
-function stopAuto(){ if(autoTimer){ clearInterval(autoTimer); autoTimer = null; } }
-function onLogSelect(){
-  currentRunId = document.getElementById("logSelect").value || null;
-  refreshLogs();
-}
-
-/* ---------- RUN LIST / PERF ---------- */
-function refreshLogs(){
-  if(currentRunId){
-    api("GET","/api/logs/"+currentRunId).then(function(r){ return r.text(); })
-      .then(function(txt){ document.getElementById("liveLog").textContent = txt.trim() || "(no output captured yet \u2014 process may still be starting or produced nothing)"; })
-      .catch(function(e){ toast(String(e),"err"); });
-  } else { loadRuns(); }
-}
-function buildRunRows(runs){
-  __RUNS = runs.slice();
-  if(!runs.length) return '<tr><td colspan="17" style="color:var(--muted)">No runs recorded yet. Launch a profile in the Playground.</td></tr>';
-  return runs.map(function(r, i){
-    var dateStr = fmtDate(r.created_at);
-    var mtpOn = !!(r.mtp_file);
-    var mmOn = !!(r.mmjog_file);
-    return "<tr>" + [
-      c(String((r.run_id||"").slice(0,26))),
-      c(r.base_model||""),
-      '<td style="color:var(--muted)">'+dateStr+"</td>",
-      "<td>"+okBad(r.success)+"</td>",
-      c(r.tokens_per_second),
-      c(r.prompt_per_second),
-      combinedCell(r.input_tokens, r.output_tokens),
-      c(r.duration_ms),
-      c(r.gpu_util_real),
-      c(r.mem_used_gb),
-      c(r.backend||""),
-      c(r.load_mode),
-      c(r.n_gpu_layers),
-      c(r.mmap),
-      c(r.flash_attention),
-      "<td>" + (mtpOn ? '<span class="pill ok">yes</span>' : "\u2014") + "</td>",
-      "<td>" + (mmOn ? '<span class="pill ok">yes</span>' : "\u2014") + "</td>",
-      btnCell('<button onclick="viewById(' + i + ')">View</button>')
-    ].join("") + "</tr>";
-  }).join("");
-}
-function viewById(i){
-  var r = __RUNS[i];
-  if(!r) return;
-  currentRunId = String(r.run_id);
-  var sel = document.getElementById("logSelect");
-  for(var k=0;k<sel.options.length;k++){
-    if(String(sel.options[k].value) === String(r.run_id)){ sel.selectedIndex = k; break; }
-  }
-  showTab("logs");
-  viewSelected();
-}
-function loadRuns(){
-  Promise.all([ api("GET","/api/analytics/runs?limit=500"), api("GET","/api/analytics/best-by-base") ])
-    .then(function(rs){ return Promise.all([ rs[0].json(), rs[1].json() ]); })
-    .then(function(js){
-      var runsJ = js[0].runs || [];
-      var bestRows = js[1].rows || [];
-      document.getElementById("perfTable").querySelector("tbody").innerHTML = buildRunRows(runsJ);
-
-      var bb = document.getElementById("bestTable").querySelector("tbody");
-      if(!bestRows.length){ bb.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No runs yet.</td></tr>'; }
-      else {
-        bb.innerHTML = bestRows.map(function(b){
-          return "<tr>" + c(b.base_model||"") +
-            "<td><strong>"+cell(b.best_tokens_per_second)+"</strong> tok/s</td>" +
-            "<td>"+cell(b.best_prompt_per_second)+"/s</td>" +
-            c(b.n_gpu_layers) + "</tr>";
-        }).join("");
-      }
-      var sel = document.getElementById("logListSel"), pl = document.getElementById("logSelect");
-      sel.innerHTML = ""; pl.innerHTML = "";
-      runsJ.forEach(function(r){
-        var o = document.createElement("option");
-        o.value = r.run_id;
-        o.textContent = String((r.run_id||"").slice(0,32));
-        sel.appendChild(o);
-      });
-      if(!pl.children.length){ pl.innerHTML = '<option value="">no runs yet</option>'; }
-    })
-    .catch(function(e){ toast(String(e), "err"); });
-}
-function openRun(rid){
-  currentRunId = rid;
-  document.getElementById("logSelect").value = rid;
-  showTab("logs");
-  viewSelected();
-}
-
-/* ---------- ENV SCALE TABLE ---------- */
-function loadEnv(){
-  api("GET","/api/analytics/env-table").then(function(r){ return r.json(); }).then(function(j){
-    var rows = j.env_rows || [];
-    var tb = document.getElementById("envTable").querySelector("tbody");
-    if(!rows.length){ tb.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">No env-var history yet.</td></tr>'; return; }
-    tb.innerHTML = rows.map(function(e){
-      return "<tr>" + [
-        '<td><code>' + escapeHtml(e.flag) + '</code></td>',
-        c(e.category||""),
-        '<td style="color:var(--muted)">'+escapeHtml(e.description||"")+"</td>",
-        c(e.recommended),
-        c(e.last_run_for),
-        c(e.last_tps),
-        c(e.last_pps),
-        '<td style="color:var(--muted)">'+fmtDate(e.last_run_at)+"</td>"
-      ].join("") + "</tr>";
-    }).join("");
-  }).catch(function(e){ toast(String(e), "err"); });
-}
-
-/* ---------- LOGS VIEWER ---------- */
-function viewSelected(){
-  var rid = document.getElementById("logListSel").value;
-  if(!rid){ document.getElementById("fullLog").textContent = "No run selected."; return; }
-  currentRunId = rid;
-  api("GET","/api/logs/"+rid).then(function(r){ return r.text(); })
-    .then(function(txt){ document.getElementById("fullLog").textContent = txt || "(empty)"; })
-    .catch(function(e){ document.getElementById("fullLog").textContent = "Error: "+e; });
-}
-function loadLogs(){ loadRuns(); }
-
-/* ---------- INIT ---------- */
-(function init(){
-  loadProfiles();
-  loadCatalog();
-  loadRuns();
-  loadEnv();
-})();
-</script>
+<datalist id="modelList"></datalist>
+<datalist id="list-mmproj"></datalist>
+<datalist id="list-mtp"></datalist>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="/static/app.js"></script>
 </body>
 </html>

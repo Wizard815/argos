@@ -1,360 +1,148 @@
-"""Orchestration layer: profile copy/paste, launch/run lifecycle, log analysis,
-analytics aggregation, and the curated env-var / launch-command reference table.
-
-Works against :mod:`src.db.Store`, :mod:`src.integrations` and
-:mod:`src.log_analyzer`. Pure Python so it can be unit-tested without a GPU or a
-running llama-swap / Odysseus instance.
-"""
+"""Turning launches into perf-sheet rows, and the analytics built on them."""
 from __future__ import annotations
 
-import os
-import signal
-import subprocess
 import time
-from dataclasses import asdict, dataclass, field
 from typing import Optional
 
-from .db import Store
-from .integrations.command_parser import parse_launch_command
-from .log_analyzer import ParsedRun, parse_log_text
+from .command import guess_base_model, parse_command
+from .db import Store, new_id
+from .log_analyzer import parse_log_text
+from .runner import Runner
 
-
-# Curated env-var reference library. Each entry becomes one row in the big
-# "env vars + launch commands + scale + last-used performance" table. The
-# ``last_*`` fields are filled by record_run() from actual runs so you never
-# have to guess which flag worked best for your hardware again.
+# Reference rows for the Env Flags view. Every entry is a real variable read by
+# llama.cpp/ggml or the GPU runtime; usage columns fill in from recorded runs.
 ENV_FLAG_LIBRARY: list[dict] = [
-    {"flag": "LLAMA_MMAP", "category": "load-mode",
-     "description": "Memory-map the gguf instead of loading fully into VRAM.",
-     "recommended": "1 (default); use 0 if the model OOMs or mmap fails"},
-    {"flag": "GGML_CUDA_MEM_ALLOC", "category": "gpu-vram",
-     "description": "VRAM allocation policy (CUDA). 0=GPU mem pool, 1=default.",
-     "recommended": "0 for smoother multi-model layouts"},
+    {"flag": "CUDA_VISIBLE_DEVICES", "category": "gpu-select",
+     "description": "Which NVIDIA GPUs the process can see (comma-separated indices or UUIDs).",
+     "recommended": "Pin each server to its own GPU(s) when running several models."},
+    {"flag": "CUDA_DEVICE_ORDER", "category": "gpu-select",
+     "description": "Order CUDA enumerates devices in.",
+     "recommended": "PCI_BUS_ID so indices match nvidia-smi."},
+    {"flag": "GGML_CUDA_ENABLE_UNIFIED_MEMORY", "category": "gpu-memory",
+     "description": "Let the CUDA backend spill into system RAM instead of failing to allocate (Linux).",
+     "recommended": "1 only when a model barely does not fit; it is much slower than VRAM."},
+    {"flag": "GGML_CUDA_NO_PINNED", "category": "gpu-memory",
+     "description": "Disable pinned host memory buffers in the CUDA backend.",
+     "recommended": "1 if pinned allocations fail or starve the host of RAM."},
+    {"flag": "GGML_CUDA_DISABLE_GRAPHS", "category": "gpu-scheduling",
+     "description": "Turn off CUDA graphs for token generation.",
+     "recommended": "Leave unset; set to 1 when debugging crashes or odd slowdowns."},
     {"flag": "HIP_VISIBLE_DEVICES", "category": "gpu-select",
-     "description": "Constrain llama-server to specific ROCm GPU index(es).",
-     "recommended": "0 on single-GPU hosts"},
-    {"flag": "NVIDIA_VISIBLE_DEVICES", "category": "gpu-select",
-     "description": "Constrain llama.cpp CUDA backend to specific GPU(s).",
-     "recommended": "ALL / 0 depending on host"},
+     "description": "Which AMD GPUs the ROCm/HIP backend can see.",
+     "recommended": "0 on single-GPU hosts with an iGPU, to skip the iGPU."},
+    {"flag": "ROCR_VISIBLE_DEVICES", "category": "gpu-select",
+     "description": "Device filter applied by the ROCm runtime itself (below HIP).",
+     "recommended": "Use instead of HIP_VISIBLE_DEVICES inside containers."},
     {"flag": "HSA_OVERRIDE_GFX_VERSION", "category": "amd-tuning",
-     "description": "Force an AMD GFX target when auto-detection is wrong.",
-     "recommended": "e.g. '9.0.0' for RDNA3; only set if kernels miscompile"},
-    {"flag": "LLAMA_ENABLE_MTP_OPT", "category": "mtp-opt",
-     "description": "Enable the MTP (multi-token prediction) fast-path opt.",
-     "recommended": "1 when a matching .mtp file is supplied via --mtp"},
-    {"flag": "GGML_MMAP_TIMEOUT", "category": "load-mode",
-     "description": "Timeout (ms) for mmap mapping before falling back.",
-     "recommended": "5000"},
-    {"flag": "GPU_MAX_QUEUES", "category": "amd-tuning",
-     "description": "Number of ROCm compute queues (amdhip64).",
-     "recommended": "Set per GPU in the ROCm docs; often 1-8"},
-    {"flag": "GPU_MAX_HW_QUEUES", "category": "amd-tuning",
-     "description": "Hardware queues submitted by llama.cpp to the GPU.",
-     "recommended": "Match or cap relative to GPU_MAX_QUEUES"},
-    {"flag": "HSA_FORCE_FINE_GRAIN_PCIE", "category": "amd-tuning",
-     "description": "Force fine-grained PCIe atomics for host/device sharing.",
-     "recommended": "1 if you see stability issues with unified memory"},
-    {"flag": "CUBLAS_WORKSPACE_CONFIG", "category": "nv-tuning",
-     "description": "cuBLAS workspace sizing mode (e.g. ':4096:8').",
-     "recommended": "':16M:8' for large batched prompt evals"},
-    {"flag": "GGML_SCHED_SYNC_STALL", "category": "gpu-scheduling",
-     "description": "Synchronise scheduler stalls instead of dropping them.",
-     "recommended": "1 to reduce tail-latency spikes"},
+     "description": "Make ROCm treat the GPU as a supported gfx target.",
+     "recommended": "10.3.0 for RDNA2, 11.0.0 for RDNA3 consumer cards ROCm does not list."},
+    {"flag": "HSA_ENABLE_SDMA", "category": "amd-tuning",
+     "description": "Use SDMA engines for host/device copies.",
+     "recommended": "0 if you see hangs or corrupted output on some APUs/boards."},
+    {"flag": "GGML_VK_VISIBLE_DEVICES", "category": "gpu-select",
+     "description": "Which Vulkan devices the Vulkan backend uses.",
+     "recommended": "Index list from vulkaninfo; skip software/iGPU devices."},
+    {"flag": "LLAMA_ARG_CTX_SIZE", "category": "server-args",
+     "description": "Same as -c/--ctx-size; every llama-server flag has a LLAMA_ARG_* twin.",
+     "recommended": "Use flags in the command instead unless a wrapper sets args by env."},
+    {"flag": "LLAMA_ARG_N_GPU_LAYERS", "category": "server-args",
+     "description": "Same as -ngl/--n-gpu-layers.",
+     "recommended": "A command-line flag wins over the env var."},
+    {"flag": "LLAMA_CACHE", "category": "downloads",
+     "description": "Directory where -hf/--hf-repo downloads are cached.",
+     "recommended": "Point at a big, persistent volume in containers."},
+    {"flag": "HF_TOKEN", "category": "downloads",
+     "description": "Hugging Face token for gated or private repos with -hf.",
+     "recommended": "Set in the environment, not in saved profiles."},
 ]
 
 
-@dataclass
-class LaunchResult:
-    run_id: str
-    proc: Optional[subprocess.Popen] = None
-    log_path: str = ""
-    started_at: float = 0.0
-    ok: bool = False
-    error: str = ""
+class Recorder:
+    """Stores the result of a benchmark (or the numbers found in a log) as a run row."""
 
-    def to_dict(self):
-        # Build manually so we never deep-copy a running Popen (its lock is unpicklable).
-        d = {k: getattr(self, k) for k in ("run_id", "log_path", "started_at", "ok", "error")}
-        d["running"] = bool(self.proc) and self.proc.poll() is None
-        return d
-
-
-@dataclass
-class RunRecord:
-    """A recorded test of one launch command against one model."""
-    base_model: str
-    gguf_path: str = ""
-    launch_command: str = ""
-    port: Optional[int] = None
-    backend: str = "llama.cpp"
-    gpu_layers: int = -1
-    n_ctx: int = 4096
-    load_mode: str = ""
-    kv_size: str = ""
-    mmap: int = 1
-    flash_attention: bool = False
-    env_vars: dict = field(default_factory=dict)
-    tokens_per_second: float = 0.0
-    prompt_per_second: float = 0.0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_tokens: int = 0
-    draft_tokens: int = 0
-    draft_acc: float = 0.0
-    duration_ms: int = 0
-    gpu_util: Optional[float] = None
-    mem_used_gb: Optional[float] = None
-    temp_c: Optional[float] = None
-    success: bool = True
-    note: str = ""
-
-    def to_dict(self):
-        return asdict(self)
-
-
-def _new_profile_id() -> str:
-    return f"prof-{int(time.time()*1000)}-{os.urandom(2).hex()}"
-
-
-def _base_to_id(base_model: str) -> str:
-    return base_model.split("/")[-1] if "/" in base_model else base_model
-
-
-# Canonical directory for captured run logs / analytics input.
-RUNS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "runs")
-
-class ProfileService:
-    """Copy/paste launch profiles between models + register model files."""
-
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, runner: Runner):
         self.store = store
+        self.runner = runner
 
-    def copy_profile(
-        self, source_cmd: str, target_model_id: str,
-        *, edits: Optional[dict] = None, name: str = "", copied_from: str = "",
-    ) -> dict:
-        """Return a new LaunchCommand built from ``source_cmd`` retargeted at
-        ``target_model_id``. Only fields named in ``edits`` change; every other
-        flag (flash-attn, mmproj, mtp, env vars) carries over verbatim. This is
-        the "copy from one model, paste to another with info fixed" flow.
-        """
-        src = parse_launch_command(source_cmd)
-        edits = edits or {}
-        flag_map = {
-            "model": "model", "port": "port", "n-gpu-layers": "n-gpu-layers",
-            "ctx-size": "ctx-size", "n-batch": "n-batch", "n-ubatch": "n-ubatch",
-            "n-threads": "n-threads", "load-mode": "load-mode",
-            "kv-size-tokens": "kv-size-tokens",
-        }
-        overrides = {flag_map.get(k, k): v for k, v in edits.items() if v is not None}
-        new_cmd = src.clone_with(**overrides)
-        return {
-            "profile_id": _new_profile_id(),
-            "name": name or f"{target_model_id}.{src.model.split('/')[-1]}",
-            "source_model": copied_from or "",
-            "launch_command": new_cmd.to_string(),
-            "base_model": target_model_id,
-            "copied_from": copied_from,
-            "env_json": dict(src.env_vars),
-            "flags_json": list(new_cmd.args),
-        }
-
-    def add_mtp(self, base_model: str, *, hf_repo: str = "", file_path: str = "",
-                name: str = "", notes: str = "") -> int:
-        return self.store.add_mtp({
-            "model_id": _base_to_id(base_model),
-            "name": name or os.path.basename(hf_repo or file_path or "mtp"),
-            "hf_repo": hf_repo, "file_path": file_path, "base_model": base_model, "notes": notes})
-
-    def add_mmjog(self, base_model: str, *, type_: str = "mmjog", hf_repo: str = "",
-                  file_path: str = "", modalities: str = "image", name: str = "", notes: str = "") -> int:
-        return self.store.add_mmjog({
-            "model_id": _base_to_id(base_model),
-            "name": name or os.path.basename(hf_repo or file_path or "mmjog"),
-            "type": type_, "hf_repo": hf_repo, "file_path": file_path,
-            "base_model": base_model, "modalities": modalities, "notes": notes})
-
-
-__all__ = ["ProfileService", "RunRecord", "LaunchResult", "ENV_FLAG_LIBRARY"]
-
-
-# --------------------------------------------------------------------------- #
-# Launch / run lifecycle
-# --------------------------------------------------------------------------- #
-import shlex as _shlex
-
-
-def _shlex_split(s: str) -> list[str]:
-    try:
-        return _shlex.split(s)
-    except ValueError:
-        return s.split()
-
-
-def _new_run_id() -> str:
-    return f"run-{int(time.time()*1000)}-{os.urandom(2).hex()}"
-
-
-class LaunchService:
-    """Spawn llama-server (or any command) as a background process and capture
-    its log so we can parse performance back off the real output."""
-
-    def __init__(self, store: Store, work_dir: Optional[str] = None):
-        self.store = store
-        self.work_dir = work_dir or RUNS_DIR
-        os.makedirs(self.work_dir, exist_ok=True)
-        self._active: dict[str, LaunchResult] = {}
-
-    def launch(self, record: RunRecord, *, background: bool = True,
-               n_predict: int = 512) -> LaunchResult:
-        cmd = record.launch_command
-        lc = parse_launch_command(cmd)
-        run_id = _new_run_id()
-        log_path = os.path.join(self.work_dir, f"{run_id}.log")
-        env = os.environ.copy()
-        env.update({k: str(v) for k, v in (record.env_vars or {}).items()})
-        import multiprocessing
-        if not any(a.startswith("--n-threads") for a in lc.args):
-            lc.args += ["--n-threads", str(multiprocessing.cpu_count())]
-        tokens = [lc.program] + list(lc.args)
-        result = LaunchResult(run_id=run_id, log_path=log_path, started_at=time.time(), ok=True)
-        try:
-            proc = subprocess.Popen(
-                tokens, stdout=open(log_path, "w"), stderr=subprocess.STDOUT,
-                env=env, start_new_session=True,
-            )
-        except Exception as exc:
-            result.ok = False
-            result.error = str(exc)
-            self._active[run_id] = result
-            return result
-        result.proc = proc
-        self._active[run_id] = result
-        if background:
-            return result
-        try:
-            proc.wait(timeout=n_predict * 5 + 30)
-        except subprocess.TimeoutExpired:
-            pass
-        return result
-
-    def stop(self, run_id: str) -> bool:
-        """Terminate the process group for ``run_id`` (SIGTERM to the leader).
-
-        The Popen handle is retained so callers can still ``poll()`` it and see
-        the exit code once the child dies; only the live pid is cleared because
-        the kernel has already taken ownership of that pgid.
-        """
-        res = self._active.get(run_id)
-        if not res or not res.proc:
-            return False
-        try:
-            os.killpg(os.getpgid(res.proc.pid), signal.SIGTERM)
-        except Exception:
-            # Fall back to signalling just the leader pid.
-            try:
-                res.proc.terminate()
-            except Exception:
-                pass
-        # Keep proc so status_run/poll can observe termination.
-        return True
-
-    def read_log(self, run_id: str) -> str:
-        res = self._active.get(run_id)
-        path = (res.log_path if res and res.log_path
-                else os.path.join(self.work_dir, f"{run_id}.log"))
-        try:
-            with open(path, encoding="utf-8", errors="ignore") as f:
-                return f.read()
-        except OSError:
-            return ""
-
-
-class LogAnalysisService:
-    """Parse a captured log file into perf stats for a recorded run."""
-
-    def __init__(self, store: Store):
-        self.store = store
-
-    def analyze_file(self, log_path: str) -> ParsedRun:
-        try:
-            with open(log_path, encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-        except OSError:
-            text = ""
-        return parse_log_text(text)
-
-    def analyze_string(self, text: str) -> ParsedRun:
-        return parse_log_text(text or "")
-
-    def record_run(self, run_id: str, base_model: str, launch_command: str,
-                   *, env_vars: Optional[dict] = None, backend: str = "llama.cpp",
-                   note: str = "", source: str = "manual") -> dict:
-        path = os.path.abspath(os.path.join(RUNS_DIR, f"{run_id}.log"))
-        parsed = self.analyze_file(path)
-        rec = {
-            "run_id": run_id, "created_at": time.time(), "base_model": base_model,
-            "launch_command": launch_command, "backend": backend,
-            "tokens_per_second": parsed.tokens_per_second,
-            "prompt_per_second": parsed.prompt_per_second,
+    def record(self, launch_id: str, timings: Optional[dict] = None, note: str = "") -> dict:
+        run = self.runner.get(launch_id)
+        if run is None:
+            raise KeyError(f"no launch {launch_id} in this session")
+        parsed = parse_log_text(self.runner.read_log(launch_id) or "")
+        cmd = parse_command(run.command)
+        s = cmd.summary()
+        perf = {
             "input_tokens": parsed.input_tokens, "output_tokens": parsed.output_tokens,
-            "cache_tokens": parsed.cache_tokens, "draft_tokens": None,
-            "duration_ms": int(parsed.eval_ms + parsed.prompt_eval_ms),
-            "gpu_util_real": None, "mem_used_gb": None, "temp_c": None,
-            "note": note, "log_source": source,
-            "success": 1 if parsed.tokens_per_second > 0 else 0,
+            "prompt_ms": parsed.prompt_ms, "eval_ms": parsed.eval_ms,
+            "prompt_per_second": parsed.prompt_per_second,
+            "tokens_per_second": parsed.tokens_per_second,
+            "draft_tokens": parsed.draft_tokens or None, "draft_acc": parsed.draft_acc,
+            "mem_used_gb": round(parsed.gpu_mem_mb / 1024, 2) if parsed.gpu_mem_mb else None,
+        }
+        perf.update({k: v for k, v in (timings or {}).items() if v is not None})
+        now = time.time()
+        base_model = run.base_model or guess_base_model(s["model"]) or "unknown"
+        rec = {
+            "run_id": new_id("bench" if timings else "log"),
+            "launch_id": launch_id, "created_at": now, "base_model": base_model,
+            "profile_name": run.profile_name, "launch_command": run.command,
+            "env_json": run.env, "gguf_path": s["model"], "mtp_file": s["mtp"],
+            "mmproj_file": s["mmproj"], "draft_model": s["model_draft"], "port": run.port,
+            "backend": cmd.program.rsplit("/", 1)[-1], "gpu_layers": s["n_gpu_layers"],
+            "n_ctx": parsed.n_ctx or s["ctx_size"], "n_batch": s["batch_size"],
+            "n_ubatch": s["ubatch_size"], "n_threads": s["threads"], "n_parallel": s["parallel"],
+            "mmap": None if s["mmap"] is None else int(s["mmap"]),
+            "flash_attention": s["flash_attn"], "cache_type_k": s["cache_type_k"],
+            "cache_type_v": s["cache_type_v"], "load_ms": parsed.load_ms or None,
+            "layers_offloaded": (f"{parsed.layers_offloaded}/{parsed.layers_total}"
+                                 if parsed.layers_total else None),
+            "duration_ms": int((perf.get("prompt_ms") or 0) + (perf.get("eval_ms") or 0)),
+            "note": note or (parsed.error if not perf.get("tokens_per_second") else ""),
+            "log_source": "bench" if timings else "log",
+            "success": 1 if (perf.get("tokens_per_second") or 0) > 0 else 0,
+            **perf,
         }
         self.store.add_run(rec)
-        for k in (env_vars or {}):
-            try:
-                self.store.set_last_used(k, parsed.tokens_per_second,
-                                         parsed.prompt_per_second, time.time())
-            except Exception:
-                pass
-        return rec
+        for flag in run.env:
+            self.store.set_last_used(flag, base_model, perf.get("tokens_per_second"),
+                                     perf.get("prompt_per_second"), now)
+        return self.store.get_run(rec["run_id"])  # type: ignore[return-value]
 
 
-class AnalyticsService:
-    """Aggregate runs into the big comparison tables."""
-
+class Analytics:
     def __init__(self, store: Store):
         self.store = store
 
     def best_by_base_model(self) -> list[dict]:
-        rows = []
-        for base in {r["base_model"] for r in self.store.list_runs(limit=5000)}:
-            runs = [r for r in self.store.recorded_for(base)
-                    if r.get("tokens_per_second", 0) > 0]
-            if not runs:
+        best: dict[str, dict] = {}
+        counts: dict[str, int] = {}
+        for r in self.store.list_runs(limit=100_000):
+            base = r["base_model"]
+            counts[base] = counts.get(base, 0) + 1
+            if (r.get("tokens_per_second") or 0) <= 0:
                 continue
-            best = max(runs, key=lambda r: r["tokens_per_second"])
-            rows.append({
-                "base_model": base,
-                "best_tokens_per_second": best["tokens_per_second"],
-                "best_prompt_per_second": best["prompt_per_second"],
-                "launch_command": best["launch_command"],
-                "created_at": best["created_at"],
-                "n_gpu_layers": best.get("gpu_layers"),
-            })
-        rows.sort(key=lambda x: x["best_tokens_per_second"], reverse=True)
-        return rows
+            if base not in best or r["tokens_per_second"] > best[base]["tokens_per_second"]:
+                best[base] = r
+        rows = [{**r, "runs": counts[base]} for base, r in best.items()]
+        return sorted(rows, key=lambda r: r["tokens_per_second"], reverse=True)
 
     def env_table(self) -> list[dict]:
+        usage = {row["flag"]: row for row in self.store.list_env_flags()}
         out = []
-        existing = {row["flag"]: row for row in self.store.list_env_flags()}
         for lib in ENV_FLAG_LIBRARY:
-            flag = lib["flag"]
-            last = existing.get(flag) or {}
-            out.append({**lib, "last_run_for": last.get("last_used_for") or "",
-                        "last_tps": last.get("last_tokens_per_second"),
-                        "last_pps": last.get("last_prompt_per_second"),
-                        "last_run_at": last.get("last_run_at")})
-        for k, v in existing.items():
-            if not any(o["flag"] == k for o in out):
-                out.append({"flag": k, "category": v.get("category", ""),
-                            "description": v.get("description", ""),
-                            "recommended": v.get("recommended", "")})
+            out.append({**lib, **_usage(usage.pop(lib["flag"], {}))})
+        for flag, row in sorted(usage.items()):
+            out.append({"flag": flag, "category": row.get("category") or "seen in runs",
+                        "description": row.get("description") or "",
+                        "recommended": row.get("recommended") or "", **_usage(row)})
         return out
 
 
-__all__ += ["LaunchService", "LogAnalysisService", "AnalyticsService"]
+def _usage(row: dict) -> dict:
+    return {"last_used_for": row.get("last_used_for") or "",
+            "last_tps": row.get("last_tokens_per_second"),
+            "last_pps": row.get("last_prompt_per_second"),
+            "last_run_at": row.get("last_run_at")}
+
+
+__all__ = ["Recorder", "Analytics", "ENV_FLAG_LIBRARY"]

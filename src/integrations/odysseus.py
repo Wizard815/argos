@@ -1,124 +1,71 @@
-"""Read Odysseus' cookbook state to obtain per-model launch commands.
+"""Read launch commands out of Odysseus' cookbook state.
 
-Odysseus saves its cookbook in ``cookbook_state.json`` with this shape::
+Odysseus saves its cookbook in ``cookbook_state.json``::
 
     {
-      "tasks": [
-        {"name": "...", "sessionId": "cookbook-...", "payload": {
-            "_cmd": "llama-server --model /models/... --port 8080 ...",
-            "repo_id": "...", "port": 8080}}
-      ],
-      "presets": [
-        {"name": "fast", "label": "fast", "model": "unsloth/Qwen...",
-         "cmd": "llama-server --model /models/... --n-gpu-layers 35 ..."},
-        ...
-      ]
+      "tasks":   [{"name": "...", "sessionId": "cookbook-...",
+                   "payload": {"_cmd": "llama-server --model ...", "repo_id": "org/repo"}}],
+      "presets": [{"name": "fast", "label": "fast", "model": "org/repo",
+                   "cmd": "llama-server --model ... -ngl 99"}]
     }
 
-Both live tasks ("_cmd") and saved presets are treated as launch recipes: each one
-becomes a profile we can copy, test, and record performance for.
+Both live tasks and saved presets become importable commands. Mounting the
+file is the recommended route: Odysseus gates its HTTP API behind admin +
+loopback middleware that a separate container cannot satisfy.
 """
 from __future__ import annotations
 
 import json
 import os
-import time
-from dataclasses import dataclass, field
-from typing import Optional
-
-from .command_parser import LaunchCommand, parse_launch_command
+import urllib.request
+from typing import Any
 
 
-@dataclass
-class CookbookModel:
-    model_id: str
-    label: str
-    cmd: str
-    source: str = "task"          # 'task' or 'preset'
-    repo_id: str = ""
-    session_id: str = ""
-
-    @property
-    def command(self) -> LaunchCommand:
-        return parse_launch_command(self.cmd)
+def _read(path_or_url: str) -> Any:
+    if path_or_url.startswith(("http://", "https://")):
+        with urllib.request.urlopen(path_or_url, timeout=5) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8"))
+    with open(path_or_url, encoding="utf-8") as f:
+        return json.load(f)
 
 
-@dataclass
-class CookbookState:
-    models: list[CookbookModel] = field(default_factory=list)
+def load_cookbook_commands(path_or_url: str) -> list[dict]:
+    """Return ``[{source, kind, name, base_model, command}]``. Raises on unreadable input."""
+    data = _read(path_or_url)
+    if not isinstance(data, dict):
+        raise ValueError("cookbook state is not a JSON object")
+    out: list[dict] = []
+    for t in data.get("tasks") or []:
+        payload = (t or {}).get("payload") or {}
+        cmd = payload.get("_cmd") or ""
+        if cmd.strip():
+            repo = payload.get("repo_id") or ""
+            out.append({"source": "odysseus", "kind": "task",
+                        "name": t.get("name") or repo or "task",
+                        "base_model": repo.split("/")[-1], "command": cmd.strip()})
+    for p in data.get("presets") or []:
+        cmd = (p or {}).get("cmd") or (p or {}).get("_cmd") or ""
+        if cmd.strip():
+            repo = p.get("model") or ""
+            out.append({"source": "odysseus", "kind": "preset",
+                        "name": p.get("label") or p.get("name") or "preset",
+                        "base_model": repo.split("/")[-1], "command": cmd.strip()})
+    return out
 
-    @property
-    def unique_base_models(self) -> list[str]:
-        out, seen = [], set()
-        for m in self.models:
-            base = (m.repo_id or "").split("/")[-1] or m.model_id
-            if base not in seen:
-                seen.add(base)
-                out.append(base)
-        return out
 
-    def commands_by_base(self, base_model: str) -> list[CookbookModel]:
-        return [m for m in self.models if (m.repo_id or "").endswith(base_model)]
-
-
-def load_cookbook_state(path_or_url):
-    """Load cookbook state from a local JSON path or URL.
-
-    Recommended route is the mounted file ``cookbook_state.json`` because Odysseus
-    gates its API behind admin + loopback middleware a container cannot satisfy.
-    """
-    import urllib.request
-
-    data = None
-    src = "url" if isinstance(path_or_url, str) and ("http://" in path_or_url or "https://" in path_or_url) else "file"
+def describe(path_or_url: str) -> dict:
+    """Status block for the Integrations view."""
+    if not path_or_url:
+        return {"configured": False}
+    info: dict[str, Any] = {"configured": True, "location": path_or_url}
+    if not path_or_url.startswith(("http://", "https://")) and not os.path.exists(path_or_url):
+        return {**info, "ok": False, "error": "file not found"}
     try:
-        if src == "url":
-            with urllib.request.urlopen(path_or_url, timeout=5) as resp:  # noqa: S310
-                data = json.loads(resp.read().decode("utf-8"))
-        else:
-            p = path_or_url
-            if not os.path.exists(p):
-                return CookbookState(models=[])
-            with open(p, encoding="utf-8", errors="ignore") as f:
-                raw = f.read()
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                data = {}
-    except Exception:
-        data = {}
-    return _build_state(data)
+        info["commands"] = load_cookbook_commands(path_or_url)
+        info["ok"] = True
+    except Exception as exc:  # noqa: BLE001 - surfaced in the UI
+        info.update(ok=False, error=str(exc))
+    return info
 
 
-def _build_state(data: dict) -> CookbookState:
-    state = CookbookState()
-    tasks = data.get("tasks") or []
-    for t in tasks:
-        payload = t.get("payload") or {}
-        cmd = payload.get("_cmd")
-        if not cmd or "--model" not in cmd:
-            continue
-        state.models.append(CookbookModel(
-            model_id=t.get("id") or t.get("sessionId") or payload.get("repo_id") or cmd[:40],
-            label=t.get("name") or payload.get("repo_id") or "task",
-            cmd=cmd,
-            source="task",
-            repo_id=payload.get("repo_id") or "",
-            session_id=t.get("sessionId") or "",
-        ))
-    presets = data.get("presets") or []
-    for p in presets:
-        cmd = p.get("cmd") or p.get("_cmd")
-        if not cmd:
-            continue
-        state.models.append(CookbookModel(
-            model_id=p.get("name") or p.get("label") or cmd[:40],
-            label=p.get("label") or p.get("name") or "preset",
-            cmd=cmd,
-            source="preset",
-            repo_id=p.get("model") or "",
-        ))
-    return state
-
-
-__all__ = ["CookbookState", "CookbookModel", "load_cookbook_state"]
+__all__ = ["load_cookbook_commands", "describe"]
