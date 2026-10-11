@@ -1,0 +1,116 @@
+import time
+
+from src.db import Store
+from src.telemetry import Collector, fetch_activity, parse_nvidia_csv, read_amd_sysfs, read_llama_swap
+
+from .fakes import make_llama_swap, serve
+
+
+def write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def test_amd_sysfs(tmp_path):
+    for card, busy, used in (("card0", "37", str(6 * 2**30)), ("card1", "0", str(1 * 2**30))):
+        dev = tmp_path / card / "device"
+        write(dev / "mem_info_vram_total", str(16 * 2**30))
+        write(dev / "mem_info_vram_used", used)
+        write(dev / "gpu_busy_percent", busy)
+        write(dev / "hwmon" / "hwmon3" / "temp1_input", "61000")
+        write(dev / "hwmon" / "hwmon3" / "power1_average", "182000000")
+    write(tmp_path / "card0-DP-1" / "status", "connected")  # connectors are not GPUs
+    write(tmp_path / "card2" / "device" / "vendor", "0x8086")  # no VRAM files: skipped
+    gpus = read_amd_sysfs(str(tmp_path))
+    assert [g["gpu"] for g in gpus] == [0, 1]
+    assert gpus[0] == {"gpu": 0, "name": "AMD GPU (card0)", "util": 37.0, "mem_used_mb": 6144.0,
+                       "mem_total_mb": 16384.0, "temp_c": 61.0, "power_w": 182.0, "source": "sysfs"}
+
+
+def test_nvidia_csv():
+    rows = parse_nvidia_csv("0, NVIDIA GeForce RTX 4090, 87, 20123, 24564, 71, 301.55\n1, x, [N/A], 1, 2, 3\n")
+    assert rows == [{"gpu": 0, "name": "NVIDIA GeForce RTX 4090", "util": 87.0, "mem_used_mb": 20123.0,
+                     "mem_total_mb": 24564.0, "temp_c": 71.0, "power_w": 301.55, "source": "nvidia-smi"}]
+
+
+GPU_STATS = [
+    {"timestamp": "2026-10-11T10:00:00Z", "id": 0, "name": "MI50", "temp_c": 50, "gpu_util_pct": 10,
+     "mem_used_mb": 1000, "mem_total_mb": 32768, "power_draw_w": 90},
+    {"timestamp": "2026-10-11T10:00:05Z", "id": 0, "name": "MI50", "temp_c": 55, "gpu_util_pct": 99,
+     "mem_used_mb": 30000, "mem_total_mb": 32768, "power_draw_w": 250},
+    {"timestamp": "2026-10-11T10:00:05Z", "id": 1, "name": "MI50", "temp_c": 40, "gpu_util_pct": 0,
+     "mem_used_mb": 10, "mem_total_mb": 32768, "power_draw_w": 20},
+]
+
+
+def activity(i, model="qwen3.6-35b", tps=45.0, hour=10):
+    return {"id": i, "timestamp": f"2026-10-11T{hour}:0{i % 10}:00Z", "src": "proxy", "model": model,
+            "req_path": "/v1/chat/completions", "resp_status_code": 200 if i != 3 else 400,
+            "tokens": {"input_tokens": 100, "output_tokens": 50, "cache_tokens": 0, "draft_tokens": 0,
+                       "draft_acc_tokens": 0, "prompt_per_second": 800.0, "tokens_per_second": tps},
+            "duration_ms": 1200, "error_msg": "too long" if i == 3 else ""}
+
+
+def test_llama_swap_readers():
+    with serve(make_llama_swap(GPU_STATS, [activity(i) for i in range(1, 5)])) as url:
+        gpus = read_llama_swap(url)
+        assert [(g["gpu"], g["util"], g["mem_used_mb"]) for g in gpus] == [(0, 99, 30000), (1, 0, 10)]
+        rows = fetch_activity(url, 2)
+        assert [r["source_id"] for r in rows] == [3, 4] and rows[0]["error"] == "too long"
+
+
+def settings_for(url, source="auto"):
+    return lambda: {"telemetry": {"enabled": True, "interval_s": 15, "raw_days": 14, "source": source},
+                    "integrations": {"llama_swap_url": url}}
+
+
+def test_collector_stores_samples_activity_and_rollups(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    events = []
+    acts = [activity(i) for i in range(1, 4)]
+    with serve(make_llama_swap(GPU_STATS, acts)) as url:
+        col = Collector(store, settings_for(url), lambda *a, **k: events.append(a))
+        now = time.time()
+        col.tick(now=now - 7200)
+        col.tick(now=now)
+        assert col.last_source == "llama-swap"
+        assert len(store.list_requests()) == 3
+        acts.append(activity(4, tps=50.0))  # new request on llama-swap
+        assert col.sync_activity() == 1 and len(store.list_requests()) == 4
+        acts[:] = [activity(1, model="fresh", hour=12)]  # llama-swap's database was recreated: ids restart
+        assert col.sync_activity() == 1
+        assert {r["model"] for r in store.list_requests()} == {"qwen3.6-35b", "fresh"}
+    stats = {r["model"]: r for r in store.request_stats(0)}
+    assert stats["qwen3.6-35b"]["requests"] == 4 and stats["qwen3.6-35b"]["errors"] == 1
+    hourly = store.gpu_hourly(0)
+    assert [(h["gpu"], h["util_max"]) for h in hourly] == [(0, 99), (1, 0)]  # the older hour got rolled up
+    assert {r["gpu"] for r in store.gpu_latest()} == {0, 1}
+    store.rollup_gpu(now=now + 30 * 86400, keep_raw_s=86400)
+    assert store.gpu_summary(0) == [] and len(store.gpu_hourly(0)) == 4  # raw expired, rollups kept
+
+
+def test_collector_reports_each_failure_once(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    events = []
+    col = Collector(store, settings_for("http://127.0.0.1:9", source="llama-swap"),
+                    lambda kind, msg, **k: events.append(msg))
+    col.tick()
+    col.tick()
+    assert len([e for e in events if e.startswith("GPU sampling")]) == 1
+
+
+def test_log_routes(client, app):
+    store = app.extensions["pb"].store
+    now = time.time()
+    store.add_gpu_samples([{"ts": now - 60, "gpu": 0, "name": "g", "util": 50, "mem_used_mb": 100,
+                            "mem_total_mb": 1000, "temp_c": 60, "power_w": 100, "source": "test"}])
+    store.add_event("launch", "boom", level="error")
+    store.add_requests([{"source_id": 1, "ts": now, "model": "m", "tokens_per_second": 10.0}])
+    s = client.get("/api/gpu/series?range=1h").get_json()
+    assert s["source"] == "raw" and s["rows"][0]["util"] == 50 and s["latest"][0]["gpu"] == 0
+    assert client.get("/api/gpu/series?range=1y").get_json()["source"] == "hourly"
+    assert client.get("/api/gpu/series?range=2w").status_code == 400
+    assert client.get("/api/events?level=error").get_json()["events"][0]["message"] == "boom"
+    assert client.get("/api/events?q=nothing").get_json()["events"] == []
+    r = client.get("/api/requests?range=24h").get_json()
+    assert r["requests"][0]["model"] == "m" and r["stats"][0]["requests"] == 1

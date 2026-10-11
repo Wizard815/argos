@@ -1,0 +1,82 @@
+import os
+
+from src.command import parse_command
+from src.library import prefab_command, scan_models
+from src.settings import env_defaults
+
+PREFAB = env_defaults({})["prefab"]
+
+
+def touch(path, size=10):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"x" * size)
+
+
+def test_scan_like_modelscan(tmp_path):
+    m = tmp_path / "models"
+    touch(m / "Qwen3-8B-Q4_K_M.gguf", 100)
+    touch(m / "big" / "Mistral-UD-Q3_K_XL-00001-of-00003.gguf", 50)
+    touch(m / "big" / "Mistral-UD-Q3_K_XL-00002-of-00003.gguf", 50)
+    touch(m / "big" / "Mistral-UD-Q3_K_XL-00003-of-00003.gguf", 40)
+    touch(m / "half" / "Part-Q4_0-00001-of-00002.gguf", 5)
+    touch(m / "gemma" / "gemma-3-12b-it-Q4_K_M.gguf", 30)
+    touch(m / "gemma" / "mmproj-gemma-3-12b-Q8_0.gguf", 3)
+    touch(m / "gemma" / "mmproj-gemma-3-12b-F16.gguf", 6)
+    touch(m / "nomic-embed-text-v1.5.Q8_0.gguf", 2)
+    touch(m / "mtp-gemma-4-12b-it-q8_0.gguf", 20)
+    touch(m / ".hidden" / "skip.gguf")
+    touch(m / "notes.txt")
+    models = {x["id"]: x for x in scan_models(str(m))}
+    assert set(models) == {"qwen3-8b-q4_k_m", "mistral-ud-q3_k_xl-00001-of-00003", "part-q4_0-00001-of-00002",
+                           "gemma-3-12b-it-q4_k_m", "nomic-embed-text-v1.5.q8_0", "mtp-gemma-4-12b-it-q8_0"}
+    big = models["mistral-ud-q3_k_xl-00001-of-00003"]
+    assert (big["size"], big["shards"], big["quant"]) == (140, 3, "UD-Q3_K_XL")
+    assert models["part-q4_0-00001-of-00002"]["shards"] == -2  # second shard missing
+    gemma = models["gemma-3-12b-it-q4_k_m"]
+    assert gemma["kind"] == "vision" and os.path.basename(gemma["mmproj"][0]) == "mmproj-gemma-3-12b-F16.gguf"
+    assert models["nomic-embed-text-v1.5.q8_0"]["kind"] == "embedding"
+    assert models["mtp-gemma-4-12b-it-q8_0"]["kind"] == "mtp"
+    assert scan_models(str(tmp_path / "missing")) == []
+
+
+def test_prefabs_per_kind():
+    chat = prefab_command({"path": "/m/Qwen3-8B-Q4_K_M.gguf", "kind": "chat", "mmproj": []}, PREFAB)
+    assert chat.to_string(style="odysseus") == (
+        'llama-server --model "/m/Qwen3-8B-Q4_K_M.gguf" --host 0.0.0.0 --port 8080 -ngl 99 -c 32768 '
+        '--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --jinja')
+
+    tuned = {**PREFAB, "load_mode": "dio", "split_mode": "layer", "env": "HIP_VISIBLE_DEVICES=0\n# note",
+             "extra": "--n-cpu-moe 4", "flash_attn": "", "cache_type": ""}
+    s = prefab_command({"path": "/m/A.gguf", "kind": "chat", "mmproj": []}, tuned, port="${PORT}")
+    assert s.env == {"HIP_VISIBLE_DEVICES": "0"}
+    assert s.get("load-mode") == "dio" and s.get("split-mode") == "layer" and s.get("n-cpu-moe") == "4"
+    assert s.get("port") == "${PORT}" and s.get("flash-attn") is None
+
+    emb = prefab_command({"path": "/m/nomic-embed.gguf", "kind": "embedding", "mmproj": []}, PREFAB)
+    assert emb.get("embedding") == "" and emb.get("pooling") == "mean" and emb.get("ctx-size") == "8192"
+    assert emb.get("jinja") is None and emb.get("cache-type-k") is None
+
+    mtp = prefab_command({"path": "/m/mtp-x.gguf", "kind": "mtp", "mmproj": []}, PREFAB)
+    assert mtp.env["LLAMA_ENABLE_MTP_OPT"] == "1"
+    assert mtp.get("spec-type") == "draft-mtp" and mtp.get("spec-draft-n-max") == "3"
+
+    vis = prefab_command({"path": "/m/g.gguf", "kind": "vision", "mmproj": ["/m/mm proj.gguf"]}, PREFAB)
+    assert vis.get("mmproj") == "/m/mm proj.gguf" and vis.get("image-max-tokens") == "1024"
+    assert parse_command(vis.to_string(style="odysseus")).get("mmproj") == "/m/mm proj.gguf"
+
+
+def test_library_routes_and_profile_counts(client, app):
+    models_dir = app.extensions["pb"].settings.get("paths")["models_dir"]
+    touch(os.path.join(models_dir, "q", "Qwen3-0.6B-Q8_0.gguf"))
+    lib = client.get("/api/library").get_json()
+    assert lib["exists"] and [m["id"] for m in lib["models"]] == ["qwen3-0.6b-q8_0"]
+    path = lib["models"][0]["path"]
+    pre = client.post("/api/library/prefab", json={"path": path}).get_json()
+    assert pre["command"].startswith(f'llama-server --model "{path}" --host 0.0.0.0 --port 8080')
+    assert client.post("/api/library/prefab", json={"path": "/etc/passwd"}).status_code == 404
+    for i in range(3):
+        client.post("/api/profiles", json={"name": f"p{i}", "launch_command": pre["command"]})
+    assert client.get("/api/library").get_json()["models"][0]["profiles"] == 3
+    only = client.get("/api/profiles?model_id=qwen3-0.6b-q8_0").get_json()["profiles"]
+    assert len(only) == 3 and all(p["model_id"] == "qwen3-0.6b-q8_0" for p in only)

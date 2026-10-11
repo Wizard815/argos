@@ -34,14 +34,18 @@ FLAGS: dict[str, tuple[tuple[str, ...], str]] = {
     "parallel": (("-np", "--parallel"), "value"),
     "n-predict": (("-n", "--n-predict"), "value"),
     "flash-attn": (("-fa", "--flash-attn"), "optional"),
+    "load-mode": (("-lm", "--load-mode"), "value"),
+    "fit": (("-fit", "--fit"), "optional"),
     "mmap": (("--mmap",), "bool"),
     "no-mmap": (("--no-mmap",), "bool"),
     "mlock": (("--mlock",), "bool"),
     "cache-type-k": (("-ctk", "--cache-type-k"), "value"),
     "cache-type-v": (("-ctv", "--cache-type-v"), "value"),
     "mmproj": (("-mm", "--mmproj"), "value"),
-    "mtp": (("--mtp", "--mtp-file"), "value"),
+    "image-max-tokens": (("--image-max-tokens",), "value"),
     "model-draft": (("-md", "--model-draft"), "value"),
+    "spec-type": (("--spec-type",), "value"),
+    "spec-draft-n-max": (("--spec-draft-n-max",), "value"),
     "gpu-layers-draft": (("-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"), "value"),
     "draft-max": (("--draft-max", "--draft", "--draft-n"), "value"),
     "draft-min": (("--draft-min", "--draft-n-min"), "value"),
@@ -65,6 +69,10 @@ FLAGS: dict[str, tuple[tuple[str, ...], str]] = {
     "no-webui": (("--no-webui",), "bool"),
     "metrics": (("--metrics",), "bool"),
     "embedding": (("--embedding", "--embeddings"), "bool"),
+    "pooling": (("--pooling",), "value"),
+    "reranking": (("--reranking", "--rerank"), "bool"),
+    "reasoning-budget": (("--reasoning-budget",), "value"),
+    "chat-template-kwargs": (("--chat-template-kwargs",), "value"),
     "verbose": (("-v", "--verbose", "--log-verbose"), "bool"),
 }
 OPTIONAL_VALUES = {"on", "off", "auto", "1", "0", "true", "false", "enabled", "disabled"}
@@ -79,7 +87,14 @@ def canonical(flag: str) -> str:
     return _SPELLING.get(flag) or flag.lstrip("-")
 
 
+# How a newly added flag is written: the short forms llama-swap configs and the
+# Cookbook use for these, the long form for everything else.
+PREFERRED_SPELLING = {"n-gpu-layers": "-ngl", "ctx-size": "-c", "load-mode": "-lm"}
+
+
 def _spelling_for(name: str) -> str:
+    if name in PREFERRED_SPELLING:
+        return PREFERRED_SPELLING[name]
     if name in FLAGS:
         return next(s for s in FLAGS[name][0] if s.startswith("--"))
     return name if name.startswith("-") else f"--{name}"
@@ -116,6 +131,15 @@ class Arg:
         if self.joined:
             return [f"{self.flag}={self.value}"]
         return [self.flag, self.value]
+
+
+_PATH_FLAGS = {"model", "mmproj", "model-draft"}
+
+
+def _dquote(tok: str) -> str:
+    if any(c in tok for c in '"$`\\') or not tok:
+        return _quote(tok)
+    return f'"{tok}"'
 
 
 def _quote(tok: str) -> str:
@@ -213,10 +237,13 @@ class LaunchCommand:
             out += a.tokens()
         return out
 
-    def to_string(self, multiline: bool = False) -> str:
+    def to_string(self, multiline: bool = False, style: str = "plain") -> str:
+        """``style="odysseus"`` double-quotes file paths the way Odysseus' Cookbook does."""
         env = [f"{k}={_quote(v)}" for k, v in self.env.items()]
         head = " ".join(env + [_quote(self.program)])
-        parts = [" ".join(_quote(t) for t in a.tokens()) for a in self.args]
+        dq = style == "odysseus"
+        parts = [" ".join(_dquote(t) if dq and a.value is not None and t is a.value and a.name in _PATH_FLAGS
+                          else _quote(t) for t in a.tokens()) for a in self.args]
         if multiline and parts:
             return " \\\n  ".join([head] + parts)
         return " ".join([head] + parts)
@@ -241,8 +268,13 @@ class LaunchCommand:
             "cache_type_k": self.get("cache-type-k"),
             "cache_type_v": self.get("cache-type-v"),
             "mmproj": self.get("mmproj"),
-            "mtp": self.get("mtp"),
             "model_draft": self.get("model-draft"),
+            "spec_type": self.get("spec-type"),
+            "spec_draft_n_max": _int(self.get("spec-draft-n-max")),
+            "load_mode": self.get("load-mode"),
+            "fit": None if self.get("fit") is None else (self.get("fit") or "on"),
+            "split_mode": self.get("split-mode"),
+            "embedding": self.has("embedding"),
         }
 
     def to_dict(self) -> dict:
@@ -256,15 +288,41 @@ class LaunchCommand:
         }
 
 
+_EXPORT = re.compile(r"^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"]*\"|'[^']*'|[^\s;&]*)\s*(?:;|&&)?\s*")
+_PRINTF = re.compile(r"""\$\(\s*printf\s+(?:%s|["']%s["'])\s+(?:["']([^"']*)["']|([^\s)]+))\s*\)""")
+_SHELL_OPS = {"&&", "||", ";", "|"}
+
+
 def _clean(raw: str) -> str:
-    """Drop comment lines and join backslash line continuations."""
+    """Normalise the shell forms Odysseus writes into one plain command line.
+
+    Drops comment lines, joins backslash continuations, turns ``export K=V``
+    (own line, or ``export K=V; cmd``) into a leading ``K=V`` assignment and
+    unwraps ``$(printf %s '/path')`` -- the same translations llama-swap's
+    Odysseus integration applies.
+    """
     lines = [ln for ln in (raw or "").splitlines() if not ln.strip().startswith("#")]
-    return re.sub(r"\\[ \t]*\n", " ", "\n".join(lines)).strip()
+    text = re.sub(r"\\[ \t]*\n", " ", "\n".join(lines)).strip()
+    env = []
+    while True:
+        m = _EXPORT.match(text)
+        if not m:
+            break
+        val = m.group(2)
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        env.append(f"{m.group(1)}={shlex.quote(val)}")
+        text = text[m.end():].lstrip()
+    text = _PRINTF.sub(lambda m: m.group(1) if m.group(1) is not None else m.group(2), text)
+    return " ".join(env + [text]).strip()
 
 
 def parse_command(raw: str) -> LaunchCommand:
     """Parse a shell launch string. Raises ValueError on unbalanced quotes."""
     tokens = shlex.split(_clean(raw))
+    ops = _SHELL_OPS.intersection(tokens)
+    if ops:
+        raise ValueError(f"shell operators ({' '.join(sorted(ops))}) are not supported; use one command")
     env: dict[str, str] = {}
     i = 0
     if tokens and tokens[0] == "env":
@@ -301,6 +359,54 @@ def parse_command(raw: str) -> LaunchCommand:
     return cmd
 
 
+def swap_model_id(model_path: str) -> str:
+    """The model ID llama-swap's modelscan gives a GGUF file (its SanitizeModelID).
+
+    ``/app/models/Qwen3-8B-Q4_K_M.gguf`` -> ``qwen3-8b-q4_k_m``. Shard suffixes
+    stay, exactly as modelscan keeps them.
+    """
+    stem = re.sub(r"\.gguf$", "", (model_path or "").rstrip("/").split("/")[-1], flags=re.IGNORECASE)
+    return re.sub(r"[^a-zA-Z0-9._-]+", "-", stem.lower()).strip("-") or "model"
+
+
+_CORE = (("model", "--model"), ("host", "--host"), ("port", "--port"),
+         ("n-gpu-layers", "-ngl"), ("ctx-size", "-c"))
+
+
+def to_odysseus(cmd: LaunchCommand, port: Any = 8080, host: str = "0.0.0.0") -> LaunchCommand:
+    """Reorder into the shape Odysseus' Cookbook writes::
+
+        [ENV=..] llama-server --model "<gguf>" --host 0.0.0.0 --port N -ngl N -c N <extras>
+
+    ``--host``/``--port`` are added when missing (llama-swap health-checks the
+    port); ``-ngl``/``-c`` move to the front only when set. Every other flag
+    keeps its order and spelling. Anything that is not llama-server (a wrapper
+    script, a benchmark tool) is returned unchanged: reordering its arguments
+    could move flags in front of the wrapper's own positional arguments.
+    """
+    c = cmd.copy()
+    if not c.program.rsplit("/", 1)[-1].startswith("llama-server"):
+        return c
+    core: list[Arg] = []
+    for name, spelling in _CORE:
+        i = c._find(name)
+        if i >= 0:
+            core.append(Arg(spelling, c.args[i].value))
+        elif name == "host":
+            core.append(Arg(spelling, host))
+        elif name == "port":
+            core.append(Arg(spelling, str(port)))
+    names = {n for n, _ in _CORE}
+    lead = []  # bare positional arguments right after the program stay there
+    for a in c.args:
+        if a.flag:
+            break
+        lead.append(a)
+    rest = c.args[len(lead):]
+    c.args = lead + core + [a for a in rest if not (a.flag and a.name in names)]
+    return c
+
+
 def guess_base_model(model: str) -> str:
     """``/models/Qwen3-8B-Q4_K_M.gguf`` -> ``Qwen3-8B-Q4_K_M``; ``org/repo:Q4`` -> ``repo:Q4``."""
     name = (model or "").rstrip("/").split("/")[-1]
@@ -321,5 +427,5 @@ def to_llama_swap_yaml(name: str, cmd: LaunchCommand) -> str:
     return "\n".join(out) + "\n"
 
 
-__all__ = ["Arg", "LaunchCommand", "FLAGS", "canonical", "parse_command",
-           "guess_base_model", "to_llama_swap_yaml"]
+__all__ = ["Arg", "LaunchCommand", "FLAGS", "canonical", "parse_command", "guess_base_model",
+           "swap_model_id", "to_odysseus", "to_llama_swap_yaml"]

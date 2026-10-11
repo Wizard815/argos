@@ -36,9 +36,9 @@ def test_profiles_create_update_delete(tmp_path):
 def test_catalog(tmp_path):
     s = Store(str(tmp_path / "a.db"))
     fid = s.add_file("mmproj", "gemma", file_path="/m/mmproj-gemma.gguf")
-    s.add_file("mtp", "qwen", hf_repo="org/qwen-mtp")
+    s.add_file("draft", "qwen", hf_repo="org/qwen-draft")
     assert s.list_files("mmproj")[0]["name"] == "mmproj-gemma.gguf"
-    assert s.list_files(base_model="qwen")[0]["name"] == "qwen-mtp"
+    assert s.list_files(base_model="qwen")[0]["name"] == "qwen-draft"
     assert s.base_models() == ["gemma", "qwen"]
     with pytest.raises(sqlite3.IntegrityError):
         s.add_file("lora", "x", file_path="y")
@@ -101,8 +101,30 @@ def test_migrates_first_version_database(tmp_path):
     assert s.get_run("new-1")["layers_offloaded"] == "33/33"
 
     files = {(f["kind"], f["base_model"], f["file_path"]) for f in s.list_files()}
-    assert files == {("mtp", "qwen", "/m/q.mtp"), ("mmproj", "g", "/m/mm.gguf")}
+    assert files == {("draft", "qwen", "/m/q.mtp"), ("mmproj", "g", "/m/mm.gguf")}
     (p,) = s.list_profiles()
     assert (p["profile_id"], p["base_model"], p["source"]) == ("prof-1", "qwen", "odysseus")
 
     Store(path)  # reopening a migrated database is a no-op
+
+
+def test_migrates_v2_catalog_mtp_rows_to_draft(tmp_path):
+    path = str(tmp_path / "v2.db")
+    con = sqlite3.connect(path)
+    con.executescript("""
+CREATE TABLE catalog_files (id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('mtp', 'mmproj')), base_model TEXT NOT NULL, name TEXT NOT NULL,
+  hf_repo TEXT DEFAULT '', file_path TEXT DEFAULT '', notes TEXT DEFAULT '', created_at REAL NOT NULL);
+INSERT INTO catalog_files (kind, base_model, name, file_path, created_at) VALUES ('mtp', 'q', 'd', '/m/d.gguf', 1);
+CREATE TABLE profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+  base_model TEXT, source TEXT DEFAULT '', launch_command TEXT NOT NULL, env_json TEXT DEFAULT '{}',
+  notes TEXT DEFAULT '', created_at REAL NOT NULL, updated_at REAL NOT NULL);
+INSERT INTO profiles (profile_id, name, launch_command, created_at, updated_at) VALUES ('p1', 'x', 'llama-server', 1, 1);
+""")
+    con.commit()
+    con.close()
+    s = Store(path)
+    assert [(f["kind"], f["file_path"]) for f in s.list_files()] == [("draft", "/m/d.gguf")]
+    p = s.get_profile("p1")
+    assert p["favorite"] == 0 and p["model_id"] is None  # new columns added
+    s.add_file("draft", "q", file_path="/m/e.gguf")

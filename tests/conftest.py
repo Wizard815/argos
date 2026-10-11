@@ -25,6 +25,10 @@ def app(tmp_path):
         "ODYSSEUS_COOKBOOK": os.path.join(FIXTURES, "cookbook_state.json"),
         "LLAMA_SWAP_CONFIG": os.path.join(FIXTURES, "llama-swap.yaml"),
         "LLAMA_SWAP_URL": "",
+        "MODELS_DIR": str(tmp_path / "models"),
+        "HF_ENDPOINT": "http://127.0.0.1:9",  # tests that need the Hub start a fake one
+        "TELEMETRY": False,
+        "BACKGROUND": False,
     })
     yield app
     app.extensions["runner"].stop_all()

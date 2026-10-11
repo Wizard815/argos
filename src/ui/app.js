@@ -27,6 +27,12 @@ const ICONS = {
   refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   "arrow-up": '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  activity: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  cog: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
+  star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
 };
 
 function icon(name) {
@@ -170,7 +176,8 @@ function settingChips(s) {
   if (k || v) out.push(`kv ${k || "f16"}/${v || "f16"}`);
   if (s.mmap === false || s.mmap === 0) out.push("no-mmap");
   if (s.mmproj || s.mmproj_file) out.push("vision");
-  if (s.mtp || s.mtp_file) out.push("mtp");
+  if (s.spec_type) out.push(s.spec_type);
+  if (s.load_mode) out.push(`lm ${s.load_mode}`);
   if (s.model_draft || s.draft_model) out.push("draft");
   return out.map((c) => h("span", { class: "chip" }, c));
 }
@@ -178,8 +185,12 @@ function settingChips(s) {
 const SAFE_TOKEN = /^[\w@%+=:,./${}-]+$/;
 const shq = (t) => (t !== "" && SAFE_TOKEN.test(t) ? t : `'${String(t).replace(/'/g, `'\\''`)}'`);
 
-/** Syntax-highlighted command from a parse result. */
+const PATH_FLAGS = new Set(["model", "mmproj", "model-draft"]);
+const dq = (t) => (t && !/["$`\\]/.test(t) ? `"${t}"` : shq(t));
+
+/** Syntax-highlighted command from a parse result (paths double-quoted in Odysseus format). */
 function renderCommand(parsed, multiline) {
+  const odysseus = parsed.format === "odysseus";
   const out = [];
   const sep = () => out.push(multiline ? h("span", { class: "tk-cont" }, " \\\n  ") : " ");
   Object.entries(parsed.env || {}).forEach(([k, v]) => out.push(h("span", { class: "tk-env" }, k), "=", h("span", { class: "tk-str" }, shq(v)), " "));
@@ -189,7 +200,8 @@ function renderCommand(parsed, multiline) {
     if (a.flag) out.push(h("span", { class: "tk-flag" }, a.flag));
     if (a.value != null) {
       if (a.flag) out.push(" ");
-      out.push(h("span", { class: /^-?\d+(\.\d+)?$/.test(a.value) ? "tk-num" : "tk-str" }, shq(a.value)));
+      const text = odysseus && PATH_FLAGS.has(a.name) ? dq(a.value) : shq(a.value);
+      out.push(h("span", { class: /^-?\d+(\.\d+)?$/.test(a.value) ? "tk-num" : "tk-str" }, text));
     }
   }
   return out;
@@ -220,20 +232,26 @@ function renderTable(table, cols, rows, state, emptyMsg) {
 const S = {
   view: "builder",
   profiles: [], models: [], catalog: [], launches: [], runs: [], best: [], env: [], integrations: null,
+  settings: null, library: null, downloads: [],
   sel: null,            // selected launch id in the playground
   lastBench: {},        // launch id -> last recorded run
 };
-const VIEWS = { builder: "Builder", profiles: "Profiles", playground: "Playground", perf: "Perf sheet", catalog: "Catalog", env: "Env flags", integrations: "Integrations" };
+const VIEWS = { builder: "Builder", models: "Models", profiles: "Profiles", playground: "Playground", perf: "Perf sheet",
+  logs: "Logs", assistant: "Assistant", env: "Env flags", integrations: "Integrations", settings: "Settings" };
 const onShow = {
+  models: () => { loadLibrary(); loadCatalog(); loadDownloads(); },
   profiles: () => renderProfiles(),
   perf: () => loadPerf(),
-  catalog: () => loadCatalog(),
+  logs: () => loadLogs(),
+  assistant: () => loadAssistant(),
   env: () => loadEnv(),
   integrations: () => loadIntegrations(),
+  settings: () => loadSettings().then(renderSettings),
   playground: () => { renderLaunches(); pollSelected(true); },
 };
 
 function show(view) {
+  if (view === "catalog") view = "models";
   if (!VIEWS[view]) view = "builder";
   S.view = view;
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
@@ -256,13 +274,17 @@ async function loadModels() {
   S.models = (await api("GET", "/api/models")).models;
   fill($("#modelList"), S.models.map((m) => h("option", { value: m })));
 }
+async function loadSettings() {
+  S.settings = (await api("GET", "/api/settings")).settings;
+  return S.settings;
+}
 async function loadCatalog() {
   S.catalog = (await api("GET", "/api/catalog")).files;
-  for (const kind of ["mmproj", "mtp"]) {
+  for (const kind of ["mmproj", "draft"]) {
     fill($(`#list-${kind}`), S.catalog.filter((f) => f.kind === kind && f.file_path)
       .map((f) => h("option", { value: f.file_path }, `${f.base_model} · ${f.name}`)));
   }
-  if (S.view === "catalog") renderCatalog();
+  if (S.view === "models") renderCatalog();
 }
 async function loadIntegrations() {
   try {
@@ -303,18 +325,23 @@ const SETTINGS = [
   { name: "host", label: "Host", flag: "--host", ph: "127.0.0.1" },
   { name: "cache-type-k", label: "KV cache K", flag: "-ctk", options: KV_TYPES },
   { name: "cache-type-v", label: "KV cache V", flag: "-ctv", options: KV_TYPES },
+  { name: "load-mode", label: "Load mode", flag: "-lm", ph: "dio", list: "list-loadmode" },
+  { name: "split-mode", label: "Split mode", flag: "-sm", options: ["", "none", "layer", "row"] },
   { name: "flash-attn", label: "Flash attention", flag: "-fa", seg: [["", "default"], ["on", "on"], ["off", "off"], ["auto", "auto"]] },
   { name: "mmap", label: "Memory map", flag: "--[no-]mmap", seg: [["", "default"], ["mmap", "on"], ["no-mmap", "off"]] },
+  { name: "fit", label: "Auto-fit", flag: "--fit", seg: [["", "default"], ["on", "on"], ["off", "off"]] },
 ];
 const FILES = [
-  { name: "model", label: "Model", flag: "-m", ph: "/models/model-Q4_K_M.gguf" },
-  { name: "mmproj", label: "Vision projector", flag: "-mm", ph: "mmproj-F16.gguf", list: "list-mmproj" },
-  { name: "mtp", label: "MTP file", flag: "--mtp", ph: "model-mtp.gguf", list: "list-mtp" },
-  { name: "model-draft", label: "Draft model", flag: "-md", ph: "small-draft-Q8_0.gguf" },
+  { name: "model", label: "Model", flag: "--model", ph: "/app/models/model-Q4_K_M.gguf", wide: true },
+  { name: "mmproj", label: "Vision projector", flag: "--mmproj", ph: "mmproj-F16.gguf", list: "list-mmproj", wide: true },
+  { name: "model-draft", label: "Draft model", flag: "-md", ph: "small-draft-Q8_0.gguf", list: "list-draft", wide: true },
+  { name: "spec-type", label: "Speculative", flag: "--spec-type", ph: "draft-mtp", list: "list-spectype" },
+  { name: "spec-draft-n-max", label: "Draft tokens", flag: "--spec-draft-n-max", type: "number", ph: "3" },
 ];
 const KEY_NAMES = new Set([...SETTINGS, ...FILES].map((f) => f.name).concat(["no-mmap"]));
 
-const B = { cmd: "", parsed: null, profileId: null, source: "", layout: "multi", queue: Promise.resolve(), controls: {} };
+const B = { cmd: "", parsed: null, profileId: null, source: "", layout: "multi", format: "odysseus",
+  queue: Promise.resolve(), controls: {} };
 
 function argValue(name) {
   const a = (B.parsed?.args || []).find((x) => x.name === name);
@@ -346,7 +373,8 @@ function setSeg(f, v) {
 
 function initBuilder() {
   fill($("#bFields"), SETTINGS.map(buildField));
-  fill($("#bFiles"), FILES.map((f) => buildField({ ...f, wide: true })));
+  fill($("#bFiles"), FILES.map(buildField));
+  document.body.append(h("datalist", { id: "list-spectype" }, h("option", { value: "draft-mtp" })));
   $("#parseBtn").onclick = () => openCommand($("#composerInput").value, { source: "pasted" });
   $("#composerInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#parseBtn").click(); });
   $("#blankBtn").onclick = () => openCommand("llama-server -m /models/model.gguf --port 8080 -ngl 99", { source: "blank" });
@@ -368,6 +396,11 @@ function initBuilder() {
     if (ok) $("#bRawCancel").click();
   };
   $$("#bLayout button").forEach((b) => (b.onclick = () => { B.layout = b.dataset.v; renderBuilder(); }));
+  $$("#bFormat button").forEach((b) => (b.onclick = async () => {
+    B.format = b.dataset.v;
+    if (B.parsed) await openCommand(B.cmd, { name: $("#bName").value, base_model: $("#bBase").value, source: B.source, profileId: B.profileId });
+    renderBuilder();
+  }));
 }
 
 function resetBuilder() {
@@ -382,7 +415,7 @@ function resetBuilder() {
 async function openCommand(command, meta = {}) {
   if (!command.trim()) { toast("Paste a command first.", "err"); return false; }
   try {
-    const res = await api("POST", "/api/command/parse", { command });
+    const res = await api("POST", "/api/command/parse", { command, format: B.format });
     Object.assign(B, { cmd: res.command, parsed: res, profileId: meta.profileId || null, source: meta.source || "" });
     $("#bName").value = meta.name || "";
     $("#bBase").value = meta.base_model || res.base_model || "";
@@ -400,7 +433,8 @@ async function openCommand(command, meta = {}) {
 function edit(edits, env, argEdits) {
   B.queue = B.queue.then(async () => {
     try {
-      const res = await api("POST", "/api/command/build", { command: B.cmd, edits, env, arg_edits: argEdits, name: $("#bName").value || $("#bBase").value });
+      const res = await api("POST", "/api/command/build", { command: B.cmd, edits, env, arg_edits: argEdits, format: B.format,
+        name: $("#bName").value || $("#bBase").value });
       B.cmd = res.command; B.parsed = res;
       if (!$("#bBase").value && res.base_model) $("#bBase").value = res.base_model;
     } catch (e) { fail(e); }
@@ -428,6 +462,7 @@ function renderBuilder() {
   });
   fill($("#bPreview"), renderCommand(p, B.layout === "multi"));
   $$("#bLayout button").forEach((b) => b.classList.toggle("on", b.dataset.v === B.layout));
+  $$("#bFormat button").forEach((b) => b.classList.toggle("on", b.dataset.v === B.format));
   const src = $("#bSource");
   src.hidden = !B.source && !B.profileId;
   src.textContent = B.profileId ? `profile${B.source && B.source !== "profile" ? " · " + B.source : ""}` : B.source;
@@ -503,12 +538,37 @@ async function showYaml() {
 
 // ── Profiles view ────────────────────────────────────────────
 const profileSort = { key: null, asc: false };
+function fillProfileModels() {
+  const sel = $("#pModel"), cur = sel.value;
+  const ids = [...new Set(S.profiles.map((p) => p.model_id || p.base_model).filter(Boolean))].sort();
+  fill(sel, h("option", { value: "" }, `All models (${S.profiles.length})`),
+    ids.map((id) => h("option", { value: id }, `${id} (${S.profiles.filter((p) => (p.model_id || p.base_model) === id).length})`)));
+  sel.value = ids.includes(cur) ? cur : "";
+}
+function showProfilesFor(modelId) {
+  show("profiles");
+  fillProfileModels();
+  $("#pModel").value = modelId;
+  renderProfiles();
+}
+async function toggleFavorite(p) {
+  try {
+    await api("POST", "/api/profiles", { ...p, favorite: !p.favorite });
+    await loadProfiles();
+  } catch (e) { fail(e); }
+}
 function renderProfiles() {
-  const q = $("#pSearch").value.trim().toLowerCase();
-  const rows = S.profiles.filter((p) => !q || `${p.name} ${p.base_model} ${p.launch_command} ${p.source}`.toLowerCase().includes(q));
+  fillProfileModels();
+  const q = $("#pSearch").value.trim().toLowerCase(), m = $("#pModel").value;
+  const rows = S.profiles.filter((p) => (!m || (p.model_id || p.base_model) === m)
+    && (!q || `${p.name} ${p.base_model} ${p.model_id} ${p.launch_command} ${p.source}`.toLowerCase().includes(q)));
   renderTable($("#pTable"), [
+    { label: "", cell: (p) => h("td", { style: "width:1%" }, h("button", {
+      class: "icon-btn ghost", title: p.favorite ? "Unstar" : "Star", "aria-label": "Favorite",
+      style: p.favorite ? "color:var(--warn)" : "color:var(--muted)", onclick: () => toggleFavorite(p) }, icon("star"))) },
     { key: "name", label: "Name", cell: (p) => h("span", { class: "strong" }, p.name) },
-    { key: "base_model", label: "Base model", cell: (p) => p.base_model || DASH },
+    { key: "model_id", label: "Model", cell: (p) => h("td", { class: "trunc", title: p.summary?.model || "" },
+      p.model_id || p.base_model || DASH, p.base_model && p.model_id && p.base_model !== p.model_id ? h("div", { class: "muted mono-sm" }, p.base_model) : null) },
     { label: "Settings", cell: (p) => h("div", { class: "chips" }, settingChips(p.summary)) },
     { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
     { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
@@ -519,7 +579,7 @@ function renderProfiles() {
         if (!(await confirmBox(`Delete profile “${p.name}”?`))) return;
         try { await api("DELETE", `/api/profiles/${encodeURIComponent(p.profile_id)}`); toast("Deleted.", "ok"); loadProfiles(); } catch (e) { fail(e); }
       }, "danger")) },
-  ], rows, profileSort, q ? "No profiles match." : h("span", {}, "No saved profiles yet. ", h("b", {}, "New profile"), " starts one."));
+  ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."));
 }
 
 // ── Playground ───────────────────────────────────────────────
@@ -710,7 +770,7 @@ function exportCsv() {
   if (!rows.length) { toast("Nothing to export.", "err"); return; }
   const cols = ["created_at", "base_model", "profile_name", "tokens_per_second", "prompt_per_second", "input_tokens", "output_tokens",
     "n_ctx", "gpu_layers", "layers_offloaded", "n_batch", "n_ubatch", "n_threads", "flash_attention", "cache_type_k", "cache_type_v",
-    "mmap", "mmproj_file", "mtp_file", "draft_model", "draft_acc", "mem_used_gb", "gpu_util", "temp_c", "log_source", "success", "launch_command"];
+    "mmap", "load_mode", "spec_type", "mmproj_file", "draft_model", "model_id", "draft_acc", "mem_used_gb", "gpu_util", "temp_c", "log_source", "success", "launch_command"];
   const esc = (v) => (v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
   const csv = [cols.join(",")].concat(rows.map((r) => cols.map((c) => esc(c === "created_at" ? new Date(r[c] * 1000).toISOString() : r[c])).join(","))).join("\n");
   const a = h("a", { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: "perf-sheet.csv" });
@@ -720,8 +780,8 @@ function exportCsv() {
 
 // ── Catalog ──────────────────────────────────────────────────
 const CATALOG = [
-  { kind: "mmproj", title: "Vision projectors", flag: "--mmproj", hint: "Multimodal projector GGUFs (image/audio input) paired with a base model." },
-  { kind: "mtp", title: "MTP files", flag: "--mtp", hint: "Multi-token-prediction heads paired with a base model." },
+  { kind: "mmproj", title: "Vision projectors", flag: "--mmproj", hint: "Projectors kept outside the model's folder. (One beside the model is found automatically.)" },
+  { kind: "draft", title: "Draft models", flag: "-md", hint: "Small models for speculative decoding with a bigger one. (MTP needs no file: it is --spec-type draft-mtp.)" },
 ];
 function renderCatalog() {
   fill($("#cCards"), CATALOG.map((c) => {
@@ -801,9 +861,34 @@ const statusLine = (ok, text) => h("div", { class: "row", style: "margin-bottom:
   h("span", { class: `dot ${ok ? "on" : "bad"}` }), h("span", { class: ok ? "" : "muted", style: "min-width:0; overflow-wrap:anywhere" }, text));
 const setupHint = (lines) => h("div", { class: "stack" }, h("p", { class: "hint", style: "margin:0" }, "Not configured. Set these environment variables and restart:"),
   h("pre", { class: "code" }, lines.join("\n")));
+function renderExport(x) {
+  const origin = location.origin;
+  const viaUrl = ["odysseus:", "  enabled: true", `  baseURL: "${origin}"`,
+    `  token: "${x.token_required ? "<your export token>" : "any"}"  # llama-swap needs a value`,
+    "  refreshSeconds: 60", '  profilePrefix: "pb"', '  outputFile: "/app/config.d/odysseus.generated.yaml"', "  ensureDio: true"].join("\n");
+  const viaFile = ["odysseus:", "  enabled: true", `  stateFile: "${x.file || "/app/profilebuilder-data/cookbook_state.json"}"`,
+    "  refreshSeconds: 60", '  profilePrefix: "pb"', '  outputFile: "/app/config.d/odysseus.generated.yaml"', "  ensureDio: true"].join("\n");
+  fill($("#iExport"),
+    h("div", { class: "card-head" }, h("h2", {}, "Export for llama-swap"), h("span", { class: "spacer" }),
+      h("span", { class: "pill accent" }, `${x.presets} presets`), x.tasks ? h("span", { class: "pill" }, `${x.tasks} tasks`) : null),
+    h("p", { class: "hint" }, "This app serves your profiles at ", h("code", {}, "/api/cookbook/state"),
+      " in Odysseus' cookbook_state.json shape, so llama-swap-rescan's Odysseus integration reads it exactly like Odysseus — every profile becomes a variant ",
+      h("code", {}, "<model-id>--<profile name>"), ". No five-per-model limit.",
+      x.include_odysseus ? " Odysseus' own presets are passed through, so pointing llama-swap here keeps them." : ""),
+    statusLine(!x.error, x.file ? (x.error ? `${x.file}: ${x.error}` : `writing ${x.file}${x.written_at ? ` · last ${ago(x.written_at)}` : ""}`)
+      : "No export file set (Settings → Export) — llama-swap can still read the URL."),
+    (x.warnings || []).length ? h("div", { class: "stack", style: "margin-bottom:10px" }, x.warnings.map((w) => h("div", { class: "muted mono-sm" }, `⚠ ${w}`))) : null,
+    h("div", { class: "cols2" },
+      h("div", { class: "stack" }, h("span", { class: "muted mono-sm" }, "llama-swap config.yaml — over HTTP"), h("pre", { class: "code" }, viaUrl),
+        h("div", { class: "row end" }, btn("Copy", () => copyText(viaUrl), "sm", "copy"))),
+      h("div", { class: "stack" }, h("span", { class: "muted mono-sm" }, "or from the export file (shared volume)"), h("pre", { class: "code" }, viaFile),
+        h("div", { class: "row end" }, btn("Copy", () => copyText(viaFile), "sm", "copy")))));
+}
+
 function renderIntegrations() {
   const i = S.integrations;
   if (!i) return;
+  renderExport(i.export);
   const o = i.odysseus, s = i.llama_swap;
   fill($("#iOdysseus"), h("div", { class: "card-head" }, h("h2", {}, "Odysseus cookbook")),
     !o.configured ? setupHint(["ODYSSEUS_COOKBOOK=/path/to/cookbook_state.json"])
@@ -816,6 +901,590 @@ function renderIntegrations() {
         s.config && statusLine(s.config_ok, s.config_ok ? `${s.commands.length} models in ${s.config}` : `${s.config}: ${s.config_error}`),
         s.config_ok && commandList(s.commands),
       ]);
+}
+
+// ── Models: library + prefabs ────────────────────────────────
+const GB = 1e9;
+const size = (b) => (b >= GB ? `${(b / GB).toFixed(b >= 10 * GB ? 0 : 1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+const librarySort = { key: null, asc: true };
+
+async function loadLibrary() {
+  try { S.library = await api("GET", "/api/library"); } catch (e) { fail(e); return; }
+  $("#navModels").textContent = S.library.models.length || "";
+  if (S.view === "models") renderLibrary();
+}
+async function openPrefab(m, launchIt = false) {
+  try {
+    const res = await api("POST", "/api/library/prefab", { path: m.path });
+    if (launchIt) launch(res.command, m.name, "");
+    else openCommand(res.command, { name: "", base_model: m.name, source: "prefab" });
+  } catch (e) { fail(e); }
+}
+function renderLibrary() {
+  const lib = S.library;
+  if (!lib) return;
+  $("#mSub").textContent = `Every GGUF in ${lib.models_dir}, each with a ready-made prefab command.`;
+  const q = $("#mSearch").value.trim().toLowerCase();
+  const rows = lib.models.filter((m) => !q || `${m.name} ${m.dir} ${m.kind} ${m.quant}`.toLowerCase().includes(q));
+  $("#mCount").textContent = `${lib.models.length} model${lib.models.length === 1 ? "" : "s"}`;
+  const empty = !lib.exists
+    ? h("span", {}, `The models folder ${lib.models_dir} does not exist. Mount your GGUF folder there (e.g. `, h("b", {}, "-v /path/to/LLMBin:/app/models"), ") or change it in Settings.")
+    : lib.models.length ? "No models match." : h("span", {}, "No .gguf files yet. Get one from the ", h("b", {}, "Download"), " tab.");
+  renderTable($("#mTable"), [
+    { key: "name", label: "Model", cell: (m) => h("td", { class: "trunc", title: m.path }, h("span", { class: "strong" }, m.name),
+      h("div", { class: "muted mono-sm" }, m.dir === "." ? m.id : `${m.dir} · ${m.id}`)) },
+    { key: "kind", label: "Kind", cell: (m) => h("span", { class: `pill${m.kind === "chat" ? "" : " accent"}` }, m.kind) },
+    { key: "quant", label: "Quant", cell: (m) => (m.quant ? h("span", { class: "chip" }, m.quant) : DASH) },
+    { key: "size", label: "Size", num: true, cell: (m) => size(m.size) },
+    { label: "Files", cell: (m) => h("div", { class: "chips" },
+      m.shards < 0 ? h("span", { class: "pill bad" }, `incomplete ${-m.shards} parts`) : m.shards > 1 ? h("span", { class: "chip" }, `${m.shards} parts`) : null,
+      m.mmproj.length ? h("span", { class: "chip", title: m.mmproj.join("\n") }, "mmproj") : null) },
+    { key: "profiles", label: "Profiles", num: true, cell: (m) => (m.profiles
+      ? h("button", { class: "btn sm ghost", onclick: () => showProfilesFor(m.id) }, String(m.profiles)) : DASH) },
+    { label: "", cell: (m) => h("td", { class: "actions" },
+      btn("Prefab", () => openPrefab(m), "sm", "sliders"),
+      iconBtn("play", "Launch the prefab", () => openPrefab(m, true))) },
+  ], rows, librarySort, empty);
+}
+
+// ── Models: Hugging Face downloader ──────────────────────────
+const fitPill = { fits: ["ok", "fits"], tight: ["warn", "tight"], "too big": ["bad", "too big"], unknown: ["", "?"] };
+let currentRepo = null;
+
+async function hfSearch() {
+  const q = $("#dQuery").value.trim();
+  if (/^[\w.-]+\/[\w.-]+$/.test(q)) { loadRepo(q); return; }
+  fill($("#dResults"), h("div", { class: "empty" }, "Searching…"));
+  try {
+    const res = await api("GET", `/api/hf/search?q=${encodeURIComponent(q)}`);
+    fill($("#dResults"), res.results.length ? res.results.map((r) => h("div", {
+      class: `repo${currentRepo === r.id ? " sel" : ""}`, onclick: () => loadRepo(r.id), role: "button", tabindex: "0",
+      onkeydown: (e) => { if (e.key === "Enter") loadRepo(r.id); } },
+      h("span", { class: "id" }, r.id), r.gated ? h("span", { class: "pill warn" }, "gated") : null,
+      h("span", { class: "muted mono-sm" }, `↓ ${num(r.downloads, 0)}`))) : h("div", { class: "empty" }, "No GGUF repos found."));
+  } catch (e) { fill($("#dResults"), h("div", { class: "empty" }, e.message)); }
+}
+
+async function loadRepo(id) {
+  currentRepo = id;
+  $$("#dResults .repo").forEach((r) => r.classList.toggle("sel", r.firstChild.textContent === id));
+  const card = $("#dRepo");
+  fill(card, h("div", { class: "empty" }, `Loading ${id}…`));
+  let info;
+  try { info = await api("GET", `/api/hf/repo?id=${encodeURIComponent(id)}`); } catch (e) { fill(card, h("div", { class: "empty" }, e.message)); return; }
+  $("#dVram").textContent = info.vram_gb ? `fit vs ${info.vram_gb} GB VRAM` : "VRAM unknown — set it in Settings";
+  const quantTable = h("table");
+  renderTable(quantTable, [
+    { label: "Quant", cell: (q) => h("span", { class: "strong", title: q.files.join("\n") }, q.quant) },
+    { label: "Size", num: true, cell: (q) => size(q.size) },
+    { label: "Parts", num: true, cell: (q) => q.shards },
+    { label: "Fit", cell: (q) => { const [c, t] = fitPill[q.fit] || fitPill.unknown; return h("span", { class: `pill ${c}` }, t); } },
+    { label: "", cell: (q) => h("td", { class: "actions" }, q.downloaded ? h("span", { class: "pill ok" }, "downloaded")
+      : btn("Download", () => startDownload(info.id, q.files), "sm primary", "download")) },
+  ], info.quants, { key: null, asc: true }, "No GGUF files in this repo.");
+  fill(card,
+    h("div", { class: "card-head" }, h("h2", {}, info.id), info.gated ? h("span", { class: "pill warn" }, "gated: needs HF token") : null),
+    h("p", { class: "hint" }, `Saves to ${info.dest}. Fit is a rough guide: weights + 15% + 1 GB for cache and buffers.`),
+    h("div", { class: "table-wrap" }, quantTable),
+    info.mmproj.length ? [h("h2", { style: "font-size:12px;margin:14px 0 6px" }, "Vision projectors"),
+      h("div", { class: "stack" }, info.mmproj.map((f) => h("div", { class: "row" },
+        h("span", { style: "flex:1" }, f.name), h("span", { class: "muted mono-sm" }, size(f.size)),
+        btn("Download", () => startDownload(info.id, [f.name]), "sm", "download"))))] : null);
+}
+
+async function startDownload(repo, files) {
+  try {
+    await api("POST", "/api/downloads", { repo, files });
+    toast(`Downloading ${files.length > 1 ? `${files.length} files` : files[0]}…`, "ok");
+    loadDownloads();
+  } catch (e) { fail(e); }
+}
+
+async function loadDownloads() {
+  try { S.downloads = (await api("GET", "/api/downloads")).downloads; } catch (e) { return; }
+  const active = S.downloads.filter((d) => d.status === "running" || d.status === "queued");
+  const meta = $("#navModels");
+  if (active.length) meta.textContent = `↓ ${active.length}`;
+  else if (S.library) meta.textContent = S.library.models.length || "";
+  if (S.settings) $("#dDest").textContent = `into ${S.settings.paths.models_dir}`;
+  renderDownloads();
+  if (!active.length && S._hadActiveDownloads) {  // something just finished
+    loadLibrary();
+    if (currentRepo) loadRepo(currentRepo);
+  }
+  S._hadActiveDownloads = !!active.length;
+}
+function renderDownloads() {
+  const jobs = S.downloads.slice(0, 20);
+  fill($("#dJobs"), jobs.length ? jobs.map((d) => {
+    const pct = d.bytes_total ? Math.min(100, (d.bytes_done / d.bytes_total) * 100) : 0;
+    const running = d.status === "running" || d.status === "queued";
+    const eta = running && d.speed > 0 ? Math.round((d.bytes_total - d.bytes_done) / d.speed) : null;
+    const cls = d.status === "done" ? "ok" : d.status === "failed" ? "bad" : running ? "accent" : "warn";
+    return h("div", { class: "stack", style: "padding:8px 0;border-bottom:1px solid var(--line)" },
+      h("div", { class: "row" }, h("span", { class: "strong", style: "flex:1;min-width:0" }, d.repo,
+        h("span", { class: "muted mono-sm" }, `  ${d.files.map((f) => f.name.split("/").pop()).join(", ")}`)),
+        h("span", { class: `pill ${cls}` }, d.status),
+        running ? btn("Cancel", async () => { await api("POST", `/api/downloads/${d.id}/cancel`).catch(fail); loadDownloads(); }, "sm")
+          : d.status !== "done" ? btn("Resume", async () => { await api("POST", `/api/downloads/${d.id}/retry`).catch(fail); loadDownloads(); }, "sm") : null),
+      h("div", { class: `progress${d.status === "done" ? " done" : ""}` }, h("i", { style: `width:${pct.toFixed(1)}%` })),
+      h("div", { class: "muted mono-sm" }, `${size(d.bytes_done || 0)} of ${size(d.bytes_total || 0)}`,
+        running && d.speed ? ` · ${size(d.speed)}/s` : "", eta != null ? ` · ${uptime(Date.now() / 1000 - eta)} left` : "",
+        d.error ? ` · ${d.error}` : ""));
+  }) : h("div", { class: "empty" }, "No downloads yet."));
+}
+
+// ── Logs: GPU charts ─────────────────────────────────────────
+const SVGNS = "http://www.w3.org/2000/svg";
+const sv = (tag, attrs = {}) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
+const RANGES = [["1h", "1h"], ["6h", "6h"], ["24h", "24h"], ["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["1y", "1y"]];
+const G = { range: "24h", data: null };
+const seriesColor = (i) => `var(--series-${(i % 8) + 1})`;
+
+/** Round tick step for roughly four intervals up to ``max``. */
+function niceStep(max) {
+  const raw = (max > 0 ? max : 1) / 4, p = 10 ** Math.floor(Math.log10(raw)), n = raw / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+function timeLabel(t, span) {
+  const d = new Date(t * 1000);
+  if (span <= 86400) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (span <= 8 * 86400) return d.toLocaleDateString([], { weekday: "short" }) + " " + d.toLocaleTimeString([], { hour: "2-digit" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+/** One metric, one line per GPU. Crosshair + one tooltip listing every GPU at that time. */
+function lineChart(box, { title, unit, xs, series, yMax, digits = 0, bucket }) {
+  const W = Math.max(260, box.clientWidth || 400), H = 190, m = { l: 40, r: 12, t: 8, b: 22 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const all = series.flatMap((s) => s.values).filter((v) => v != null);
+  const peak = Math.max(yMax || 0, ...all, 0) || 1, step = niceStep(peak), top = Math.ceil(peak / step) * step;
+  const x0 = xs[0], x1 = xs[xs.length - 1], span = Math.max(1, x1 - x0);
+  const X = (t) => m.l + ((t - x0) / span) * iw, Y = (v) => m.t + ih - (v / top) * ih;
+  const svg = sv("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${title} chart`, tabindex: "0" });
+  const grid = sv("g", { class: "grid" }), axis = sv("g", { class: "axis" });
+  for (let i = 0; i <= Math.round(top / step); i++) {
+    const v = step * i, y = Y(v);
+    if (i) grid.append(sv("line", { x1: m.l, x2: W - m.r, y1: y, y2: y }));
+    const t = sv("text", { x: m.l - 6, y: y + 3, "text-anchor": "end" });
+    t.textContent = v >= 1000 ? `${+(v / 1000).toFixed(1)}K` : `${+v.toFixed(step < 1 ? 1 : 0)}`;
+    axis.append(t);
+  }
+  const ticks = Math.min(5, xs.length);
+  for (let i = 0; i < ticks; i++) {
+    const t = x0 + (span * i) / Math.max(1, ticks - 1);
+    const lbl = sv("text", { x: X(t), y: H - 6, "text-anchor": i === 0 ? "start" : i === ticks - 1 ? "end" : "middle" });
+    lbl.textContent = timeLabel(t, span);
+    axis.append(lbl);
+  }
+  svg.append(grid, sv("line", { class: "base", x1: m.l, x2: W - m.r, y1: Y(0), y2: Y(0) }), axis);
+  const gap = (bucket || 60) * 2.5;
+  series.forEach((s, si) => {
+    let d = "", prev = null;
+    s.values.forEach((v, i) => {
+      if (v == null) { prev = null; return; }
+      d += `${prev == null || xs[i] - prev > gap ? "M" : "L"}${X(xs[i]).toFixed(1)},${Y(v).toFixed(1)}`;
+      prev = xs[i];
+    });
+    svg.append(sv("path", { class: "series", d, stroke: seriesColor(si) }));
+    const last = s.values.map((v, i) => [v, i]).filter(([v]) => v != null).pop();
+    if (last) svg.append(sv("circle", { class: "dot", cx: X(xs[last[1]]), cy: Y(last[0]), r: 4, fill: seriesColor(si) }));
+  });
+  const cross = sv("line", { class: "cross", y1: m.t, y2: m.t + ih, visibility: "hidden" });
+  const dots = series.map((_, si) => sv("circle", { class: "dot", r: 4, fill: seriesColor(si), visibility: "hidden" }));
+  const hit = sv("rect", { x: m.l, y: m.t, width: iw, height: ih, fill: "transparent" });
+  svg.append(cross, ...dots, hit);
+  const tip = h("div", { class: "tip" });
+  const fmt = (v) => (v == null ? DASH : `${num(v, digits)}${unit ? ` ${unit}` : ""}`);
+  const showAt = (i) => {
+    const x = X(xs[i]);
+    cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.setAttribute("visibility", "visible");
+    series.forEach((s, si) => {
+      const v = s.values[i];
+      dots[si].setAttribute("visibility", v == null ? "hidden" : "visible");
+      if (v != null) { dots[si].setAttribute("cx", x); dots[si].setAttribute("cy", Y(v)); }
+    });
+    fill(tip, h("div", { class: "t" }, new Date(xs[i] * 1000).toLocaleString()),
+      series.map((s, si) => h("div", { class: "r" }, h("span", { class: "key", style: `background:${seriesColor(si)}` }), h("b", {}, fmt(s.values[i])), s.name)));
+    tip.style.display = "block";
+    const left = (x / W) * box.clientWidth;
+    tip.style.left = `${Math.min(Math.max(0, left + 12), box.clientWidth - tip.offsetWidth)}px`;
+    tip.style.top = "26px";
+  };
+  const hide = () => { cross.setAttribute("visibility", "hidden"); dots.forEach((d) => d.setAttribute("visibility", "hidden")); tip.style.display = "none"; };
+  const nearest = (px) => { const t = x0 + ((px - m.l) / iw) * span; let best = 0; xs.forEach((x, i) => { if (Math.abs(x - t) < Math.abs(xs[best] - t)) best = i; }); return best; };
+  let focusIdx = xs.length - 1;
+  hit.addEventListener("pointermove", (e) => { const r = svg.getBoundingClientRect(); focusIdx = nearest(((e.clientX - r.left) / r.width) * W); showAt(focusIdx); });
+  hit.addEventListener("pointerleave", hide);
+  svg.addEventListener("focus", () => showAt(focusIdx));
+  svg.addEventListener("blur", hide);
+  svg.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") focusIdx = Math.max(0, focusIdx - 1);
+    else if (e.key === "ArrowRight") focusIdx = Math.min(xs.length - 1, focusIdx + 1);
+    else return;
+    e.preventDefault(); showAt(focusIdx);
+  });
+  fill(box, h("h3", {}, title, unit ? h("small", {}, unit) : null), svg, tip);
+}
+
+function renderGpu() {
+  const d = G.data;
+  fill($("#gRange"), RANGES.map(([v, l]) => h("button", { class: G.range === v ? "on" : "", onclick: () => { G.range = v; loadGpu(); } }, l)));
+  if (!d) return;
+  $("#gSource").textContent = d.rows.length
+    ? `${d.source === "hourly" ? "hourly rollups" : `${d.bucket}s buckets`} · source: ${d.collector.source || "stored"}`
+    : "";
+  const gpus = [...new Map(d.rows.map((r) => [r.gpu, r.name])).entries()].sort((a, b) => a[0] - b[0]);
+  if (!d.rows.length) {
+    fill($("#gLegend"));
+    fill($("#gCharts"), h("div", { class: "empty", style: "grid-column:1/-1" },
+      d.collector.enabled ? "No GPU readings in this range yet. With LLAMA_SWAP_URL set they come from llama-swap; otherwise from /sys/class/drm (AMD) or nvidia-smi."
+        : h("span", {}, "Telemetry is off. Turn it on in ", h("b", {}, "Settings"), ".")));
+    fill($("#gTable"));
+    return;
+  }
+  const xs = [...new Set(d.rows.map((r) => r.t))].sort((a, b) => a - b);
+  const idx = new Map(xs.map((t, i) => [t, i]));
+  const pick = (key, scale = 1) => gpus.map(([g, name]) => {
+    const values = new Array(xs.length).fill(null);
+    d.rows.filter((r) => r.gpu === g && r[key] != null).forEach((r) => { values[idx.get(r.t)] = r[key] * scale; });
+    return { name: `GPU${g} ${name}`, values };
+  });
+  fill($("#gLegend"), gpus.map(([g, name], i) => h("span", {}, h("span", { class: "key", style: `background:${seriesColor(i)}` }), `GPU${g} ${name}`)));
+  const vramTop = Math.max(...d.rows.map((r) => (r.mem_total_mb || 0) / 1024));
+  const charts = [
+    { title: "Utilization", unit: "%", key: "util", yMax: 100 },
+    { title: "VRAM used", unit: "GB", key: "mem_used_mb", scale: 1 / 1024, yMax: vramTop, digits: 1 },
+    { title: "Temperature", unit: "°C", key: "temp_c" },
+    { title: "Power", unit: "W", key: "power_w" },
+  ];
+  const boxes = charts.map(() => h("div", { class: "chart" }));
+  fill($("#gCharts"), boxes);
+  charts.forEach((c, i) => lineChart(boxes[i], { ...c, xs, series: pick(c.key, c.scale), bucket: d.bucket }));
+  const stat = (g, key, f) => { const v = d.rows.filter((r) => r.gpu === g && r[key] != null).map((r) => r[key]); return v.length ? f(v) : null; };
+  const avg = (v) => v.reduce((a, b) => a + b, 0) / v.length, max = (v) => Math.max(...v);
+  const latest = new Map((d.latest || []).map((r) => [r.gpu, r]));
+  renderTable($("#gTable"), [
+    { label: "GPU", cell: (r) => h("span", {}, h("span", { class: "key", style: `background:${seriesColor(r.i)};margin-right:8px;vertical-align:middle` }), h("span", { class: "strong" }, r.label)) },
+    { label: "Now", num: true, cell: (r) => (r.now ? `${num(r.now.util, 0)}% · ${num((r.now.mem_used_mb || 0) / 1024, 1)} GB · ${num(r.now.temp_c, 0)}°C` : DASH) },
+    { label: "Util avg / max", num: true, cell: (r) => `${num(r.ua, 0)}% / ${num(r.um, 0)}%` },
+    { label: "VRAM peak", num: true, cell: (r) => (r.vm != null ? `${num(r.vm / 1024, 1)} / ${num(r.vt / 1024, 1)} GB` : DASH) },
+    { label: "Temp max", num: true, cell: (r) => (r.tm != null ? `${num(r.tm, 0)}°C` : DASH) },
+    { label: "Power avg", num: true, cell: (r) => (r.pa != null ? `${num(r.pa, 0)} W` : DASH) },
+  ], gpus.map(([g, name], i) => ({ i, label: `GPU${g} ${name}`, now: latest.get(g),
+    ua: stat(g, "util", avg), um: stat(g, "util_max", max) ?? stat(g, "util", max), vm: stat(g, "mem_used_mb", max),
+    vt: stat(g, "mem_total_mb", max), tm: stat(g, "temp_max", max) ?? stat(g, "temp_c", max), pa: stat(g, "power_w", avg) })),
+  { key: null, asc: false }, "");
+}
+
+async function loadGpu() {
+  $("#gCharts").style.opacity = G.data ? "0.5" : "1";
+  try { G.data = await api("GET", `/api/gpu/series?range=${G.range}`); } catch (e) { fail(e); }
+  $("#gCharts").style.opacity = "1";
+  renderGpu();
+}
+
+// ── Logs: requests + events ──────────────────────────────────
+async function loadRequests() {
+  const rng = $("#rRange").value, model = $("#rModel").value;
+  let res;
+  try { res = await api("GET", `/api/requests?range=${rng}&limit=500${model ? `&model=${encodeURIComponent(model)}` : ""}`); } catch (e) { fail(e); return; }
+  const url = S.settings?.integrations.llama_swap_url;
+  $("#rHint").textContent = url ? `synced from ${url}` : "Set the llama-swap URL in Settings to collect request history.";
+  if (!model) {
+    const cur = $("#rModel").value;
+    fill($("#rModel"), h("option", { value: "" }, "All models"), res.stats.map((s) => h("option", { value: s.model }, s.model)));
+    $("#rModel").value = cur;
+  }
+  const maxTg = Math.max(1, ...res.stats.map((s) => s.tg_avg || 0));
+  renderTable($("#rStats"), [
+    { key: "model", label: "Model", cell: (s) => h("span", { class: "strong" }, s.model || DASH) },
+    { key: "requests", label: "Requests", num: true, cell: (s) => num(s.requests, 0) },
+    { key: "tg_avg", label: "Gen t/s avg", num: true, cell: (s) => h("div", { class: "bar-cell" }, num(s.tg_avg, 1), h("span", { class: "bar" }, h("i", { style: `width:${Math.round(((s.tg_avg || 0) / maxTg) * 100)}%` }))) },
+    { key: "tg_max", label: "max", num: true, cell: (s) => num(s.tg_max, 1) },
+    { key: "pp_avg", label: "Prompt t/s", num: true, cell: (s) => num(s.pp_avg, 0) },
+    { key: "output_tokens", label: "Tokens in / out", num: true, cell: (s) => `${num(s.input_tokens, 0)} / ${num(s.output_tokens, 0)}` },
+    { key: "errors", label: "Errors", num: true, cell: (s) => (s.errors ? h("span", { class: "pill bad" }, String(s.errors)) : "0") },
+    { key: "last_ts", label: "Last", cell: (s) => h("span", { class: "muted" }, ago(s.last_ts)) },
+  ], res.stats, { key: null, asc: false }, url ? "No requests in this range." : "No request history yet.");
+  renderTable($("#rTable"), [
+    { key: "ts", label: "When", cell: (r) => h("span", { class: "muted", title: new Date(r.ts * 1000).toLocaleString() }, ago(r.ts)) },
+    { key: "model", label: "Model", cell: (r) => r.model || DASH },
+    { key: "tokens_per_second", label: "Gen t/s", num: true, cell: (r) => num(r.tokens_per_second, 1) },
+    { key: "prompt_per_second", label: "Prompt t/s", num: true, cell: (r) => num(r.prompt_per_second, 0) },
+    { label: "In / out", num: true, cell: (r) => `${num(r.input_tokens, 0)} / ${num(r.output_tokens, 0)}` },
+    { key: "duration_ms", label: "Time", num: true, cell: (r) => (r.duration_ms ? `${num(r.duration_ms / 1000, 1)} s` : DASH) },
+    { key: "status", label: "Status", cell: (r) => h("span", { class: `pill ${r.status >= 400 || r.error ? "bad" : "ok"}`, title: r.error || "" }, String(r.status || "?")) },
+  ], res.requests, { key: null, asc: false }, "No requests.");
+}
+
+async function loadEvents() {
+  const qs = new URLSearchParams({ limit: "500" });
+  for (const [k, id] of [["kind", "#eKind"], ["level", "#eLevel"], ["q", "#eQuery"]]) if ($(id).value.trim()) qs.set(k, $(id).value.trim());
+  let res;
+  try { res = await api("GET", `/api/events?${qs}`); } catch (e) { fail(e); return; }
+  const lvl = { error: "bad", warn: "warn", info: "" };
+  renderTable($("#evTable"), [
+    { key: "ts", label: "When", cell: (e) => h("span", { class: "muted", title: new Date(e.ts * 1000).toLocaleString() }, new Date(e.ts * 1000).toLocaleString()) },
+    { key: "level", label: "Level", cell: (e) => h("span", { class: `pill ${lvl[e.level] || ""}` }, e.level) },
+    { key: "kind", label: "Kind", cell: (e) => h("span", { class: "chip" }, e.kind) },
+    { label: "Message", cell: (e) => h("td", { style: "white-space:normal;min-width:280px" }, e.message) },
+  ], res.events, { key: null, asc: false }, "Nothing logged yet.");
+}
+
+async function refreshLogsNav() {
+  try {
+    const res = await api("GET", "/api/events?level=error&hours=24&limit=100");
+    fill($("#navLogs"), res.events.length ? [String(res.events.length), h("span", { class: "dot bad", title: "errors in the last 24h" })] : null);
+  } catch (e) { /* ignore */ }
+}
+
+function loadLogs() {
+  const pane = $(".tabs[data-tabs=logs] button.on")?.dataset.pane || "gpu";
+  if (pane === "gpu") loadGpu();
+  else if (pane === "requests") loadRequests();
+  else loadEvents();
+}
+
+// ── Assistant ────────────────────────────────────────────────
+const A = { state: null, busy: false };
+const SUGGESTIONS = ["How did my GPUs do today?", "Which model is fastest here?", "Any errors in the last day?", "How can I fit a bigger context?"];
+
+/** Tiny markdown: paragraphs, lists, `code`, ```blocks```, **bold** — built as DOM, never HTML. */
+function markdown(text) {
+  const out = [];
+  const inline = (line) => {
+    const parts = [];
+    line.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).forEach((p) => {
+      if (/^`[^`]+`$/.test(p)) parts.push(h("code", {}, p.slice(1, -1)));
+      else if (/^\*\*[^*]+\*\*$/.test(p)) parts.push(h("strong", {}, p.slice(2, -2)));
+      else if (p) parts.push(p);
+    });
+    return parts;
+  };
+  const blocks = text.split(/```/);
+  blocks.forEach((block, bi) => {
+    if (bi % 2) { out.push(h("pre", {}, h("code", {}, block.replace(/^\w*\n/, "")))); return; }
+    let list = null;
+    block.split("\n").forEach((line) => {
+      const m = line.match(/^\s*(?:[-*]|(\d+)\.)\s+(.*)$/);
+      if (m) {
+        const tag = m[1] ? "ol" : "ul";
+        if (!list || list.tagName.toLowerCase() !== tag) { list = h(tag); out.push(list); }
+        list.append(h("li", {}, inline(m[2])));
+        return;
+      }
+      list = null;
+      if (line.trim()) out.push(h("p", {}, inline(line)));
+    });
+  });
+  return out;
+}
+
+function msgEl(m) {
+  if (m.role === "user") return h("div", { class: `msg user${m.compacted ? " compacted" : ""}` }, m.content);
+  return h("div", { class: `msg assistant${m.compacted ? " compacted" : ""}` }, h("div", { class: "who" }, "assistant"), markdown(m.content));
+}
+
+async function loadAssistant() {
+  try { A.state = await api("GET", "/api/assistant"); } catch (e) { fail(e); return; }
+  renderAssistant();
+}
+
+function assistantNav() {
+  const sv = A.state?.server;
+  fill($("#navAssistant"), sv && sv.mode === "managed" && sv.running ? h("span", { class: `dot ${sv.ready ? "on" : "warn"}` }) : null);
+}
+
+function renderAssistant() {
+  const st = A.state;
+  if (!st) return;
+  const sv = st.server;
+  $("#aModel").textContent = sv.mode === "endpoint" ? `${sv.model || "model"} @ ${sv.endpoint || "?"}` : (sv.profile ? sv.profile.name : "no model set");
+  fill($("#aStatus"), sv.mode === "managed" && sv.profile
+    ? [h("span", { class: `dot ${sv.ready ? "on" : sv.running ? "warn" : ""}` }), sv.ready ? "ready" : sv.running ? "loading" : "starts on first message"]
+    : null);
+  $("#aStop").disabled = !(sv.mode === "managed" && sv.running);
+  $("#aTokens").textContent = `${num(st.tokens, 0)} / ${num(st.budget, 0)} tokens`;
+  $("#aMeter").style.width = `${Math.min(100, (st.tokens / st.budget) * 100).toFixed(0)}%`;
+  assistantNav();
+  const box = $("#aMessages");
+  const msgs = st.messages;
+  const needsSetup = sv.mode === "managed" && !sv.profile;
+  const kids = [];
+  if (!msgs.length) {
+    kids.push(h("div", { class: "hero", style: "padding-top:4vh" },
+      h("div", { class: "logo" }, icon("message"), "assistant"),
+      h("div", { class: "tag" }, "Ask about your GPUs, speeds, models and profiles. It reads this app's logs."),
+      needsSetup ? h("div", { class: "stack", style: "align-items:center;margin-top:16px" },
+        h("p", { class: "hint", style: "margin:0;max-width:520px" }, "The assistant runs a small model beside your others: Qwen3-0.6B (Q8_0, under 1 GB). It is reused if it's already in your models folder, otherwise downloaded from Hugging Face."),
+        h("div", { class: "row" }, btn("Set up Qwen3-0.6B", setupAssistant, "primary", "download"), btn("Use another profile…", () => show("settings"), ""))) :
+        h("div", { class: "suggest" }, SUGGESTIONS.map((q) => h("button", { onclick: () => { $("#aInput").value = q; sendChat(); } }, q)))));
+  }
+  let shownDivider = false;
+  msgs.forEach((m, i) => {
+    if (!m.compacted && i > 0 && msgs[i - 1].compacted && !shownDivider) {
+      shownDivider = true;
+      kids.push(h("details", { class: "divider-box" }, h("summary", { class: "divider" }, "earlier messages compacted into a summary — click to read it"),
+        h("div", { class: "msg assistant", style: "margin-top:8px" }, markdown(st.summary || "(empty)"))));
+    }
+    kids.push(msgEl(m));
+  });
+  fill(box, kids);
+  box.lastElementChild?.scrollIntoView({ block: "end" });
+}
+
+async function setupAssistant() {
+  try {
+    const res = await api("POST", "/api/assistant/setup", {});
+    toast(res.download ? "Downloading Qwen3-0.6B — the assistant starts once it lands." : `Assistant set to ${res.profile.name}.`, "ok");
+    loadDownloads();
+    loadProfiles();
+    loadAssistant();
+  } catch (e) { fail(e); }
+}
+
+async function sendChat() {
+  const input = $("#aInput");
+  const text = input.value.trim();
+  if (!text || A.busy) return;
+  A.busy = true;
+  $("#aSend").disabled = true;
+  input.value = "";
+  const box = $("#aMessages");
+  if (!A.state?.messages.length) fill(box);
+  box.append(msgEl({ role: "user", content: text }));
+  const status = h("div", { class: "status-line" }, h("span", { class: "dot warn" }), "thinking…");
+  const body = h("div");
+  const bubble = h("div", { class: "msg assistant" }, h("div", { class: "who" }, "assistant"), status, body);
+  box.append(bubble);
+  bubble.scrollIntoView({ block: "end" });
+  let answer = "";
+  try {
+    const res = await fetch("/api/assistant/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, cut).trim();
+        buf = buf.slice(cut + 2);
+        if (!line.startsWith("data:")) continue;
+        const ev = JSON.parse(line.slice(5));
+        if (ev.type === "status") fill(status, h("span", { class: "dot warn" }), ev.text);
+        else if (ev.type === "compacted") toast("Older messages were compacted into a summary.", "");
+        else if (ev.type === "delta") { status.remove(); answer += ev.text; body.textContent = answer; bubble.scrollIntoView({ block: "end" }); }
+        else if (ev.type === "error") { status.remove(); body.append(h("p", { style: "color:var(--danger)" }, ev.error)); }
+      }
+    }
+  } catch (e) { status.remove(); body.append(h("p", { style: "color:var(--danger)" }, e.message)); }
+  A.busy = false;
+  $("#aSend").disabled = false;
+  await loadAssistant();
+  input.focus();
+}
+
+function initAssistant() {
+  $("#aSend").onclick = sendChat;
+  $("#aInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } });
+  $("#aReset").onclick = async () => {
+    if (!(await confirmBox("Clear the whole conversation and its summary?", "Reset chat"))) return;
+    try { await api("POST", "/api/assistant/reset"); toast("Chat cleared.", "ok"); loadAssistant(); } catch (e) { fail(e); }
+  };
+  $("#aStop").onclick = async () => { await api("POST", "/api/assistant/stop").catch(fail); loadAssistant(); };
+  $("#aDigest").onclick = async () => {
+    try {
+      const res = await api("GET", "/api/assistant/digest");
+      modal("What the assistant sees each turn", h("div", { class: "stack" },
+        h("p", { class: "hint", style: "margin:0" }, "Built fresh from the database for every message, after the system prompt."),
+        h("pre", { class: "code wrap" }, res.digest)));
+    } catch (e) { fail(e); }
+  };
+}
+
+// ── Settings ─────────────────────────────────────────────────
+const SETTINGS_FORM = [
+  { group: "paths", title: "Paths", fields: [
+    { k: "models_dir", label: "Models folder", hint: "Library and download target. In Docker, mount your GGUF folder here (llama-swap uses /app/models)." }] },
+  { group: "integrations", title: "Integrations", fields: [
+    { k: "odysseus_cookbook", label: "Odysseus cookbook_state.json", ph: "/app/odysseus-data/cookbook_state.json" },
+    { k: "llama_swap_config", label: "llama-swap config", ph: "/app/llama-swap/config.yaml" },
+    { k: "llama_swap_url", label: "llama-swap URL", ph: "http://llama-swap:8080", hint: "GPU readings, request history and status come from here." }] },
+  { group: "builder", title: "Builder", fields: [
+    { k: "command_format", label: "Command format", type: "select", wide: true, options: [["odysseus", "Odysseus (Cookbook shape)"], ["plain", "As written"]] }] },
+  { group: "prefab", title: "Prefab defaults", hint: "Every model's prefab starts from these; embedding, vision and MTP models get their extras on top.", fields: [
+    { k: "host", label: "Host" }, { k: "port", label: "Port" }, { k: "ngl", label: "GPU layers (-ngl)" }, { k: "ctx", label: "Context (-c)" },
+    { k: "flash_attn", label: "Flash attention", type: "select", options: [["", "default"], ["on", "on"], ["off", "off"], ["auto", "auto"]] },
+    { k: "cache_type", label: "KV cache type", type: "select", options: KV_TYPES.map((t) => [t, t || "default"]) },
+    { k: "load_mode", label: "Load mode (-lm)", list: "list-loadmode", ph: "dio" },
+    { k: "split_mode", label: "Split mode", type: "select", options: [["", "default"], ["none", "none"], ["layer", "layer"], ["row", "row"]] },
+    { k: "jinja", label: "--jinja for chat models", type: "check" },
+    { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
+    { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
+  { group: "downloads", title: "Downloads", fields: [
+    { k: "hf_endpoint", label: "Hugging Face endpoint", ph: "https://huggingface.co" },
+    { k: "hf_token", label: "HF token", type: "password", hint: "Only for gated or private repos." },
+    { k: "vram_gb", label: "VRAM for fit (GB)", type: "number", hint: "0 = detect from telemetry / sysfs / nvidia-smi." }] },
+  { group: "telemetry", title: "Telemetry", fields: [
+    { k: "enabled", label: "Record GPU history", type: "check" },
+    { k: "source", label: "Source", type: "select", wide: true, options: [["auto", "auto (llama-swap, then local)"], ["llama-swap", "llama-swap only"], ["local", "local sysfs / nvidia-smi"], ["off", "off"]] },
+    { k: "interval_s", label: "Every (seconds)", type: "number" },
+    { k: "raw_days", label: "Keep raw readings (days)", type: "number", hint: "Hourly rollups are kept forever." }] },
+  { group: "export", title: "Export for llama-swap", fields: [
+    { k: "file", label: "Also write cookbook_state.json to", ph: "/data/export/cookbook_state.json" },
+    { k: "include_odysseus", label: "Pass Odysseus' own presets through", type: "check" },
+    { k: "include_tasks", label: "Include running launches as tasks", type: "check" },
+    { k: "token", label: "Require X-Odysseus-Internal-Token", type: "password" }] },
+  { group: "assistant", title: "Assistant", fields: [
+    { k: "mode", label: "Runs on", type: "select", wide: true, options: [["managed", "a profile launched here"], ["endpoint", "an OpenAI-compatible URL"]] },
+    { k: "profile_id", label: "Profile", type: "profile", wide: true },
+    { k: "endpoint", label: "Endpoint", ph: "http://llama-swap:8080/v1" },
+    { k: "model", label: "Model ID at the endpoint", ph: "qwen3-0.6b-q8_0" },
+    { k: "context_tokens", label: "Context window (tokens)", type: "number", hint: "Must match the profile's -c; compaction starts at ~70%." },
+    { k: "keep_recent", label: "Messages kept verbatim", type: "number" },
+    { k: "temperature", label: "Temperature", type: "number", step: "0.1" }] },
+];
+
+function settingsField(f, val) {
+  let input;
+  if (f.type === "select" || f.type === "profile") {
+    const opts = f.type === "profile" ? [["", "none"], ...S.profiles.map((p) => [p.profile_id, p.name])] : f.options;
+    input = h("select", {}, opts.map(([v, l]) => h("option", { value: v }, l)));
+    input.value = val ?? "";
+  } else if (f.type === "check") {
+    input = h("input", { type: "checkbox", checked: !!val });
+    return { input, el: h("label", { class: "check wide" }, input, f.label) };
+  } else if (f.type === "textarea") {
+    input = h("textarea", { rows: 3, placeholder: f.ph || "", spellcheck: "false" }, val || "");
+  } else {
+    input = h("input", { type: f.type || "text", value: val ?? "", placeholder: f.ph || "", list: f.list || null, step: f.step || null, spellcheck: "false" });
+  }
+  const wide = f.wide || ["textarea", "check"].includes(f.type) || (f.hint && f.hint.length > 40) || /dir|file|config|cookbook|endpoint|url/.test(f.k);
+  return { input, el: h("label", { class: `field${wide ? " wide" : ""}` }, h("span", {}, f.label), input, f.hint ? h("span", { class: "muted mono-sm" }, f.hint) : null) };
+}
+
+function renderSettings() {
+  if (!S.settings) return;
+  fill($("#sGrid"), SETTINGS_FORM.map((g) => {
+    const vals = S.settings[g.group] || {};
+    const fields = g.fields.map((f) => ({ f, ...settingsField(f, vals[f.k]) }));
+    const save = async () => {
+      const out = {};
+      fields.forEach(({ f, input }) => { out[f.k] = f.type === "check" ? input.checked : input.value; });
+      try {
+        await api("PUT", `/api/settings/${g.group}`, out);
+        await loadSettings();
+        toast(`Saved ${g.title.toLowerCase()}.`, "ok");
+        if (g.group === "builder") B.format = S.settings.builder.command_format;
+        if (g.group === "paths") loadLibrary();
+      } catch (e) { fail(e); }
+    };
+    return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, g.title), h("span", { class: "spacer" }), btn("Save", save, "sm primary", "save")),
+      g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)));
+  }));
 }
 
 // ── Boot ─────────────────────────────────────────────────────
@@ -840,15 +1509,32 @@ async function migrateBrowserProfiles() {
 }
 
 let pollTimer = null;
+let tickCount = 0;
 async function tick() {
   clearTimeout(pollTimer);
   let busy = false;
+  tickCount++;
   try {
     await refreshLaunches();
     busy = S.launches.some((l) => l.running);
     if (S.view === "playground") await pollSelected(false);
+    const downloading = S.downloads.some((d) => d.status === "running" || d.status === "queued");
+    if (downloading || (S.view === "models" && tickCount % 4 === 0)) { await loadDownloads(); busy = busy || downloading; }
+    if (S.view === "logs" && tickCount % 10 === 0) loadLogs();
+    if (tickCount % 20 === 1) refreshLogsNav();
+    if (S.view === "assistant" && !A.busy && tickCount % 3 === 0) loadAssistant();
   } catch (e) { /* server restarting; try again */ }
-  pollTimer = setTimeout(tick, busy || S.view === "playground" ? 1500 : 8000);
+  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant"].includes(S.view) ? 1500 : 8000);
+}
+
+function initTabs() {
+  $$(".tabs[data-tabs]").forEach((bar) => bar.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-pane]");
+    if (!b) return;
+    $$("button", bar).forEach((x) => x.classList.toggle("on", x === b));
+    $$(".pane", bar.parentElement).forEach((p) => p.classList.toggle("on", p.dataset.pane === b.dataset.pane));
+    if (bar.dataset.tabs === "logs") loadLogs();
+  }));
 }
 
 function boot() {
@@ -867,17 +1553,32 @@ function boot() {
   window.addEventListener("hashchange", () => show(location.hash.slice(1)));
   $("#themeLabel").textContent = document.documentElement.classList.contains("light") ? "light" : "dark";
   $("#pSearch").addEventListener("input", debounce(renderProfiles, 120));
+  $("#pModel").addEventListener("change", renderProfiles);
   $("#fSearch").addEventListener("input", debounce(renderPerf, 120));
   $("#fModel").addEventListener("change", renderPerf);
   $("#fCsv").onclick = exportCsv;
   $("#eSearch").addEventListener("input", debounce(renderEnvTable, 120));
   $("#iRefresh").onclick = loadIntegrations;
+  $("#mSearch").addEventListener("input", debounce(renderLibrary, 120));
+  $("#mRescan").onclick = () => { loadLibrary(); loadDownloads(); };
+  $("#dSearch").onclick = hfSearch;
+  $("#dQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") hfSearch(); });
+  $("#rRange").addEventListener("change", loadRequests);
+  $("#rModel").addEventListener("change", loadRequests);
+  $("#eKind").addEventListener("change", loadEvents);
+  $("#eLevel").addEventListener("change", loadEvents);
+  $("#eQuery").addEventListener("input", debounce(loadEvents, 250));
+  if (window.ResizeObserver) new ResizeObserver(debounce(() => { if (S.view === "logs" && G.data) renderGpu(); }, 150)).observe($("#gCharts"));
+  initTabs();
   initBuilder();
   initPlayground();
+  initAssistant();
   fillImportSelect();
-  show(location.hash.slice(1) || "builder");
-  Promise.all([loadProfiles(), loadModels(), loadCatalog(), loadIntegrations()])
+  loadSettings().then((st) => { B.format = st.builder.command_format; }).catch(() => {})
+    .finally(() => show(location.hash.slice(1) || "builder"));
+  Promise.all([loadProfiles(), loadModels(), loadCatalog(), loadIntegrations(), loadLibrary(), loadDownloads()])
     .then(migrateBrowserProfiles).catch(fail);
+  api("GET", "/api/assistant").then((st) => { A.state = st; assistantNav(); }).catch(() => {});
   api("GET", "/api/runs?limit=100000").then((r) => { $("#navPerf").textContent = r.runs.length || ""; }).catch(() => {});
   tick();
 }

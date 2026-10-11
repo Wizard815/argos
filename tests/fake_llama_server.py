@@ -53,11 +53,40 @@ def main() -> None:
             else:
                 self._json(404, {"error": "not found"})
 
+        def _chat(self, req):
+            """/v1/chat/completions: echoes the last user message and what context it got."""
+            msgs = req.get("messages") or []
+            system = msgs[0]["content"] if msgs and msgs[0]["role"] == "system" else ""
+            last = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
+            if "memory notes" in system:
+                text = f"SUMMARY of {last.count('User:')} user turns."
+            else:
+                text = (f"You said: {last}. history={len(msgs) - 1}"
+                        + (" live=yes" if "LIVE DATA" in system else "")
+                        + (" summary=yes" if "summary)" in system else ""))
+                if "think" in last:
+                    text = "<think>internal reasoning</think>" + text
+            print(f"chat: {len(msgs)} messages", file=log)
+            log.flush()
+            if not req.get("stream"):
+                self._json(200, {"choices": [{"message": {"role": "assistant", "content": text}}]})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for i in range(0, len(text), 7):
+                chunk = {"choices": [{"delta": {"content": text[i:i + 7]}}]}
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
         def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            if self.path == "/v1/chat/completions":
+                self._chat(req)
+                return
             if self.path != "/completion":
                 self._json(404, {"error": "not found"})
                 return
-            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             n_prompt = max(1, int(len(req.get("prompt", "").split()) * 1.3))
             n_pred = int(req.get("n_predict", 16))
             p_ms, e_ms = n_prompt / (speed * 20) * 1000, n_pred / speed * 1000

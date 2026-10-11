@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from .command import guess_base_model, parse_command
+from .command import guess_base_model, parse_command, swap_model_id
 from .db import Store, new_id
 from .log_analyzer import parse_log_text
 from .runner import Runner
@@ -35,10 +35,14 @@ ENV_FLAG_LIBRARY: list[dict] = [
      "recommended": "Use instead of HIP_VISIBLE_DEVICES inside containers."},
     {"flag": "HSA_OVERRIDE_GFX_VERSION", "category": "amd-tuning",
      "description": "Make ROCm treat the GPU as a supported gfx target.",
-     "recommended": "10.3.0 for RDNA2, 11.0.0 for RDNA3 consumer cards ROCm does not list."},
+     "recommended": "9.0.6 for gfx906 (MI50 / Radeon VII), 10.3.0 for RDNA2, 11.0.0 for RDNA3."},
     {"flag": "HSA_ENABLE_SDMA", "category": "amd-tuning",
      "description": "Use SDMA engines for host/device copies.",
      "recommended": "0 if you see hangs or corrupted output on some APUs/boards."},
+    {"flag": "LLAMA_ENABLE_MTP_OPT", "category": "speculative",
+     "description": "MTP fast path in builds that carry it (the RaidLab llama.cpp image does); "
+                    "pairs with --spec-type draft-mtp.",
+     "recommended": "1 only on models with an MTP head; leave it off for the rest."},
     {"flag": "GGML_VK_VISIBLE_DEVICES", "category": "gpu-select",
      "description": "Which Vulkan devices the Vulkan backend uses.",
      "recommended": "Index list from vulkaninfo; skip software/iGPU devices."},
@@ -86,8 +90,10 @@ class Recorder:
             "run_id": new_id("bench" if timings else "log"),
             "launch_id": launch_id, "created_at": now, "base_model": base_model,
             "profile_name": run.profile_name, "launch_command": run.command,
-            "env_json": run.env, "gguf_path": s["model"], "mtp_file": s["mtp"],
-            "mmproj_file": s["mmproj"], "draft_model": s["model_draft"], "port": run.port,
+            "env_json": run.env, "gguf_path": s["model"],
+            "model_id": swap_model_id(s["model"]) if s["model"].lower().endswith(".gguf") else None,
+            "mmproj_file": s["mmproj"], "draft_model": s["model_draft"], "spec_type": s["spec_type"],
+            "load_mode": s["load_mode"], "port": run.port,
             "backend": cmd.program.rsplit("/", 1)[-1], "gpu_layers": s["n_gpu_layers"],
             "n_ctx": parsed.n_ctx or s["ctx_size"], "n_batch": s["batch_size"],
             "n_ubatch": s["ubatch_size"], "n_threads": s["threads"], "n_parallel": s["parallel"],

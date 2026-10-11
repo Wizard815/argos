@@ -29,11 +29,17 @@ def _read(path_or_url: str) -> Any:
         return json.load(f)
 
 
-def load_cookbook_commands(path_or_url: str) -> list[dict]:
-    """Return ``[{source, kind, name, base_model, command}]``. Raises on unreadable input."""
+def load_state(path_or_url: str) -> dict:
+    """The raw cookbook state document. Raises on unreadable input."""
     data = _read(path_or_url)
     if not isinstance(data, dict):
         raise ValueError("cookbook state is not a JSON object")
+    return data
+
+
+def load_cookbook_commands(path_or_url: str) -> list[dict]:
+    """Return ``[{source, kind, name, base_model, command}]``. Raises on unreadable input."""
+    data = load_state(path_or_url)
     out: list[dict] = []
     for t in data.get("tasks") or []:
         payload = (t or {}).get("payload") or {}
@@ -68,4 +74,4 @@ def describe(path_or_url: str) -> dict:
     return info
 
 
-__all__ = ["load_cookbook_commands", "describe"]
+__all__ = ["load_state", "load_cookbook_commands", "describe"]

@@ -19,13 +19,16 @@
     <button class="nav-item" data-action="new"><i data-icon="plus"></i>New profile</button>
     <div class="nav-sep"></div>
     <button class="nav-item" data-view="builder"><i data-icon="sliders"></i>Builder</button>
+    <button class="nav-item" data-view="models"><i data-icon="package"></i>Models<span class="meta" id="navModels"></span></button>
     <button class="nav-item" data-view="profiles"><i data-icon="bookmark"></i>Profiles<span class="meta" id="navProfiles"></span></button>
     <button class="nav-item" data-view="playground"><i data-icon="play"></i>Playground<span class="meta" id="navPlayground">idle <span class="dot"></span></span></button>
     <button class="nav-item" data-view="perf"><i data-icon="chart"></i>Perf sheet<span class="meta" id="navPerf"></span></button>
-    <button class="nav-item" data-view="catalog"><i data-icon="package"></i>Catalog</button>
+    <button class="nav-item" data-view="logs"><i data-icon="activity"></i>Logs<span class="meta" id="navLogs"></span></button>
+    <button class="nav-item" data-view="assistant"><i data-icon="message"></i>Assistant<span class="meta" id="navAssistant"></span></button>
+    <div class="nav-sep"></div>
     <button class="nav-item" data-view="env"><i data-icon="braces"></i>Env flags</button>
     <button class="nav-item" data-view="integrations"><i data-icon="plug"></i>Integrations<span class="meta" id="navIntegrations"></span></button>
-    <div class="nav-sep"></div>
+    <button class="nav-item" data-view="settings"><i data-icon="cog"></i>Settings</button>
     <button class="nav-item" data-action="theme"><i data-icon="palette"></i>Theme<span class="meta" id="themeLabel">dark</span></button>
   </nav>
   <div class="sidebar-foot">llama.cpp launch profiles</div>
@@ -56,7 +59,7 @@
             <button class="btn primary" id="parseBtn"><i data-icon="arrow-up"></i>Open in builder</button>
           </div>
         </div>
-        <div class="tip">Ctrl+Enter opens the command. Saved profiles, Odysseus cookbooks and llama-swap models are under “Import from…”.</div>
+        <div class="tip">Ctrl+Enter opens the command. Saved profiles, Odysseus cookbooks and llama-swap models are under “Import from…”; every local GGUF has a prefab under Models.</div>
       </div>
 
       <div id="builderMain" hidden>
@@ -86,6 +89,7 @@
           <div class="card-head">
             <h2>Command</h2><span class="pill accent" id="bSource" hidden></span>
             <span class="spacer"></span>
+            <div class="seg" id="bFormat" role="group" aria-label="Format" title="Odysseus: the Cookbook's own command shape, which llama-swap reads"><button data-v="odysseus">Odysseus</button><button data-v="plain">As written</button></div>
             <div class="seg" id="bLayout" role="group" aria-label="Layout"><button data-v="multi" class="on">Lines</button><button data-v="single">One line</button></div>
             <button class="btn sm" id="bCopy"><i data-icon="copy"></i>Copy</button>
             <button class="btn sm" id="bYaml"><i data-icon="file-code"></i>llama-swap</button>
@@ -103,8 +107,9 @@
     <!-- PROFILES -->
     <section class="view" id="view-profiles">
       <div class="view-head">
-        <div><h1>Profiles</h1><p class="sub">Saved launch commands. Open one in the builder to retarget it at another model.</p></div>
+        <div><h1>Profiles</h1><p class="sub">Your saved launch commands — as many per model as you like. Every one is served to llama-swap in Odysseus' format.</p></div>
         <span class="spacer"></span>
+        <select id="pModel" style="width:auto; max-width:260px" aria-label="Model"></select>
         <input type="search" id="pSearch" placeholder="Filter…" style="width:200px">
         <button class="btn primary" data-action="new"><i data-icon="plus"></i>New</button>
       </div>
@@ -177,12 +182,95 @@
       <div class="card"><div class="table-wrap"><table id="fTable"></table></div></div>
     </section>
 
-    <!-- CATALOG -->
-    <section class="view" id="view-catalog">
+    <!-- MODELS -->
+    <section class="view" id="view-models">
       <div class="view-head">
-        <div><h1>Catalog</h1><p class="sub">Companion files per base model. They show up as suggestions in the builder.</p></div>
+        <div><h1>Models</h1><p class="sub" id="mSub">Every GGUF in your models folder, each with a ready-made prefab command.</p></div>
+        <span class="spacer"></span>
+        <button class="btn" id="mRescan"><i data-icon="refresh"></i>Rescan</button>
       </div>
-      <div class="cols2" id="cCards"></div>
+      <div class="tabs" data-tabs="models">
+        <button data-pane="library" class="on">Library</button><button data-pane="download">Download</button><button data-pane="extra">Extra files</button>
+      </div>
+      <div class="pane on" data-pane="library">
+        <div class="card">
+          <div class="card-head"><input type="search" id="mSearch" placeholder="Filter models…" style="width:240px"><span class="spacer"></span><span class="hint" id="mCount"></span></div>
+          <div class="table-wrap"><table id="mTable"></table></div>
+        </div>
+      </div>
+      <div class="pane" data-pane="download">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-head"><h2>Hugging Face</h2><span class="spacer"></span><span class="hint" id="dVram"></span></div>
+            <div class="row" style="flex-wrap:nowrap; margin-bottom:10px">
+              <input type="search" id="dQuery" placeholder="Search GGUF repos, e.g. qwen3 8b" style="flex:1">
+              <button class="btn primary" id="dSearch"><i data-icon="search"></i>Search</button>
+            </div>
+            <div class="repo-list" id="dResults"><div class="empty">Search for a model, or paste an <b>org/repo</b> id.</div></div>
+          </div>
+          <div class="card" id="dRepo"><div class="empty">Pick a repo to see its quants and which ones fit your VRAM.</div></div>
+        </div>
+        <div class="card"><div class="card-head"><h2>Downloads</h2><span class="spacer"></span><span class="hint" id="dDest"></span></div><div id="dJobs"></div></div>
+      </div>
+      <div class="pane" data-pane="extra"><div class="cols2" id="cCards"></div></div>
+    </section>
+
+    <!-- LOGS -->
+    <section class="view" id="view-logs">
+      <div class="view-head">
+        <div><h1>Logs</h1><p class="sub">Long-term history in the embedded database: GPU readings, llama-swap request speeds, and everything this app did.</p></div>
+      </div>
+      <div class="tabs" data-tabs="logs">
+        <button data-pane="gpu" class="on">GPU</button><button data-pane="requests">Requests</button><button data-pane="events">Events</button>
+      </div>
+      <div class="pane on" data-pane="gpu">
+        <div class="row" style="margin-bottom:12px">
+          <div class="seg" id="gRange" role="group" aria-label="Range"></div>
+          <span class="hint" id="gSource" style="margin:0"></span>
+        </div>
+        <div class="card">
+          <div class="legend" id="gLegend"></div>
+          <div class="charts" id="gCharts"></div>
+        </div>
+        <div class="card"><div class="card-head"><h2>Per GPU</h2><span class="spacer"></span><span class="hint">over the selected range</span></div><div class="table-wrap"><table id="gTable"></table></div></div>
+      </div>
+      <div class="pane" data-pane="requests">
+        <div class="row" style="margin-bottom:12px">
+          <select id="rRange" style="width:auto" aria-label="Range"><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="1y">Last year</option></select>
+          <select id="rModel" style="width:auto; max-width:280px" aria-label="Model"></select>
+          <span class="hint" id="rHint" style="margin:0"></span>
+        </div>
+        <div class="card"><div class="card-head"><h2>Per model</h2></div><div class="table-wrap"><table id="rStats"></table></div></div>
+        <div class="card"><div class="card-head"><h2>Recent requests</h2></div><div class="table-wrap"><table id="rTable"></table></div></div>
+      </div>
+      <div class="pane" data-pane="events">
+        <div class="row" style="margin-bottom:12px">
+          <select id="eKind" style="width:auto" aria-label="Kind"><option value="">All kinds</option><option>launch</option><option>bench</option><option>profile</option><option>download</option><option>assistant</option><option>telemetry</option><option>export</option><option>settings</option></select>
+          <select id="eLevel" style="width:auto" aria-label="Level"><option value="">All levels</option><option value="error">Errors</option><option value="warn">Warnings</option><option value="info">Info</option></select>
+          <input type="search" id="eQuery" placeholder="Search messages…" style="width:240px">
+        </div>
+        <div class="card"><div class="table-wrap"><table id="evTable"></table></div></div>
+      </div>
+    </section>
+
+    <!-- ASSISTANT -->
+    <section class="view" id="view-assistant">
+      <div class="chat-wrap">
+        <div class="chat-head">
+          <span id="aModel" class="pill"></span>
+          <span id="aStatus" class="status-line"></span>
+          <span class="spacer"></span>
+          <span class="meter" title="Estimated tokens the next turn sends"><span id="aTokens"></span><span class="progress"><i id="aMeter" style="width:0%"></i></span></span>
+          <button class="btn sm" id="aDigest"><i data-icon="eye"></i>What it sees</button>
+          <button class="btn sm" id="aStop" title="Stop the assistant's model server"><i data-icon="square"></i>Stop model</button>
+          <button class="btn sm danger" id="aReset"><i data-icon="trash"></i>Reset chat</button>
+        </div>
+        <div class="messages" id="aMessages"></div>
+        <div class="composer chat">
+          <textarea id="aInput" rows="2" spellcheck="true" placeholder="Ask about your GPUs, speeds, models or profiles…"></textarea>
+          <div class="bar"><span class="hint" style="margin:0">Enter sends · Shift+Enter for a new line · one continuous chat, older turns get compacted</span><span class="spacer"></span><button class="send" id="aSend" aria-label="Send"><i data-icon="arrow-up"></i></button></div>
+        </div>
+      </div>
     </section>
 
     <!-- ENV FLAGS -->
@@ -195,6 +283,14 @@
       <div class="card"><div class="table-wrap"><table id="eTable"></table></div></div>
     </section>
 
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings">
+      <div class="view-head">
+        <div><h1>Settings</h1><p class="sub">Saved in the database. Environment variables only set the defaults.</p></div>
+      </div>
+      <div class="settings-grid" id="sGrid"></div>
+    </section>
+
     <!-- INTEGRATIONS -->
     <section class="view" id="view-integrations">
       <div class="view-head">
@@ -202,6 +298,7 @@
         <span class="spacer"></span>
         <button class="btn" id="iRefresh"><i data-icon="refresh"></i>Refresh</button>
       </div>
+      <div class="card" id="iExport"></div>
       <div class="cols2"><div class="card" id="iOdysseus"></div><div class="card" id="iSwap"></div></div>
     </section>
 
@@ -210,7 +307,8 @@
 
 <datalist id="modelList"></datalist>
 <datalist id="list-mmproj"></datalist>
-<datalist id="list-mtp"></datalist>
+<datalist id="list-draft"></datalist>
+<datalist id="list-loadmode"><option value="dio"></option><option value="mmap"></option></datalist>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="/static/app.js"></script>
 </body>

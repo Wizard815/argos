@@ -27,18 +27,24 @@ def test_ui_and_static(client):
 
 
 def test_command_parse_and_build(client):
-    r = client.post("/api/command/parse", json={"command": "llama-server -m /m/Qwen3-8B-Q4_K_M.gguf -ngl 20"})
+    r = client.post("/api/command/parse", json={"command": "llama-server -m /m/Qwen3-8B-Q4_K_M.gguf -ngl 20",
+                                                "format": "plain"})
     j = r.get_json()
-    assert j["ok"] and j["base_model"] == "Qwen3-8B-Q4_K_M"
+    assert j["ok"] and j["base_model"] == "Qwen3-8B-Q4_K_M" and j["model_id"] == "qwen3-8b-q4_k_m"
     assert j["args"][1] == {"flag": "-ngl", "name": "n-gpu-layers", "value": "20"}
 
     r = client.post("/api/command/build", json={
         "command": j["command"], "edits": {"n-gpu-layers": "99", "flash-attn": "on"},
-        "env": {"CUDA_VISIBLE_DEVICES": "1"}, "name": "q"})
+        "env": {"CUDA_VISIBLE_DEVICES": "1"}, "name": "q", "format": "plain"})
     j = r.get_json()
     assert j["command"] == "CUDA_VISIBLE_DEVICES=1 llama-server -m /m/Qwen3-8B-Q4_K_M.gguf -ngl 99 --flash-attn on"
     assert '"q":' in j["llama_swap_yaml"]
     assert j["multiline"].count("\\\n") == 3
+
+    # default format is Odysseus' Cookbook shape
+    j = client.post("/api/command/parse", json={"command": "llama-server -c 4096 -ngl 20 -m /m/a.gguf -fa on"}).get_json()
+    assert j["format"] == "odysseus"
+    assert j["command"] == 'llama-server --model "/m/a.gguf" --host 0.0.0.0 --port 8080 -ngl 20 -c 4096 -fa on'
 
     assert client.post("/api/command/parse", json={"command": "llama-server 'x"}).status_code == 400
     assert client.post("/api/command/build", json={"command": "llama-server", "edits": [1]}).status_code == 400
