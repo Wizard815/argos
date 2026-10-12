@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argos</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e06c75' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='m12 14 4-4'/%3E%3Cpath d='M3.34 19a10 10 0 1 1 17.32 0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/theme.js"></script>
+</head>
+<body>
+
+<aside class="sidebar" id="sidebar">
+  <div class="brand"><span class="name"><i data-icon="gauge"></i>Argos</span></div>
+  <nav class="nav" aria-label="Main">
+    <button class="nav-item" data-action="new"><i data-icon="plus"></i>New profile</button>
+    <div class="nav-sep"></div>
+    <button class="nav-item" data-view="builder"><i data-icon="sliders"></i>Builder</button>
+    <button class="nav-item" data-view="models"><i data-icon="package"></i>Models<span class="meta" id="navModels"></span></button>
+    <button class="nav-item" data-view="profiles"><i data-icon="bookmark"></i>Profiles<span class="meta" id="navProfiles"></span></button>
+    <button class="nav-item" data-view="playground"><i data-icon="play"></i>Playground<span class="meta" id="navPlayground">idle <span class="dot"></span></span></button>
+    <button class="nav-item" data-view="perf"><i data-icon="chart"></i>Perf sheet<span class="meta" id="navPerf"></span></button>
+    <button class="nav-item" data-view="inventory"><i data-icon="database"></i>Inventory<span class="meta" id="navInventory"></span></button>
+    <button class="nav-item" data-view="schedule"><i data-icon="layers"></i>Schedule<span class="meta" id="navSchedule"></span></button>
+    <button class="nav-item" data-view="logs"><i data-icon="activity"></i>Logs<span class="meta" id="navLogs"></span></button>
+    <button class="nav-item" data-view="assistant"><i data-icon="message"></i>Assistant<span class="meta" id="navAssistant"></span></button>
+    <div class="nav-sep"></div>
+    <button class="nav-item" data-view="env"><i data-icon="braces"></i>Env flags</button>
+    <button class="nav-item" data-view="integrations"><i data-icon="plug"></i>Odysseus<span class="meta" id="navIntegrations"></span></button>
+    <button class="nav-item" data-view="settings"><i data-icon="cog"></i>Settings</button>
+    <button class="nav-item" data-action="theme"><i data-icon="palette"></i>Theme<span class="meta" id="themeLabel">dark</span></button>
+  </nav>
+  <div class="sidebar-foot">llama.cpp launch profiles</div>
+</aside>
+<div class="scrim" data-action="close-nav"></div>
+
+<div class="main">
+  <header class="topbar">
+    <button class="icon-btn ghost menu-btn" data-action="open-nav" aria-label="Open menu"><i data-icon="menu"></i></button>
+    <div class="title" id="topTitle">Builder</div>
+    <button class="btn sm ghost note-btn" id="addNote" title="Add a sticky note to this page"><i data-icon="plus"></i>Note</button>
+  </header>
+
+  <div class="content">
+
+    <!-- BUILDER -->
+    <section class="view" id="view-builder">
+      <div id="builderEmpty">
+        <div class="hero">
+          <div class="logo"><i data-icon="gauge"></i>Argos</div>
+          <div class="tag">Tune once. Launch anywhere.</div>
+        </div>
+        <div class="composer">
+          <textarea id="composerInput" spellcheck="false" placeholder="Paste a llama-server command…"></textarea>
+          <div class="bar">
+            <select id="importSelect" aria-label="Import a command"></select>
+            <button class="btn ghost sm" id="blankBtn">Start blank</button>
+            <span class="spacer"></span>
+            <button class="btn primary" id="parseBtn"><i data-icon="arrow-up"></i>Open in builder</button>
+          </div>
+        </div>
+        <div class="tip">Ctrl+Enter opens the command. Saved profiles, Odysseus cookbooks and llama-swap models are under “Import from…”; every local GGUF has a prefab under Models.</div>
+      </div>
+
+      <div id="builderMain" hidden>
+        <div class="view-head">
+          <div class="fields preset-bar" style="flex:1">
+            <label class="field"><span>Model</span><input type="text" id="bBase" placeholder="Search your models…" spellcheck="false"></label>
+            <label class="field"><span>Preset</span><select id="bPreset" aria-label="Preset for this model"></select></label>
+            <label class="field"><span>Preset name <span class="pill warn" id="bDirty" hidden>unsaved changes</span></span><input type="text" id="bName" placeholder="qwen3-8b · fast"></label>
+          </div>
+          <div class="row">
+            <button class="btn primary" id="bSave"><i data-icon="save"></i>Save</button>
+            <button class="btn" id="bSaveNew">Save as new</button>
+            <button class="btn ghost" id="bDelete" title="Delete this preset"><i data-icon="trash"></i></button>
+            <button class="btn" id="bLaunch"><i data-icon="play"></i>Launch</button>
+            <button class="btn" id="bOdysseus" title="Send this preset to Odysseus"><i data-icon="plug"></i>Odysseus</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <div class="card-head"><h2>Settings</h2><span class="spacer"></span><span class="hint">blank = llama.cpp default</span></div>
+            <div class="fields" id="bFields"></div>
+          </div>
+          <div>
+            <div class="card"><div class="card-head"><h2>Model files</h2></div><div class="fields" id="bFiles"></div></div>
+            <div class="card"><div class="card-head"><h2>Environment</h2><span class="spacer"></span><span class="hint">set before the program</span></div><div class="stack" id="bEnv"></div></div>
+            <div class="card"><div class="card-head"><h2>Other flags</h2></div><div class="stack" id="bOther"></div></div>
+            <div class="card"><div class="card-head"><h2>Always applied</h2><span class="spacer"></span><button class="btn sm" id="bAlwaysEdit"><i data-icon="pencil"></i>Edit</button></div>
+              <p class="hint">Added to every launch and to what llama-swap gets, unless this preset sets them itself.</p><div class="chips" id="bAlways"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>Command</h2><span class="pill accent" id="bSource" hidden></span>
+            <span class="spacer"></span>
+            <div class="seg" id="bFormat" role="group" aria-label="Format" title="Odysseus: the Cookbook's own command shape, which llama-swap reads"><button data-v="odysseus">Odysseus</button><button data-v="plain">As written</button></div>
+            <div class="seg" id="bLayout" role="group" aria-label="Layout"><button data-v="multi" class="on">Lines</button><button data-v="single">One line</button></div>
+            <button class="btn sm" id="bCopy"><i data-icon="copy"></i>Copy</button>
+            <button class="btn sm" id="bYaml"><i data-icon="file-code"></i>llama-swap</button>
+            <button class="btn sm" id="bRaw"><i data-icon="pencil"></i>Edit raw</button>
+          </div>
+          <pre class="code" id="bPreview"></pre>
+          <div class="stack" id="bRawBox" hidden>
+            <textarea id="bRawText" rows="9" spellcheck="false"></textarea>
+            <div class="row end"><button class="btn sm" id="bRawCancel">Cancel</button><button class="btn sm primary" id="bRawApply">Apply</button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PROFILES -->
+    <section class="view" id="view-profiles">
+      <div class="view-head">
+        <div><h1>Profiles</h1><p class="sub">Your saved launch commands — as many per model as you like. Every one is served to llama-swap in Odysseus' format.</p></div>
+        <span class="spacer"></span>
+        <select id="pModel" style="width:auto; max-width:260px" aria-label="Model"></select>
+        <input type="search" id="pSearch" placeholder="Filter…" style="width:200px">
+        <button class="btn primary" data-action="new"><i data-icon="plus"></i>New</button>
+      </div>
+      <div class="card"><div class="table-wrap"><table id="pTable"></table></div></div>
+    </section>
+
+    <!-- PLAYGROUND -->
+    <section class="view" id="view-playground">
+      <div class="view-head">
+        <div><h1>Playground</h1><p class="sub">Launch, wait for the server, benchmark. Results land in the perf sheet.</p></div>
+      </div>
+      <div class="grid2">
+        <div>
+          <div class="card">
+            <div class="card-head"><h2>Launch</h2><span class="spacer"></span>
+              <select id="gProfile" style="width:auto; max-width:260px" aria-label="Load a profile"></select></div>
+            <textarea id="gCmd" rows="5" spellcheck="false" placeholder="llama-server -m /models/model.gguf --port ${PORT} -ngl 99"></textarea>
+            <div class="row" style="margin-top:10px">
+              <input type="text" id="gBase" list="modelList" placeholder="Base model (for the perf sheet)" style="flex:1; width:auto">
+              <button class="btn primary" id="gLaunch"><i data-icon="play"></i>Launch</button>
+            </div>
+            <p class="hint">${PORT} is swapped for a free port. Each launch logs to runs/&lt;id&gt;.log.</p>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2 id="gLogTitle">Output</h2><span class="spacer"></span>
+              <label class="row muted mono-sm"><input type="checkbox" id="gFollow" checked> follow</label></div>
+            <pre class="log" id="gLog"></pre>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Live readings</h2><span class="spacer"></span>
+              <button class="btn sm" id="gSimilar"><i data-icon="search"></i>Compare with similar</button></div>
+            <div class="stats" id="gBuf"></div>
+            <div class="grid2" style="margin-top:12px">
+              <div class="chart" id="gDecode"></div>
+              <div class="chart" id="gPrefill"></div>
+            </div>
+            <div id="gRefs"></div>
+            <details style="margin-top:10px"><summary class="muted mono-sm">Tensor and load readings</summary>
+              <pre class="log" id="gReadings" style="max-height:200px"></pre></details>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="card-head"><h2>Launches</h2><span class="spacer"></span><span class="hint">this session</span></div>
+            <div id="gLaunches"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Benchmark</h2><span class="spacer"></span><span id="gState"></span></div>
+            <div class="fields">
+              <label class="field"><span>Prompt</span><select id="gWords">
+                <option value="100">~130 tokens</option>
+                <option value="400" selected>~520 tokens</option>
+                <option value="1600">~2k tokens</option>
+                <option value="6400">~8k tokens</option>
+              </select></label>
+              <label class="field"><span>Generate</span><select id="gNPredict">
+                <option>64</option><option selected>128</option><option>256</option><option>512</option>
+              </select></label>
+            </div>
+            <div class="row" style="margin-top:12px">
+              <button class="btn primary" id="gBench"><i data-icon="zap"></i>Run benchmark</button>
+              <button class="btn" id="gRecord" title="Store the numbers found in the log (llama-cli / llama-bench / earlier requests)"><i data-icon="file-text"></i>Record from log</button>
+              <span class="spacer" style="flex:1"></span>
+              <button class="btn danger" id="gStop"><i data-icon="square"></i>Stop</button>
+            </div>
+            <div class="stats" id="gStats" style="margin-top:12px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PERF -->
+    <section class="view" id="view-perf">
+      <div class="view-head">
+        <div><h1>Perf sheet</h1><p class="sub">Every benchmark and recorded log, so you never re-test what already worked.</p></div>
+        <span class="spacer"></span>
+        <select id="fModel" style="width:auto; max-width:240px" aria-label="Model"></select>
+        <input type="search" id="fSearch" placeholder="Filter…" style="width:160px">
+        <button class="btn" id="fCsv"><i data-icon="download"></i>CSV</button>
+      </div>
+      <div class="card"><div class="card-head"><h2>Best per model</h2><span class="spacer"></span><span class="hint">by generation speed</span></div><div class="best-grid" id="fBest"></div></div>
+      <div class="card"><div class="table-wrap"><table id="fTable"></table></div></div>
+    </section>
+
+    <!-- MODELS -->
+    <section class="view" id="view-models">
+      <div class="view-head">
+        <div><h1>Models</h1><p class="sub" id="mSub">Every GGUF in your models folder, each with a ready-made prefab command.</p></div>
+        <span class="spacer"></span>
+        <button class="btn" id="mRescan"><i data-icon="refresh"></i>Rescan</button>
+      </div>
+      <div class="tabs" data-tabs="models">
+        <button data-pane="library" class="on">Library</button><button data-pane="download">Download</button><button data-pane="extra">Extra files</button>
+      </div>
+      <div class="pane on" data-pane="library">
+        <div class="card">
+          <div class="card-head"><input type="search" id="mSearch" placeholder="Filter models…" style="width:240px"><span class="spacer"></span><span class="hint" id="mCount"></span></div>
+          <div class="table-wrap"><table id="mTable"></table></div>
+        </div>
+      </div>
+      <div class="pane" data-pane="download">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-head"><h2>Hugging Face</h2><span class="spacer"></span><span class="hint" id="dVram"></span></div>
+            <div class="row" style="flex-wrap:nowrap; margin-bottom:10px">
+              <input type="search" id="dQuery" placeholder="Search GGUF repos, e.g. qwen3 8b" style="flex:1">
+              <button class="btn primary" id="dSearch"><i data-icon="search"></i>Search</button>
+            </div>
+            <div class="repo-list" id="dResults"><div class="empty">Search for a model, or paste an <b>org/repo</b> id.</div></div>
+          </div>
+          <div class="card" id="dRepo"><div class="empty">Pick a repo to see its quants and which ones fit your VRAM.</div></div>
+        </div>
+        <div class="card"><div class="card-head"><h2>Downloads</h2><span class="spacer"></span><span class="hint" id="dDest"></span></div><div id="dJobs"></div></div>
+      </div>
+      <div class="pane" data-pane="extra"><div class="cols2" id="cCards"></div></div>
+    </section>
+
+    <!-- INVENTORY -->
+    <section class="view" id="view-inventory">
+      <div class="view-head">
+        <div><h1>Inventory</h1><p class="sub">Every model that exists or ran: which GPUs, how much VRAM, which quant, cache type and flags. Anything new is recorded as new, never refused.</p></div>
+        <span class="spacer"></span>
+        <div class="row"><span class="hint" id="ivRefreshed" style="margin:0"></span><button class="btn sm" id="ivRefresh"></button></div>
+      </div>
+      <div class="tabs" data-tabs="inventory">
+        <button data-pane="models" class="on">Models</button><button data-pane="sessions">Loads</button><button data-pane="review">New &amp; unknown<span class="meta" id="ivPending"></span></button><button data-pane="host">Host</button>
+      </div>
+      <div class="pane on" data-pane="models"><div id="ivModels"></div></div>
+      <div class="pane" data-pane="sessions"><div id="ivSessions"></div></div>
+      <div class="pane" data-pane="review"><div id="ivReview"></div></div>
+      <div class="pane" data-pane="host"><div id="ivHost"></div></div>
+    </section>
+
+    <!-- SCHEDULE -->
+    <section class="view" id="view-schedule">
+      <div class="view-head">
+        <div><h1>Schedule</h1><p class="sub">Which models share the GPUs. Plan it here, try it first, and watch llama-swap carry it out.</p></div>
+      </div>
+      <div class="tabs" data-tabs="schedule">
+        <button data-pane="live" class="on">Live</button><button data-pane="plan">Plan</button><button data-pane="simulate">Simulate</button><button data-pane="export">Export</button>
+      </div>
+      <div class="pane on" data-pane="live"><div id="scLive"></div></div>
+      <div class="pane" data-pane="plan"><div id="scPlan"></div></div>
+      <div class="pane" data-pane="simulate"><div id="scSim"></div></div>
+      <div class="pane" data-pane="export"><div id="scExport"></div></div>
+    </section>
+
+    <!-- LOGS -->
+    <section class="view" id="view-logs">
+      <div class="view-head">
+        <div><h1>Logs</h1><p class="sub">Long-term history in the embedded database: GPU readings, llama-swap request speeds, and everything this app did.</p></div>
+      </div>
+      <div class="tabs" data-tabs="logs">
+        <button data-pane="gpu" class="on">GPU</button><button data-pane="requests">Requests</button><button data-pane="events">Events</button>
+      </div>
+      <div class="pane on" data-pane="gpu">
+        <div class="row" style="margin-bottom:12px">
+          <div class="seg" id="gRange" role="group" aria-label="Range"></div>
+          <span class="hint" id="gSource" style="margin:0"></span>
+        </div>
+        <div class="card">
+          <div class="legend" id="gLegend"></div>
+          <div class="charts" id="gCharts"></div>
+        </div>
+        <div class="card"><div class="card-head"><h2>Per GPU</h2><span class="spacer"></span><span class="hint">over the selected range</span></div><div class="table-wrap"><table id="gTable"></table></div></div>
+      </div>
+      <div class="pane" data-pane="requests">
+        <div class="row" style="margin-bottom:12px">
+          <select id="rRange" style="width:auto" aria-label="Range"><option value="5m">Last 5 minutes</option><option value="10m">Last 10 minutes</option><option value="30m">Last 30 minutes</option><option value="1h">Last hour</option><option value="6h">Last 6 hours</option><option value="24h" selected>Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="1y">Last year</option></select>
+          <select id="rModel" style="width:auto; max-width:280px" aria-label="Model"></select>
+          <span class="hint" id="rHint" style="margin:0"></span>
+        </div>
+        <div class="card"><div class="card-head"><h2>Per model</h2></div><div class="table-wrap"><table id="rStats"></table></div></div>
+        <div class="card"><div class="card-head"><h2>Recent requests</h2></div><div class="table-wrap"><table id="rTable"></table></div></div>
+      </div>
+      <div class="pane" data-pane="events">
+        <div class="row" style="margin-bottom:12px">
+          <select id="eKind" style="width:auto" aria-label="Kind"><option value="">All kinds</option><option>launch</option><option>bench</option><option>profile</option><option>download</option><option>assistant</option><option>telemetry</option><option>export</option><option>settings</option><option>inventory</option><option>schedule</option><option>measure</option></select>
+          <select id="eLevel" style="width:auto" aria-label="Level"><option value="">All levels</option><option value="error">Errors</option><option value="warn">Warnings</option><option value="info">Info</option></select>
+          <input type="search" id="eQuery" placeholder="Search messages…" style="width:240px">
+        </div>
+        <div class="card">
+          <div class="row" style="flex-wrap:nowrap">
+            <input type="text" id="eAsk" placeholder="Ask the assistant about the events below, e.g. why did the last load fail?" style="flex:1">
+            <button class="btn primary" id="eAskBtn"><i data-icon="message"></i>Ask</button>
+          </div>
+          <div id="eAnswer"></div>
+        </div>
+        <div class="card"><div class="table-wrap"><table id="evTable"></table></div></div>
+      </div>
+    </section>
+
+    <!-- ASSISTANT -->
+    <section class="view" id="view-assistant">
+      <div class="chat-wrap">
+        <div class="chat-head">
+          <span id="aModel" class="pill"></span>
+          <span id="aStatus" class="status-line"></span>
+          <span class="spacer"></span>
+          <span class="meter" title="Estimated tokens the next turn sends"><span id="aTokens"></span><span class="progress"><i id="aMeter" style="width:0%"></i></span></span>
+          <button class="btn sm" id="aDigest"><i data-icon="eye"></i>What it sees</button>
+          <button class="btn sm" id="aMemory" title="The assistant's memory: search it, see what is in it"><i data-icon="database"></i>Memory</button>
+          <button class="btn sm" id="aStop" title="Stop the assistant's model server"><i data-icon="square"></i>Stop model</button>
+          <button class="btn sm danger" id="aReset"><i data-icon="trash"></i>Reset chat</button>
+        </div>
+        <div class="messages" id="aMessages"></div>
+        <div class="composer chat">
+          <textarea id="aInput" rows="2" spellcheck="true" placeholder="Ask about your GPUs, speeds, models or profiles…"></textarea>
+          <div class="bar"><span class="hint" style="margin:0">Enter sends · Shift+Enter for a new line · one continuous chat, older turns get compacted</span><span class="spacer"></span><button class="send" id="aSend" aria-label="Send"><i data-icon="arrow-up"></i></button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ENV FLAGS -->
+    <section class="view" id="view-env">
+      <div class="view-head">
+        <div><h1>Env flags</h1><p class="sub">Environment variables that matter for llama.cpp, with the last numbers seen when each was set.</p></div>
+        <span class="spacer"></span>
+        <input type="search" id="eSearch" placeholder="Filter…" style="width:200px">
+      </div>
+      <div class="card"><div class="table-wrap"><table id="eTable"></table></div></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings">
+      <div class="view-head">
+        <div><h1>Settings</h1><p class="sub">Saved in the database. Environment variables only set the defaults.</p></div>
+      </div>
+      <div class="settings-grid" id="sGrid"></div>
+      <div class="card" id="iExport"></div>
+    </section>
+
+    <!-- INTEGRATIONS -->
+    <section class="view" id="view-integrations">
+      <div class="view-head">
+        <div><h1>Odysseus</h1><p class="sub">Your Odysseus from here: notes, brain, calendar, library, cookbook, tasks, gallery and tools.</p></div>
+        <span class="spacer"></span>
+        <button class="btn" id="iRefresh"><i data-icon="refresh"></i>Refresh</button>
+      </div>
+      <div class="card" id="oConn"></div>
+      <div class="tabs" data-tabs="odysseus">
+        <button data-pane="notes" class="on">Notes</button><button data-pane="brain">Brain</button><button data-pane="calendar">Calendar</button><button data-pane="library">Library</button><button data-pane="cookbook">Cookbook</button><button data-pane="tasks">Tasks</button><button data-pane="gallery">Gallery</button><button data-pane="tools">Tools</button>
+      </div>
+      <div class="pane on" data-pane="notes"><div id="oArea-notes"></div></div>
+      <div class="pane" data-pane="brain"><div id="oArea-brain"></div></div>
+      <div class="pane" data-pane="calendar"><div id="oArea-calendar"></div></div>
+      <div class="pane" data-pane="library"><div id="oArea-library"></div></div>
+      <div class="pane" data-pane="cookbook"><div id="oArea-cookbook"></div></div>
+      <div class="pane" data-pane="tasks"><div id="oArea-tasks"></div></div>
+      <div class="pane" data-pane="gallery"><div id="oArea-gallery"></div></div>
+      <div class="pane" data-pane="tools"><div id="oArea-tools"></div></div>
+    </section>
+
+  </div>
+</div>
+
+<datalist id="modelList"></datalist>
+<datalist id="list-mmproj"></datalist>
+<datalist id="list-draft"></datalist>
+<datalist id="list-loadmode"><option value="dio"></option><option value="mmap"></option></datalist>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

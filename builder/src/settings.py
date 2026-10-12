@@ -1,0 +1,152 @@
+"""App settings: defaults from the environment, overrides saved from the UI.
+
+Each top-level key is one group. A group saved from the Settings view is
+stored whole in the ``settings`` table and merged over its default, so new
+default keys still appear for older saved groups.
+"""
+from __future__ import annotations
+
+import copy
+import os
+from typing import Any
+
+from .db import Store
+
+SECRET_KEYS = {("downloads", "hf_token"), ("export", "token"), ("odysseus", "token")}
+
+
+def env_defaults(cfg: dict) -> dict:
+    """Default settings built from app config (which itself defaults to env vars)."""
+    root = cfg.get("ROOT", ".")
+    return {
+        "paths": {
+            "models_dir": cfg.get("MODELS_DIR") or os.path.join(root, "models"),
+        },
+        "integrations": {
+            "odysseus_cookbook": cfg.get("ODYSSEUS_COOKBOOK", ""),
+            "llama_swap_config": cfg.get("LLAMA_SWAP_CONFIG", ""),
+            "llama_swap_url": cfg.get("LLAMA_SWAP_URL", ""),
+        },
+        "always": {
+            # added to every command when it does not set them already; a profile's own value wins
+            "env": "",
+            "flags": "",
+            "on_launch": True,   # launches from this app (playground, measure)
+            "on_export": True,   # what llama-swap gets
+        },
+        "odysseus": {
+            "url": "",                # e.g. http://odysseus:7000
+            "token": "",              # an ody_… API token from Odysseus → Settings → API tokens
+            "brain_in_memory": True,  # let the assistant's memory include Odysseus' Brain
+        },
+        "memory": {
+            # the assistant's memory: every record gets an embedding from this OpenAI-compatible endpoint
+            "enabled": True,
+            "endpoint": "",   # blank = llama-swap's /v1
+            "model": "",      # an embedding model id, e.g. nomic-embed-text-v2-q8; blank = search by words only
+            "batch": 16,
+            "results": 8,     # records the assistant sees per question
+        },
+        "builder": {
+            # "odysseus" rewrites commands into the Cookbook's shape on every edit
+            "command_format": "odysseus",
+        },
+        "prefab": {
+            # what a freshly scanned model's prefab command starts from
+            "host": "0.0.0.0",
+            "port": "8080",
+            "ngl": "99",
+            "ctx": "32768",
+            "flash_attn": "on",
+            "cache_type": "q8_0",
+            "load_mode": "",
+            "split_mode": "",
+            "jinja": True,
+            "env": "",
+            "extra": "",
+        },
+        "downloads": {
+            "hf_endpoint": cfg.get("HF_ENDPOINT") or "https://huggingface.co",
+            "hf_token": cfg.get("HF_TOKEN", ""),
+            "vram_gb": 0.0,  # 0 = detect
+        },
+        "telemetry": {
+            "enabled": bool(cfg.get("TELEMETRY", True)),
+            "interval_s": 15,
+            "raw_days": 14,
+            "source": "auto",  # auto | llama-swap | local | off
+        },
+        "export": {
+            "file": cfg.get("COOKBOOK_EXPORT_FILE", ""),
+            "include_odysseus": True,
+            "include_tasks": False,
+            "token": "",
+        },
+        "assistant": {
+            "mode": "managed",       # managed: launch a profile here; endpoint: use an OpenAI URL
+            "profile_id": "",
+            "endpoint": "",          # e.g. http://llama-swap:8080/v1
+            "model": "",
+            "context_tokens": 8192,  # what the assistant's server was launched with
+            "keep_recent": 8,        # messages always kept verbatim
+            "temperature": 0.7,
+        },
+    }
+
+
+def _merge(base: dict, over: dict) -> dict:
+    out = copy.deepcopy(base)
+    for k, v in (over or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge(out[k], v)
+        elif k in out or not isinstance(base, dict):
+            out[k] = v
+    return out
+
+
+class Settings:
+    def __init__(self, store: Store, defaults: dict):
+        self.store = store
+        self.defaults = defaults
+
+    def all(self) -> dict:
+        saved = self.store.get_settings()
+        return {group: _merge(vals, saved.get(group) or {}) for group, vals in self.defaults.items()}
+
+    def get(self, group: str) -> dict:
+        return self.all()[group]
+
+    def update(self, group: str, values: dict) -> dict:
+        """Save ``values`` over ``group``; unknown keys are rejected, types coerced to the default's."""
+        if group not in self.defaults:
+            raise KeyError(f"unknown settings group {group!r}")
+        current = self.get(group)
+        for key, val in values.items():
+            if key not in self.defaults[group]:
+                raise KeyError(f"unknown setting {group}.{key}")
+            if (group, key) in SECRET_KEYS and isinstance(val, str) and set(val) == {"•"}:
+                continue  # masked value sent back unchanged
+            current[key] = _coerce(self.defaults[group][key], val)
+        self.store.set_setting(group, current)
+        return current
+
+    def public(self) -> dict:
+        """All settings with secrets masked, for the UI."""
+        out = self.all()
+        for group, key in SECRET_KEYS:
+            if out[group].get(key):
+                out[group][key] = "•" * 8
+        return out
+
+
+def _coerce(default: Any, value: Any) -> Any:
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
+    if isinstance(default, int):
+        return int(float(value))
+    if isinstance(default, float):
+        return float(value)
+    return "" if value is None else str(value)
+
+
+__all__ = ["Settings", "env_defaults"]

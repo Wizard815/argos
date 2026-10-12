@@ -1,0 +1,401 @@
+"""The built-in assistant: one continuous chat with a small local model.
+
+Every turn the model gets a compact LIVE DATA block built from this app's
+database (GPU history, llama-swap request speeds, benchmarks, running
+launches, recent problems), so a 0.6B model can answer "how have my GPUs been
+doing" from facts instead of guessing. The conversation is stored in
+``chat_messages``; when it would no longer fit the context window, the oldest
+turns are summarised by the model itself into a running summary and marked
+compacted (still shown in the UI, no longer sent).
+
+The model is either a profile this app launches and keeps running
+("managed", the default -- Qwen3-0.6B Q8_0) or any OpenAI-compatible endpoint,
+for example llama-swap's /v1 with one of its model IDs.
+"""
+from __future__ import annotations
+
+import json
+import queue
+import re
+import threading
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime
+from typing import Callable, Iterator, Optional
+
+from .db import Store
+from .runner import LaunchError, Runner
+from .settings import Settings
+
+DEFAULT_REPOS = ("Qwen/Qwen3-0.6B-GGUF", "ggml-org/Qwen3-0.6B-GGUF", "unsloth/Qwen3-0.6B-GGUF")
+DEFAULT_QUANT = "Q8_0"
+PROFILE_NAME = "Assistant · Qwen3-0.6B"
+ANSWER_TOKENS = 768
+SUMMARY_KEY = "_chat_summary"
+
+SYSTEM_PROMPT = """You are the Argos assistant, a concise helper for running llama.cpp models on this machine.
+Use the LIVE DATA block for anything about GPUs, speeds, models, profiles, launches or errors; quote its numbers.
+RELATED RECORDS are the stored records closest to the question; prefer them for anything about a specific model, setting, note or past event.
+INVENTORY lines list the models seen, how long each was loaded and on which GPUs, and settings (quants, cache types, flags) seen for the first time that are waiting for review.
+If LIVE DATA does not cover the question, say so in one line instead of guessing.
+Know llama-server flags (-ngl, -c, --flash-attn, --cache-type-k/v, -lm, --split-mode, --n-cpu-moe, --spec-type) and suggest concrete changes.
+Answer in a few short sentences or a short list."""
+
+SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}  # Qwen3 non-thinking defaults
+THINK = re.compile(r"<think>.*?(?:</think>\s*|$)", re.DOTALL)
+
+
+def pick_quant(quants: list[dict], want: str = DEFAULT_QUANT) -> Optional[dict]:
+    """The wanted quant if the repo has it, else the smallest 4-8 bit one."""
+    exact = [q for q in quants if q["quant"].upper() == want.upper()]
+    if exact:
+        return exact[0]
+    usable = [q for q in quants if re.match(r"(UD-)?I?Q[4-8]", q["quant"].upper())]
+    return min(usable, key=lambda q: q["size"]) if usable else None
+
+
+def first_json(text: str):
+    """The first JSON array or object in a model's reply (code fences and chatter around it are ignored)."""
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text or ""):
+        if ch in "[{":
+            try:
+                return decoder.raw_decode(text[i:])[0]
+            except ValueError:
+                continue
+    return None
+
+
+def estimate_tokens(text: str) -> int:
+    return len(text) // 3 + 1  # deliberately pessimistic: numbers and code tokenize densely
+
+
+def _f(v, digits=0) -> str:
+    return "?" if v is None else f"{v:.{digits}f}"
+
+
+class AssistantError(Exception):
+    pass
+
+
+class Assistant:
+    def __init__(self, store: Store, settings: Settings, runner: Runner, analytics,
+                 on_event: Callable[..., None], inventory=None, memory=None):
+        self.inventory = inventory
+        self.memory = memory
+        self.store = store
+        self.settings = settings
+        self.runner = runner
+        self.analytics = analytics
+        self.on_event = on_event
+        self.launch_id: Optional[str] = None
+        self._launched_stamp: tuple = ()
+        self._turn = threading.Lock()
+
+    # ----- the facts the model sees ----------------------------------------
+    def digest(self, question: str = "", now: Optional[float] = None) -> str:
+        now = now or time.time()
+        lines = [f"LIVE DATA ({datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M')})"]
+        latest = self.store.gpu_latest()
+        if latest and now - latest[0]["ts"] < 600:
+            lines.append("GPU now: " + " | ".join(
+                f"GPU{g['gpu']} {g['name']}: {_f(g['util'])}% busy, VRAM {_f((g['mem_used_mb'] or 0) / 1024, 1)}"
+                f"/{_f((g['mem_total_mb'] or 0) / 1024, 1)} GB, {_f(g['temp_c'])}°C, {_f(g['power_w'])} W"
+                for g in latest))
+        for label, span in (("last 1h", 3600), ("last 24h", 86400)):
+            rows = self.store.gpu_summary(now - span)
+            if rows:
+                lines.append(f"GPU {label}: " + " | ".join(
+                    f"GPU{g['gpu']} avg {_f(g['util_avg'])}% (max {_f(g['util_max'])}%), VRAM peak "
+                    f"{_f((g['mem_max_mb'] or 0) / 1024, 1)}/{_f((g['mem_total_mb'] or 0) / 1024, 1)} GB, "
+                    f"temp max {_f(g['temp_max'])}°C, avg {_f(g['power_avg'])} W" for g in rows))
+        if not latest:
+            lines.append("GPU: no samples recorded yet (Settings -> Telemetry).")
+        week = [h for h in self.store.gpu_hourly(now - 7 * 86400)]
+        if week:
+            by_gpu: dict[int, list] = {}
+            for h in week:
+                by_gpu.setdefault(h["gpu"], []).append(h)
+            lines.append("GPU last 7d (hourly): " + " | ".join(
+                f"GPU{g} busiest hour {_f(max(x['util_avg'] or 0 for x in hs))}% avg, hottest "
+                f"{_f(max(x['temp_max'] or 0 for x in hs))}°C" for g, hs in sorted(by_gpu.items())))
+        reqs = self.store.request_stats(now - 86400)
+        if reqs:
+            lines.append("Requests last 24h (llama-swap): " + " | ".join(
+                f"{r['model']}: {r['requests']} req, gen {_f(r['tg_avg'], 1)} t/s avg (max {_f(r['tg_max'], 1)}), "
+                f"prompt {_f(r['pp_avg'])} t/s, {r['errors']} errors" for r in reqs[:6]))
+        month = self.store.request_stats(now - 30 * 86400)
+        if len(month) > 1:
+            lines.append("Model speeds last 30d (compare models): " + " | ".join(
+                f"{r['model']}: gen {_f(r['tg_avg'], 1)} t/s, prompt {_f(r['pp_avg'])} t/s, {r['requests']} req"
+                for r in sorted(month, key=lambda r: -(r["tg_avg"] or 0))[:8]))
+        best = self.analytics.best_by_base_model()[:5]
+        if best:
+            lines.append("Best benchmarks: " + " | ".join(
+                f"{b['base_model']} {_f(b['tokens_per_second'], 1)} t/s gen, {_f(b['prompt_per_second'])} t/s prompt "
+                f"(ngl {b.get('gpu_layers') or '?'}, ctx {b.get('n_ctx') or '?'}, fa {b.get('flash_attention') or '-'}, "
+                f"kv {b.get('cache_type_k') or 'f16'})" for b in best))
+        running = [r for r in self.runner.list() if r.running]
+        if running:
+            lines.append("Running here: " + ", ".join(
+                f"{r.profile_name or r.base_model or r.launch_id} on :{r.port}" for r in running))
+        profiles = self.store.list_profiles()
+        if profiles:
+            lines.append(f"Profiles: {len(profiles)} saved across "
+                         f"{len({p.get('model_id') or p.get('base_model') for p in profiles})} models.")
+        problems = [e for e in self.store.list_events(since=now - 86400, limit=50) if e["level"] in ("warn", "error")]
+        if problems:
+            lines.append("Recent problems: " + " | ".join(
+                f"{datetime.fromtimestamp(e['ts']).strftime('%H:%M')} {e['message'][:140]}" for e in problems[:5]))
+        if self.inventory is not None:
+            lines += self.inventory.digest_lines(now)
+        lines += self.related(question)
+        lines += self._model_focus(question, now)
+        return "\n".join(lines)
+
+    def related(self, question: str) -> list[str]:
+        """The records from memory closest to the question, by meaning and by words."""
+        if self.memory is None or len((question or "").strip()) < 3 or not self.settings.get("memory")["enabled"]:
+            return []
+        try:
+            hits = self.memory.search(question, int(self.settings.get("memory")["results"] or 8))
+        except Exception:  # noqa: BLE001 - memory is a bonus, never a reason to fail an answer
+            return []
+        if not hits:
+            return []
+        return ["RELATED RECORDS (closest to the question, from the database):"] + [f"- [{h['source']}] {h['text'][:400]}" for h in hits]
+
+    def _model_focus(self, question: str, now: float) -> list[str]:
+        q = question.lower()
+        if len(q) < 3:
+            return []
+        names = {r["base_model"] for r in self.store.list_runs(limit=2000)}
+        names |= {r["model"] for r in self.store.list_requests(since=now - 30 * 86400, limit=2000) if r["model"]}
+        hits = sorted((n for n in names if n and (n.lower() in q or q.strip("?. ") in n.lower())), key=len)[:2]
+        out = []
+        for name in hits:
+            runs = self.store.list_runs(base_model=name, limit=5)
+            if runs:
+                out.append(f"{name} benchmarks: " + "; ".join(
+                    f"{_f(r['tokens_per_second'], 1)} t/s gen, {_f(r['prompt_per_second'])} prompt, "
+                    f"ngl {r.get('gpu_layers') or '?'}, ctx {r.get('n_ctx') or '?'}" for r in runs))
+            reqs = self.store.list_requests(model=name, since=now - 7 * 86400, limit=500)
+            if reqs:
+                tg = [r["tokens_per_second"] for r in reqs if r["tokens_per_second"]]
+                out.append(f"{name} last 7d: {len(reqs)} requests" +
+                           (f", gen {sum(tg) / len(tg):.1f} t/s avg, min {min(tg):.1f}, max {max(tg):.1f}" if tg else ""))
+        return out
+
+    # ----- where the model runs ---------------------------------------------
+    def endpoint(self, status: Callable[[str], None] = lambda s: None, wait_s: float = 300) -> tuple[str, str]:
+        cfg = self.settings.get("assistant")
+        if cfg["mode"] == "endpoint":
+            if not cfg["endpoint"]:
+                raise AssistantError("Set the assistant endpoint in Settings, or switch it to managed.")
+            return cfg["endpoint"].rstrip("/"), cfg["model"] or "assistant"
+        profile = self.store.get_profile(cfg["profile_id"]) if cfg["profile_id"] else None
+        if not profile:
+            raise AssistantError("No assistant profile yet. Click “Set up Qwen3-0.6B” or pick a profile in Settings.")
+        stamp = (profile["profile_id"], profile["launch_command"])
+        run = self.runner.get(self.launch_id) if self.launch_id else None
+        if run and run.running and stamp != self._launched_stamp:
+            self.runner.stop(run.launch_id)  # the profile changed since we started it
+            run = None
+        if not run or not run.running:
+            status("Starting the assistant model…")
+            try:
+                run = self.runner.launch(profile["launch_command"], base_model=profile.get("base_model") or "",
+                                         profile_name=profile["name"])
+            except LaunchError as exc:
+                raise AssistantError(f"Could not start the assistant: {exc}") from exc
+            self.launch_id, self._launched_stamp = run.launch_id, stamp
+            self.on_event("assistant", f"started assistant model ({profile['name']}) on :{run.port}",
+                          data={"launch_id": run.launch_id})
+        deadline = time.time() + wait_s
+        while not self.runner.health(run, timeout=1.0):
+            if not run.running:
+                tail = (self.runner.read_log(run.launch_id, tail_bytes=600) or "").strip().splitlines()
+                raise AssistantError("The assistant model exited while loading: " + (tail[-1] if tail else "no output"))
+            if time.time() > deadline:
+                raise AssistantError("The assistant model did not become ready in time.")
+            status("Loading the assistant model…")
+            time.sleep(0.5)
+        return f"http://{run.host}:{run.port}/v1", "assistant"
+
+    def server_state(self) -> dict:
+        cfg = self.settings.get("assistant")
+        if cfg["mode"] == "endpoint":
+            return {"mode": "endpoint", "endpoint": cfg["endpoint"], "model": cfg["model"]}
+        run = self.runner.get(self.launch_id) if self.launch_id else None
+        profile = self.store.get_profile(cfg["profile_id"]) if cfg["profile_id"] else None
+        return {"mode": "managed", "profile": profile and {"profile_id": profile["profile_id"], "name": profile["name"]},
+                "running": bool(run and run.running), "ready": bool(run and self.runner.health(run, timeout=0.3)),
+                "launch_id": run.launch_id if run else None}
+
+    def stop(self) -> None:
+        if self.launch_id:
+            self.runner.stop(self.launch_id)
+
+    # ----- conversation ------------------------------------------------------
+    def summary(self) -> str:
+        return self.store.get_settings().get(SUMMARY_KEY) or ""
+
+    def _prompt(self, digest: str) -> list[dict]:
+        system = SYSTEM_PROMPT + "\n\n" + digest
+        if self.summary():
+            system += "\n\nEARLIER IN THIS CHAT (summary):\n" + self.summary()
+        msgs = [{"role": "system", "content": system}]
+        msgs += [{"role": m["role"], "content": m["content"]} for m in self.store.list_messages() if not m["compacted"]]
+        return msgs
+
+    def budget(self) -> int:
+        return max(1024, int(self.settings.get("assistant")["context_tokens"]) - ANSWER_TOKENS)
+
+    def compact(self, base: str, model: str, digest: str) -> bool:
+        """Summarise old turns into the running summary when the prompt gets too big."""
+        cfg = self.settings.get("assistant")
+        live = [m for m in self.store.list_messages() if not m["compacted"]]
+        size = sum(estimate_tokens(m["content"]) for m in self._prompt(digest))
+        keep = max(2, int(cfg["keep_recent"]))
+        if size <= self.budget() * 0.7 or len(live) <= keep:
+            return False
+        old = live[:-keep]
+        transcript = "\n".join(f"{m['role'].title()}: {m['content']}" for m in old)
+        prompt = [
+            {"role": "system", "content": "You write compact memory notes for a chat assistant."},
+            {"role": "user", "content": (
+                "Update the running summary of this conversation. Keep facts, numbers, model names, "
+                "decisions and open questions; drop chit-chat. At most 180 words.\n\n"
+                f"Current summary:\n{self.summary() or '(none)'}\n\nNew turns:\n{transcript[-12000:]}")},
+        ]
+        try:
+            text = self._complete(base, model, prompt, max_tokens=400)
+        except AssistantError:
+            text = (self.summary() + "\n(earlier messages were dropped to fit the context window)").strip()
+        self.store.set_setting(SUMMARY_KEY, text.strip())
+        self.store.mark_compacted(old[-1]["id"])
+        self.on_event("assistant", f"compacted {len(old)} chat messages into the summary")
+        return True
+
+    def chat(self, text: str) -> Iterator[dict]:
+        """Run one turn; yields {"type": status|delta|compacted|done|error, ...}."""
+        if not self._turn.acquire(blocking=False):
+            yield {"type": "error", "error": "The assistant is still answering the previous message."}
+            return
+        try:
+            text = text.strip()
+            if not text:
+                yield {"type": "error", "error": "Empty message."}
+                return
+            # Starting the model can take a while: run it aside and stream its progress.
+            updates: queue.Queue = queue.Queue()
+            result: dict = {}
+
+            def start() -> None:
+                try:
+                    result["endpoint"] = self.endpoint(status=updates.put)
+                except AssistantError as exc:
+                    result["error"] = str(exc)
+                finally:
+                    updates.put(None)
+
+            threading.Thread(target=start, daemon=True).start()
+            last = None
+            while (update := updates.get()) is not None:
+                if update != last:
+                    yield {"type": "status", "text": update}
+                    last = update
+            if "error" in result:
+                yield {"type": "error", "error": result["error"]}
+                return
+            base, model = result["endpoint"]
+            self.store.add_message("user", text)
+            digest = self.digest(text)
+            if self.compact(base, model, digest):
+                yield {"type": "compacted", "summary": self.summary()}
+            answer = ""
+            try:
+                for piece in self._stream(base, model, self._prompt(digest)):
+                    answer += piece
+                    yield {"type": "delta", "text": piece}
+            except AssistantError as exc:
+                if answer:
+                    self.store.add_message("assistant", answer.strip())
+                yield {"type": "error", "error": str(exc)}
+                return
+            self.store.add_message("assistant", answer.strip() or "(no answer)")
+            yield {"type": "done", "tokens": self.context_tokens(digest)}
+        finally:
+            self._turn.release()
+
+    def context_tokens(self, digest: Optional[str] = None) -> int:
+        return sum(estimate_tokens(m["content"]) for m in self._prompt(digest if digest is not None else self.digest()))
+
+    def reset(self) -> None:
+        self.store.clear_chat()
+        self.store.set_setting(SUMMARY_KEY, None)
+        self.on_event("assistant", "chat reset")
+
+    # ----- OpenAI-compatible calls ------------------------------------------
+    def _body(self, model: str, messages: list[dict], stream: bool, max_tokens: int) -> bytes:
+        temp = self.settings.get("assistant")["temperature"]
+        return json.dumps({"model": model, "messages": messages, "stream": stream, "max_tokens": max_tokens,
+                           **SAMPLING, "temperature": temp,
+                           "chat_template_kwargs": {"enable_thinking": False}}).encode()
+
+    def _open(self, base: str, body: bytes, timeout: float):
+        req = urllib.request.Request(base + "/chat/completions", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            raise AssistantError(f"model server returned HTTP {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise AssistantError(f"model server not reachable: {getattr(exc, 'reason', exc)}") from exc
+
+    def _complete(self, base: str, model: str, messages: list[dict], max_tokens: int) -> str:
+        with self._open(base, self._body(model, messages, False, max_tokens), 300) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return THINK.sub("", (data.get("choices") or [{}])[0].get("message", {}).get("content") or "")
+
+    def ask(self, question: str, extra: str = "", title: str = "") -> str:
+        """One question answered from LIVE DATA plus an extra block (e.g. log lines); not added to the chat."""
+        base, model = self.endpoint()
+        digest = self.digest(question)
+        user = (f"{title}:\n{extra}\n\n" if extra else "") + f"QUESTION: {question}"
+        answer = self._complete(base, model, [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + digest},
+                                              {"role": "user", "content": user}], ANSWER_TOKENS)
+        self.on_event("assistant", f"answered a question about {title.lower() or 'the data'}: {question[:80]}")
+        return answer.strip()
+
+    def ask_json(self, system: str, user: str, max_tokens: int = 700):
+        """One question, answered with JSON: the first JSON value in the reply, or None when there is none."""
+        base, model = self.endpoint()
+        text = self._complete(base, model, [{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens)
+        return first_json(text)
+
+    def _stream(self, base: str, model: str, messages: list[dict]) -> Iterator[str]:
+        full, sent = "", ""
+        with self._open(base, self._body(model, messages, True, ANSWER_TOKENS), 300) as r:
+            for raw in r:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(payload)["choices"][0].get("delta", {}).get("content") or ""
+                except (ValueError, KeyError, IndexError):
+                    continue
+                full += delta
+                visible = THINK.sub("", full)
+                if visible.startswith(sent) and len(visible) > len(sent):
+                    yield visible[len(sent):]
+                    sent = visible
+
+
+__all__ = ["Assistant", "AssistantError", "first_json", "DEFAULT_REPOS", "DEFAULT_QUANT", "PROFILE_NAME", "estimate_tokens",
+           "pick_quant"]

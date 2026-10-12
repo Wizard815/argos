@@ -17,3 +17,11 @@ evals/config.yaml
 # to this path once and edit the copy; see README-DEPLOY.md. Keeping it out of
 # git means `git pull` never collides with or overwrites your real config.
 deploy/config.yaml
+
+# Python app
+builder/__pycache__/
+builder/**/__pycache__/
+builder/.pytest_cache/
+builder/data.db*
+builder/runs/
+builder/venv/

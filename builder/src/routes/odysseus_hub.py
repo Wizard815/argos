@@ -1,0 +1,193 @@
+"""Odysseus hub: its Notes, Brain, Calendar, Library, Cookbook, Tasks, Gallery and Tools from here,
+and sending what the builder knows (a preset, its measured speeds) into Odysseus."""
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from typing import Any
+
+from flask import Blueprint
+
+from ..integrations.odysseus_api import AREAS, Odysseus, OdysseusError, as_list
+from ..model_perf import model_perf
+from ..web import body, ctx, err, ok
+
+bp = Blueprint("odysseus_hub", __name__)
+
+
+def client() -> Odysseus:
+    o = ctx().settings.get("odysseus")
+    return Odysseus(o["url"], o["token"])
+
+
+def _fail(exc: OdysseusError):
+    return err(str(exc), 502 if not exc.status else (exc.status if exc.status in (401, 403, 404) else 502))
+
+
+@bp.get("/api/ody/status")
+def status():
+    o = ctx().settings.get("odysseus")
+    if not (o["url"] and o["token"]):
+        return ok(configured=False, areas={a: False for a in AREAS})
+    try:
+        caps = client().capabilities()
+    except OdysseusError as exc:
+        return ok(configured=True, connected=False, error=str(exc), areas={a: False for a in AREAS})
+    tools = caps.get("tools") or {}
+    scopes = set(caps.get("token_scopes") or [])
+    areas = {
+        "notes": bool((tools.get("todos") or {}).get("read")),
+        "brain": bool((tools.get("memory") or {}).get("read")),
+        "calendar": bool((tools.get("calendar") or {}).get("read")),
+        "library": bool((tools.get("documents") or {}).get("read")),
+        "cookbook": bool((tools.get("cookbook") or {}).get("read")),
+        # the update adds these to /capabilities; an older Odysseus does not list them
+        "gallery": bool((tools.get("gallery") or {}).get("read")),
+        "tasks": bool((tools.get("tasks") or {}).get("read")),
+        "tools": bool((tools.get("skills") or {}).get("read")),
+    }
+    writable = {"notes": bool((tools.get("todos") or {}).get("write")), "brain": bool((tools.get("memory") or {}).get("write")),
+                "calendar": bool((tools.get("calendar") or {}).get("write")), "library": bool((tools.get("documents") or {}).get("write")),
+                "tasks": bool((tools.get("tasks") or {}).get("run"))}
+    return ok(configured=True, connected=True, areas=areas, writable=writable, scopes=sorted(scopes),
+              updated=any(k in tools for k in ("gallery", "tasks", "skills")))
+
+
+@bp.get("/api/ody/<area>")
+def area_list(area):
+    if area not in AREAS:
+        return err("unknown area", 404)
+    try:
+        c = client()
+        if area == "notes":
+            data = c.notes()
+            return ok(text=data.get("results") or data.get("response") or "", items=as_list(data, "notes"))
+        if area == "brain":
+            return ok(items=as_list(c.memories(), "memories"))
+        if area == "calendar":
+            return ok(items=as_list(c.events(), "events"))
+        if area == "library":
+            return ok(items=as_list(c.documents(), "documents", "library"))
+        if area == "cookbook":
+            cb = c.cookbook()
+            return ok(items=cb["presets"], servers=as_list(cb["servers"], "servers"))
+        if area == "gallery":
+            return ok(items=as_list(c.gallery(), "images"))
+        if area == "tasks":
+            return ok(items=as_list(c.tasks(), "tasks"))
+        return ok(items=as_list(c.tools(), "skills"))
+    except OdysseusError as exc:
+        return _fail(exc)
+
+
+@bp.post("/api/ody/<area>")
+def area_add(area):
+    d = body()
+    try:
+        c = client()
+        if area == "notes":
+            if not (d.get("title") or "").strip():
+                return err("a note needs a title")
+            return ok(result=c.add_note(d["title"].strip(), str(d.get("content") or "")))
+        if area == "brain":
+            if not (d.get("text") or "").strip():
+                return err("write what the Brain should remember")
+            return ok(result=c.remember(d["text"].strip(), str(d.get("category") or "fact")))
+        if area == "calendar":
+            if not (d.get("summary") or "").strip() or not d.get("start"):
+                return err("an event needs a title and a start time")
+            return ok(result=c.add_event(d["summary"].strip(), d["start"], d.get("end") or "", str(d.get("description") or "")))
+        if area == "library":
+            if not (d.get("title") or "").strip():
+                return err("a document needs a title")
+            return ok(result=c.add_document(d["title"].strip(), str(d.get("content") or "")))
+        return err("nothing can be added there from here", 400)
+    except OdysseusError as exc:
+        return _fail(exc)
+
+
+@bp.post("/api/ody/tasks/<task_id>/run")
+def run_task(task_id):
+    try:
+        return ok(result=client().run_task(task_id))
+    except OdysseusError as exc:
+        return _fail(exc)
+
+
+# ----- from the builder ------------------------------------------------------------------------
+def preset_summary(profile: dict) -> tuple[str, str]:
+    """(title, markdown) describing a preset and how fast it has been."""
+    mid = profile.get("model_id") or profile.get("base_model") or ""
+    lines = [f"# {profile['name']} — {mid}", "", "Launch command:", "", "```", profile["launch_command"], "```", ""]
+    perf = model_perf(ctx().store, mid) if mid else None
+    if perf and perf["configs"]:
+        lines += ["| Launch config | Requests | Prefill t/s (median) | Decode t/s (median) | Most at once |", "|---|---|---|---|---|"]
+        for c in perf["configs"]:
+            lines.append(f"| {c['label']} | {c['requests'] + c['benchmarks']} | {c['prefill']['median'] or '-'} | "
+                         f"{c['decode']['median'] or '-'} | {c['concurrency_max'] or '-'} |")
+    lines += ["", f"_From Argos, {datetime.now().strftime('%Y-%m-%d %H:%M')}_"]
+    return f"{profile['name']} ({mid})", "\n".join(lines)
+
+
+@bp.post("/api/ody/send")
+def send():
+    """Send a preset to Odysseus as a note, a Brain memory, a Library document, or a calendar reminder."""
+    c, d = ctx(), body()
+    profile = c.store.get_profile(d.get("profile_id") or "")
+    if not profile:
+        return err("save the preset first", 404)
+    what = d.get("what")
+    title, text = preset_summary(profile)
+    try:
+        o = client()
+        if what == "note":
+            result = o.add_note(title, text)
+        elif what == "brain":
+            perf = model_perf(c.store, profile.get("model_id") or "")
+            best = max((x for x in perf["configs"] if x["decode"]["median"]), key=lambda x: x["decode"]["median"], default=None)
+            fact = f"For model {profile.get('model_id')}, the preset “{profile['name']}” launches with: {profile['launch_command']}"
+            if best:
+                fact += f". Fastest measured config: {best['label']} at {best['decode']['median']} t/s decode."
+            result = o.remember(fact, "fact")
+        elif what == "document":
+            result = o.add_document(title, text)
+        elif what == "event":
+            start = d.get("start") or (datetime.now() + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0).isoformat()
+            result = o.add_event(f"Benchmark {profile['name']}", start, d.get("end") or "", text)
+        else:
+            return err("what must be note, brain, document or event")
+    except OdysseusError as exc:
+        return _fail(exc)
+    c.event("odysseus", f"sent “{profile['name']}” to Odysseus as a {what}", data={"profile_id": profile["profile_id"]})
+    return ok(result=result)
+
+
+def brain_source(settings_fn, limit: int = 500):
+    """Odysseus' Brain as a source for the assistant's memory (when connected and allowed)."""
+    def odysseus_brain() -> list[tuple[str, str, float, str]]:
+        s = settings_fn()
+        o = s["odysseus"]
+        if not (o["url"] and o["token"] and o.get("brain_in_memory")):
+            return []
+        items = as_list(Odysseus(o["url"], o["token"], timeout=10).memories(), "memories")[:limit]
+        out = []
+        for m in items:
+            if not isinstance(m, dict):
+                continue
+            text = m.get("text") or m.get("content") or m.get("memory") or ""
+            if text:
+                out.append(("odysseus-brain", str(m.get("id") or hash(text)), _ts(m.get("created_at") or m.get("timestamp")),
+                            f"Odysseus Brain ({m.get('category') or 'memory'}): {text}"))
+        return out
+    return odysseus_brain
+
+
+def _ts(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
+
+__all__ = ["bp", "brain_source", "preset_summary"]
