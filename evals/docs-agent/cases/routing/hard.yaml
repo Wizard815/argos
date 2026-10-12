@@ -12,7 +12,7 @@
     - Notes exclusive false means other groups are unaffected
 
 - id: hard-matrix-operators
-  question: In a llama-swap matrix set expression, what do the & and | operators mean?
+  question: In an Argos matrix set expression, what do the & and | operators mean?
   tags: [routing, multihop]
   expect_regex: ["&", "\\|"]
   expect_any: ["and", "or"]

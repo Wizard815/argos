@@ -1,4 +1,4 @@
-"""In-process fakes of the Hugging Face Hub and of llama-swap-rescan's API."""
+"""In-process fakes of the Hugging Face Hub and of the Argos engine's API."""
 from __future__ import annotations
 
 import json
@@ -75,11 +75,14 @@ def make_hub(files: dict[str, bytes], gated: bool = False, repo: str = "Qwen/Qwe
     return Hub
 
 
-def make_llama_swap(gpu_stats: list[dict], activity: list[dict], pool: dict = None, model_ids: list = None,
-                    running: list = None, hardware: dict = None, version: dict = None, calls: list = None):
-    """llama-swap-rescan's /api/performance, /api/metrics/activity, /api/pool and /v1/models.
+def make_engine(gpu_stats: list[dict], activity: list[dict], pool: dict = None, model_ids: list = None,
+                    running: list = None, hardware: dict = None, version: dict = None, calls: list = None,
+                    chat_reply: str = "ok"):
+    """The engine's /api/performance, /api/metrics/activity, /api/pool, /v1/models, /running, model unloads
+    and a one-line /v1/chat/completions.
 
-    ``pool`` is served as-is and may be replaced between requests by mutating the dict.
+    ``pool`` is served as-is and may be replaced between requests by mutating the dict. Unloading a model removes
+    it from ``running``.
     """
 
     class Swap(_Base):
@@ -118,8 +121,17 @@ def make_llama_swap(gpu_stats: list[dict], activity: list[dict], pool: dict = No
         def do_POST(self):
             if calls is not None:
                 calls.append(("POST", self.path))
+            size = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(size) or b"{}") if size else {}
             if self.path == "/api/odysseus/refresh":
                 self.send_json({"ok": True})
+            elif self.path.startswith("/api/models/unload/"):
+                name = urllib.parse.unquote(self.path[len("/api/models/unload/"):])
+                if running is not None:
+                    running[:] = [m for m in running if m.get("model") != name]
+                self.send_json({"ok": True})
+            elif self.path == "/v1/chat/completions" and not body.get("stream"):
+                self.send_json({"choices": [{"message": {"role": "assistant", "content": chat_reply}}]})
             else:
                 self.send_json({"error": "not found"}, 404)
 

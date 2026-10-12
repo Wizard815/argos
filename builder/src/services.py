@@ -4,7 +4,8 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from .command import guess_base_model, parse_command, swap_model_id
+from .command import FLAGS, guess_base_model, parse_command, swap_model_id
+from .flaglib import FLAG_LIBRARY
 from .db import Store, new_id
 from .log_analyzer import parse_log_text
 from .runner import Runner
@@ -142,6 +143,37 @@ class Analytics:
                         "description": row.get("description") or "",
                         "recommended": row.get("recommended") or "", **_usage(row)})
         return out
+
+
+    def flag_table(self) -> list[dict]:
+        """llama-server flags: the reference list, plus how many saved profiles use each and with which values."""
+        uses: dict[str, dict] = {}
+        for p in self.store.list_profiles():
+            try:
+                cmd = parse_command(p["launch_command"])
+            except ValueError:
+                continue
+            seen = set()
+            for a in cmd.args:
+                if not a.flag or a.name in seen:
+                    continue
+                seen.add(a.name)
+                u = uses.setdefault(a.name, {"profiles": 0, "values": {}, "spelling": a.flag})
+                u["profiles"] += 1
+                val = a.value if a.value is not None else ""
+                u["values"][val] = u["values"].get(val, 0) + 1
+
+        def row(name: str, category: str, description: str, notes: str) -> dict:
+            u = uses.pop(name, {})
+            spellings = list(FLAGS[name][0]) if name in FLAGS else [u.get("spelling") or f"--{name}"]
+            top = sorted(u.get("values", {}).items(), key=lambda kv: -kv[1])[:3]
+            return {"flag": name, "spellings": spellings, "category": category, "description": description, "notes": notes,
+                    "profiles": u.get("profiles", 0), "values": [v for v, _ in top if v]}
+
+        rows = [row(f["flag"], f["category"], f["description"], f["notes"]) for f in FLAG_LIBRARY]
+        for name in sorted(uses):  # flags your profiles use that the list does not know
+            rows.append(row(name, "Seen in your profiles", "Not in the reference list. Check llama-server --help for what it does.", ""))
+        return rows
 
 
 def _usage(row: dict) -> dict:

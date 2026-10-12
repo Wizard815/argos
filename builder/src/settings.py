@@ -12,7 +12,7 @@ from typing import Any
 
 from .db import Store
 
-SECRET_KEYS = {("downloads", "hf_token"), ("export", "token"), ("odysseus", "token")}
+SECRET_KEYS = {("downloads", "hf_token"), ("odysseus", "token")}
 
 
 def env_defaults(cfg: dict) -> dict:
@@ -23,26 +23,26 @@ def env_defaults(cfg: dict) -> dict:
             "models_dir": cfg.get("MODELS_DIR") or os.path.join(root, "models"),
         },
         "integrations": {
-            "odysseus_cookbook": cfg.get("ODYSSEUS_COOKBOOK", ""),
-            "llama_swap_config": cfg.get("LLAMA_SWAP_CONFIG", ""),
-            "llama_swap_url": cfg.get("LLAMA_SWAP_URL", ""),
+            # the engine is the Argos container's own scheduler; the builder reads GPUs, loads and speeds from it
+            "engine_url": cfg.get("ENGINE_URL", ""),
         },
         "always": {
             # added to every command when it does not set them already; a profile's own value wins
             "env": "",
             "flags": "",
             "on_launch": True,   # launches from this app (playground, measure)
-            "on_export": True,   # what llama-swap gets
+            "on_export": True,   # every model the engine starts
         },
         "odysseus": {
             "url": "",                # e.g. http://odysseus:7000
             "token": "",              # an ody_… API token from Odysseus → Settings → API tokens
             "brain_in_memory": True,  # let the assistant's memory include Odysseus' Brain
+            "use_presets": True,      # Odysseus' saved Cookbook presets become models here
         },
         "memory": {
             # the assistant's memory: every record gets an embedding from this OpenAI-compatible endpoint
             "enabled": True,
-            "endpoint": "",   # blank = llama-swap's /v1
+            "endpoint": "",   # blank = the engine's /v1 (another OpenAI-compatible server only if you need one)
             "model": "",      # an embedding model id, e.g. nomic-embed-text-v2-q8; blank = search by words only
             "batch": 16,
             "results": 8,     # records the assistant sees per question
@@ -74,22 +74,17 @@ def env_defaults(cfg: dict) -> dict:
             "enabled": bool(cfg.get("TELEMETRY", True)),
             "interval_s": 15,
             "raw_days": 14,
-            "source": "auto",  # auto | llama-swap | local | off
-        },
-        "export": {
-            "file": cfg.get("COOKBOOK_EXPORT_FILE", ""),
-            "include_odysseus": True,
-            "include_tasks": False,
-            "token": "",
+            "source": "auto",  # auto | engine | local | off
         },
         "assistant": {
-            "mode": "managed",       # managed: launch a profile here; endpoint: use an OpenAI URL
+            "mode": "engine",        # engine: a model in Argos; endpoint: another OpenAI-compatible server; managed: a profile launched beside the engine
             "profile_id": "",
-            "endpoint": "",          # e.g. http://llama-swap:8080/v1
+            "endpoint": "",          # only for mode endpoint, e.g. http://other-box:8080/v1
             "model": "",
             "context_tokens": 8192,  # what the assistant's server was launched with
             "keep_recent": 8,        # messages always kept verbatim
             "temperature": 0.7,
+            "idle_unload_min": 15,   # unload the assistant's chat and embedding models after this long unused; 0 = never
         },
     }
 

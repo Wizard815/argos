@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 func TestServer_SanitizeAccessControlRequestHeaders(t *testing.T) {

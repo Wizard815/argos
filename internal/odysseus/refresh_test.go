@@ -69,7 +69,7 @@ profiles:
 }
 
 // TestOdysseus_GuardConflicts is the guard itself: a hand-written profile named
-// "ody" must stop the write rather than let llama-swap fail the next reload with
+// "ody" must stop the write rather than let Argos fail the next reload with
 // a duplicate identity key.
 func TestOdysseus_GuardConflicts(t *testing.T) {
 	res := &Result{
@@ -112,7 +112,7 @@ func TestOdysseus_GuardConflictsClean(t *testing.T) {
 }
 
 // TestOdysseus_SourceKeysToleratesMissingAndMalformed keeps a refresh working
-// when an unrelated config file is absent or broken -- llama-swap reports those
+// when an unrelated config file is absent or broken -- Argos reports those
 // itself, with better messages.
 func TestOdysseus_SourceKeysToleratesMissingAndMalformed(t *testing.T) {
 	dir := t.TempDir()

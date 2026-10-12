@@ -9,11 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/router/scheduler"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/router/scheduler"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 type shutdownReq struct {

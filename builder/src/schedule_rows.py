@@ -1,6 +1,6 @@
 """The models the Schedule view lists, each with a size estimate.
 
-A row is anything llama-swap can load: a GGUF in the library (its modelscan id)
+A row is anything Argos can load: a GGUF in the library (its modelscan id)
 or a saved profile (``<model-id>--<label>``, how the Odysseus integration names
 variants). Every profile is its own row because its context size and cache type
 change how much VRAM it takes.
@@ -104,9 +104,9 @@ def build_rows(library: list[dict], presets: list[dict], plan: dict, prefab: dic
     return rows, commands
 
 
-def exported_sizes(rows: list[dict]) -> dict[str, float]:
+def plan_sizes(rows: list[dict]) -> dict[str, float]:
     """id -> GiB for every row that has a size, which is what the plan exports."""
     return {r["id"]: r["effective_gib"] for r in rows if r["effective_gib"] > 0}
 
 
-__all__ = ["build_rows", "exported_sizes", "file_bytes", "arch_of"]
+__all__ = ["build_rows", "plan_sizes", "file_bytes", "arch_of"]

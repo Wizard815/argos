@@ -23,7 +23,7 @@ run it in a shell.
 $ llama-server --port 10001 --model /models/qwen.gguf
 ```
 
-If it fails there, it is not a llama-swap problem — wrong path, missing GGUF,
+If it fails there, it is not an Argos problem — wrong path, missing GGUF,
 insufficient VRAM, bad flag. Fix it there first.
 
 ## 2. Does `proxy` match the port in `cmd`?
@@ -53,7 +53,7 @@ Turn up detail with `logLevel: debug`.
 
 ## 4. Is the health check right?
 
-llama-swap polls `checkEndpoint` (default `/health`) until it returns HTTP 200.
+Argos polls `checkEndpoint` (default `/health`) until it returns HTTP 200.
 Servers that don't have `/health` never look ready, and every request waits
 until `healthCheckTimeout` expires.
 
@@ -74,7 +74,7 @@ healthCheckTimeout: 500   # seconds; default 120, minimum 15
 ```
 
 Large models, cold page cache and vLLM's compile step can all exceed the
-default. If the log shows the server still starting up when llama-swap gives
+default. If the log shows the server still starting up when Argos gives
 up, raise this.
 
 ## 6. Is something else holding the port or the GPU?
@@ -93,14 +93,14 @@ use `cmdStop: docker stop ${MODEL_ID}` for Docker-managed models.
 ## 7. Validate the config file
 
 ```console
-$ llama-swap --config config.yaml -validate
+$ argos --config config.yaml -validate
 ```
 
 This checks the config and exits. Add the schema modeline at the top of your
 file for editor validation as you type:
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/mostlygeek/llama-swap/refs/heads/main/config-schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Wizard815/Argos/refs/heads/main/config-schema.json
 ```
 
 ## Quick reference

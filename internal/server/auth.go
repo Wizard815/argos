@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mostlygeek/llama-swap/internal/chain"
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/chain"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 // CreateAuthMiddleware returns middleware that validates API keys when the
@@ -30,7 +30,7 @@ func CreateAuthMiddleware(cfg config.Config) chain.Middleware {
 				}
 			}
 			if !valid {
-				w.Header().Set("WWW-Authenticate", `Basic realm="llama-swap"`)
+				w.Header().Set("WWW-Authenticate", `Basic realm="argos"`)
 				swaputil.SendResponse(w, r, http.StatusUnauthorized, "unauthorized: invalid or missing API key")
 				return
 			}

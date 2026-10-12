@@ -1,6 +1,6 @@
 # Grounded in docs/kb/guides/groups-and-matrix.md and guides/profiles-and-selectors.md
 - id: routing-two-routers
-  question: What are the two routing engines in llama-swap and how do I choose one?
+  question: What are the two routing engines in Argos and how do I choose one?
   tags: [routing]
   expect_regex: ["group", "matrix"]
   expect_any: ["routing", "router"]
@@ -14,7 +14,7 @@
     - Shows or names routing.router.use as the selector
 
 - id: routing-group-flags
-  question: What do the swap and exclusive flags do on a llama-swap group?
+  question: What do the swap and exclusive flags do on an Argos group?
   tags: [routing]
   expect_regex: ["swap", "exclusive"]
   expect_tools: [docs__search_docs]
@@ -27,7 +27,7 @@
     - Says exclusive governs whether loading a member unloads other groups
 
 - id: routing-model-many-groups
-  question: Can one model be a member of two different groups in llama-swap?
+  question: Can one model be a member of two different groups in Argos?
   tags: [routing]
   expect_any: ["only one", "one group", "cannot", "can't", "no"]
   expect_tools: [docs__search_docs]
@@ -51,7 +51,7 @@
     - Shows a yaml snippet with persistent true
 
 - id: routing-profiles-vs-selectors
-  question: What is the difference between a profile and a selector in llama-swap?
+  question: What is the difference between a profile and a selector in Argos?
   tags: [routing, profiles]
   expect_regex: ["profile", "selector"]
   expect_tools: [docs__search_docs]

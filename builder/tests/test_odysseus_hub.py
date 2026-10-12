@@ -7,7 +7,7 @@ from .fakes import serve
 TOKEN = "ody_" + "x" * 43
 
 
-def make_odysseus(scopes, updated=True, calls=None):
+def make_odysseus(scopes, updated=True, calls=None, capabilities=True):
     calls = calls if calls is not None else []
     state = {"notes": [], "memories": [{"id": 1, "text": "user prefers row split for two chats", "category": "preference",
                                         "created_at": "2026-10-01T10:00:00"}], "events": [], "docs": [{"id": "d1", "title": "Old report"}]}
@@ -59,6 +59,8 @@ def make_odysseus(scopes, updated=True, calls=None):
                     "/api/codex/tasks": (["tasks:read", "tasks:run"], lambda: {"tasks": [{"id": "t1", "name": "nightly digest"}]}),
                     "/api/codex/skills": (["skills:read"], lambda: {"skills": [{"name": "web_search"}], "count": 1}),
                 })
+            if not capabilities:
+                routes.pop("/api/codex/capabilities")
             if path not in routes:
                 return self._send({"detail": "Not Found"}, 404)
             need, fn = routes[path]
@@ -121,7 +123,7 @@ def test_an_older_odysseus_has_no_gallery_tasks_or_tools(client):
         j = client.get("/api/ody/status").get_json()
         assert j["updated"] is False and not j["areas"]["gallery"] and j["areas"]["library"]
         r = client.get("/api/ody/gallery")
-    assert r.status_code == 404 and "update Odysseus" in r.get_json()["error"]
+    assert r.status_code == 200 and r.get_json()["unavailable"] is True, "an area this Odysseus lacks is just empty"
 
 
 def test_every_area_lists(client):
@@ -204,3 +206,34 @@ def test_the_token_is_never_shown(app, client):
     client.put("/api/settings/odysseus", json={"token": "•" * 8, "url": "http://y"})
     saved = app.extensions["pb"].settings.get("odysseus")
     assert saved["token"] == TOKEN and saved["url"] == "http://y", "sending the mask back keeps the real token"
+
+
+# ----- presets come through the API, so only the URL and token are needed ---------------------------------
+def test_odysseus_presets_become_models_from_the_url_and_token_alone(client):
+    with serve(make_odysseus(ALL)) as url:
+        connect(client, url)
+        j = client.get("/api/integrations").get_json()["odysseus"]
+        assert j["ok"] and [c["name"] for c in j["commands"]] == ["Qwen fast"]
+        state = client.get("/api/cookbook/state").get_json()
+        assert [p["label"] for p in state["presets"]] == ["Qwen fast"] and state["presets"][0]["cmd"] == "llama-server -m q.gguf"
+        client.put("/api/settings/odysseus", json={"use_presets": False})
+        assert client.get("/api/cookbook/state").get_json()["presets"] == []
+
+
+def test_a_bad_token_is_a_warning_not_a_broken_engine_feed(client):
+    with serve(make_odysseus(ALL)) as url:
+        connect(client, url, token="wrong")
+        j = client.get("/api/integrations").get_json()["odysseus"]
+        assert j["ok"] is False and "token" in j["error"]
+        assert client.get("/api/cookbook/state").status_code == 200
+
+
+def test_an_odysseus_without_capabilities_still_works(client):
+    with serve(make_odysseus(ALL, updated=False, capabilities=False)) as url:
+        connect(client, url)
+        j = client.get("/api/ody/status").get_json()
+        assert j["connected"] is True and j["capabilities"] is False
+        assert j["areas"]["notes"] and j["areas"]["cookbook"]
+        assert not j["areas"]["gallery"] and not j["areas"]["tasks"] and not j["areas"]["tools"]
+        r = client.get("/api/ody/gallery").get_json()
+        assert r["ok"] and r["items"] == [] and r["unavailable"] is True, "a missing area is empty, not an error"

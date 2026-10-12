@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/logmon"
 )
 
 const (
@@ -174,8 +174,8 @@ func TestProcessCommand_StartStop(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("before start: expected 503, got %d", rr.Code)
 	}
-	if body := rr.Body.String(); !strings.Contains(body, `"src":"llama-swap"`) || !strings.Contains(body, "process is not ready") {
-		t.Errorf("before start: expected llama-swap error envelope, got %q", body)
+	if body := rr.Body.String(); !strings.Contains(body, `"src":"argos"`) || !strings.Contains(body, "process is not ready") {
+		t.Errorf("before start: expected Argos error envelope, got %q", body)
 	}
 
 	runErr := runAsync(t, p)
@@ -213,8 +213,8 @@ func TestProcessCommand_StartStop(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("after stop: expected 503, got %d", rr.Code)
 	}
-	if body := rr.Body.String(); !strings.Contains(body, `"src":"llama-swap"`) || !strings.Contains(body, "process is not ready") {
-		t.Errorf("after stop: expected llama-swap error envelope, got %q", body)
+	if body := rr.Body.String(); !strings.Contains(body, `"src":"argos"`) || !strings.Contains(body, "process is not ready") {
+		t.Errorf("after stop: expected Argos error envelope, got %q", body)
 	}
 }
 

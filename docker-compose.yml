@@ -20,3 +20,7 @@ services:
       - ${MODELS_DIR:-./models}:/app/models
       - ./data:/data
       - ./config.d:/app/config.d
+    environment:
+      # starting values for the Schedule page (setup.sh writes them to .env); the page can change them later
+      - ARGOS_SCHEDULE_POOL=${ARGOS_SCHEDULE_POOL:-}
+      - ARGOS_SCHEDULE_CARDS=${ARGOS_SCHEDULE_CARDS:-}

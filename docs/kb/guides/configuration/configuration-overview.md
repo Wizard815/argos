@@ -9,15 +9,15 @@ updated: 2026-09-05
 
 # Configuration overview
 
-llama-swap's whole setup lives in one YAML file, passed with `-config` when
-you start the binary. Models, routing, profiles, peers — everything is one
+Argos's whole setup lives in one YAML file, passed with `-config` when
+you start the binary. Models, routing, profiles, selectors — everything is one
 file you edit incrementally, not separate settings scattered across several
 places. (`-config-dir` can split it across multiple files later, but you
 don't need that yet.)
 
 ## Start smaller than you think
 
-Nothing requires a full configuration before llama-swap will run. The most
+Nothing requires a full configuration before Argos will run. The most
 useful first step is getting one model running well enough to ask the Help
 page's Docs agent about everything else, instead of reading it all here.
 
@@ -47,17 +47,17 @@ your build is older than that — add `--jinja` to `cmd` explicitly. See
 `capabilities.tools: true`, which only advertises support in `/v1/models`
 and doesn't enable it by itself.
 
-Start llama-swap and open http://localhost:8080:
+Start Argos and open http://localhost:8080:
 
 ```bash
-llama-swap -config config.yaml -listen localhost:8080
+argos -config config.yaml -listen localhost:8080
 ```
 
 `-validate` checks a config file and exits without starting anything, which
 is useful while you're still getting the YAML right:
 
 ```bash
-llama-swap -config config.yaml -validate
+argos -config config.yaml -validate
 ```
 
 ## Ask, don't grep
@@ -71,7 +71,7 @@ same real settings instead of guessing.
 ## When you need everything
 
 [`config.example.yaml`](../../../config.example.yaml) documents every setting
-llama-swap has, each with its own comment. It's long and covers advanced
+Argos has, each with its own comment. It's long and covers advanced
 cases most configs never touch — treat it as a reference to search, not
 something to read top to bottom.
 

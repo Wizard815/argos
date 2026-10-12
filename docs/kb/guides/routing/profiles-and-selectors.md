@@ -36,10 +36,10 @@ profiles:
 Your editor always requests `llm-code`. Flip the active profile and it gets a
 different model, with no client-side change.
 
-- Pin targets may be a local model, a fully qualified peer model, an alias, a
-  `setParamsByID` alias, or a selector.
+- Pin targets may be a model, an alias, a `setParamsByID` alias, or a
+  selector.
 - An empty string or YAML `~` **disables** the pin — requests get a 404 and it
-  is left out of model listings. Existing local, alias and peer IDs stay
+  is left out of model listings. Existing model and alias IDs stay
   reachable.
 - Pins are applied first, before aliases, filters and routing.
 - Startup selects the profile remembered in `profileStateFile`, falling back to
@@ -110,21 +110,20 @@ want for "just use whatever is already loaded and don't make me wait".
 only. Useful as a stable indirection you can edit in one place.
 
 **`spillover`** — fill each target up to a reservation count, then move to the
-next. Good for spreading load across local and remote capacity:
+next. Good for spreading load across copies of a model:
 
 ```yaml
 selectors:
   llama:
     strategy: spillover
-    targets: [local-llama, peer-a/llama, peer-b/llama]
+    targets: [llama-gpu0, llama-gpu1]
     settings:
       spillover: 4     # requests per active target before spilling over
 ```
 
 Rules worth knowing:
 
-- Selector IDs cannot collide with model IDs, aliases or fully qualified peer
-  model names.
+- Selector IDs cannot collide with model IDs or aliases.
 - A selector's targets cannot be other selectors.
 - Selectors are **not** supported on `/upstream/<model>` paths.
 - Profiles run first, so a profile pin may target a selector.

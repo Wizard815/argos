@@ -21,7 +21,7 @@
   import { Button } from "$lib/components/ui/button/index.js";
 
   /**
-   * The Docs Agent: a fixed agentic client for llama-swap's own documentation
+   * The Docs Agent: a fixed agentic client for Argos's own documentation
    * tools. This is the whole of the Help page; routes/Help.svelte only frames
    * it. It sits among the playground components because it is built from them
    * -- the same chat message, model selector and textarea -- not because Help
@@ -510,7 +510,7 @@
       {#if messages.length === 0}
         <EmptyState full>
           <div class="w-full max-w-xl px-4 text-center">
-            <p class="text-foreground text-sm font-medium">Ask llama-swap about llama-swap</p>
+            <p class="text-foreground text-sm font-medium">Ask Argos about Argos</p>
             <p class="mt-1 text-sm">
               Choose a topic below or ask a question to get started.
             </p>
@@ -604,7 +604,7 @@
         <ExpandableTextarea
           bind:ref={inputRef}
           bind:value={userInput}
-          placeholder="Ask a question about llama-swap..."
+          placeholder="Ask a question about Argos..."
           rows={3}
           onkeydown={handleKeyDown}
           disabled={isStreaming || !$selectedModelStore}

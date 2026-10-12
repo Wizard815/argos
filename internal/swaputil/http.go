@@ -15,7 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -41,7 +41,6 @@ var (
 	ReqContextKey        = &contextkey{"context"}
 	ErrNoModelInContext  = fmt.Errorf("no model in request context")
 	ErrNoRouterFound     = fmt.Errorf("no router found for model")
-	ErrNoPeerModelFound  = fmt.Errorf("peer model not found")
 	ErrNoLocalModelFound = fmt.Errorf("local model not found")
 )
 
@@ -79,7 +78,7 @@ func ShouldIgnoreWebsocket(r *http.Request, cfg config.Config) bool {
 }
 
 // StatusClientClosedRequest mirrors nginx's non-standard 499 "Client Closed
-// Request". llama-swap records it when a client disconnects before any
+// Request". Argos records it when a client disconnects before any
 // response was written, so an abandoned request is not filed as a success (a
 // cancelled cold-start load) or blamed on the upstream (a 502 from the reverse
 // proxy). It is never written to the connection — the client is already gone —
@@ -138,7 +137,7 @@ func ResponseStarted(w http.ResponseWriter) bool {
 //
 // The test is deliberately the client's own context rather than the request's:
 // middleware derive cancellable children from it (the inflight tracker, which
-// an operator can cancel from the UI, and the peer router's shutdown link), and
+// an operator can cancel from the UI), and
 // a request killed server-side still has a live client that must be answered
 // normally. Blaming that client would be the same misattribution this sentinel
 // exists to fix.
@@ -176,8 +175,6 @@ func SendError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrNoModelInContext):
 		SendResponse(w, r, http.StatusNotFound, "no model id could be identified")
-	case errors.Is(err, ErrNoPeerModelFound):
-		SendResponse(w, r, http.StatusNotFound, "no peer found for requested model")
 	case errors.Is(err, ErrNoLocalModelFound):
 		SendResponse(w, r, http.StatusNotFound, "no local server found for requested model")
 	case errors.Is(err, ErrNoRouterFound):
@@ -204,14 +201,14 @@ func SendResponse(w http.ResponseWriter, r *http.Request, status int, message st
 	if strings.Contains(acceptHeader, "text/plain") {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(status)
-		w.Write([]byte(fmt.Sprintf("llama-swap: %s", message)))
+		w.Write([]byte(fmt.Sprintf("Argos: %s", message)))
 		return
 	}
 
 	if strings.Contains(acceptHeader, "text/html") {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(status)
-		w.Write([]byte(fmt.Sprintf(`<html><body><h1>llama-swap</h1><p>%s</p></body></html>`, html.EscapeString(message))))
+		w.Write([]byte(fmt.Sprintf(`<html><body><h1>Argos</h1><p>%s</p></body></html>`, html.EscapeString(message))))
 		return
 	}
 

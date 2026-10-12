@@ -3,7 +3,7 @@ title: Set-if-undefined — set a parameter only if the request didn't
 summary: Append ? to a setParams or setParamsByID key to apply the value only when the request doesn't carry that parameter.
 category: guides
 tags: [filters, set-params, set-if-undefined, aliases, sampling]
-config_keys: [models.*.filters.setParams, models.*.filters.setParamsByID, peers.*.filters.setParams]
+config_keys: [models.*.filters.setParams, models.*.filters.setParamsByID]
 updated: 2026-09-02
 ---
 
@@ -32,8 +32,8 @@ the config) and "the client has no say" (plain `setParams`): the server
 supplies a tuned value, the client can still deviate for a single request
 without anyone adding a new alias or copying the value into every client.
 
-It works the same everywhere `setParams` works: model filters, per-alias
-`setParamsByID` entries, and peer filters.
+It works the same everywhere `setParams` works: model filters and per-alias
+`setParamsByID` entries.
 
 ## Semantics
 

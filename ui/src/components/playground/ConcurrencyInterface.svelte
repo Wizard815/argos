@@ -45,17 +45,11 @@
   let timelineMaxMs = $derived(Math.max(100, ...Object.values(runs).map((r) => r.elapsedMs)));
 
   let availableModels = $derived(
-    $playgroundModels.filter(
-      (model) => model.playgroundType !== "selector" && model.playgroundType !== "peer"
-    )
-  );
-  let peerModels = $derived(
-    $playgroundModels.filter((model) => model.playgroundType === "peer")
+    $playgroundModels.filter((model) => model.playgroundType !== "selector")
   );
   let modeSections = $derived([
     { label: "Selectors", ids: $selectorModels.map((model) => model.id) },
     { label: "Models", ids: availableModels.map((model) => model.id) },
-    { label: "Peers", ids: peerModels.map((model) => model.id) },
   ].filter((section) => section.ids.length > 0));
   let hasModels = $derived(modeSections.length > 0);
   let canRun = $derived(!isRunning && $testListStore.length > 0 && $promptStore.trim() !== "");
@@ -139,7 +133,7 @@
     };
   }
 
-  // Detect and split the llama-swap loading block (wrapped in ━━━━━ markers,
+  // Detect and split the Argos loading block (wrapped in ━━━━━ markers,
   // delivered as reasoning_content) from the model's own reasoning tokens.
   function ingestReasoning(
     prev: RunState,
@@ -475,7 +469,7 @@
         <div class="max-w-md text-sm text-muted-foreground space-y-4">
           <h4 class="text-base font-semibold text-foreground pb-0">Load Test</h4>
           <p>
-            Fire several streaming chat completions at llama-swap at the same time to see how it handles parallel
+            Fire several streaming chat completions at Argos at the same time to see how it handles parallel
             loading and concurrent inference. Each request streams into its own panel with a live timer and status.
           </p>
           <ol class="list-decimal list-inside space-y-1">

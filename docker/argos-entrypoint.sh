@@ -4,7 +4,7 @@ set -u
 
 mkdir -p /app/config.d /data/runs
 
-/app/llama-swap -config /app/config.yaml -config-dir /app/config.d -watch-config -listen 0.0.0.0:8080 &
+/app/argos -config /app/config.yaml -config-dir /app/config.d -watch-config -listen 0.0.0.0:8080 &
 ENGINE=$!
 
 cd /app/builder

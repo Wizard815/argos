@@ -85,7 +85,7 @@ describe("parseCase", () => {
 
 describe("loadCases", () => {
   it("recursively loads sorted groups and rejects duplicate IDs across them", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "llama-swap-cases-"));
+    const dir = await mkdtemp(path.join(tmpdir(), "argos-cases-"));
     try {
       await mkdir(path.join(dir, "routing"));
       await mkdir(path.join(dir, "operations"));

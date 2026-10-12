@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 // multiModelGroupID names the routing group the generated copies are put in.
@@ -20,7 +20,7 @@ const multiModelGroupID = "multimodel"
 // a spillover selector, so that one model id serves ceil(chats/parallel)
 // instances.
 //
-// It reuses llama-swap's existing spillover selector: with
+// It reuses Argos's existing spillover selector: with
 // settings.spillover equal to the model's --parallel, the selector fills the
 // first target up to that many concurrent requests and then spills onto the
 // next copy, starting it on demand. Every additional chat therefore lands on a

@@ -9,7 +9,7 @@ from typing import Any
 from flask import Blueprint, Response, request
 
 from ..cookbook import variant_id
-from ..integrations import llama_swap
+from ..integrations import engine_api
 from ..inventory import STATUSES
 from ..library import scan_models
 from ..model_perf import model_perf
@@ -22,18 +22,18 @@ REFRESH_EVERY_S = 600
 
 # ----- background work (called from the collector loop) --------------------------------
 def sync_running() -> None:
-    """Match the open sessions to what llama-swap is running. Does nothing if llama-swap cannot be reached."""
+    """Match the open sessions to what Argos is running. Does nothing if Argos cannot be reached."""
     c = ctx()
-    url = c.settings.get("integrations")["llama_swap_url"]
+    url = c.settings.get("integrations")["engine_url"]
     if not url:
         return
     try:
-        running = llama_swap.running(url)
+        running = engine_api.running(url)
     except Exception:  # noqa: BLE001 - unreachable is not the same as "everything stopped"
         return
     try:
-        pool = llama_swap.pool_state(url)
-    except Exception:  # noqa: BLE001 - not llama-swap-rescan, or the group router
+        pool = engine_api.pool_state(url)
+    except Exception:  # noqa: BLE001 - not Argos, or the group router
         pool = {}
     pooled = {m["id"]: m for m in pool.get("models") or []} if pool.get("enabled") else {}
     measured = c.plans.get()["measured"]
@@ -47,19 +47,19 @@ def sync_running() -> None:
 
 
 def run_refresh() -> dict:
-    """Scan the library, profiles and llama-swap, and record anything new."""
+    """Scan the library, profiles and Argos, and record anything new."""
     c = ctx()
     i = c.settings.get("integrations")
     library = scan_models(c.settings.get("paths")["models_dir"])
     commands = {variant_id(p): p["cmd"] for p in core.cookbook_state()["presets"] if variant_id(p)}
     live_ids = hardware = version = None
     problems = []
-    if i["llama_swap_url"]:
-        for name, fn in (("model list", llama_swap.model_ids), ("hardware", llama_swap.hardware), ("version", llama_swap.version)):
+    if i["engine_url"]:
+        for name, fn in (("model list", engine_api.model_ids), ("hardware", engine_api.hardware), ("version", engine_api.version)):
             try:
-                value = fn(i["llama_swap_url"])
-            except Exception as exc:  # noqa: BLE001 - llama-swap-rescan has /api/hardware, plain llama-swap does not
-                problems.append(f"llama-swap {name}: {exc}")
+                value = fn(i["engine_url"])
+            except Exception as exc:  # noqa: BLE001 - Argos has /api/hardware, plain Argos does not
+                problems.append(f"Argos {name}: {exc}")
                 continue
             if name == "model list":
                 live_ids = value

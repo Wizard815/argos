@@ -4,14 +4,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 var (
 	ErrNoRouterFound     = swaputil.ErrNoRouterFound
-	ErrNoPeerModelFound  = swaputil.ErrNoPeerModelFound
 	ErrNoLocalModelFound = swaputil.ErrNoLocalModelFound
 )
 
@@ -32,8 +31,7 @@ type Router interface {
 }
 
 // LocalRouter is a Router backed by local processes whose state can be
-// inspected and which can be individually stopped. Peer routers, which only
-// forward to remote hosts, do not implement it.
+// inspected and which can be individually stopped.
 type LocalRouter interface {
 	Router
 

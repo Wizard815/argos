@@ -5,7 +5,7 @@
   require_tools: true
 
 - id: holdout-routing-matrix-or
-  question: In a llama-swap matrix rule, which operator represents an alternative requirement?
+  question: In an Argos matrix rule, which operator represents an alternative requirement?
   expect_any: ["\\|", "pipe"]
   expect_tools_any: [docs__search_docs, docs__get_doc]
   require_tools: true

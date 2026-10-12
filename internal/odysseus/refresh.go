@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/mostlygeek/llama-swap/internal/modelscan"
+	"github.com/Wizard815/Argos/internal/modelscan"
 )
 
 // RefreshResult reports what a refresh did.
@@ -19,7 +19,7 @@ type RefreshResult struct {
 	Models   int
 	Profiles int
 	// Wrote is false when the fragment was already up to date. That matters:
-	// llama-swap reloads on any change under -config-dir, and a reload restarts
+	// Argos reloads on any change under -config-dir, and a reload restarts
 	// every running model, so a no-op refresh must not touch the file.
 	Wrote bool
 	// Warnings are per-task advisories (a skipped vLLM task, a command with no
@@ -33,13 +33,13 @@ type RefreshResult struct {
 	ChoicesResolved map[string]string
 }
 
-// Refresh fetches Odysseus' cookbook state, renders the llama-swap fragment and
+// Refresh fetches Odysseus' cookbook state, renders the Argos fragment and
 // writes it if its content changed.
 //
 // otherSources are the paths of every other YAML config source in play (the
 // -config file and the other files under -config-dir). They are read to make
 // sure this fragment does not redefine a model or profile that another source
-// already owns: llama-swap's merge treats `models` and `profiles` as
+// already owns: Argos's merge treats `models` and `profiles` as
 // identity-keyed maps and rejects a key defined twice
 // (internal/config/merge.go identityMapPaths), which would otherwise fail the
 // whole config load the next time anything reloads.
@@ -153,7 +153,7 @@ func SourceKeys(paths []string, skipPath string) (models, profiles map[string]st
 		}
 		var doc yaml.Node
 		if uerr := yaml.Unmarshal(raw, &doc); uerr != nil {
-			// Not this package's problem to report; llama-swap will fail the
+			// Not this package's problem to report; Argos will fail the
 			// load with a better message if the file really is malformed.
 			continue
 		}

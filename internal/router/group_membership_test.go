@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/logmon"
 )
 
 // A group that names a model with no model config must still build. Group

@@ -188,7 +188,7 @@
             size="sm"
             onclick={() => void handleRefresh()}
             disabled={refreshing}
-            title="Re-read Odysseus' saved launch configs and rebuild the llama-swap profiles"
+            title="Re-read Odysseus' saved launch configs and rebuild the Argos profiles"
           >
             <RefreshCw class={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
             Refresh

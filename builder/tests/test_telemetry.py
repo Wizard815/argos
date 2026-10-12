@@ -1,9 +1,9 @@
 import time
 
 from src.db import Store
-from src.telemetry import Collector, fetch_activity, parse_nvidia_csv, read_amd_sysfs, read_llama_swap
+from src.telemetry import Collector, fetch_activity, parse_nvidia_csv, read_amd_sysfs, read_engine
 
-from .fakes import make_llama_swap, serve
+from .fakes import make_engine, serve
 
 
 def write(path, text):
@@ -51,9 +51,9 @@ def activity(i, model="qwen3.6-35b", tps=45.0, hour=10):
             "duration_ms": 1200, "error_msg": "too long" if i == 3 else ""}
 
 
-def test_llama_swap_readers():
-    with serve(make_llama_swap(GPU_STATS, [activity(i) for i in range(1, 5)])) as url:
-        gpus = read_llama_swap(url)
+def test_engine_readers():
+    with serve(make_engine(GPU_STATS, [activity(i) for i in range(1, 5)])) as url:
+        gpus = read_engine(url)
         assert [(g["gpu"], g["util"], g["mem_used_mb"]) for g in gpus] == [(0, 99, 30000), (1, 0, 10)]
         rows = fetch_activity(url, 2)
         assert [r["source_id"] for r in rows] == [3, 4] and rows[0]["error"] == "too long"
@@ -61,23 +61,23 @@ def test_llama_swap_readers():
 
 def settings_for(url, source="auto"):
     return lambda: {"telemetry": {"enabled": True, "interval_s": 15, "raw_days": 14, "source": source},
-                    "integrations": {"llama_swap_url": url}}
+                    "integrations": {"engine_url": url}}
 
 
 def test_collector_stores_samples_activity_and_rollups(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     events = []
     acts = [activity(i) for i in range(1, 4)]
-    with serve(make_llama_swap(GPU_STATS, acts)) as url:
+    with serve(make_engine(GPU_STATS, acts)) as url:
         col = Collector(store, settings_for(url), lambda *a, **k: events.append(a))
         now = time.time()
         col.tick(now=now - 7200)
         col.tick(now=now)
-        assert col.last_source == "llama-swap"
+        assert col.last_source == "engine"
         assert len(store.list_requests()) == 3
-        acts.append(activity(4, tps=50.0))  # new request on llama-swap
+        acts.append(activity(4, tps=50.0))  # new request on Argos
         assert col.sync_activity() == 1 and len(store.list_requests()) == 4
-        acts[:] = [activity(1, model="fresh", hour=12)]  # llama-swap's database was recreated: ids restart
+        acts[:] = [activity(1, model="fresh", hour=12)]  # Argos's database was recreated: ids restart
         assert col.sync_activity() == 1
         assert {r["model"] for r in store.list_requests()} == {"qwen3.6-35b", "fresh"}
     stats = {r["model"]: r for r in store.request_stats(0)}
@@ -92,7 +92,7 @@ def test_collector_stores_samples_activity_and_rollups(tmp_path):
 def test_collector_reports_each_failure_once(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     events = []
-    col = Collector(store, settings_for("http://127.0.0.1:9", source="llama-swap"),
+    col = Collector(store, settings_for("http://127.0.0.1:9", source="engine"),
                     lambda kind, msg, **k: events.append(msg))
     col.tick()
     col.tick()

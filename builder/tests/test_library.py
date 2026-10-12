@@ -1,7 +1,7 @@
 import os
 
 from src.command import parse_command
-from src.library import prefab_command, scan_models
+from src.library import prefab_command, scan_media, scan_models
 from src.settings import env_defaults
 
 PREFAB = env_defaults({})["prefab"]
@@ -38,6 +38,29 @@ def test_scan_like_modelscan(tmp_path):
     assert models["nomic-embed-text-v1.5.q8_0"]["kind"] == "embedding"
     assert models["mtp-gemma-4-12b-it-q8_0"]["kind"] == "mtp"
     assert scan_models(str(tmp_path / "missing")) == []
+
+
+def test_audio_and_image_models_are_listed_but_not_launchable(tmp_path):
+    m = tmp_path / "models"
+    touch(m / "qwen" / "Qwen3-8B-Q4_K_M.gguf", 100)
+    touch(m / "whisper" / "ggml-large-v3-turbo.bin", 40)
+    touch(m / "tts" / "kokoro-v1.0.onnx", 8)
+    touch(m / "tts" / "OuteTTS-0.3-1B-Q8_0.gguf", 9)
+    touch(m / "image" / "flux1-dev-Q8_0.gguf", 60)
+    touch(m / "image" / "ae.safetensors", 3)
+    touch(m / "image" / "t5xxl_fp16.safetensors", 7)
+    touch(m / "sdxl-turbo" / "model_index.json", 1)
+    touch(m / "sdxl-turbo" / "unet" / "diffusion_pytorch_model.safetensors", 20)
+    touch(m / "llm" / "model-00001-of-00002.safetensors", 5)
+    touch(m / "llm" / "voice-assistant-llama-8b-Q4_K_M.gguf", 5)
+    assert sorted(x["name"] for x in scan_models(str(m))) == ["Qwen3-8B-Q4_K_M", "voice-assistant-llama-8b-Q4_K_M"],         "audio and image GGUFs are not offered to llama-server"
+    media = {x["name"]: x for x in scan_media(str(m))}
+    assert set(media) == {"ggml-large-v3-turbo", "kokoro-v1.0", "OuteTTS-0.3-1B-Q8_0", "flux1-dev-Q8_0", "ae", "t5xxl_fp16", "sdxl-turbo"}
+    assert (media["ggml-large-v3-turbo"]["kind"], media["ggml-large-v3-turbo"]["task"], media["ggml-large-v3-turbo"]["format"]) == ("audio", "speech-to-text", "ggml")
+    assert media["kokoro-v1.0"]["task"] == "text-to-speech" and media["OuteTTS-0.3-1B-Q8_0"]["quant"] == "Q8_0"
+    assert (media["flux1-dev-Q8_0"]["kind"], media["ae"]["task"], media["t5xxl_fp16"]["task"]) == ("image", "vae", "text encoder")
+    assert media["sdxl-turbo"]["format"] == "diffusers" and media["sdxl-turbo"]["size"] == 21, "a diffusers folder is one model"
+    assert all(x["listed_only"] for x in media.values())
 
 
 def test_prefabs_per_kind():

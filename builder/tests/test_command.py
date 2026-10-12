@@ -1,6 +1,6 @@
 import pytest
 
-from src.command import canonical, guess_base_model, parse_command, to_llama_swap_yaml
+from src.command import canonical, guess_base_model, parse_command, swap_model_id
 
 
 def test_parses_env_program_and_aliases():
@@ -98,13 +98,9 @@ def test_canonical_and_guess_base_model():
     assert guess_base_model("") == ""
 
 
-def test_llama_swap_yaml_uses_port_macro_and_env():
-    yaml_text = to_llama_swap_yaml("qwen", parse_command("CUDA_VISIBLE_DEVICES=1 llama-server -m q.gguf --port 8080"))
-    import yaml
 
-    data = yaml.safe_load(yaml_text)
-    entry = data["models"]["qwen"]
-    assert "--port ${PORT}" in entry["cmd"]
-    assert "CUDA_VISIBLE_DEVICES" not in entry["cmd"]
-    assert entry["env"] == ["CUDA_VISIBLE_DEVICES=1"]
-    assert parse_command(entry["cmd"]).get("model") == "q.gguf"
+
+def test_model_id_is_the_file_name_on_any_platform():
+    assert swap_model_id("/app/models/Qwen3-8B-Q4_K_M.gguf") == "qwen3-8b-q4_k_m"
+    assert swap_model_id(r"C:\Users\me\models\gemma\Gemma-4-12B-UD-Q8_K_XL.gguf") == "gemma-4-12b-ud-q8_k_xl"
+    assert swap_model_id("") == "model"

@@ -11,7 +11,7 @@ import (
 
 // TestOdysseus_FetchStateFromFile covers the file source that replaces the API
 // path. Odysseus restricts the X-Odysseus-Internal-Token bypass to direct
-// loopback clients (app.py:385, _is_trusted_loopback), so a llama-swap in
+// loopback clients (app.py:385, _is_trusted_loopback), so an Argos in
 // another container cannot authenticate to /api/cookbook/state at all -- it gets
 // 401 no matter how correct the token is. Reading the file needs no credential.
 func TestOdysseus_FetchStateFromFile(t *testing.T) {

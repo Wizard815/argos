@@ -357,7 +357,7 @@ var modelScanGroupCmdTemplateRegex = regexp.MustCompile(`^modelScan\.groups\[\d+
 // field — the primary one, or one of ModelScan.Groups's — the only places
 // PORT/MODEL_ID/MODEL_PATH are legitimately unresolved at config-load time:
 // modelscan.Scan only ever substitutes ${MODEL_PATH} itself, deliberately
-// leaving ${PORT} and any macro name for llama-swap to resolve once the
+// leaving ${PORT} and any macro name for Argos to resolve once the
 // generated fragment is loaded as real models: entries (see
 // internal/modelscan/scan.go).
 func isModelScanCmdTemplatePath(path string) bool {

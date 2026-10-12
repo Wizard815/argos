@@ -1,0 +1,91 @@
+# Copy next to the ROOT docker-compose.yml of the Argos repo as
+# docker-compose.override.yaml. Uncomment only what you need.
+# Service key must match the base file (`argos`). Base already publishes 8080
+# (OpenAI API) and 7861 (web UI) and mounts ./data, ./config.d and the models dir.
+#
+# Merge rules: ports/devices/group_add APPEND; volumes match on container path
+# (same path => replaced); `!override` replaces a list; `!reset []` empties one
+# (Compose v2.24+).
+#
+# STATUS: written from the repo files, not run on your hardware.
+
+services:
+  argos:
+
+    # =====================================================================
+    # GPU ACCESS -- the base file already passes AMD (/dev/kfd, /dev/dri).
+    # Pick ROCm, CUDA, or BOTH by uncommenting. Mode 1 below = the Argos image
+    # runs the backend itself, so it needs the GPU. Mode 2 (sibling containers)
+    # gives GPUs to the siblings via `docker run` flags in config.yaml, so Argos
+    # itself needs no GPU devices.
+    # =====================================================================
+
+    # ---- ROCm (already in base file; shown for completeness) ----
+    # devices:
+    #   - /dev/kfd
+    #   - /dev/dri
+    # group_add:
+    #   - "${VIDEO_GID:-44}"
+
+    # ---- CUDA only: drop the AMD devices, add NVIDIA ----
+    # devices: !reset []
+    # group_add: !reset []
+    # gpus: all
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    #   - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+    # ---- BOTH in one Argos container (keep AMD devices above, add NVIDIA).
+    #      Works only if the image has BOTH stacks' libraries, which is
+    #      uncommon. Prefer Mode 2 below. ----
+    # gpus: all
+
+    # =====================================================================
+    # MODE 2: let Argos start backend containers (ROCm image + CUDA image +
+    # custom builds). Needs: docker CLI inside the Argos image (add it to the
+    # Dockerfile; the repo's does not install it) and the socket below.
+    # SECURITY: the socket gives Argos root-equivalent control of the host.
+    # Env values are consumed in config.yaml as ${env.NAME}.
+    # =====================================================================
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
+    #   # custom llama.cpp build folder on the HOST (only if you use bk-custom)
+    #   # - /mnt/user/appdata/my-llama:/opt/my-llama:ro
+    # environment:
+    #   - HOST_MODELS_DIR=${MODELS_DIR}        # must be the HOST path
+    #   - VIDEO_GID=${VIDEO_GID:-44}
+    #   - ROCM_IMAGE=${ROCM_IMAGE}
+    #   - CUDA_IMAGE=${CUDA_IMAGE}
+    #   - HOST_CUSTOM_BIN=${HOST_CUSTOM_BIN:-/mnt/user/appdata/my-llama}
+    #   - HOST_HF_DIR=${HOST_HF_DIR:-/mnt/user/appdata/hf-cache}
+
+    # =====================================================================
+    # CUSTOM LOCATIONS
+    # =====================================================================
+    # volumes:
+    #   - /mnt/disk2/LLMBin:/app/models-nvme:ro          # extra model folder
+    #   - /mnt/user/appdata/argos/data:/data              # replaces ./data
+    #   - /mnt/user/appdata/argos/config.d:/app/config.d  # replaces ./config.d
+    # (If you set `volumes:` twice in this file, merge them into one list.)
+
+    # =====================================================================
+    # NETWORKING -- pick ONE
+    # =====================================================================
+    # A) bind to specific host interfaces
+    # ports: !override
+    #   - "192.168.1.50:8080:8080"
+    #   - "127.0.0.1:7861:7861"
+    # B) shared network (other containers reach http://argos:8080)
+    #    docker network create llm-net
+    # networks: [llm-net]
+    # C) reach services on the Docker host
+    # extra_hosts: ["host.docker.internal:host-gateway"]
+    # D) host networking (delete ports/networks if used)
+    # network_mode: host
+    # NOTE: Mode 2's `--network container:argos` requires container_name: argos
+    # (already set in the base file) and does not work with network_mode: host.
+
+# networks:
+#   llm-net:
+#     external: true
+#   # own LAN IP on Unraid: external network `br0`, plus ipv4_address on the service

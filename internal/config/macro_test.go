@@ -56,7 +56,7 @@ models:
 // modelScan.groups[N].cmdTemplate field path: PORT/MODEL_ID/MODEL_PATH must
 // be accepted there exactly as they already are in the primary
 // modelScan.cmdTemplate, since modelscan.Scan only ever substitutes
-// MODEL_PATH itself and deliberately leaves the rest for llama-swap to
+// MODEL_PATH itself and deliberately leaves the rest for Argos to
 // resolve once the generated fragment is loaded as real models: entries.
 // Regression coverage for the "unknown macro '${PORT}'" config-load failure
 // a group's cmdTemplate previously hit (isModelScanCmdTemplatePath only

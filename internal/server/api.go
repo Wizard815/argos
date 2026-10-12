@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/event"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/event"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 // modelRecord is one entry in the OpenAI-compatible /v1/models listing.
@@ -133,8 +133,8 @@ func filterCappedMetadata(md map[string]any) map[string]any {
 	return filtered
 }
 
-// handleListModels serves the OpenAI-compatible model listing: local models
-// (with optional aliases) plus peer models.
+// handleListModels serves the OpenAI-compatible model listing: the models
+// (with optional aliases) and selectors.
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	// Every OpenAI-compatible client's "refresh models" action calls this
 	// endpoint, so it doubles as the trigger for keeping the generated
@@ -170,14 +170,14 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			ID:          id,
 			Object:      "model",
 			Created:     created,
-			OwnedBy:     "llama-swap",
+			OwnedBy:     "argos",
 			Name:        strings.TrimSpace(name),
 			Description: strings.TrimSpace(description),
 			Status:      map[string]any{"value": status},
 		}
 		rec.Architecture, rec.Capabilities, rec.SupportedParameters, rec.ContextLength = renderCapabilities(caps)
 		// A scanned model declares no capabilities, so the window its command
-		// allocates is the only number llama-swap has before the child runs.
+		// allocates is the only number Argos has before the child runs.
 		// Without it a client cannot size its prompts against the real window
 		// and substitutes a guess of its own.
 		if rec.ContextLength == 0 {
@@ -189,17 +189,17 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if !caps.Empty() {
 			metadata = filterCappedMetadata(metadata)
 		}
-		llamaSwapMetadata := make(map[string]any, len(metadata)+len(internalMetadata))
+		argosMetadata := make(map[string]any, len(metadata)+len(internalMetadata))
 		for key, value := range metadata {
-			llamaSwapMetadata[key] = value
+			argosMetadata[key] = value
 		}
 		for key, value := range internalMetadata {
-			llamaSwapMetadata[key] = value
+			argosMetadata[key] = value
 		}
-		if len(llamaSwapMetadata) > 0 || rec.ContextLength > 0 {
+		if len(argosMetadata) > 0 || rec.ContextLength > 0 {
 			rec.Meta = make(map[string]any)
-			if len(llamaSwapMetadata) > 0 {
-				rec.Meta["llamaswap"] = llamaSwapMetadata
+			if len(argosMetadata) > 0 {
+				rec.Meta["argos"] = argosMetadata
 			}
 			if rec.ContextLength > 0 {
 				rec.Meta["n_ctx"] = rec.ContextLength
@@ -225,7 +225,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		// Expose the launch configuration so the UI can show exactly what will
 		// be run for this model, and so a client can confirm that an active
 		// profile rewrote the ID to the right variant. cmd still carries
-		// llama-swap's own ${PORT} macro, which is how it is written in config.
+		// Argos's own ${PORT} macro, which is how it is written in config.
 		if strings.TrimSpace(mc.Cmd) != "" {
 			internalMetadata["cmd"] = mc.Cmd
 		}
@@ -249,27 +249,6 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 					))
 				}
 			}
-		}
-	}
-
-	for peerID, peer := range s.cfg.Peers {
-		for _, modelID := range peer.Models {
-			fqn := config.PeerModelFQN(peerID, modelID)
-			modelIDs[fqn] = struct{}{}
-			if resolvedPeer, resolvedModel, found := s.cfg.ResolvePeerModel(modelID); found &&
-				resolvedPeer == peerID && resolvedModel == modelID {
-				modelIDs[modelID] = struct{}{}
-			}
-			data = append(data, newRecord(
-				fqn,
-				peerID+": "+modelID,
-				"",
-				nil,
-				config.ModelCapConfig{},
-				"unloaded",
-				map[string]any{"type": "peer", "peerID": peerID},
-				0,
-			))
 		}
 	}
 
@@ -369,8 +348,7 @@ type runningModel struct {
 	Description string `json:"description"`
 }
 
-// handleUnload stops every running local process. Peer models are remote and
-// unaffected.
+// handleUnload stops every running model process.
 func (s *Server) handleUnload(w http.ResponseWriter, r *http.Request) {
 	s.local.Unload(0)
 	w.WriteHeader(http.StatusOK)
@@ -575,18 +553,14 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// Either the model is already loaded (no swap would be triggered)
-		// or this is a peer model (peer proxying never swaps). Fall through
-		// to normal dispatch.
+		// The model is already loaded, so no swap would be triggered. Fall
+		// through to normal dispatch.
 		break
 	}
 
-	switch {
-	case s.local.Handles(modelID):
-		s.local.ServeHTTP(w, r)
-	case s.peer.Handles(modelID):
-		s.peer.ServeHTTP(w, r)
-	default:
+	if !s.local.Handles(modelID) {
 		swaputil.SendResponse(w, r, http.StatusNotFound, "no router for model "+modelID)
+		return
 	}
+	s.local.ServeHTTP(w, r)
 }

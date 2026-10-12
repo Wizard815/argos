@@ -5,7 +5,7 @@ package config
 // fragment from them, instead of hand-listing every model in config.yaml.
 //
 // This is a local fork addition (see internal/modelscan), not part of
-// upstream llama-swap.
+// upstream Argos.
 type ModelScanConfig struct {
 	// Enabled turns on the /api/models/rescan endpoint and the automatic
 	// background scan triggered by GET /v1/models. Defaults to false so
@@ -21,23 +21,23 @@ type ModelScanConfig struct {
 
 	// CmdTemplate is the ModelConfig.Cmd to use for every discovered model.
 	// The literal substring "${MODEL_PATH}" is replaced with the model's
-	// absolute file path; any llama-swap macro (e.g. "${PORT}", or a name
+	// absolute file path; any Argos macro (e.g. "${PORT}", or a name
 	// defined under the top-level macros: block) is left untouched and
-	// resolved normally by llama-swap at process-launch time.
+	// resolved normally by Argos at process-launch time.
 	CmdTemplate string `yaml:"cmdTemplate"`
 
 	// NamePrefix is prepended to every generated model ID, e.g. "local-".
 	NamePrefix string `yaml:"namePrefix"`
 
 	// OutputFile is the generated YAML fragment's path. It must live inside
-	// the directory passed as -config-dir so llama-swap's config-dir merge
+	// the directory passed as -config-dir so Argos's config-dir merge
 	// (and, with -watch-config, its file watcher) picks it up.
 	OutputFile string `yaml:"outputFile"`
 
 	// Env is the ModelConfig.Env list written onto every model in this
 	// scan, letting a scan target set per-model environment (e.g.
 	// "HIP_VISIBLE_DEVICES=0" to pin a set of models to one GPU) without
-	// hand-writing each model entry. Same format as llama-swap's own Env:
+	// hand-writing each model entry. Same format as Argos's own Env:
 	// a plain "KEY=value" list appended to the container environment.
 	//
 	// This exists because modelscan otherwise only ever writes `cmd`, so a
@@ -46,7 +46,7 @@ type ModelScanConfig struct {
 
 	// TTL is the ModelConfig.UnloadAfter value, in seconds, written onto
 	// every model in this scan. Pointer-typed so that unset is distinct
-	// from 0: llama-swap reads ttl: 0 as "never unload this model" while
+	// from 0: Argos reads ttl: 0 as "never unload this model" while
 	// -1 means "inherit globalTTL", and an unset value must become neither.
 	// Use 0 to keep a set of models (e.g. embeddings) permanently resident.
 	TTL *int `yaml:"ttl"`

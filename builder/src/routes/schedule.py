@@ -1,4 +1,4 @@
-"""Scheduling: the plan, a simulator, VRAM measuring, export to llama-swap, and the live pool."""
+"""Scheduling: the plan, a simulator, VRAM measuring, and the live pool. Saving the plan applies it to the engine."""
 from __future__ import annotations
 
 import time
@@ -8,37 +8,37 @@ from flask import Blueprint, request
 
 from ..always import apply_always
 from ..command import parse_command
-from ..integrations import llama_swap
+from ..integrations import engine_api
 from ..library import scan_models
-from ..scheduler import (Engine, PlanError, clean_plan, effective_size, render_fragment, simulate,
+from ..scheduler import (Engine, PlanError, clean_plan, effective_size, engine_file, render_fragment, simulate,
                          write_fragment)
-from ..schedule_rows import build_rows, exported_sizes
+from ..schedule_rows import build_rows, plan_sizes
 from ..web import body, check_id, ctx, err, ok
 from . import core
 
 bp = Blueprint("schedule", __name__)
-EXPORT_CHECK_S = 300  # how often the background tick re-checks the export (it scans the library)
-EXPORT_RETRY_S = 60   # ...and how often while models are left out because llama-swap does not list them yet
+APPLY_CHECK_S = 300  # how often the background tick re-checks the engine's copy (it scans the library)
+APPLY_RETRY_S = 60   # ...and how often while models are left out because the engine does not list them yet
 KNOWN_TTL_S = 30
 
 
 # ----- shared pieces -----------------------------------------------------------------
 def known_ids() -> tuple[Optional[set[str]], str]:
-    """Model ids llama-swap lists at /v1/models, or (None, "") when it cannot be asked.
+    """Model ids the engine lists at /v1/models, or (None, "") when it cannot be asked.
 
-    Only the live list is trusted: llama-swap makes models from files and from profiles itself, so
+    Only the live list is trusted: the engine makes models from files and from profiles itself, so
     they are not in its config file. Without it nothing is filtered. Cached for a few seconds because
     this is an HTTP call and the Schedule view loads often.
     """
     c = ctx()
-    url = c.settings.get("integrations")["llama_swap_url"]
+    url = c.settings.get("integrations")["engine_url"]
     cached = c.schedule_state.get("_known")
     if cached and cached["key"] == url and time.time() - cached["at"] < KNOWN_TTL_S:
         return cached["value"]
     value: tuple[Optional[set[str]], str] = (None, "")
     if url:
         try:
-            value = (llama_swap.model_ids(url), "live")
+            value = (engine_api.model_ids(url), "live")
         except Exception:  # noqa: BLE001 - the Live view and Integrations page show connection problems
             pass
     c.schedule_state["_known"] = {"at": time.time(), "key": url, "value": value}
@@ -52,7 +52,7 @@ def compute(plan: Optional[dict] = None) -> dict:
     library = scan_models(c.settings.get("paths")["models_dir"])
     presets = core.cookbook_state()["presets"]
     rows, commands = build_rows(library, presets, plan, c.settings.get("prefab"), known)
-    sizes = exported_sizes(rows)
+    sizes = plan_sizes(rows)
     text, skipped = render_fragment(plan, sizes, known)
     return {"plan": plan, "rows": rows, "commands": commands, "sizes": sizes, "fragment": text,
             "skipped": skipped, "known_from": known_from}
@@ -64,31 +64,32 @@ def detected_cards() -> list[dict]:
              "total_gib": round((g.get("mem_total_mb") or 0) / 1024, 2)} for g in ctx().store.gpu_latest()]
 
 
-def write_schedule_export(force: bool = True, data: Optional[dict] = None) -> None:
-    """Write the YAML fragment when an export file is set. The background tick passes force=False.
+def apply_plan(force: bool = True, data: Optional[dict] = None) -> None:
+    """Give the plan to the engine: write its routing block into the engine's config folder, which the engine
+    watches. Called on every save and profile change; the background tick passes force=False.
 
     ``data`` is a compute() result the caller already has, to avoid scanning the library twice.
     """
     c = ctx()
-    plan = data["plan"] if data else c.plans.get()
-    path = plan["export_file"]
+    path = engine_file()
     if not path:
         return
-    wait = EXPORT_RETRY_S if c.schedule_state.get("_retry") else EXPORT_CHECK_S
+    plan = data["plan"] if data else c.plans.get()
+    wait = APPLY_RETRY_S if c.schedule_state.get("_retry") else APPLY_CHECK_S
     if not force and time.time() - c.schedule_state.get("_checked", 0.0) < wait:
         return
     c.schedule_state["_checked"] = time.time()
     try:
         data = data or compute(plan)
-        c.schedule_state["_retry"] = bool(data["skipped"])  # a new profile reaches llama-swap within its refresh
+        c.schedule_state["_retry"] = bool(data["skipped"])  # a new profile reaches the engine within its refresh
         if write_fragment(path, data["fragment"]):
             c.schedule_state.update(written_at=time.time(), error="")
-            c.event("schedule", f"wrote the scheduling plan to {path}",
-                    data={"models": len(data["sizes"]), "skipped": data["skipped"]})
+            c.event("schedule", "applied the scheduling plan to the engine",
+                    data={"models": len(data["sizes"]), "skipped": data["skipped"], "file": path})
         c.schedule_state.update(error="")
     except OSError as exc:
         if c.schedule_state.get("error") != str(exc):
-            c.event("schedule", f"could not write {path}: {exc}", level="error")
+            c.event("schedule", f"could not apply the plan to the engine ({path}): {exc}", level="error")
         c.schedule_state.update(error=str(exc))
 
 
@@ -96,9 +97,9 @@ def _payload(data: dict) -> dict:
     c = ctx()
     return {"plan": data["plan"], "rows": data["rows"], "fragment": data["fragment"], "skipped": data["skipped"],
             "known_from": data["known_from"], "detected_cards": detected_cards(),
-            "export": {"file": data["plan"]["export_file"], "written_at": c.schedule_state.get("written_at"),
-                       "error": c.schedule_state.get("error", "")},
-            "live_configured": bool(c.settings.get("integrations")["llama_swap_url"])}
+            "applied": {"connected": bool(engine_file()), "at": c.schedule_state.get("written_at"),
+                        "error": c.schedule_state.get("error", "")},
+            "live_configured": bool(c.settings.get("integrations")["engine_url"])}
 
 
 # ----- plan --------------------------------------------------------------------------
@@ -116,20 +117,7 @@ def schedule_put():
         return err(str(exc))
     c.event("schedule", "saved the scheduling plan")
     data = compute()
-    write_schedule_export(data=data)
-    return ok(**_payload(data))
-
-
-@bp.post("/api/schedule/export")
-def schedule_export():
-    c = ctx()
-    path = c.plans.get()["export_file"]
-    if not path:
-        return err("set an export file first (the llama-swap -config-dir, e.g. /app/config.d/scheduler.generated.yaml)")
-    data = compute()
-    write_schedule_export(data=data)
-    if c.schedule_state.get("error"):
-        return err(c.schedule_state["error"], 500)
+    apply_plan(data=data)
     return ok(**_payload(data))
 
 
@@ -150,7 +138,7 @@ def schedule_simulate():
         return err(str(exc))
     data = compute(plan)
     sizes = {r["id"]: r["effective_gib"] for r in data["rows"]}
-    sizes.update(plan["sizes"])  # models llama-swap has that this app has no file or profile for
+    sizes.update(plan["sizes"])  # models Argos has that this app has no file or profile for
     for mid, m in plan["measured"].items():
         sizes.setdefault(mid, m["gib"])
     sizes.update(overrides)
@@ -210,21 +198,21 @@ def measure_use(model_id):
         return err("nothing measured for this model", 404)
     c.plans.update({"sizes": {**plan["sizes"], model_id: m["gib"]}})
     data = compute()
-    write_schedule_export(data=data)
+    apply_plan(data=data)
     return ok(**_payload(data))
 
 
 # ----- live --------------------------------------------------------------------------
 @bp.get("/api/schedule/live")
 def schedule_live():
-    """llama-swap-rescan's /api/pool, passed through so the browser needs no access to llama-swap."""
-    url = ctx().settings.get("integrations")["llama_swap_url"]
+    """Argos's /api/pool, passed through so the browser needs no access to Argos."""
+    url = ctx().settings.get("integrations")["engine_url"]
     if not url:
-        return ok(connected=False, error="set the llama-swap URL under Integrations", pool=None)
+        return ok(connected=False, error="set the Argos URL under Integrations", pool=None)
     try:
-        return ok(connected=True, error="", pool=llama_swap.pool_state(url), at=time.time())
+        return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time())
     except Exception as exc:  # noqa: BLE001
         return ok(connected=False, error=str(exc), pool=None)
 
 
-__all__ = ["bp", "write_schedule_export", "compute"]
+__all__ = ["bp", "apply_plan", "compute"]

@@ -13,6 +13,7 @@
 - **Perf sheets and Inventory.** Every model and every launch is remembered, with prefill and decode speed for each setup.
 - **Logs.** GPU use, speed per request and events, from 30 seconds back to a year.
 - **Assistant.** A small model that knows your history and answers questions about it.
+- **Servers.** Local plus any machine you can reach over SSH, each with its own key and a Check that shows what is installed there. See [docs/servers.md](docs/servers.md).
 - **Odysseus.** Notes, Brain, Calendar, Library, Cookbook, Tasks, Gallery and Tools, right inside Argos.
 - **Themes.** The same themes as Odysseus, or make your own.
 
@@ -50,4 +51,4 @@ More settings are in [docs/configuration.md](docs/configuration.md). Running wit
 
 **Security:** the Playground runs whatever command you give it, and there is no login. Only expose the ports to people you trust.
 
-The engine is a fork of [llama-swap](https://github.com/mostlygeek/llama-swap). Its original docs are in [docs/llama-swap.md](docs/llama-swap.md).
+Argos started as a fork of [llama-swap](https://github.com/mostlygeek/llama-swap) by Benson Wong (MIT, see [LICENSE.md](LICENSE.md)). The engine is now part of Argos and is configured and documented here.

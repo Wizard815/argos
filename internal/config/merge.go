@@ -12,14 +12,13 @@ import (
 
 // identityMapPaths is the set of dotted paths whose direct children are
 // identity-keyed maps. A child key present in two sources is a hard error;
-// such keys name discrete entities (a model, a group, a peer, etc.) and a
+// such keys name discrete entities (a model, a group, a selector, etc.) and a
 // duplicate means the user has split one entity across files by mistake.
 var identityMapPaths = map[string]bool{
 	"models":                         true,
 	"groups":                         true,
 	"profiles":                       true,
 	"selectors":                      true,
-	"peers":                          true,
 	"matrix":                         true,
 	"routing.router.settings.groups": true,
 	"routing.router.settings.matrix": true,
@@ -180,7 +179,7 @@ func mergeNodes(dst, src *yaml.Node, path, srcPath string) error {
 
 		if identityMapPaths[childPath] {
 			// Identity-keyed map: each child key names a discrete entity
-			// (a model, group, peer, ...). A shared child key is a hard
+			// (a model, group, selector, ...). A shared child key is a hard
 			// error; src-only children are appended in the second pass.
 			if err := mergeIdentityMap(dstVal, srcVal, childPath, key, srcPath); err != nil {
 				return err
@@ -212,7 +211,7 @@ func mergeNodes(dst, src *yaml.Node, path, srcPath string) error {
 }
 
 // mergeIdentityMap merges two identity-keyed mapping nodes (e.g. `models`,
-// `groups`, `peers`). Any child key present in both sides is a duplicate
+// `groups`, `selectors`). Any child key present in both sides is a duplicate
 // entity and produces an error naming the conflicting key and source file.
 // src-only keys are appended to dst.
 func mergeIdentityMap(dst, src *yaml.Node, path, mapName, srcPath string) error {

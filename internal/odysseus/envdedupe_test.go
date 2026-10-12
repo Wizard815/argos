@@ -6,7 +6,7 @@ import (
 )
 
 // A variable written both as an export line and as an inline prefix must reach
-// llama-swap once: the duplicate showed up verbatim in the generated fragment,
+// Argos once: the duplicate showed up verbatim in the generated fragment,
 // as two identical HIP_VISIBLE_DEVICES entries.
 func TestParseCommand_DeduplicatesEnvWrittenTwice(t *testing.T) {
 	cmd := `export HIP_VISIBLE_DEVICES=0,1

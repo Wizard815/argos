@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/logmon"
 )
 
 var benchmarkSolveResult solveResult

@@ -111,18 +111,6 @@ models:
 	assert.Contains(t, err.Error(), `duplicate groups "g1"`)
 }
 
-func TestLoadConfigSources_DuplicatePeer(t *testing.T) {
-	dir := t.TempDir()
-	peerA := "peers:\n  remote:\n    proxy: http://x:1\n    models: [m1]\n"
-	peerB := "peers:\n  remote:\n    proxy: http://x:2\n    models: [m2]\n"
-	writeYAML(t, dir, "a.yaml", "models:\n"+modelCfg("m1", "echo m1")+"\n"+peerA)
-	writeYAML(t, dir, "b.yaml", "models:\n"+modelCfg("m2", "echo m2")+"\n"+peerB)
-
-	_, err := LoadConfigSources("", dir)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `duplicate peers "remote"`)
-}
-
 func TestLoadConfigSources_ScalarConflict(t *testing.T) {
 	dir := t.TempDir()
 	writeYAML(t, dir, "a.yaml", "models:\n"+modelCfg("m1", "echo m1")+"\nglobalTTL: 100\n")

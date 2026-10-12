@@ -14,7 +14,7 @@
   let { value = $bindable(), placeholder = "Select a model...", disabled = false, capabilities, matchAny = false }: Props = $props();
 
   let grouped = $derived(groupModels(
-    $playgroundModels.filter((model) => model.playgroundType === "model" || model.playgroundType === "peer"),
+    $playgroundModels.filter((model) => model.playgroundType === "model"),
     capabilities,
     matchAny,
   ));
@@ -24,7 +24,6 @@
       || $selectorModels.length > 0
       || hasMatching
       || grouped.local.length > 0
-      || grouped.peers.length > 0
   );
 </script>
 
@@ -80,15 +79,6 @@
                 <Select.Item value={alias}>↳ {alias}</Select.Item>
               {/each}
             {/if}
-          {/each}
-        </Select.Group>
-        <Select.Separator />
-      {/if}
-      {#if grouped.peers.length > 0}
-        <Select.Group>
-          <Select.Label>Peers</Select.Label>
-          {#each grouped.peers as model (model.id)}
-            <Select.Item value={model.id}>{model.id}</Select.Item>
           {/each}
         </Select.Group>
       {/if}

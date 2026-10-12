@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 // TestProcessCommand_TTLStartsWhenProcessBecomesReady verifies that a freshly

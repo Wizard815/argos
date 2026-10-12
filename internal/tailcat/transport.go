@@ -1,4 +1,4 @@
-// Package tailcat isolates llama-swap from Tailcat's unstable API.
+// Package tailcat isolates Argos from Tailcat's unstable API.
 // No package outside this adapter and config validation should need to know
 // how Tailcat represents listeners, clients, regions, or connection blobs.
 package tailcat

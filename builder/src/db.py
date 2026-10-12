@@ -10,14 +10,15 @@ settings        UI-editable settings (JSON values), overriding env defaults
 events          long-term app log: launches, exits, benches, downloads, errors
 gpu_samples     raw GPU readings (kept for the raw retention window)
 gpu_hourly      hourly GPU rollups, kept forever
-requests        per-request speeds pulled from llama-swap's activity log
+requests        per-request speeds pulled from Argos's activity log
 downloads       Hugging Face downloads and their progress
 chat_messages   the assistant's single conversation
-models_seen     every model ever seen (library, llama-swap, profiles), present or gone
+models_seen     every model ever seen (library, Argos, profiles), present or gone
 model_sessions  every time a model was loaded: GPUs, VRAM, quant, cache types, flags
 traits          every quant / cache type / split mode / spec type / flag / env var ever seen
 host_snapshots  hardware and container facts, kept when they change
-notes           sticky notes pinned to a view; note_versions keeps their history
+notes           sticky notes: open ones float over every page, minimized ones wait in the Notes menu
+servers         machines models run on: Local plus SSH servers, and what Check found on each
 memory_records  the assistant's memory: text from every other table, with an embedding vector each
 
 Databases written by earlier versions are migrated in place on open.
@@ -206,19 +207,24 @@ CREATE TABLE IF NOT EXISTS host_snapshots (
 );
 
 CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, view TEXT NOT NULL, title TEXT DEFAULT '', body TEXT DEFAULT '',
+    id INTEGER PRIMARY KEY AUTOINCREMENT, view TEXT NOT NULL DEFAULT '*', title TEXT DEFAULT '', body TEXT DEFAULT '',
     color TEXT DEFAULT 'yellow', created_at REAL NOT NULL, updated_at REAL NOT NULL, deleted INTEGER DEFAULT 0,
-    x REAL, y REAL, w REAL, h REAL
+    x REAL, y REAL, w REAL, h REAL, collapsed INTEGER DEFAULT 0, is_open INTEGER DEFAULT 1
 );
-CREATE TABLE IF NOT EXISTS note_versions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, ts REAL NOT NULL, title TEXT, body TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_note_versions ON note_versions (note_id, ts DESC);
 
 CREATE TABLE IF NOT EXISTS memory_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, key TEXT NOT NULL, ts REAL NOT NULL,
     text TEXT NOT NULL, hash TEXT NOT NULL, model TEXT DEFAULT '', dims INTEGER DEFAULT 0, vector BLOB,
     indexed_at REAL, UNIQUE (source, key)
+);
+
+CREATE TABLE IF NOT EXISTS servers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'ssh',
+    host TEXT DEFAULT '', port INTEGER DEFAULT 22, env_prefix TEXT DEFAULT '', llama_server TEXT DEFAULT '',
+    gpu TEXT DEFAULT 'auto', model_dirs TEXT DEFAULT '[]', is_default INTEGER DEFAULT 0, source TEXT DEFAULT 'ui',
+    status TEXT DEFAULT 'unknown', latency_ms REAL, last_check REAL, last_error TEXT DEFAULT '',
+    engines TEXT DEFAULT '{{}}', created_at REAL NOT NULL, updated_at REAL NOT NULL,
+    env_kind TEXT DEFAULT 'none', env_value TEXT DEFAULT '', color TEXT DEFAULT '', download_dir TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS chat_messages (
@@ -253,8 +259,20 @@ class Store:
             self._conn.executescript(SCHEMA)
             self._add_missing_columns("runs", RUN_COLUMNS)
             self._add_missing_columns("profiles", PROFILE_COLUMNS)
-            self._add_missing_columns("notes", {"x": "REAL", "y": "REAL", "w": "REAL", "h": "REAL"})
+            self._add_missing_columns("servers", {"env_kind": "TEXT DEFAULT 'none'", "env_value": "TEXT DEFAULT ''",
+                                                 "color": "TEXT DEFAULT ''", "download_dir": "TEXT DEFAULT ''"})
+            self._add_missing_columns("notes", {"x": "REAL", "y": "REAL", "w": "REAL", "h": "REAL", "collapsed": "INTEGER DEFAULT 0"})
+            self._migrate_notes()
             self._conn.commit()
+
+    def _migrate_notes(self) -> None:
+        """Notes used to belong to a page, keep a history and be hidden on delete. Now there is one set of notes,
+        open ones show on every page, minimized ones wait in the Notes menu, and a delete is final."""
+        if "is_open" not in self._columns("notes"):
+            self._conn.execute("ALTER TABLE notes ADD COLUMN is_open INTEGER DEFAULT 1")
+            self._conn.execute("UPDATE notes SET is_open = CASE WHEN collapsed=1 THEN 0 ELSE 1 END")
+        self._conn.execute("DELETE FROM notes WHERE deleted=1")
+        self._conn.execute("DROP TABLE IF EXISTS note_versions")
 
     def _q(self, sql: str, args: Iterable = ()) -> list[dict]:
         with self._lock:
@@ -546,60 +564,111 @@ class Store:
 
     # ----- notes ----------------------------------------------------------
     NOTE_COLORS = ("yellow", "blue", "green", "pink", "gray")
-    NOTE_MERGE_S = 120  # edits closer together than this update the newest version instead of adding one
+    NOTE_FIELDS = ("id", "title", "body", "color", "x", "y", "w", "h", "is_open", "created_at", "updated_at")
 
-    def add_note(self, view: str, title: str = "", body: str = "", color: str = "yellow") -> dict:
+    def _note(self, row: dict) -> dict:
+        n = {k: row.get(k) for k in self.NOTE_FIELDS}
+        n["is_open"] = bool(n["is_open"])
+        return n
+
+    def add_note(self, title: str = "", body: str = "", color: str = "yellow", is_open: bool = True) -> dict:
+        """A new note. Notes are not tied to a page: an open note shows on every page."""
         now = time.time()
-        nid = self._x("INSERT INTO notes (view, title, body, color, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                      (view[:40], title[:200], body[:20000], color if color in self.NOTE_COLORS else "yellow", now, now)).lastrowid
-        self._x("INSERT INTO note_versions (note_id, ts, title, body) VALUES (?,?,?,?)", (nid, now, title[:200], body[:20000]))
+        nid = self._x("INSERT INTO notes (view, title, body, color, is_open, created_at, updated_at) VALUES ('*',?,?,?,?,?,?)",
+                      (title[:200], body[:20000], color if color in self.NOTE_COLORS else "yellow", int(bool(is_open)), now, now)).lastrowid
         return self.get_note(nid)
 
     def get_note(self, note_id: int) -> Optional[dict]:
-        rows = self._q("SELECT * FROM notes WHERE id=? AND deleted=0", (note_id,))
-        if not rows:
-            return None
-        n = rows[0]
-        n["versions"] = self._q("SELECT COUNT(*) AS n FROM note_versions WHERE note_id=?", (note_id,))[0]["n"]
-        return n
+        rows = self._q("SELECT * FROM notes WHERE id=?", (note_id,))
+        return self._note(rows[0]) if rows else None
 
-    def list_notes(self, view: Optional[str] = None) -> list[dict]:
-        # view "*" means every page, so a page asks for its own notes and those
-        sql = "SELECT * FROM notes WHERE deleted=0" + (" AND (view=? OR view='*')" if view else "") + " ORDER BY created_at"
-        notes = self._q(sql, (view,) if view else ())
-        counts = {r["note_id"]: r["n"] for r in self._q("SELECT note_id, COUNT(*) AS n FROM note_versions GROUP BY note_id")}
-        for n in notes:
-            n["versions"] = counts.get(n["id"], 0)
-        return notes
+    def list_notes(self) -> list[dict]:
+        """Every note, oldest first: the open ones float over the page, the rest wait in the Notes menu."""
+        return [self._note(r) for r in self._q("SELECT * FROM notes ORDER BY created_at, id")]
 
     def update_note(self, note_id: int, **fields: Any) -> Optional[dict]:
-        """Save a note. A change to its text is kept as history; quick successive edits share one version."""
+        """Save any of title, body, color, x, y, w, h and is_open."""
         note = self.get_note(note_id)
         if not note:
             return None
-        now = time.time()
-        vals = {"title": str(fields.get("title", note["title"]))[:200], "body": str(fields.get("body", note["body"]))[:20000],
-                "color": fields.get("color", note["color"]) if fields.get("color", note["color"]) in self.NOTE_COLORS else note["color"],
-                "view": str(fields.get("view", note["view"]))[:40]}
-        geo = {k: fields.get(k, note.get(k)) for k in ("x", "y", "w", "h")}
-        for k, v in geo.items():
-            geo[k] = None if v is None else max(0.0, min(float(v), 100000.0))
-        self._x("UPDATE notes SET title=?, body=?, color=?, view=?, x=?, y=?, w=?, h=?, updated_at=? WHERE id=?",
-                (vals["title"], vals["body"], vals["color"], vals["view"], geo["x"], geo["y"], geo["w"], geo["h"], now, note_id))
-        if (vals["title"], vals["body"]) != (note["title"], note["body"]):
-            last = self._q("SELECT id, ts FROM note_versions WHERE note_id=? ORDER BY ts DESC, id DESC LIMIT 1", (note_id,))
-            if last and now - last[0]["ts"] < self.NOTE_MERGE_S and self._q("SELECT COUNT(*) AS n FROM note_versions WHERE note_id=?", (note_id,))[0]["n"] > 1:
-                self._x("UPDATE note_versions SET ts=?, title=?, body=? WHERE id=?", (now, vals["title"], vals["body"], last[0]["id"]))
-            else:
-                self._x("INSERT INTO note_versions (note_id, ts, title, body) VALUES (?,?,?,?)", (note_id, now, vals["title"], vals["body"]))
+        color = fields.get("color", note["color"])
+        vals = {"title": str(fields.get("title", note["title"]) or "")[:200], "body": str(fields.get("body", note["body"]) or "")[:20000],
+                "color": color if color in self.NOTE_COLORS else note["color"],
+                "is_open": int(bool(fields.get("is_open", note["is_open"])))}
+        for k in ("x", "y", "w", "h"):
+            v = fields.get(k, note[k])
+            vals[k] = None if v is None else max(0.0, min(float(v), 100000.0))
+        self._x("UPDATE notes SET title=?, body=?, color=?, is_open=?, x=?, y=?, w=?, h=?, updated_at=? WHERE id=?",
+                (vals["title"], vals["body"], vals["color"], vals["is_open"], vals["x"], vals["y"], vals["w"], vals["h"], time.time(), note_id))
         return self.get_note(note_id)
 
-    def note_versions(self, note_id: int) -> list[dict]:
-        return self._q("SELECT * FROM note_versions WHERE note_id=? ORDER BY ts DESC, id DESC", (note_id,))
-
     def delete_note(self, note_id: int) -> bool:
-        """Notes are hidden, not erased, so their history is never lost."""
-        return self._x("UPDATE notes SET deleted=1, updated_at=? WHERE id=? AND deleted=0", (time.time(), note_id)).rowcount > 0
+        """Gone for good. Minimize a note instead to keep it in the Notes menu."""
+        return self._x("DELETE FROM notes WHERE id=?", (note_id,)).rowcount > 0
+
+    # ----- servers --------------------------------------------------------
+    SERVER_FIELDS = ("name", "kind", "host", "port", "env_prefix", "env_kind", "env_value", "llama_server", "gpu", "model_dirs",
+                     "download_dir", "color", "source")
+
+    def _server(self, row: dict) -> dict:
+        row["model_dirs"] = _json(row.get("model_dirs"), [])
+        row["engines"] = _json(row.get("engines"), {})
+        row["is_default"] = bool(row.get("is_default"))
+        return row
+
+    def list_servers(self) -> list[dict]:
+        return [self._server(r) for r in self._q("SELECT * FROM servers ORDER BY (kind='local') DESC, id")]
+
+    def get_server(self, server_id: int) -> Optional[dict]:
+        rows = self._q("SELECT * FROM servers WHERE id=?", (server_id,))
+        return self._server(rows[0]) if rows else None
+
+    def server_by_name(self, name: str) -> Optional[dict]:
+        rows = self._q("SELECT * FROM servers WHERE name=?", (name,))
+        return self._server(rows[0]) if rows else None
+
+    def save_server(self, d: dict[str, Any], server_id: Optional[int] = None) -> dict:
+        """Insert (or update ``server_id``). ``d`` holds only SERVER_FIELDS; the first server saved becomes the default."""
+        now = time.time()
+        vals = {k: d[k] for k in self.SERVER_FIELDS if k in d}
+        if "model_dirs" in vals:
+            vals["model_dirs"] = json.dumps(vals["model_dirs"])
+        if server_id is None:
+            vals.setdefault("name", "")
+            cols = list(vals) + ["created_at", "updated_at"]
+            self._x(f"INSERT INTO servers ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                    [*vals.values(), now, now])
+            server_id = self._q("SELECT id FROM servers WHERE name=?", (vals["name"],))[0]["id"]
+            if not self._q("SELECT 1 FROM servers WHERE is_default=1"):
+                self._x("UPDATE servers SET is_default=1 WHERE id=?", (server_id,))
+        elif vals:
+            sets = ", ".join(f"{k}=?" for k in vals)
+            self._x(f"UPDATE servers SET {sets}, updated_at=? WHERE id=?", [*vals.values(), now, server_id])
+        return self.get_server(server_id)  # type: ignore[return-value]
+
+    def set_server_check(self, server_id: int, status: str, latency_ms: Optional[float], error: str, engines: dict) -> None:
+        self._x("UPDATE servers SET status=?, latency_ms=?, last_check=?, last_error=?, engines=? WHERE id=?",
+                (status, latency_ms, time.time(), error[:500], json.dumps(engines), server_id))
+
+    def set_default_server(self, server_id: int) -> bool:
+        if not self.get_server(server_id):
+            return False
+        with self._lock:
+            self._conn.execute("UPDATE servers SET is_default=0")
+            self._conn.execute("UPDATE servers SET is_default=1 WHERE id=?", (server_id,))
+            self._conn.commit()
+        return True
+
+    def delete_server(self, server_id: int) -> bool:
+        s = self.get_server(server_id)
+        if not s or s["kind"] == "local":
+            return False
+        self._x("DELETE FROM servers WHERE id=?", (server_id,))
+        if s["is_default"]:
+            first = self._q("SELECT id FROM servers ORDER BY (kind='local') DESC, id LIMIT 1")
+            if first:
+                self.set_default_server(first[0]["id"])
+        return True
 
     # ----- events ---------------------------------------------------------
     def add_event(self, kind: str, message: str, level: str = "info", data: Optional[dict] = None,
@@ -702,7 +771,7 @@ class Store:
             self._conn.execute("DELETE FROM gpu_samples WHERE ts < ?", (now - keep_raw_s,))
             self._conn.commit()
 
-    # ----- llama-swap request history -------------------------------------
+    # ----- Argos request history -------------------------------------
     def add_requests(self, rows: list[dict]) -> int:
         if not rows:
             return 0

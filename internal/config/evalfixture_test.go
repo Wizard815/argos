@@ -28,8 +28,8 @@ func loadEvalFixture(t *testing.T) Config {
 	return cfg
 }
 
-// Every name in the fixture has to be prefixed, because models, groups and
-// peers are identity-keyed: a name that also appears in the config of whoever
+// Every name in the fixture has to be prefixed, because models and groups
+// are identity-keyed: a name that also appears in the config of whoever
 // runs the eval is a merge error that stops the server from starting.
 func TestEvalFixture_NamesAreNamespaced(t *testing.T) {
 	cfg := loadEvalFixture(t)
@@ -59,9 +59,6 @@ func TestEvalFixture_NamesAreNamespaced(t *testing.T) {
 	// either one can conflict with, or silently rewrite, the user's config.
 	if len(cfg.Macros) != 0 {
 		t.Errorf("fixture defines global macros %v; use model-scoped macros instead", cfg.Macros)
-	}
-	if len(cfg.Peers) != 0 {
-		t.Error("fixture defines peers; nothing in the cases needs them")
 	}
 }
 

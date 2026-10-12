@@ -69,7 +69,7 @@ Two things to know:
 
 - The expansion happens when the config loads, and the watcher only watches
   `*.yml`/`*.yaml`, so switching a model to `multi_model` takes effect on the
-  next config reload — restart llama-swap (or touch a config file).
+  next config reload — restart Argos (or touch a config file).
 - A profile pin normally rewrites the model id *before* selectors resolve, which
   would bypass the selector. A `multi_model` model therefore **declines its pin**
   — the selector is used instead, and turning the mode off restores the pin.

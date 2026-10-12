@@ -5,7 +5,7 @@
   require_tools: true
 
 - id: loading-feedback
-  question: What setting lets a compatible client see that llama-swap is still loading a model?
+  question: What setting lets a compatible client see that Argos is still loading a model?
   expect_regex: ["sendLoadingState", "true"]
   expect_tools_any: [docs__search_docs, docs__get_doc]
   require_tools: true

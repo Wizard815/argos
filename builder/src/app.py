@@ -7,11 +7,11 @@ can then be changed in the Settings view (stored in the database):
   ARGOS_DB                 SQLite file                      (default ./data.db)
   ARGOS_RUNS_DIR           launch logs                      (default ./runs)
   MODELS_DIR               GGUF library + download target   (default ./models)
-  ODYSSEUS_COOKBOOK        Odysseus cookbook_state.json path or URL
-  LLAMA_SWAP_CONFIG        llama-swap config.yaml (or a directory of yaml files)
-  LLAMA_SWAP_URL           running llama-swap, e.g. http://llama-swap:8080
-  COOKBOOK_EXPORT_FILE     also write the Odysseus-format state to this file
+  ARGOS_ENGINE_URL         the engine in this container      (default none; Docker sets http://127.0.0.1:8080)
   HF_ENDPOINT / HF_TOKEN   Hugging Face mirror and token for downloads
+  ARGOS_SSH_DIR            SSH keys for servers          (default <db folder>/ssh)
+  ARGOS_SERVERS_FILE       servers.yaml / .json that seeds the Servers view at start
+  ARGOS_SERVERS            the same as JSON in the environment
   HOST / PORT              bind address                     (default 0.0.0.0:7861)
 
 The API launches arbitrary commands by design: only expose it on networks
@@ -36,11 +36,12 @@ from .db import Store  # noqa: E402
 from .downloader import Downloads  # noqa: E402
 from .log_analyzer import parse_log_text  # noqa: E402
 from .routes import assistant as assistant_routes  # noqa: E402
-from .routes import core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, workspace  # noqa: E402
+from .routes import core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
 from .measure import Measurer  # noqa: E402
 from .runner import Runner  # noqa: E402
 from .scheduler import Plans  # noqa: E402
-from .integrations import llama_swap  # noqa: E402
+from .servers import Servers, gguf_index, load_seed  # noqa: E402
+from .integrations import engine_api  # noqa: E402
 from .inventory import Inventory  # noqa: E402
 from .memory import Memory  # noqa: E402
 from .services import Analytics, Recorder  # noqa: E402
@@ -59,12 +60,12 @@ def _env_config() -> dict:
         "DB": env("ARGOS_DB") or env("PROFILEBUILDER_DB", os.path.join(ROOT, "data.db")),
         "RUNS_DIR": env("ARGOS_RUNS_DIR") or env("PROFILEBUILDER_RUNS_DIR", os.path.join(ROOT, "runs")),
         "MODELS_DIR": env("MODELS_DIR", ""),
-        "ODYSSEUS_COOKBOOK": env("ODYSSEUS_COOKBOOK", ""),
-        "LLAMA_SWAP_CONFIG": env("LLAMA_SWAP_CONFIG", ""),
-        "LLAMA_SWAP_URL": env("LLAMA_SWAP_URL", ""),
-        "COOKBOOK_EXPORT_FILE": env("COOKBOOK_EXPORT_FILE", ""),
+        "ENGINE_URL": env("ARGOS_ENGINE_URL", ""),
         "HF_ENDPOINT": env("HF_ENDPOINT", ""),
         "HF_TOKEN": env("HF_TOKEN", ""),
+        "SSH_DIR": env("ARGOS_SSH_DIR", ""),
+        "SERVERS_FILE": env("ARGOS_SERVERS_FILE", ""),
+        "SERVERS_JSON": env("ARGOS_SERVERS", ""),
         "TELEMETRY": (env("ARGOS_TELEMETRY") or env("PROFILEBUILDER_TELEMETRY", "1")) not in ("0", "false", "off"),
         "BACKGROUND": True,  # tests turn the background thread off and drive it by hand
     }
@@ -102,10 +103,9 @@ def create_app(config: dict | None = None) -> Flask:
             event("launch", f"{name} exited with code {run.exit_code}" + (f": {problem}" if problem else ""),
                   level="error" if run.exit_code else "info", data={"launch_id": run.launch_id})
 
-    def refresh_export():
+    def refresh_plan():
         with app.app_context():
-            core.write_export()
-            schedule.write_schedule_export(force=False)
+            schedule.apply_plan(force=False)
 
     inventory = Inventory(store, event)
     memory = Memory(store, settings.all, event)
@@ -126,11 +126,11 @@ def create_app(config: dict | None = None) -> Flask:
 
     def watch_pool():
         """Log what the pool router did between two looks: models loaded, moved or unloaded, and long waits."""
-        url = settings.get("integrations")["llama_swap_url"]
+        url = settings.get("integrations")["engine_url"]
         if not url:
             return
         try:
-            pool = llama_swap.pool_state(url)
+            pool = engine_api.pool_state(url)
         except Exception:  # noqa: BLE001 - the Live view shows connection problems
             return
         if not pool.get("enabled"):
@@ -156,30 +156,64 @@ def create_app(config: dict | None = None) -> Flask:
                 event("schedule", f"a request for {q['model']} has waited {q['waited_seconds']:.0f}s", level="warn",
                       data={"model": q["model"], "position": q.get("position")})
 
-    collector = Collector(store, settings.all, event, hooks=[watch_exits, refresh_export, watch_pool, watch_inventory, watch_memory])
+    def watch_assistant():
+        """Unload the assistant's chat and embedding models once they sit unused for the set number of minutes."""
+        app.extensions["pb"].assistant.unload_idle()
+
+    collector = Collector(store, settings.all, event,
+                          hooks=[watch_exits, refresh_plan, watch_pool, watch_inventory, watch_memory, watch_assistant])
     plans = Plans(store)
+    servers = Servers(store, cfg["SSH_DIR"] or os.path.join(os.path.dirname(os.path.abspath(cfg["DB"])), "ssh"), run=cfg.get("SSH_RUN"),
+                      local_models=lambda: gguf_index([settings.get("paths")["models_dir"]]))
+    servers.ensure_local()
+    try:
+        seeded = servers.seed(load_seed(cfg["SERVERS_FILE"], cfg["SERVERS_JSON"]), source="file")
+        for problem in seeded["errors"]:
+            event("server", f"servers seed: {problem}", level="warn")
+    except Exception as exc:  # noqa: BLE001 - a bad seed file must not stop the app
+        event("server", f"servers seed ignored: {exc}", level="warn")
     app.extensions["pb"] = Ctx(
         store=store, settings=settings, runner=runner, recorder=Recorder(store, runner), analytics=analytics,
         downloads=Downloads(store, download_settings, event), collector=collector,
         assistant=Assistant(store, settings, runner, analytics, event, inventory, memory),
         plans=plans, measurer=Measurer(runner, plans, lambda: collector.sample(), event), inventory=inventory,
-        memory=memory)
+        memory=memory, servers=servers)
     app.extensions["runner"] = runner
     atexit.register(runner.stop_all)
     atexit.register(inventory.close_all)
     if cfg["BACKGROUND"]:
         collector.start()
 
-    for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp):
+    for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp):
         app.register_blueprint(bp)
+
+    def ui_version() -> str:
+        """Changes whenever a UI file changes, so a browser never runs an old app.js against a new server."""
+        stamp = 0.0
+        for name in os.listdir(UI_DIR):
+            try:
+                stamp = max(stamp, os.path.getmtime(os.path.join(UI_DIR, name)))
+            except OSError:
+                pass
+        return str(int(stamp))
 
     @app.get("/")
     def index():
-        return send_from_directory(UI_DIR, "index.html")
+        with open(os.path.join(UI_DIR, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+        v = ui_version()
+        for asset in ("app.js", "style.css", "theme.js"):
+            html = html.replace(f'/static/{asset}"', f'/static/{asset}?v={v}"')
+        resp = app.response_class(html, mimetype="text/html")
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
     @app.get("/static/<path:filename>")
     def static_files(filename):
-        return send_from_directory(UI_DIR, filename)
+        resp = send_from_directory(UI_DIR, filename)
+        # the page asks for ?v=<version>, so a versioned file can be kept; an unversioned one is always re-checked
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable" if request.args.get("v") else "no-cache"
+        return resp
 
     @app.errorhandler(404)
     def not_found(_e):

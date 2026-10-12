@@ -333,7 +333,7 @@ describe("buildActivityMarkdown", () => {
     );
 
     expect(markdown.endsWith(
-      "\n\nExported from [llama-swap](https://github.com/mostlygeek/llama-swap) at 2026-08-16 09:30:00"
+      "\n\nExported from [Argos](https://github.com/Wizard815/Argos) at 2026-08-16 09:30:00"
     )).toBe(true);
   });
 
@@ -347,7 +347,7 @@ describe("buildActivityMarkdown", () => {
     const generatedAt = new Date(2026, 7, 16, 9, 30, 0);
     expect(buildActivityMarkdown([entry()], [], generatedAt)).toBe(
       summaryMarkdown(summarizeActivity([entry()])) +
-        "\n\nExported from [llama-swap](https://github.com/mostlygeek/llama-swap) at 2026-08-16 09:30:00"
+        "\n\nExported from [Argos](https://github.com/Wizard815/Argos) at 2026-08-16 09:30:00"
     );
   });
 });

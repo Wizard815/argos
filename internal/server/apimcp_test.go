@@ -9,9 +9,9 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/docagent"
-	"github.com/mostlygeek/llama-swap/internal/mcptools"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/docagent"
+	"github.com/Wizard815/Argos/internal/mcptools"
 )
 
 // mcpTestFS is a small stand-in for the repository layout.
@@ -70,7 +70,7 @@ Write a models block.
 }
 
 func newMCPServer() *Server {
-	return newTestServerWithReference(newStubRouter(nil, ""), newStubRouter(nil, ""), mcpTestFS())
+	return newTestServerWithReference(newStubRouter(nil, ""), mcpTestFS())
 }
 
 type rpcEnvelope struct {
@@ -175,7 +175,7 @@ func TestServer_APIMCP_RejectsNonPost(t *testing.T) {
 
 func TestServer_APIMCP_DisabledWithoutReference(t *testing.T) {
 	// newTestServer leaves s.reference nil, which is every pre-existing test.
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, mcpProtocolVersion, "tools/list", ""))
@@ -407,8 +407,8 @@ func TestServer_APIMCP_Discover(t *testing.T) {
 	if result.Instructions == "" {
 		t.Error("instructions is empty")
 	}
-	if result.Meta.ServerInfo.Name != "llama-swap" {
-		t.Errorf("serverInfo.name = %q, want llama-swap", result.Meta.ServerInfo.Name)
+	if result.Meta.ServerInfo.Name != "argos" {
+		t.Errorf("serverInfo.name = %q, want Argos", result.Meta.ServerInfo.Name)
 	}
 	if result.CacheScope != "public" {
 		t.Errorf("cacheScope = %q, want public", result.CacheScope)
@@ -778,7 +778,7 @@ func longDocServer(t *testing.T, lines int) *Server {
 
 	fsys := mcpTestFS()
 	fsys["kb/guides/routing/long.md"] = &fstest.MapFile{Data: []byte(long.String())}
-	return newTestServerWithReference(newStubRouter(nil, ""), newStubRouter(nil, ""), fsys)
+	return newTestServerWithReference(newStubRouter(nil, ""), fsys)
 }
 
 func TestServer_APIMCP_GetDocPaginates(t *testing.T) {

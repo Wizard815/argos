@@ -19,7 +19,7 @@ func TestServer_LaunchEnvAppliesPoolPlacement(t *testing.T) {
 		"one":  {"1"},
 		"both": {"0", "1"},
 	}}
-	s := newTestServer(local, &stubRouter{})
+	s := newTestServer(local)
 
 	got := s.launchEnv("one", nil, []string{"HIP_VISIBLE_DEVICES=0", "FOO=bar"})
 	assert.Equal(t, []string{"HIP_VISIBLE_DEVICES=1", "FOO=bar"}, got, "the placement replaces the configured pin")
@@ -31,9 +31,9 @@ func TestServer_LaunchEnvAppliesPoolPlacement(t *testing.T) {
 func TestServer_LaunchEnvWithoutPlacementIsUnchanged(t *testing.T) {
 	env := []string{"HIP_VISIBLE_DEVICES=0"}
 
-	plain := newTestServer(&stubRouter{}, &stubRouter{})
+	plain := newTestServer(&stubRouter{})
 	assert.Equal(t, env, plain.launchEnv("m", nil, env), "a router that cannot place")
 
-	placing := newTestServer(&placingRouter{stubRouter: &stubRouter{}}, &stubRouter{})
+	placing := newTestServer(&placingRouter{stubRouter: &stubRouter{}})
 	assert.Equal(t, env, placing.launchEnv("m", nil, env), "no placement recorded for the model")
 }

@@ -1,7 +1,7 @@
 """Launch llama.cpp processes, capture their output, and benchmark servers.
 
 A launched process gets its own process group and log file
-(``<runs_dir>/<launch_id>.log``). ``${PORT}`` in a command (llama-swap style)
+(``<runs_dir>/<launch_id>.log``). ``${PORT}`` in a command (Argos style)
 is replaced with a free port. Benchmarks call llama-server's ``/completion``
 endpoint and read the ``timings`` block it returns, sampling ``nvidia-smi``
 while the request runs when it is available.

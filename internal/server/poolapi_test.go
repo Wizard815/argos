@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/router"
+	"github.com/Wizard815/Argos/internal/router"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +25,7 @@ func TestServer_APIPoolReportsPoolStatus(t *testing.T) {
 		Cards:  []router.PoolCardStatus{{ID: "0", CapGiB: 31, UsedGiB: 26, FreeGiB: 5, Models: []string{"a"}}},
 		Models: []router.PoolModelStatus{{ID: "a", State: "ready", SizeGiB: 26, SizeKnown: true, Cards: []string{"0"}}},
 	}}
-	s := newTestServer(local, &stubRouter{})
+	s := newTestServer(local)
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/pool", nil))
@@ -41,7 +41,7 @@ func TestServer_APIPoolReportsPoolStatus(t *testing.T) {
 }
 
 func TestServer_APIPoolWithoutPool(t *testing.T) {
-	s := newTestServer(&stubRouter{}, &stubRouter{})
+	s := newTestServer(&stubRouter{})
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/pool", nil))

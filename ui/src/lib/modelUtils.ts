@@ -3,7 +3,6 @@ import type { Model } from "./types";
 export interface GroupedModels {
   local: Model[];
   localMatching: Model[];
-  peers: Model[];
 }
 
 export function modelServerPath(modelId: string): string {
@@ -23,8 +22,7 @@ export function matchesCapabilities(model: Model, required: string[], matchAny =
 
 export function groupModels(models: Model[], capabilities?: string[], matchAny = false): GroupedModels {
   const available = models.filter((m) => !m.unlisted);
-  const local = available.filter((m) => !m.peerID);
-  const peers = available.filter((m) => m.peerID);
+  const local = available;
 
   let localMatching: Model[] = [];
   let localRest: Model[] = [];
@@ -41,5 +39,5 @@ export function groupModels(models: Model[], capabilities?: string[], matchAny =
     localRest = local;
   }
 
-  return { local: localRest, localMatching, peers };
+  return { local: localRest, localMatching };
 }

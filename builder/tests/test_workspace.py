@@ -8,7 +8,7 @@ from src.always import apply_always
 from src.routes.workspace import diff_commands
 
 from .conftest import fake_command
-from .fakes import make_hub, make_llama_swap, serve
+from .fakes import make_hub, make_engine, serve
 from .test_inventory import fake_openai, point_assistant_at
 
 
@@ -30,12 +30,11 @@ def test_always_reaches_the_builder_launches_and_export(app, client, tmp_path):
     assert j["always_added"] == ["HSA_OVERRIDE_GFX_VERSION=9.0.6", "HIP_VISIBLE_DEVICES=0", "-lm dio", "--no-warmup"]
     assert "--no-warmup" not in j["command"], "the builder shows them, it does not write them into the profile"
 
-    out = tmp_path / "state.json"
-    client.put("/api/settings/export", json={"file": str(out)})
     client.post("/api/profiles", json={"name": "p", "base_model": "a", "launch_command": "llama-server --model /m/a.gguf --port 8080"})
-    ours = [x for x in json.loads(out.read_text())["presets"] if (x.get("fields") or {}).get("source") == "argos"]
+    state = lambda: client.get("/api/cookbook/state").get_json()["presets"]  # noqa: E731 - what the engine reads
+    ours = [x for x in state() if (x.get("fields") or {}).get("source") == "argos"]
     cmd = ours[0]["cmd"]
-    assert "HSA_OVERRIDE_GFX_VERSION=9.0.6" in cmd and "--no-warmup" in cmd, "llama-swap gets them"
+    assert "HSA_OVERRIDE_GFX_VERSION=9.0.6" in cmd and "--no-warmup" in cmd, "the engine gets them"
 
     r = client.post("/api/launches", json={"command": fake_command()}).get_json()
     assert "--no-warmup" in r["launch"]["command"] and r["launch"]["command"].startswith("HSA_OVERRIDE")
@@ -43,40 +42,62 @@ def test_always_reaches_the_builder_launches_and_export(app, client, tmp_path):
 
     client.put("/api/settings/always", json={"on_export": False})
     client.post("/api/profiles", json={"name": "q", "base_model": "a", "launch_command": "llama-server --model /m/a.gguf --port 8080"})
-    assert all("--no-warmup" not in p["cmd"] for p in json.loads(out.read_text())["presets"]
-               if (p.get("fields") or {}).get("source") == "argos")
+    assert all("--no-warmup" not in p["cmd"] for p in state() if (p.get("fields") or {}).get("source") == "argos")
 
 
 # ----- notes ------------------------------------------------------------------------------------
-def test_notes_keep_history(app, client):
-    assert client.post("/api/notes", json={}).status_code == 400
-    n = client.post("/api/notes", json={"view": "builder", "title": "try", "body": "v1", "color": "nope"}).get_json()["note"]
-    assert n["color"] == "yellow" and n["versions"] == 1
-    store = app.extensions["pb"].store
-    store.NOTE_MERGE_S = 0  # every save is its own version in this test
-    for text in ("v2", "v3"):
-        client.put(f"/api/notes/{n['id']}", json={"body": text})
-    client.put(f"/api/notes/{n['id']}", json={"color": "blue"})  # a color change is not a text version
-    hist = client.get(f"/api/notes/{n['id']}/history").get_json()["versions"]
-    assert [v["body"] for v in hist] == ["v3", "v2", "v1"]
+def test_notes_are_one_set_for_every_page(app, client):
+    n = client.post("/api/notes", json={"title": "try", "body": "v1", "color": "nope"}).get_json()["note"]
+    assert n["color"] == "yellow" and n["is_open"] is True, "a new note is open, so it shows on every page"
+    assert "view" not in n and "versions" not in n
+    other = client.post("/api/notes", json={"body": "second"}).get_json()["note"]
+    assert [x["id"] for x in client.get("/api/notes").get_json()["notes"]] == [n["id"], other["id"]]
+    assert [x["id"] for x in client.get("/api/notes?view=logs").get_json()["notes"]] == [n["id"], other["id"]], "no per-page notes"
 
-    first = hist[-1]["id"]
-    r = client.post(f"/api/notes/{n['id']}/restore/{first}").get_json()["note"]
-    assert r["body"] == "v1" and r["color"] == "blue" and r["versions"] == 4, "restoring adds a version, it does not delete"
+    r = client.put(f"/api/notes/{n['id']}", json={"body": "v2", "x": 40, "y": 60, "w": 300, "h": 220}).get_json()["note"]
+    assert (r["body"], r["x"], r["y"], r["w"], r["h"]) == ("v2", 40, 60, 300, 220)
+    assert client.put(f"/api/notes/{n['id']}", json={"x": "left"}).status_code == 400
+    assert client.put("/api/notes/999999", json={"body": "x"}).status_code == 404
 
-    assert [x["id"] for x in client.get("/api/notes?view=builder").get_json()["notes"]] == [n["id"]]
-    assert client.get("/api/notes?view=logs").get_json()["notes"] == []
+
+def test_minimize_keeps_a_note_in_the_menu_and_open_brings_it_back(client):
+    n = client.post("/api/notes", json={"title": "t", "body": "b"}).get_json()["note"]
+    m = client.put(f"/api/notes/{n['id']}", json={"is_open": False}).get_json()["note"]
+    assert m["is_open"] is False and m["body"] == "b"
+    listed = client.get("/api/notes").get_json()["notes"]
+    assert [(x["id"], x["is_open"]) for x in listed] == [(n["id"], False)], "minimized notes are still listed, for the menu"
+    assert client.put(f"/api/notes/{n['id']}", json={"is_open": True}).get_json()["note"]["is_open"] is True
+    hidden = client.post("/api/notes", json={"body": "start minimized", "is_open": False}).get_json()["note"]
+    assert hidden["is_open"] is False
+
+
+def test_deleting_a_note_is_final(app, client):
+    n = client.post("/api/notes", json={"body": "gone soon"}).get_json()["note"]
     assert client.delete(f"/api/notes/{n['id']}").get_json()["ok"]
-    assert client.get("/api/notes?view=builder").get_json()["notes"] == []
+    assert client.get("/api/notes").get_json()["notes"] == []
     assert client.delete(f"/api/notes/{n['id']}").status_code == 404
-    assert store.note_versions(n["id"]), "history survives a delete"
+    assert app.extensions["pb"].store.get_note(n["id"]) is None
+    assert client.get(f"/api/notes/{n['id']}/history").status_code in (404, 405), "there is no history to bring it back from"
 
 
-def test_quick_edits_share_one_version(app, client):
-    n = client.post("/api/notes", json={"view": "x", "body": "a"}).get_json()["note"]
-    for text in ("ab", "abc", "abcd"):
-        client.put(f"/api/notes/{n['id']}", json={"body": text})
-    assert [v["body"] for v in client.get(f"/api/notes/{n['id']}/history").get_json()["versions"]] == ["abcd", "a"]
+def test_old_notes_are_migrated(tmp_path):
+    import sqlite3
+    from src.db import Store
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, view TEXT NOT NULL, title TEXT DEFAULT '', body TEXT DEFAULT '',
+            color TEXT DEFAULT 'yellow', created_at REAL NOT NULL, updated_at REAL NOT NULL, deleted INTEGER DEFAULT 0,
+            x REAL, y REAL, w REAL, h REAL, collapsed INTEGER DEFAULT 0);
+        CREATE TABLE note_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, ts REAL NOT NULL, title TEXT, body TEXT);
+        INSERT INTO notes (view, title, body, created_at, updated_at, collapsed) VALUES ('builder', 'open', 'a', 1, 1, 0);
+        INSERT INTO notes (view, title, body, created_at, updated_at, collapsed) VALUES ('logs', 'small', 'b', 2, 2, 1);
+        INSERT INTO notes (view, title, body, created_at, updated_at, deleted) VALUES ('perf', 'deleted', 'c', 3, 3, 1);
+    """)
+    con.commit()
+    con.close()
+    notes = Store(path).list_notes()
+    assert [(n["title"], n["is_open"]) for n in notes] == [("open", True), ("small", False)], "deleted ones are purged, minimized stay in the menu"
 
 
 # ----- layout -----------------------------------------------------------------------------------
@@ -142,8 +163,8 @@ def test_review_then_apply_reloads_only_that_model(app, client):
                                            "launch_command": "llama-server --model /m/a.gguf --port 8080 -c 4096"}).get_json()["profile"]
     calls = []
     running = [{"model": "a--fast", "state": "ready", "cmd": "x"}, {"model": "other", "state": "ready", "cmd": "y"}]
-    with serve(make_llama_swap([], [], running=running, calls=calls)) as url:
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
+    with serve(make_engine([], [], running=running, calls=calls)) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
         d = client.post("/api/profiles/diff", json={"profile_id": p["profile_id"], "name": "Fast",
                                                     "launch_command": "llama-server --model /m/a.gguf --port 8080 -c 8192"}).get_json()
         assert d["changes"] == [{"name": "-c", "before": "4096", "after": "8192", "change": "changed", "env": False}]
@@ -164,11 +185,11 @@ def test_review_then_apply_reloads_only_that_model(app, client):
     assert client.post("/api/profiles/nope/apply", json={}).status_code == 404
 
 
-def test_apply_without_llama_swap(client):
+def test_apply_without_engine(client):
     p = client.post("/api/profiles", json={"name": "x", "base_model": "a", "launch_command": "llama-server --model /m/a.gguf"}).get_json()["profile"]
-    client.put("/api/settings/integrations", json={"llama_swap_url": ""})
+    client.put("/api/settings/integrations", json={"engine_url": ""})
     r = client.post(f"/api/profiles/{p['profile_id']}/apply", json={"load": True}).get_json()
-    assert r["exported"] and r["refresh"] == "no llama-swap URL set" and r["load"] == "skipped"
+    assert r["exported"] and r["refresh"] == "no Argos URL set" and r["load"] == "skipped"
 
 
 # ----- logs -------------------------------------------------------------------------------------

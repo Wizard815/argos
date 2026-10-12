@@ -1,5 +1,5 @@
 # Define variables for the application
-APP_NAME = llama-swap
+APP_NAME = argos
 BUILD_DIR = build
 
 # Get closest tag or if that fails (no git repo or no tags) then devel
@@ -100,7 +100,7 @@ test-ui:
 	cd ui && npm ci && npm run check && npm test
 
 # Score the Playground's Docs Agent against a local model. Builds and starts
-# llama-swap itself; see evals/docs-agent/README.md for the tuning loop.
+# Argos itself; see evals/docs-agent/README.md for the tuning loop.
 eval-docs-agent:
 	./evals/docs-agent/run.sh $(EVAL_ARGS)
 

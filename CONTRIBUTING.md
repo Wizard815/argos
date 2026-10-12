@@ -1,6 +1,6 @@
 # 1. Contributing
 
-The llama-swap project considers two types of contributing roles:
+The Argos project considers two types of contributing roles:
 
 1. Contributors are allowed to create issues, open pull requests and engage in discussion.
 2. Maintainers have contributor privileges and are also allowed to merge pull requests. Maintainers have an obligation to maintain the quality of the project.

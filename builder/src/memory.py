@@ -3,7 +3,7 @@
 Every useful row (events, notes, presets, benchmarks, loads, per-model speed summaries,
 new settings, and Odysseus' Brain when connected) becomes one short text in
 ``memory_records``. When an embedding model is set, each text gets a vector from any
-OpenAI-compatible ``/v1/embeddings`` endpoint (llama-swap serving nomic-embed, say),
+OpenAI-compatible ``/v1/embeddings`` endpoint (normally the engine serving nomic-embed),
 stored as float32 in SQLite.
 
 A question is answered from the records closest to it: vector similarity and keyword
@@ -69,14 +69,15 @@ class Memory:
         self._lock = threading.Lock()
         self._matrix: Optional[tuple] = None  # (stamp, ids, numpy matrix) cache for vector search
         self.last_error = ""
+        self.last_used = 0.0  # when the embedding model last answered, for unloading it when idle
         self.extra_sources: list[Callable[[], Iterable[tuple]]] = []  # e.g. Odysseus' Brain
 
     # ----- configuration ---------------------------------------------------------------
     def config(self) -> dict:
         s = self.settings()
         m = dict(s.get("memory") or {})
-        if not m.get("endpoint") and s["integrations"].get("llama_swap_url"):
-            m["endpoint"] = s["integrations"]["llama_swap_url"].rstrip("/") + "/v1"
+        if not m.get("endpoint") and s["integrations"].get("engine_url"):
+            m["endpoint"] = s["integrations"]["engine_url"].rstrip("/") + "/v1"
         return m
 
     def vectors_on(self) -> bool:
@@ -216,6 +217,7 @@ class Memory:
         vecs = [d.get("embedding") for d in items]
         if len(vecs) != len(texts) or not all(isinstance(v, list) and v for v in vecs):
             raise MemoryError_("embedding server returned an unexpected answer (is the model an embedding model?)")
+        self.last_used = time.time()
         return vecs
 
     def rebuild(self) -> None:

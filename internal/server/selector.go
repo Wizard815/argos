@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/mostlygeek/llama-swap/internal/chain"
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/chain"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 type selectorContextKey struct{}
@@ -26,7 +26,6 @@ func selectorFromContext(ctx context.Context) string {
 type spilloverTarget struct {
 	target  string
 	modelID string
-	local   bool
 }
 
 type selectorSpilloverState struct {
@@ -53,15 +52,10 @@ func newSelectorSpilloverTracker(cfg config.Config) *selectorSpilloverTracker {
 			inflight:  make(map[string]int, len(selector.Targets)),
 		}
 		for _, target := range selector.Targets {
-			modelID, local := cfg.RealModelName(target)
-			if !local {
-				peerID, peerModelID, _ := cfg.ResolvePeerModel(target)
-				modelID = config.PeerModelFQN(peerID, peerModelID)
-			}
+			modelID, _ := cfg.RealModelName(target)
 			state.targets = append(state.targets, spilloverTarget{
 				target:  target,
 				modelID: modelID,
-				local:   local,
 			})
 		}
 		tracker.states[selectorID] = state
@@ -189,15 +183,6 @@ func strategySpillover(selectorID string, tracker *selectorSpilloverTracker, run
 	active := make([]spilloverTarget, 0, len(state.targets))
 	cold := make([]spilloverTarget, 0, len(state.targets))
 	for _, target := range state.targets {
-		if !target.local {
-			if state.inflight[target.modelID] > 0 {
-				active = append(active, target)
-			} else {
-				cold = append(cold, target)
-			}
-			continue
-		}
-
 		processState, runningNow := running[target.modelID]
 		switch {
 		case processState == process.StateStopping || processState == process.StateShutdown:

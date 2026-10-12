@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mostlygeek/llama-swap/internal/modelscan"
+	"github.com/Wizard815/Argos/internal/modelscan"
 )
 
 // runModelScan executes a directory scan per s.cfg.ModelScan and writes the
@@ -14,7 +14,7 @@ import (
 // it unconditionally.
 //
 // A write does not reload this Server — it relies on the existing
-// -watch-config file watcher (internal/config, wired in llama-swap.go) to
+// -watch-config file watcher (internal/config, wired in argos.go) to
 // notice the change and hot-reload, same as any other hand edit to a file
 // under -config-dir. Without -watch-config, writes here still happen but
 // nothing picks them up until the process is restarted or another reload

@@ -6,10 +6,12 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import pytest
+
 from src.db import Store
 from src.inventory import Inventory, extract, is_known, norm_key
 
-from .fakes import make_llama_swap, serve
+from .fakes import make_engine, serve
 from .ggufs import kv_str, kv_u32, kv_str_array, llama_kvs, write_gguf
 
 EXOTIC = ("HIP_VISIBLE_DEVICES=1 LLAMA_ENABLE_MTP_OPT=1 llama-server -m /m/Tiel-Q8_K_XL.gguf -c 262144 "
@@ -130,8 +132,8 @@ def sessions(client, **params):
 def test_sessions_follow_models_loading_moving_and_stopping(app, client):
     state_running = [running_entry("a")]
     pool = pool_for(a=(["0"], 12.0))
-    with serve(make_llama_swap([], [], pool=pool, running=state_running)) as url:
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
+    with serve(make_engine([], [], pool=pool, running=state_running)) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
         sync = hook(app, "watch_inventory")
 
         sync()  # first look: a was already running
@@ -160,18 +162,18 @@ def test_sessions_follow_models_loading_moving_and_stopping(app, client):
     assert any("a moved to GPU 1" in m for m in msgs)
 
 
-def test_an_unreachable_llama_swap_does_not_close_sessions(app, client):
-    with serve(make_llama_swap([], [], running=[running_entry("a")])) as url:
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
+def test_an_unreachable_engine_does_not_close_sessions(app, client):
+    with serve(make_engine([], [], running=[running_entry("a")])) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
         hook(app, "watch_inventory")()
-    hook(app, "watch_inventory")()  # llama-swap is gone now
+    hook(app, "watch_inventory")()  # Argos is gone now
     assert [s["open"] for s in sessions(client)] == [1]
 
 
 def test_without_the_pool_router_the_command_names_the_gpu(app, client):
     cmd = "HIP_VISIBLE_DEVICES=1 llama-server -m /m/a.gguf"
-    with serve(make_llama_swap([], [], running=[running_entry("a", cmd)])) as url:  # /api/pool says enabled: false
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
+    with serve(make_engine([], [], running=[running_entry("a", cmd)])) as url:  # /api/pool says enabled: false
+        client.put("/api/settings/integrations", json={"engine_url": url})
         hook(app, "watch_inventory")()
     assert sessions(client)[0]["gpus"] == ["1"]
 
@@ -242,31 +244,31 @@ def test_refresh_notices_a_model_that_went_away(app, client):
     assert [m["present"] for m in client.get("/api/inventory").get_json()["models"] if m["model_id"] == "temp-q8_0"] == [False]
 
 
-def test_refresh_survives_garbage_files_and_a_dead_llama_swap(app, client):
+def test_refresh_survives_garbage_files_and_a_dead_engine(app, client):
     os.makedirs(app.config["MODELS_DIR"], exist_ok=True)
     with open(os.path.join(app.config["MODELS_DIR"], "broken.gguf"), "wb") as f:
         f.write(b"not a gguf at all")
-    client.put("/api/settings/integrations", json={"llama_swap_url": "http://127.0.0.1:9"})
+    client.put("/api/settings/integrations", json={"engine_url": "http://127.0.0.1:9"})
     r = refresh(client)
     assert "broken" in r["models_new"], "an unreadable file is still a model, just without header facts"
-    assert any("llama-swap" in p for p in r["problems"]) and r["host_changed"] is True, "local host facts are kept anyway"
+    assert any("engine" in p for p in r["problems"]) and r["host_changed"] is True, "local host facts are kept anyway"
 
 
-def test_refresh_reads_llama_swap_and_keeps_host_changes(app, client):
+def test_refresh_reads_engine_and_keeps_host_changes(app, client):
     hw = {"captured_at": "t1", "accelerators": [{"index": 0, "model": "Radeon Pro VII", "architecture": "gfx906"}]}
-    with serve(make_llama_swap([], [], model_ids=["only-in-config"], hardware=hw, version={"version": "v1"})) as url:
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
+    with serve(make_engine([], [], model_ids=["only-in-config"], hardware=hw, version={"version": "v1"})) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
         assert "only-in-config" in refresh(client)["models_new"]
         host = client.get("/api/inventory").get_json()["host"]
-        assert host["llama-swap"]["data"]["hardware"]["accelerators"][0]["architecture"] == "gfx906"
-        assert "captured_at" not in host["llama-swap"]["data"]["hardware"], "a timestamp is not a hardware change"
+        assert host["engine"]["data"]["hardware"]["accelerators"][0]["architecture"] == "gfx906"
+        assert "captured_at" not in host["engine"]["data"]["hardware"], "a timestamp is not a hardware change"
         assert host["app"]["data"]["python"]
 
         hw["captured_at"] = "t2"
         assert refresh(client)["host_changed"] is False
         hw["accelerators"].append({"index": 1, "model": "Radeon Pro VII", "architecture": "gfx906"})
         assert refresh(client)["host_changed"] is True
-        assert client.get("/api/inventory").get_json()["host_changes"]["llama-swap"] == 2
+        assert client.get("/api/inventory").get_json()["host_changes"]["engine"] == 2
 
 
 # ----- review and clean-up ---------------------------------------------------------------------
@@ -417,3 +419,23 @@ def test_the_assistant_digest_carries_the_inventory(app, client):
 
 def test_the_digest_is_unchanged_when_there_is_no_inventory(client):
     assert "INVENTORY" not in client.get("/api/assistant/digest").get_json()["digest"]
+
+
+def test_the_assistant_can_run_on_a_model_the_engine_lists(app, client):
+    from .fakes import make_engine, serve
+
+    with serve(make_engine([], [], model_ids=["qwen3-0.6b-q8_0", "nomic-embed-text-v1.5"])) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
+        j = client.get("/api/models/available").get_json()
+        assert j["engine"] == ["nomic-embed-text-v1.5", "qwen3-0.6b-q8_0"] and j["embeddings"] == ["nomic-embed-text-v1.5"]
+        assert j["engine_connected"] is True
+        client.put("/api/settings/assistant", json={"mode": "engine", "model": "qwen3-0.6b-q8_0"})
+        a = app.extensions["pb"].assistant
+        assert a.endpoint() == (url + "/v1", "qwen3-0.6b-q8_0")
+        assert a.server_state() == {"mode": "engine", "model": "qwen3-0.6b-q8_0"}
+        client.put("/api/settings/assistant", json={"model": ""})
+        with pytest.raises(Exception, match="Pick a model"):
+            a.endpoint()
+    client.put("/api/settings/integrations", json={"engine_url": ""})
+    off = client.get("/api/models/available").get_json()
+    assert off["engine"] == [] and off["engine_connected"] is False

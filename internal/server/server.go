@@ -10,24 +10,24 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/chain"
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/docagent"
-	"github.com/mostlygeek/llama-swap/internal/event"
-	"github.com/mostlygeek/llama-swap/internal/hw"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/mcptools"
-	"github.com/mostlygeek/llama-swap/internal/odysseus"
-	"github.com/mostlygeek/llama-swap/internal/perf"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/router"
-	"github.com/mostlygeek/llama-swap/internal/store"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/chain"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/docagent"
+	"github.com/Wizard815/Argos/internal/event"
+	"github.com/Wizard815/Argos/internal/hw"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/mcptools"
+	"github.com/Wizard815/Argos/internal/odysseus"
+	"github.com/Wizard815/Argos/internal/perf"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/router"
+	"github.com/Wizard815/Argos/internal/store"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
-// Server owns the HTTP mux, cross-cutting middleware, and the local/peer model
-// dispatch. It supersedes router.Server: it builds the local and peer routers
-// directly and dispatches between them itself.
+// Server owns the HTTP mux, cross-cutting middleware, and the model dispatch.
+// It supersedes router.Server: it builds the router directly and dispatches to
+// it itself.
 type Server struct {
 	cfg config.Config
 
@@ -42,7 +42,7 @@ type Server struct {
 	build    BuildInfo
 	hardware *hw.HardwareSnapshot
 
-	// reference is llama-swap's own embedded documentation, served to the
+	// reference is Argos's own embedded documentation, served to the
 	// Playground's agentic chat and to external MCP clients through /api/mcp.
 	// It is immutable and independent of cfg, so the same library is shared
 	// across the Server instances a hot config reload creates. A nil value
@@ -77,7 +77,6 @@ type Server struct {
 	odysseus odysseusState
 
 	local router.LocalRouter
-	peer  router.Router
 
 	mux     *http.ServeMux
 	handler http.Handler
@@ -264,11 +263,6 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		}
 	}
 
-	peer, err := router.NewPeer(cfg, proxylog)
-	if err != nil {
-		return nil, fmt.Errorf("creating peer router: %w", err)
-	}
-
 	if st == nil {
 		return nil, fmt.Errorf("store is required")
 	}
@@ -288,7 +282,6 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		reference:     refs,
 		activeProfile: cfg.Hooks.OnStartup.Profile,
 		local:         local,
-		peer:          peer,
 		shutdownCtx:   shutdownCtx,
 		shutdownFn:    shutdownFn,
 	}
@@ -329,9 +322,9 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	return s, nil
 }
 
-// localPeerHandler dispatches a model-routed request to the local or peer
-// router. The model is resolved once via swaputil.FetchContext.
-func (s *Server) localPeerHandler(w http.ResponseWriter, r *http.Request) {
+// modelHandler dispatches a model-routed request to the router. The model is
+// resolved once via swaputil.FetchContext.
+func (s *Server) modelHandler(w http.ResponseWriter, r *http.Request) {
 	stripVersionPrefix(r)
 	stripAudioAPIPrefix(r)
 
@@ -341,16 +334,12 @@ func (s *Server) localPeerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch {
-	case s.local.Handles(data.ModelID):
-		s.proxylog.Debugf("dispatch: using local process for model: %s", data.ModelID)
-		s.local.ServeHTTP(w, r)
-	case s.peer.Handles(data.ModelID):
-		s.proxylog.Debugf("dispatch: using peer for model: %s", data.ModelID)
-		s.peer.ServeHTTP(w, r)
-	default:
+	if !s.local.Handles(data.ModelID) {
 		swaputil.SendError(w, r, router.ErrNoRouterFound)
+		return
 	}
+	s.proxylog.Debugf("dispatch: using local process for model: %s", data.ModelID)
+	s.local.ServeHTTP(w, r)
 }
 
 // stripVersionPrefix rewrites versionless /v/... requests to their /... form
@@ -394,7 +383,7 @@ func (s *Server) routes() {
 	apiChain := chain.New(authMW)
 
 	mux := http.NewServeMux()
-	dispatch := http.HandlerFunc(s.localPeerHandler)
+	dispatch := http.HandlerFunc(s.modelHandler)
 
 	for _, path := range modelPostJSONRoutes {
 		mux.Handle("POST "+path, modelChain.Then(dispatch))
@@ -406,7 +395,7 @@ func (s *Server) routes() {
 		mux.Handle("GET "+path, modelChain.Then(dispatch))
 	}
 
-	// llama-swap API + custom endpoints.
+	// Argos API + custom endpoints.
 	mux.Handle("GET /v1/models", apiChain.ThenFunc(s.handleListModels))
 	mux.Handle("GET /models", apiChain.ThenFunc(s.handleListModels))
 	mux.Handle("GET /logs", apiChain.ThenFunc(s.handleLogs))
@@ -467,7 +456,7 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/tailcat", apiChain.ThenFunc(s.handleAPITailcat))
 	mux.Handle("GET /api/captures/{id}", apiChain.ThenFunc(s.handleAPICapture))
 
-	// Stateless MCP server exposing llama-swap's own documentation as tools,
+	// Stateless MCP server exposing Argos's own documentation as tools,
 	// consumed by the Playground's agentic chat and by any external MCP client.
 	// Registered without a method so non-POST reaches the handler and gets a
 	// 405 with Allow, rather than the mux's bare 404.
@@ -574,7 +563,7 @@ func (s *Server) CloseStreams() {
 	s.shutdownFn()
 }
 
-// Shutdown stops the local and peer routers in parallel. It is idempotent;
+// Shutdown stops the router and the tool registry. It is idempotent;
 // repeated calls return nil without re-running shutdown.
 //
 // Callers must drain inflight HTTP requests (httpServer.Shutdown) before
@@ -598,7 +587,7 @@ func (s *Server) Shutdown(timeout time.Duration) error {
 		errs = append(errs, err)
 	}
 
-	for _, rt := range []router.Router{s.local, s.peer} {
+	for _, rt := range []router.Router{s.local} {
 		if rt == nil {
 			continue
 		}

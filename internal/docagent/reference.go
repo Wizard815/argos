@@ -1,4 +1,4 @@
-// Package docagent indexes llama-swap's own documentation so it can be
+// Package docagent indexes Argos's own documentation so it can be
 // served to an LLM through the /api/mcp endpoint.
 //
 // Everything retrievable is a "doc" with an id in one flat namespace:

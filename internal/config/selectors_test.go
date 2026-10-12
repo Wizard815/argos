@@ -146,14 +146,14 @@ selectors:
 			wantErr: "name conflicts with model alias",
 		},
 		{
-			name: "warm peer target",
+			name: "unknown target",
 			config: `
 selectors:
   public:
     strategy: warm
     targets: [remote-model]
 `,
-			wantErr: `must resolve to a local model for strategy "warm"`,
+			wantErr: `references unknown model "remote-model"`,
 		},
 		{
 			name: "invalid spillover",
@@ -178,16 +178,6 @@ selectors:
 			wantErr: `duplicate resolved model "a"`,
 		},
 		{
-			name: "duplicate resolved peer spillover target",
-			config: `
-selectors:
-  public:
-    strategy: spillover
-    targets: [remote-model, remote/remote-model]
-`,
-			wantErr: `duplicate resolved model "remote/remote-model"`,
-		},
-		{
 			name: "spillover swapping group",
 			config: `
 selectors:
@@ -210,10 +200,6 @@ models:
           temperature: 0
   b:
     cmd: echo ${PORT}
-peers:
-  remote:
-    proxy: http://example.com
-    models: [remote-model]
 `
 
 	for _, tc := range tests {
@@ -223,21 +209,6 @@ peers:
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
-}
-
-func TestConfig_Selectors_PeerModelFQN(t *testing.T) {
-	cfg, err := LoadConfigFromReader(strings.NewReader(`
-peers:
-  remote:
-    proxy: http://example.com
-    models: [remote-model]
-selectors:
-  remote-model:
-    strategy: spillover
-    targets: [remote/remote-model]
-`))
-	require.NoError(t, err)
-	assert.Equal(t, []string{"remote/remote-model"}, cfg.Selectors["remote-model"].Targets)
 }
 
 func TestConfig_Selectors_SpilloverCoexistence(t *testing.T) {
@@ -331,36 +302,6 @@ selectors:
 		require.NoError(t, err)
 	})
 
-	t.Run("remote targets", func(t *testing.T) {
-		_, err := LoadConfigFromReader(strings.NewReader(`
-peers:
-  remote:
-    proxy: http://example.com
-    models: [a, b]
-selectors:
-  public:
-    strategy: spillover
-    targets: [remote/a, remote/b]
-`))
-		require.NoError(t, err)
-	})
-
-	t.Run("mixed local and remote targets", func(t *testing.T) {
-		_, err := LoadConfigFromReader(strings.NewReader(`
-models:
-  local:
-    cmd: echo ${PORT}
-peers:
-  remote:
-    proxy: http://example.com
-    models: [remote-model]
-selectors:
-  public:
-    strategy: spillover
-    targets: [local, remote/remote-model]
-`))
-		require.NoError(t, err)
-	})
 }
 
 func TestConfig_Selectors_ProfileTargetsSelector(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mostlygeek/llama-swap/internal/event"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/event"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 // A model's GPU toggle mode is per-model runtime state chosen in the model

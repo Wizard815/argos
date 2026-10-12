@@ -1,6 +1,6 @@
 package router
 
-import matrixdsl "github.com/mostlygeek/llama-swap/internal/matrix"
+import matrixdsl "github.com/Wizard815/Argos/internal/matrix"
 
 // matrixSolver contains pure swap-decision logic with no Process dependencies.
 // It is safe for concurrent reads after construction.

@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import time
 
 from flask import Blueprint, abort, current_app, request
 
-from ..command import guess_base_model, parse_command, swap_model_id, to_llama_swap_yaml, to_odysseus
+from ..command import guess_base_model, parse_command, swap_model_id, to_odysseus
 from ..always import apply_always
-from ..cookbook import build_state, write_state_file
-from ..integrations import llama_swap, odysseus
+from ..cookbook import build_state, normalize_preset
 from ..library import model_id_for_command
 from ..log_analyzer import insight as log_insight
 from ..model_perf import model_perf, signature
@@ -64,7 +64,6 @@ def command_build():
         return err(str(exc))
     out = _render(cmd, _format(d))
     out["always_added"] = apply_always(cmd.to_string(), ctx().settings.get("always"))[1]
-    out["llama_swap_yaml"] = to_llama_swap_yaml(d.get("name") or out["model_id"] or out["base_model"] or "model", cmd)
     return ok(**out)
 
 
@@ -97,7 +96,6 @@ def profiles_save():
     c.inventory.observe_command(d["launch_command"], profile["name"])
     c.event("profile", f"{'updated' if existed else 'saved'} profile “{profile['name']}”",
             data={"profile_id": profile["profile_id"], "model_id": profile["model_id"]})
-    write_export()
     refresh_schedule()
     return ok(profile=profile)
 
@@ -109,7 +107,6 @@ def profiles_delete(profile_id):
     if not p or not c.store.delete_profile(profile_id):
         return err("not found", 404)
     c.event("profile", f"deleted profile “{p['name']}”", data={"profile_id": profile_id})
-    write_export()
     refresh_schedule()
     return ok()
 
@@ -282,33 +279,40 @@ def env_flags():
     return ok(rows=ctx().analytics.env_table())
 
 
-# ----- integrations + the Odysseus-compatible state llama-swap reads ------------
+@bp.get("/api/flags")
+def server_flags():
+    return ok(rows=ctx().analytics.flag_table())
+
+
+# ----- Odysseus presets, and the Odysseus-compatible state the engine reads -------------
 @bp.get("/api/integrations")
 def integrations():
-    c = ctx()
-    i = c.settings.get("integrations")
-    exp = c.settings.get("export")
-    state = cookbook_state()
-    return ok(odysseus=odysseus.describe(i["odysseus_cookbook"]),
-              llama_swap=llama_swap.describe(i["llama_swap_config"], i["llama_swap_url"]),
-              export={"file": exp["file"], "include_odysseus": exp["include_odysseus"],
-                      "include_tasks": exp["include_tasks"], "token_required": bool(exp["token"]),
-                      "presets": len(state["presets"]), "tasks": len(state["tasks"]),
-                      "warnings": state["warnings"],
-                      **{k: v for k, v in c.export_state.items() if not k.startswith("_")}})
+    """What the builder can import from Odysseus: its saved Cookbook presets, read through its API."""
+    from .odysseus_hub import cookbook_presets
+
+    found = cookbook_presets()
+    commands = [{"source": "odysseus", "kind": "preset", "name": p.get("label") or p.get("name") or "preset",
+                 "base_model": str(p.get("model") or "").split("/")[-1], "command": p["cmd"].strip()}
+                for p in map(normalize_preset, found["presets"]) if p["cmd"].strip()]
+    return ok(odysseus={"configured": bool(c_odysseus_url()), "ok": not found["error"], "error": found["error"], "commands": commands})
+
+
+def c_odysseus_url() -> str:
+    return ctx().settings.get("odysseus")["url"]
 
 
 def cookbook_state() -> dict:
+    from .odysseus_hub import cookbook_presets
+
     c = ctx()
     always = c.settings.get("always")
-    return build_state(c.store.list_profiles(), c.runner.list(), c.settings.get("export"),
-                       c.settings.get("integrations")["odysseus_cookbook"], always if always["on_export"] else None)
+    return build_state(c.store.list_profiles(), c.runner.list(), cookbook_presets(), always if always["on_export"] else None)
 
 
 @bp.get("/api/cookbook/state")
 def cookbook_state_route():
-    """Same path and shape as Odysseus, so llama-swap's odysseus.baseURL can point here."""
-    token = ctx().settings.get("export")["token"]
+    """Same path and shape as Odysseus: the engine's odysseus.baseURL points here. ARGOS_COOKBOOK_TOKEN, when set, is required."""
+    token = os.environ.get("ARGOS_COOKBOOK_TOKEN", "")
     if token and not hmac.compare_digest(request.headers.get("X-Odysseus-Internal-Token", ""), token):
         return err("bad or missing X-Odysseus-Internal-Token", 401)
     state = cookbook_state()
@@ -320,26 +324,7 @@ def refresh_schedule() -> None:
     """A profile was saved or deleted: that adds or removes a model in the scheduling plan."""
     from . import schedule
 
-    schedule.write_schedule_export()
-
-
-def write_export() -> None:
-    """Rewrite the export file when one is configured and its content changed."""
-    c = ctx()
-    path = c.settings.get("export")["file"]
-    if not path:
-        return
-    state = cookbook_state()
-    blob = json.dumps({k: v for k, v in state.items() if k != "warnings"}, sort_keys=True)
-    if blob == c.export_state.get("_last"):
-        return
-    try:
-        write_state_file(path, state)
-        c.export_state.update(_last=blob, written_at=time.time(), error="")
-    except OSError as exc:
-        if c.export_state.get("error") != str(exc):
-            c.event("export", f"could not write {path}: {exc}", level="error")
-        c.export_state.update(error=str(exc))
+    schedule.apply_plan()
 
 
 # ----- settings -------------------------------------------------------------------
@@ -356,7 +341,6 @@ def settings_put(group):
     except (KeyError, ValueError) as exc:
         return err(str(exc).strip("'\""))
     c.event("settings", f"saved {group} settings")
-    if group in ("export", "integrations", "always"):
-        c.export_state.pop("_last", None)
-        write_export()
+    if group in ("odysseus", "always"):
+        c.export_state.pop("_ody_presets", None)
     return ok(settings=c.settings.public()[group], saved=bool(saved))

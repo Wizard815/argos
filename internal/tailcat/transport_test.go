@@ -199,7 +199,7 @@ func TestTailcatTransport_LocalDERPHTTP(t *testing.T) {
 
 	// Leave the HTTP keep-alive connection idle so Shutdown makes the server
 	// the active TCP closer. Tailcat then retains a TIME-WAIT endpoint, which
-	// must not consume llama-swap's full graceful-shutdown budget.
+	// must not consume Argos's full graceful-shutdown budget.
 	closeCtx, closeCancel := context.WithTimeout(t.Context(), 5*time.Second)
 	started := time.Now()
 	err = server.Close(closeCtx)

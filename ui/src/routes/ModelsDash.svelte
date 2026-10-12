@@ -32,8 +32,7 @@
   let visibleModels = $derived(
     $showUnlisted ? $models : $models.filter((m) => !m.unlisted)
   );
-  let localModels = $derived(visibleModels.filter((model) => !model.peerID));
-  let peerModels = $derived(visibleModels.filter((model) => model.peerID));
+  let localModels = $derived(visibleModels);
   let selectedProfile = $derived(
     $profiles.find((profile) => profile.id === $activeProfile)
   );
@@ -60,9 +59,7 @@
 
 {#snippet modelRow(model: Model)}
   <div class="hover:bg-muted/50 flex items-center gap-3 px-4 py-2.5">
-    {#if !model.peerID}
-      <span class={`size-2.5 shrink-0 rounded-full ${statusDotColor(model)}`}></span>
-    {/if}
+    <span class={`size-2.5 shrink-0 rounded-full ${statusDotColor(model)}`}></span>
     <a
       href="/models/{encodeURIComponent(model.id)}"
       use:link
@@ -92,19 +89,17 @@
     {#if model.unlisted}
       <Tag class="px-1.5 text-[0.625rem] uppercase">unlisted</Tag>
     {/if}
-    {#if !model.peerID}
-      <a
-        href={modelServerPath(model.id)}
-        target="_blank"
-        rel="noopener noreferrer"
-        class="text-muted-foreground hover:text-foreground"
-        title="Open model server"
-        aria-label="Open model server"
-      >
-        <ExternalLink class="size-4" />
-      </a>
-      <ModelLoadButton {model} />
-    {/if}
+    <a
+      href={modelServerPath(model.id)}
+      target="_blank"
+      rel="noopener noreferrer"
+      class="text-muted-foreground hover:text-foreground"
+      title="Open model server"
+      aria-label="Open model server"
+    >
+      <ExternalLink class="size-4" />
+    </a>
+    <ModelLoadButton {model} />
   </div>
 {/snippet}
 
@@ -270,7 +265,6 @@
       </Card.Root>
     {/if}
 
-    {@render modelSection("Local models", localModels, unlistedToggle)}
-    {@render modelSection("Peer models", peerModels)}
+    {@render modelSection("Models", localModels, unlistedToggle)}
   </div>
 </div>

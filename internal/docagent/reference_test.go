@@ -83,7 +83,7 @@ tags: [getting-started]
 Step one.
 `)},
 		"kb/README.md": &fstest.MapFile{Data: []byte("# contributor guide\n\nnot an article\n")},
-		"README.md":    &fstest.MapFile{Data: []byte("# llama-swap\n\n![hero](docs/assets/hero.webp)\n\nRun models and swap between them.\n")},
+		"README.md":    &fstest.MapFile{Data: []byte("# Argos\n\n![hero](docs/assets/hero.webp)\n\nRun models and swap between them.\n")},
 	}
 }
 
@@ -113,7 +113,7 @@ func TestDocs_Disabled_NilFS(t *testing.T) {
 	}
 }
 
-// A tree without config.example.yaml is not a llama-swap checkout, so nothing
+// A tree without config.example.yaml is not an Argos checkout, so nothing
 // is indexed rather than half of it.
 func TestDocs_Disabled_WithoutConfigExample(t *testing.T) {
 	fsys := testFS()

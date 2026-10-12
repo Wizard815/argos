@@ -1,4 +1,4 @@
-"""The assistant chat: state, streaming turns, reset, and one-click setup."""
+"""The assistant chat: state, streaming turns, compacting, loading and unloading its models, and one-click setup."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ import re
 
 from flask import Blueprint, Response, stream_with_context
 
-from ..assistant import DEFAULT_QUANT, DEFAULT_REPOS, PROFILE_NAME, pick_quant
+from ..assistant import DEFAULT_QUANT, DEFAULT_REPOS, PROFILE_NAME, AssistantError, pick_quant
 from ..downloader import DownloadError
 from ..library import model_id_for_command, prefab_command, scan_models
 from ..web import body, ctx, err, ok
@@ -20,7 +20,31 @@ def state():
     c = ctx()
     a = c.assistant
     return ok(messages=c.store.list_messages(), summary=a.summary(), tokens=a.context_tokens(),
-              budget=a.budget(), server=a.server_state(), settings=c.settings.get("assistant"))
+              budget=a.budget(), server=a.server_state(), settings=c.settings.get("assistant"), models=a.models())
+
+
+@bp.post("/api/assistant/compact")
+def compact():
+    """Shrink the conversation now: every turn but the last two goes into the summary."""
+    try:
+        return ok(**ctx().assistant.compact_now())
+    except AssistantError as exc:
+        return err(str(exc), 409)
+    except Exception as exc:  # noqa: BLE001 - the model may be down
+        return err(f"could not compact: {exc}", 502)
+
+
+@bp.post("/api/assistant/models/<which>/<action>")
+def model_action(which, action):
+    """Load or unload the chat model ("chat") or the memory's embedding model ("embed")."""
+    if which not in ("chat", "embed") or action not in ("load", "unload"):
+        return err("use /api/assistant/models/chat|embed/load|unload", 404)
+    a = ctx().assistant
+    try:
+        state = a.load(which) if action == "load" else a.unload(which)
+    except AssistantError as exc:
+        return err(str(exc), 409)
+    return ok(model=state, models=a.models())
 
 
 @bp.get("/api/assistant/digest")
@@ -96,6 +120,42 @@ def stop():
     return ok()
 
 
+@bp.get("/api/assistant/choices")
+def choices():
+    """What the settings dropdowns offer: chat models (library models and profiles) and embedding models,
+    all models Argos has. Each says whether the engine lists it right now."""
+    from ..cookbook import variant_id
+    from ..integrations import engine_api
+    from . import core
+    c = ctx()
+    url = c.settings.get("integrations")["engine_url"]
+    listed: set[str] = set()
+    connected = False
+    if url:
+        try:
+            listed, connected = engine_api.model_ids(url), True
+        except Exception:  # noqa: BLE001 - offer the library and profiles anyway
+            pass
+    library = scan_models(c.settings.get("paths")["models_dir"])
+    chat, embed, seen = [], [], set()
+    variants = {(p.get("fields") or {}).get("profile_id"): variant_id(p) for p in core.cookbook_state()["presets"]}
+    for p in c.store.list_profiles():
+        vid = variants.get(p["profile_id"])
+        if vid and vid not in seen:
+            seen.add(vid)
+            chat.append({"id": vid, "label": p["name"], "group": "Profiles", "listed": vid in listed})
+    for m in library:
+        if m["id"] in seen:
+            continue
+        seen.add(m["id"])
+        item = {"id": m["id"], "label": m["name"], "group": "Models", "listed": m["id"] in listed, "quant": m["quant"]}
+        (embed if m["kind"] in ("embedding", "reranker") else chat).append(item)
+    for mid in sorted(listed - seen):  # odysseus presets and anything else the engine makes
+        item = {"id": mid, "label": mid, "group": "Also in the engine", "listed": True}
+        (embed if re.search(r"(?i)embed|(?<![a-z])(bge|e5|gte)-|rerank", mid) else chat).append(item)
+    return ok(chat=chat, embed=embed, engine_connected=connected)
+
+
 def _local_qwen06(models_dir: str):
     found = [m for m in scan_models(models_dir) if re.search(r"qwen3-0\.6b", m["name"], re.IGNORECASE)
              and m["kind"] == "chat"]
@@ -139,6 +199,8 @@ def setup():
         "name": PROFILE_NAME, "base_model": "Qwen3-0.6B", "model_id": model_id_for_command(cmd),
         "source": "assistant", "launch_command": cmd, "notes": "Built-in assistant model",
     })
-    c.settings.update("assistant", {"mode": "managed", "profile_id": profile["profile_id"]})
+    from .workspace import _variant_for_profile
+    variant = _variant_for_profile(profile["profile_id"]) or model_id_for_command(cmd)
+    c.settings.update("assistant", {"mode": "engine", "model": variant, "profile_id": profile["profile_id"]})
     c.event("assistant", f"assistant set to {profile['name']}" + (" (downloading model)" if job else ""))
-    return ok(profile=profile, download=job)
+    return ok(profile=profile, download=job, model=variant)

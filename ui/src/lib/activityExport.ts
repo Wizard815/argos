@@ -221,7 +221,7 @@ export function buildActivityMarkdown(
   generatedAt: Date = new Date()
 ): string {
   const attribution =
-    "Exported from [llama-swap](https://github.com/mostlygeek/llama-swap) at " +
+    "Exported from [Argos](https://github.com/Wizard815/Argos) at " +
     formatAbsoluteTime(generatedAt.toISOString());
 
   return [summaryMarkdown(summarizeActivity(rows)), toMarkdownTable(rows, columns), attribution]

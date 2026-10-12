@@ -24,7 +24,7 @@ Engine:
 
 ```sh
 make clean all
-build/llama-swap -config config.yaml -config-dir config.d -watch-config
+build/argos -config config.yaml -config-dir config.d -watch-config
 ```
 
 Builder:

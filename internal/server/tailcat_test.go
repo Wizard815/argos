@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 func newTailcatPolicyServer(t *testing.T, extra string) *Server {
@@ -26,7 +26,7 @@ tailcat:
 		t.Fatal(err)
 	}
 	cfg.SetTailcatEnabled(true)
-	s := newTestServer(newStubRouter([]string{"real", "hidden"}, "ok"), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter([]string{"real", "hidden"}, "ok"))
 	s.cfg = cfg
 	s.routes()
 	return s
@@ -133,12 +133,8 @@ func TestServer_TailcatAdminUnlocksNormalSurface(t *testing.T) {
 	}
 }
 
-func TestServer_TailcatExposedModelIDsActiveProfileAndBarePeerNames(t *testing.T) {
+func TestServer_TailcatExposedModelIDsActiveProfile(t *testing.T) {
 	s := newTailcatPolicyServer(t, `
-peers:
-  gpu:
-    proxy: http://localhost:3
-    models: [chat]
 profiles:
   dev:
     pins:
@@ -162,12 +158,6 @@ profiles:
 	}
 	if contains(got, "dev-only") {
 		t.Fatalf("inactive profile's pin leaked: %v", got)
-	}
-	if !contains(got, "gpu/chat") {
-		t.Fatalf("peer fully qualified name missing: %v", got)
-	}
-	if !contains(got, "chat") {
-		t.Fatalf("unambiguous bare peer model name missing: %v", got)
 	}
 }
 

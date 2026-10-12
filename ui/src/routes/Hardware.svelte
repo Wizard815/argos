@@ -107,10 +107,7 @@
   <div class="mt-4 mb-4">
     <h3 class="text-lg font-semibold">Hardware</h3>
     <p class="text-sm text-muted-foreground">
-      This is an experimental feature. Please share feedback in <a
-        class="underline hover:text-foreground"
-        href="https://github.com/mostlygeek/llama-swap/issues/977">issue 977</a
-      >.
+      What this machine has: GPUs, CPU, memory and the environment the engine runs in.
     </p>
   </div>
 

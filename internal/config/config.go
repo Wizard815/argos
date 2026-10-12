@@ -214,19 +214,16 @@ type Config struct {
 	// support API keys, see issue #433, #50, #251
 	RequiredAPIKeys []string `yaml:"apiKeys"`
 
-	// support remote peers, see issue #433, #296
-	Peers PeerDictionaryConfig `yaml:"peers"`
-
 	// upstream controls behaviour of the /upstream passthrough endpoint
 	Upstream UpstreamConfig `yaml:"upstream"`
 
 	// ModelScan configures directory-based model auto-discovery. See
-	// internal/modelscan. Local fork addition, not upstream llama-swap.
+	// internal/modelscan. Local fork addition, not upstream Argos.
 	ModelScan ModelScanConfig `yaml:"modelScan"`
 
-	// Odysseus wires llama-swap to an Odysseus instance so Odysseus can own a
-	// model's launch command while llama-swap owns the process. See
-	// internal/odysseus. Local fork addition, not upstream llama-swap.
+	// Odysseus wires Argos to an Odysseus instance so Odysseus can own a
+	// model's launch command while Argos owns the process. See
+	// internal/odysseus. Local fork addition, not upstream Argos.
 	Odysseus *OdysseusConfig `yaml:"odysseus"`
 
 	// tailcatEnabled records whether this process started a Tailcat listener.
@@ -341,16 +338,9 @@ func (c *Config) FindConfig(modelName string) (ModelConfig, string, bool) {
 	}
 }
 
-// ResolveBaseModel resolves a name without applying profiles. Local model IDs
-// and aliases take precedence over peer model IDs, matching server dispatch.
+// ResolveBaseModel resolves a model ID or alias without applying profiles.
 func (c *Config) ResolveBaseModel(search string) (string, bool) {
-	if realName, found := c.RealModelName(search); found {
-		return realName, true
-	}
-	if _, _, found := c.ResolvePeerModel(search); found {
-		return search, true
-	}
-	return "", false
+	return c.RealModelName(search)
 }
 
 func LoadConfig(path string) (Config, error) {

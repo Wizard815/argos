@@ -1,6 +1,6 @@
 # Grounded in docs/kb/guides/macros.md
 - id: macros-reserved-names
-  question: Can I define a macro named PORT in my llama-swap config?
+  question: Can I define a macro named PORT in my Argos config?
   tags: [macros]
   expect_any: ["reserved", "cannot", "can't", "not allowed"]
   expect_tools: [docs__search_docs]
@@ -25,7 +25,7 @@
     - Suggests reordering the definitions
 
 - id: macros-name-charset
-  question: What characters are allowed in a llama-swap macro name, and how long can it be?
+  question: What characters are allowed in an Argos macro name, and how long can it be?
   tags: [macros]
   expect_regex: ["64"]
   expect_tools: [docs__search_docs]
@@ -48,7 +48,7 @@
     - Notes the override applies only to that model
 
 - id: macros-env-var
-  question: How do I use an environment variable inside my llama-swap config?
+  question: How do I use an environment variable inside my Argos config?
   tags: [macros, env]
   expect_regex: ["\\$\\{env\\."]
   expect_tools: [docs__search_docs]

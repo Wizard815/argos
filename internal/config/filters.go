@@ -11,7 +11,6 @@ import (
 var ProtectedParams = []string{"model"}
 
 // Filters contains filter settings for modifying request parameters
-// Used by both models and peers
 type Filters struct {
 	// StripParams is a comma-separated list of parameters to remove from requests
 	// The "model" parameter can never be removed

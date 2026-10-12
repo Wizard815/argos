@@ -1,16 +1,18 @@
 """The built-in assistant: one continuous chat with a small local model.
 
 Every turn the model gets a compact LIVE DATA block built from this app's
-database (GPU history, llama-swap request speeds, benchmarks, running
-launches, recent problems), so a 0.6B model can answer "how have my GPUs been
-doing" from facts instead of guessing. The conversation is stored in
-``chat_messages``; when it would no longer fit the context window, the oldest
+database (GPU history, request speeds, benchmarks, running launches, recent
+problems), so a 0.6B model can answer "how have my GPUs been doing" from facts
+instead of guessing. The conversation is stored in ``chat_messages``; when it
+would no longer fit the context window, or when you press Compact, the oldest
 turns are summarised by the model itself into a running summary and marked
 compacted (still shown in the UI, no longer sent).
 
-The model is either a profile this app launches and keeps running
-("managed", the default -- Qwen3-0.6B Q8_0) or any OpenAI-compatible endpoint,
-for example llama-swap's /v1 with one of its model IDs.
+The model is normally one the engine has ("engine": a library model or a
+profile, picked from a list). It can also be any OpenAI-compatible server
+("endpoint"), or a profile this app launches beside the engine ("managed").
+The chat and embedding models can be loaded and unloaded by hand, and are
+unloaded after ``idle_unload_min`` minutes without use.
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ from datetime import datetime
 from typing import Callable, Iterator, Optional
 
 from .db import Store
+from .integrations import engine_api
 from .runner import LaunchError, Runner
 from .settings import Settings
 
@@ -92,6 +95,7 @@ class Assistant:
         self.launch_id: Optional[str] = None
         self._launched_stamp: tuple = ()
         self._turn = threading.Lock()
+        self.last_used = 0.0  # when the chat model last answered, for unloading it when idle
 
     # ----- the facts the model sees ----------------------------------------
     def digest(self, question: str = "", now: Optional[float] = None) -> str:
@@ -122,7 +126,7 @@ class Assistant:
                 f"{_f(max(x['temp_max'] or 0 for x in hs))}°C" for g, hs in sorted(by_gpu.items())))
         reqs = self.store.request_stats(now - 86400)
         if reqs:
-            lines.append("Requests last 24h (llama-swap): " + " | ".join(
+            lines.append("Requests last 24h (Argos): " + " | ".join(
                 f"{r['model']}: {r['requests']} req, gen {_f(r['tg_avg'], 1)} t/s avg (max {_f(r['tg_max'], 1)}), "
                 f"prompt {_f(r['pp_avg'])} t/s, {r['errors']} errors" for r in reqs[:6]))
         month = self.store.request_stats(now - 30 * 86400)
@@ -190,13 +194,20 @@ class Assistant:
     # ----- where the model runs ---------------------------------------------
     def endpoint(self, status: Callable[[str], None] = lambda s: None, wait_s: float = 300) -> tuple[str, str]:
         cfg = self.settings.get("assistant")
+        if cfg["mode"] == "engine":
+            url = self.settings.get("integrations")["engine_url"]
+            if not cfg["model"]:
+                raise AssistantError("Pick a model for the assistant under Assistant → Settings, or click “Set up Qwen3-0.6B”.")
+            if not url:
+                raise AssistantError("The engine is not running, so the assistant's model cannot be loaded.")
+            return url.rstrip("/") + "/v1", cfg["model"]
         if cfg["mode"] == "endpoint":
             if not cfg["endpoint"]:
-                raise AssistantError("Set the assistant endpoint in Settings, or switch it to managed.")
+                raise AssistantError("Set the assistant endpoint under Assistant → Settings, or switch it to a model the engine has.")
             return cfg["endpoint"].rstrip("/"), cfg["model"] or "assistant"
         profile = self.store.get_profile(cfg["profile_id"]) if cfg["profile_id"] else None
         if not profile:
-            raise AssistantError("No assistant profile yet. Click “Set up Qwen3-0.6B” or pick a profile in Settings.")
+            raise AssistantError("No assistant profile yet. Click “Set up Qwen3-0.6B” or pick a profile under Assistant → Settings.")
         stamp = (profile["profile_id"], profile["launch_command"])
         run = self.runner.get(self.launch_id) if self.launch_id else None
         if run and run.running and stamp != self._launched_stamp:
@@ -225,6 +236,8 @@ class Assistant:
 
     def server_state(self) -> dict:
         cfg = self.settings.get("assistant")
+        if cfg["mode"] == "engine":
+            return {"mode": "engine", "model": cfg["model"]}
         if cfg["mode"] == "endpoint":
             return {"mode": "endpoint", "endpoint": cfg["endpoint"], "model": cfg["model"]}
         run = self.runner.get(self.launch_id) if self.launch_id else None
@@ -278,6 +291,137 @@ class Assistant:
         self.on_event("assistant", f"compacted {len(old)} chat messages into the summary")
         return True
 
+    def compact_now(self) -> dict:
+        """The Compact button: summarise every turn but the last two, whatever the size. Loads the model if needed."""
+        live = [m for m in self.store.list_messages() if not m["compacted"]]
+        if len(live) <= 2:
+            return {"compacted": 0, "summary": self.summary()}
+        if not self._turn.acquire(blocking=False):
+            raise AssistantError("The assistant is answering a message; compact when it is done.")
+        try:
+            base, model = self.endpoint()
+            old = live[:-2]
+            transcript = "\n".join(f"{m['role'].title()}: {m['content']}" for m in old)
+            prompt = [
+                {"role": "system", "content": "You write compact memory notes for a chat assistant."},
+                {"role": "user", "content": (
+                    "Update the running summary of this conversation. Keep facts, numbers, model names, "
+                    "decisions and open questions; drop chit-chat. At most 180 words.\n\n"
+                    f"Current summary:\n{self.summary() or '(none)'}\n\nNew turns:\n{transcript[-12000:]}")},
+            ]
+            text = self._complete(base, model, prompt, max_tokens=400).strip()
+            self.last_used = time.time()
+            self.store.set_setting(SUMMARY_KEY, text or self.summary())
+            self.store.mark_compacted(old[-1]["id"])
+            self.on_event("assistant", f"compacted {len(old)} chat messages into the summary (by hand)")
+            return {"compacted": len(old), "summary": self.summary()}
+        finally:
+            self._turn.release()
+
+    # ----- loading, unloading and idling ------------------------------------
+    def _engine(self) -> str:
+        return (self.settings.get("integrations")["engine_url"] or "").rstrip("/")
+
+    def models(self) -> dict:
+        """What the chat and the memory run on, whether each is loaded, and whether Argos can load or unload it."""
+        cfg, mem = self.settings.get("assistant"), self.settings.get("memory")
+        url = self._engine()
+
+        def in_engine(model_id: str, last: float) -> dict:
+            out = {"model": model_id, "where": "engine", "controllable": bool(url and model_id), "state": "unknown",
+                   "last_used": last or None}
+            if url and model_id:
+                try:
+                    out["state"] = engine_api.model_state(url, model_id)
+                except Exception:  # noqa: BLE001 - the engine is down: unknown, not "stopped"
+                    out["state"] = "unknown"
+            return out
+
+        if cfg["mode"] == "engine":
+            chat = in_engine(cfg["model"], self.last_used)
+        elif cfg["mode"] == "endpoint":
+            chat = {"model": cfg["model"], "where": cfg["endpoint"], "controllable": False, "state": "unknown",
+                    "last_used": self.last_used or None}
+        else:
+            sv = self.server_state()
+            chat = {"model": (sv.get("profile") or {}).get("name", ""), "where": "here", "controllable": bool(sv.get("profile")),
+                    "state": "ready" if sv.get("ready") else "starting" if sv.get("running") else "stopped",
+                    "last_used": self.last_used or None}
+        last_embed = getattr(self.memory, "last_used", 0.0) if self.memory is not None else 0.0
+        if not mem.get("model"):
+            embed = {"model": "", "where": "", "controllable": False, "state": "none", "last_used": None}
+        elif mem.get("endpoint"):
+            embed = {"model": mem["model"], "where": mem["endpoint"], "controllable": False, "state": "unknown", "last_used": last_embed or None}
+        else:
+            embed = in_engine(mem["model"], last_embed)
+        return {"chat": chat, "embed": embed, "idle_unload_min": int(cfg.get("idle_unload_min") or 0)}
+
+    def load(self, which: str) -> dict:
+        """Load the chat ("chat") or embedding ("embed") model now, instead of on the first message."""
+        info = self.models()[which]
+        if not info["controllable"]:
+            raise AssistantError("This model runs on another server, so Argos cannot load or unload it." if info["model"]
+                                 else "Pick a model first under Assistant settings.")
+        if info["where"] == "here":
+            self.endpoint()
+        else:
+            try:
+                engine_api.load_model(self._engine(), info["model"])
+            except Exception as exc:  # noqa: BLE001
+                raise AssistantError(f"The engine could not load {info['model']}: {exc}") from exc
+        if which == "chat":
+            self.last_used = time.time()
+        elif self.memory is not None:
+            self.memory.last_used = time.time()
+        self.on_event("assistant", f"loaded the assistant's {'chat' if which == 'chat' else 'embedding'} model {info['model']}")
+        return self.models()[which]
+
+    def unload(self, which: str, reason: str = "") -> dict:
+        info = self.models()[which]
+        if not info["controllable"]:
+            raise AssistantError("This model runs on another server, so Argos cannot load or unload it." if info["model"]
+                                 else "No model is set.")
+        if info["where"] == "here":
+            self.stop()
+        else:
+            try:
+                engine_api.unload_model(self._engine(), info["model"])
+            except Exception as exc:  # noqa: BLE001
+                raise AssistantError(f"The engine could not unload {info['model']}: {exc}") from exc
+        if which == "chat":
+            self.last_used = 0.0
+        elif self.memory is not None:
+            self.memory.last_used = 0.0
+        self.on_event("assistant", f"unloaded the assistant's {'chat' if which == 'chat' else 'embedding'} model {info['model']}"
+                      + (f" ({reason})" if reason else ""))
+        return self.models()[which]
+
+    def unload_idle(self, now: Optional[float] = None) -> list[str]:
+        """Called every telemetry tick. Unloads a model only after the assistant itself used it and then left it
+        alone for ``idle_unload_min`` minutes, so a model some other app loaded is never touched."""
+        minutes = int(self.settings.get("assistant").get("idle_unload_min") or 0)
+        if minutes <= 0 or self._turn.locked():
+            return []
+        now = now or time.time()
+        done = []
+        last = {"chat": self.last_used, "embed": getattr(self.memory, "last_used", 0.0) if self.memory is not None else 0.0}
+        for which, ts in last.items():
+            if not ts or now - ts < minutes * 60:
+                continue
+            info = self.models()[which]
+            if not info["controllable"] or info["state"] not in ("ready", "starting"):
+                if which == "chat":
+                    self.last_used = 0.0
+                elif self.memory is not None:
+                    self.memory.last_used = 0.0
+                continue
+            try:
+                self.unload(which, reason=f"unused for {minutes} min")
+                done.append(which)
+            except AssistantError:
+                pass
+        return done
+
     def chat(self, text: str) -> Iterator[dict]:
         """Run one turn; yields {"type": status|delta|compacted|done|error, ...}."""
         if not self._turn.acquire(blocking=False):
@@ -325,6 +469,7 @@ class Assistant:
                 yield {"type": "error", "error": str(exc)}
                 return
             self.store.add_message("assistant", answer.strip() or "(no answer)")
+            self.last_used = time.time()
             yield {"type": "done", "tokens": self.context_tokens(digest)}
         finally:
             self._turn.release()
@@ -367,6 +512,7 @@ class Assistant:
         user = (f"{title}:\n{extra}\n\n" if extra else "") + f"QUESTION: {question}"
         answer = self._complete(base, model, [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + digest},
                                               {"role": "user", "content": user}], ANSWER_TOKENS)
+        self.last_used = time.time()
         self.on_event("assistant", f"answered a question about {title.lower() or 'the data'}: {question[:80]}")
         return answer.strip()
 

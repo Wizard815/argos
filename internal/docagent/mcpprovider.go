@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/mcptools"
+	"github.com/Wizard815/Argos/internal/mcptools"
 )
 
 // Tool results are read straight into a model's context window, which for a
@@ -25,7 +25,7 @@ const (
 	maxDocMaxLines = MaxDocLines
 )
 
-// DocsProvider serves llama-swap's own embedded documentation.
+// DocsProvider serves Argos's own embedded documentation.
 //
 // It is the reference implementation of Provider: everything it does is an
 // in-memory read of an immutable index, so it holds no resources and its
@@ -38,7 +38,7 @@ var _ mcptools.Provider = (*DocsProvider)(nil)
 
 // NewDocsProvider builds the provider. A nil or disabled *Docs
 // yields a provider that advertises no tools rather than an error, matching
-// how the rest of llama-swap treats missing documentation.
+// how the rest of Argos treats missing documentation.
 func NewDocsProvider(docs *Docs) *DocsProvider {
 	return &DocsProvider{docs: docs}
 }
@@ -72,8 +72,8 @@ func (p *DocsProvider) Tools(context.Context) ([]mcptools.Tool, error) {
 	return []mcptools.Tool{
 		{
 			Name:  "list_docs",
-			Title: "List llama-swap documentation",
-			Description: "List the available llama-swap documentation. Returns every document's id, title and summary. " +
+			Title: "List Argos documentation",
+			Description: "List the available Argos documentation. Returns every document's id, title and summary. " +
 				"Call this first to see what exists, then call " + mcptools.QualifyName(p.ID(), "get_doc") + " with an id.",
 			Annotations: docsAnnotations(),
 			Tags:        []string{"docs", "index", "configuration"},
@@ -95,8 +95,8 @@ func (p *DocsProvider) Tools(context.Context) ([]mcptools.Tool, error) {
 		},
 		{
 			Name:  "get_doc",
-			Title: "Read a llama-swap document",
-			Description: "Read one llama-swap document by id. Ids come from " + mcptools.QualifyName(p.ID(), "list_docs") + " or " +
+			Title: "Read an Argos document",
+			Description: "Read one Argos document by id. Ids come from " + mcptools.QualifyName(p.ID(), "list_docs") + " or " +
 				mcptools.QualifyName(p.ID(), "search_docs") + ". " +
 				"Ids starting with 'reference/config/' return that section of config.example.yaml verbatim, comments included.",
 			Annotations: docsAnnotations(),
@@ -127,8 +127,8 @@ func (p *DocsProvider) Tools(context.Context) ([]mcptools.Tool, error) {
 		},
 		{
 			Name:  "search_docs",
-			Title: "Search llama-swap documentation",
-			Description: "Required first step for every llama-swap question. Keyword search across all documentation, including config.example.yaml. " +
+			Title: "Search Argos documentation",
+			Description: "Required first step for every Argos question. Keyword search across all documentation, including config.example.yaml. " +
 				"Returns matching snippets with the document id to read next, via " + mcptools.QualifyName(p.ID(), "get_doc") + ".",
 			Annotations: docsAnnotations(),
 			Tags:        []string{"docs", "search", "configuration"},
@@ -152,7 +152,7 @@ func (p *DocsProvider) Tools(context.Context) ([]mcptools.Tool, error) {
 		},
 		{
 			Name:  "get_config_schema",
-			Title: "Look up a llama-swap config key",
+			Title: "Look up an Argos config key",
 			Description: "Look up the JSON schema for a configuration key: its type, description, default, and direct child keys. " +
 				"Always call this when the user names or asks about a configuration key, even if search results already answer the question. " +
 				"An unknown-path error proves that key does not exist; say that explicitly before suggesting a real alternative.",
@@ -209,7 +209,7 @@ func (p *DocsProvider) listDocs(args map[string]json.RawMessage) mcptools.Result
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "llama-swap documentation. Read one with %s using its id.\n", mcptools.QualifyName(p.ID(), "get_doc"))
+	fmt.Fprintf(&b, "Argos documentation. Read one with %s using its id.\n", mcptools.QualifyName(p.ID(), "get_doc"))
 
 	category := ""
 	for _, meta := range index {

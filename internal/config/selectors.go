@@ -19,7 +19,7 @@ type SelectorSettings struct {
 }
 
 // SelectorConfig describes a virtual model ID that resolves to a concrete
-// local model, alias, or peer model for each request.
+// model or alias for each request.
 type SelectorConfig struct {
 	Strategy    string           `yaml:"strategy" json:"strategy"`
 	Targets     []string         `yaml:"targets" json:"targets"`
@@ -75,23 +75,12 @@ func validateSelectors(config Config) error {
 			if _, found := config.Selectors[target]; found {
 				return fmt.Errorf("selectors.%s.targets[%d] references selector %q; selector chaining is not supported", selectorID, i, target)
 			}
-			if _, found := config.ResolveBaseModel(target); !found {
+			realName, found := config.RealModelName(target)
+			if !found {
 				return fmt.Errorf("selectors.%s.targets[%d] references unknown model %q", selectorID, i, target)
 			}
-
-			realName, local := config.RealModelName(target)
-			if selector.Strategy == SelectorStrategyWarm {
-				if !local {
-					return fmt.Errorf("selectors.%s.targets[%d] must resolve to a local model for strategy %q", selectorID, i, selector.Strategy)
-				}
-			}
 			if selector.Strategy == SelectorStrategySpillover {
-				if local {
-					localTargets = append(localTargets, realName)
-				} else {
-					peerID, modelID, _ := config.ResolvePeerModel(target)
-					realName = PeerModelFQN(peerID, modelID)
-				}
+				localTargets = append(localTargets, realName)
 				resolvedTargets = append(resolvedTargets, realName)
 			}
 		}

@@ -38,7 +38,7 @@ def test_command_parse_and_build(client):
         "env": {"CUDA_VISIBLE_DEVICES": "1"}, "name": "q", "format": "plain"})
     j = r.get_json()
     assert j["command"] == "CUDA_VISIBLE_DEVICES=1 llama-server -m /m/Qwen3-8B-Q4_K_M.gguf -ngl 99 --flash-attn on"
-    assert '"q":' in j["llama_swap_yaml"]
+    assert "engine_yaml" not in j
     assert j["multiline"].count("\\\n") == 3
 
     # default format is Odysseus' Cookbook shape
@@ -118,9 +118,8 @@ def test_launch_bench_record_flow(client):
 
 def test_integrations_endpoint(client):
     j = client.get("/api/integrations").get_json()
-    assert j["odysseus"]["ok"] and len(j["odysseus"]["commands"]) == 2
-    assert j["llama_swap"]["config_ok"] and len(j["llama_swap"]["commands"]) == 2
-    assert "server" not in j["llama_swap"]
+    assert j["odysseus"] == {"configured": False, "ok": True, "error": "", "commands": []}
+    assert "engine" not in j and "export" not in j
 
 
 def test_sigterm_stops_launched_servers(tmp_path):
@@ -170,3 +169,24 @@ def test_sigterm_stops_launched_servers(tmp_path):
             app.kill()
     with pytest.raises(OSError):
         urllib.request.urlopen(f"http://127.0.0.1:{launch['port']}/health", timeout=1)
+
+
+def test_flag_library_counts_how_profiles_use_each_flag(client):
+    client.post("/api/profiles", json={"name": "a", "launch_command": "llama-server -m /m/a.gguf --jinja --temp 0.6 -lm dio --weird-new 3"})
+    client.post("/api/profiles", json={"name": "b", "launch_command": "llama-server -m /m/b.gguf --jinja --temp 0.2"})
+    rows = {r["flag"]: r for r in client.get("/api/flags").get_json()["rows"]}
+    assert rows["jinja"]["profiles"] == 2 and rows["jinja"]["spellings"] == ["--jinja"] and rows["jinja"]["category"] == "Chat & tools"
+    assert rows["temp"]["profiles"] == 2 and sorted(rows["temp"]["values"]) == ["0.2", "0.6"]
+    assert rows["load-mode"]["profiles"] == 1 and rows["load-mode"]["values"] == ["dio"] and "-lm" in rows["load-mode"]["spellings"]
+    assert rows["weird-new"]["category"] == "Seen in your profiles" and rows["weird-new"]["profiles"] == 1
+    assert rows["top-k"]["profiles"] == 0 and rows["top-k"]["description"]
+    assert len({r["flag"] for r in rows.values()}) == len(rows), "no flag is listed twice"
+
+
+def test_ui_files_are_versioned_so_a_browser_never_runs_an_old_app_js(client):
+    page = client.get("/")
+    html = page.get_data(as_text=True)
+    assert page.headers["Cache-Control"] == "no-cache"
+    assert '/static/app.js?v=' in html and '/static/style.css?v=' in html
+    assert "immutable" in client.get("/static/app.js?v=123").headers["Cache-Control"]
+    assert client.get("/static/app.js").headers["Cache-Control"] == "no-cache"

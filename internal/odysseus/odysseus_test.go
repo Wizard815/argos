@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 // The three commands below are the real ones from the user's Odysseus UI.
@@ -118,10 +118,10 @@ func TestParseCommand_RealCommands(t *testing.T) {
 				}
 			}
 			if strings.Contains(strings.Join(p.Argv, " "), "export ") {
-				t.Error("an `export` token survived into argv -- llama-swap would try to exec it")
+				t.Error("an `export` token survived into argv -- Argos would try to exec it")
 			}
 			if strings.Contains(strings.Join(p.Argv, " "), "$(") {
-				t.Error("command substitution survived -- llama-swap has no shell")
+				t.Error("command substitution survived -- Argos has no shell")
 			}
 			if indexOf(p.Argv, "--port") < 0 || indexOf(p.Argv, "${PORT}") < 0 {
 				t.Errorf("port was not handed to ${PORT}: %v", p.Argv)
@@ -255,7 +255,7 @@ func TestBuild_SkipsDisallowedStatuses(t *testing.T) {
 }
 
 // TestGeneratedFragmentLoadsAsConfig is the real proof: render the fragment and
-// push it through llama-swap's own config loader, with a base config that
+// push it through Argos's own config loader, with a base config that
 // already defines the base models -- exercising the -config-dir merge and its
 // identity-map duplicate detection rather than a hand-rolled parse.
 func TestGeneratedFragmentLoadsAsConfig(t *testing.T) {
@@ -298,7 +298,7 @@ models:
 
 	cfg, err := config.LoadConfigSources(confPath, confDir)
 	if err != nil {
-		t.Fatalf("llama-swap rejected the generated fragment: %v\n--- fragment ---\n%s", err, frag)
+		t.Fatalf("Argos rejected the generated fragment: %v\n--- fragment ---\n%s", err, frag)
 	}
 
 	if _, ok := cfg.Models["qwen3.6-35b-a3b-ud-q6_k_xl"]; !ok {
@@ -346,7 +346,7 @@ func TestRenderOmitsEmptySections(t *testing.T) {
 }
 
 // The task presets are written with the environment inline instead of as export
-// lines. llama-swap execs the command with no shell, so a leading assignment
+// lines. Argos execs the command with no shell, so a leading assignment
 // left in argv becomes argv[0]: the variant is generated but can never start.
 func TestParseCommand_InlineEnvPrefix(t *testing.T) {
 	const cmd = `HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_VISIBLE_DEVICES=0,1 llama-server \
@@ -376,7 +376,7 @@ func TestParseCommand_InlineEnvPrefix(t *testing.T) {
 	}
 }
 
-// Only llama-swap's env shape (^[A-Z_][A-Z0-9_]*=) may be lifted out of argv. A
+// Only Argos's env shape (^[A-Z_][A-Z0-9_]*=) may be lifted out of argv. A
 // lowercase name is not env, so the command must still be reported as not
 // starting with llama-server rather than silently gaining an env entry.
 func TestParseCommand_InlineEnvPrefixKeepsNonEnvArgument(t *testing.T) {

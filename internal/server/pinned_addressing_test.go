@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/process"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -35,7 +35,7 @@ export interface JudgeOptions {
   timeoutMs: number;
 }
 
-const SYSTEM = `You grade answers written by a documentation assistant for llama-swap, a proxy that swaps llama.cpp models on demand.
+const SYSTEM = `You grade answers written by a documentation assistant for Argos, a proxy that swaps llama.cpp models on demand.
 
 You are given the question, a reference answer, a rubric, and the answer under test. Grade the answer under test against the rubric only.
 

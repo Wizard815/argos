@@ -5,15 +5,15 @@ A background collector samples the GPUs every few seconds and stores them in
 and raw rows are dropped after the retention window. GPU readings come from,
 in ``auto`` order:
 
-1. llama-swap's ``GET /api/performance`` -- the container that owns the GPUs
-   already samples them (llama-swap-rescan reads LACT, rocm-smi, sysfs or
+1. Argos's ``GET /api/performance`` -- the container that owns the GPUs
+   already samples them (Argos reads LACT, rocm-smi, sysfs or
    nvidia-smi), so this app needs no device access at all;
 2. AMD sysfs under /sys/class/drm (gpu_busy_percent, mem_info_vram_*, hwmon);
 3. ``nvidia-smi``.
 
-With a llama-swap URL configured it also copies llama-swap's per-request
+With an Argos URL configured it also copies Argos's per-request
 activity (``GET /api/metrics/activity``) into ``requests``, so speeds per
-model survive llama-swap restarts and its own retention.
+model survive Argos restarts and its own retention.
 """
 from __future__ import annotations
 
@@ -116,8 +116,8 @@ def _ts(value) -> float:
         return time.time()
 
 
-def read_llama_swap(base_url: str) -> list[dict]:
-    """Latest reading per GPU from llama-swap's /api/performance."""
+def read_engine(base_url: str) -> list[dict]:
+    """Latest reading per GPU from Argos's /api/performance."""
     data = _get_json(base_url.rstrip("/") + "/api/performance")
     if not data.get("enabled"):
         return []
@@ -128,12 +128,12 @@ def read_llama_swap(base_url: str) -> list[dict]:
             latest[gid] = g
     return [{"gpu": gid, "name": g.get("name") or f"GPU {gid}", "util": g.get("gpu_util_pct"),
              "mem_used_mb": g.get("mem_used_mb"), "mem_total_mb": g.get("mem_total_mb"),
-             "temp_c": g.get("temp_c"), "power_w": g.get("power_draw_w"), "source": "llama-swap"}
+             "temp_c": g.get("temp_c"), "power_w": g.get("power_draw_w"), "source": "engine"}
             for gid, g in sorted(latest.items())]
 
 
 def fetch_activity(base_url: str, after_id: int, limit: int = 999, order: str = "asc") -> list[dict]:
-    """llama-swap activity rows with id > after_id as ``requests`` rows (oldest first by default)."""
+    """Argos activity rows with id > after_id as ``requests`` rows (oldest first by default)."""
     qs = urllib.parse.urlencode({"min_id": after_id + 1, "limit": limit, "sort": "id", "order": order})
     page = _get_json(f"{base_url.rstrip('/')}/api/metrics/activity?{qs}")
     rows = []
@@ -190,10 +190,10 @@ class Collector:
     def sample(self) -> list[dict]:
         s = self.settings()
         source = s["telemetry"].get("source") or "auto"
-        url = s["integrations"].get("llama_swap_url") or ""
+        url = s["integrations"].get("engine_url") or ""
         readers: list[tuple[str, Callable[[], list[dict]]]] = []
-        if source in ("auto", "llama-swap") and url:
-            readers.append(("llama-swap", lambda: read_llama_swap(url)))
+        if source in ("auto", "engine") and url:
+            readers.append(("engine", lambda: read_engine(url)))
         if source in ("auto", "local"):
             readers += [("sysfs", read_amd_sysfs), ("nvidia-smi", read_nvidia_smi)]
         errors = []
@@ -223,20 +223,20 @@ class Collector:
             self._last_rollup = now
 
     def sync_activity(self) -> int:
-        url = self.settings()["integrations"].get("llama_swap_url") or ""
+        url = self.settings()["integrations"].get("engine_url") or ""
         if not url:
             return 0
         cursor = int(self.store.get_settings().get("_activity_cursor") or 0)
         try:
             rows = fetch_activity(url, cursor)
             if not rows and cursor:
-                # llama-swap's ids restart when its database is recreated: resync from 0
+                # Argos's ids restart when its database is recreated: resync from 0
                 latest = fetch_activity(url, 0, limit=1, order="desc")
                 if latest and int(latest[0]["source_id"] or 0) < cursor:
                     rows = fetch_activity(url, 0)
                     self.store.set_setting("_activity_cursor", 0)
         except Exception as exc:  # noqa: BLE001
-            self._report(f"llama-swap activity: {exc}")
+            self._report(f"Argos activity: {exc}")
             return 0
         if rows:
             self.store.add_requests(rows)
@@ -251,5 +251,5 @@ class Collector:
             self.on_event("telemetry", message, level="warn")
 
 
-__all__ = ["Collector", "read_amd_sysfs", "read_nvidia_smi", "parse_nvidia_csv", "read_llama_swap",
+__all__ = ["Collector", "read_amd_sysfs", "read_nvidia_smi", "parse_nvidia_csv", "read_engine",
            "fetch_activity"]

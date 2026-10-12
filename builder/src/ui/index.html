@@ -28,7 +28,8 @@
     <button class="nav-item" data-view="logs"><i data-icon="activity"></i>Logs<span class="meta" id="navLogs"></span></button>
     <button class="nav-item" data-view="assistant"><i data-icon="message"></i>Assistant<span class="meta" id="navAssistant"></span></button>
     <div class="nav-sep"></div>
-    <button class="nav-item" data-view="env"><i data-icon="braces"></i>Env flags</button>
+    <button class="nav-item" data-view="servers"><i data-icon="server"></i>Servers<span class="meta" id="navServers"></span></button>
+    <button class="nav-item" data-view="env"><i data-icon="braces"></i>Flags</button>
     <button class="nav-item" data-view="integrations"><i data-icon="plug"></i>Odysseus<span class="meta" id="navIntegrations"></span></button>
     <button class="nav-item" data-view="settings"><i data-icon="cog"></i>Settings</button>
     <button class="nav-item" data-action="theme"><i data-icon="palette"></i>Theme<span class="meta" id="themeLabel">dark</span></button>
@@ -41,7 +42,8 @@
   <header class="topbar">
     <button class="icon-btn ghost menu-btn" data-action="open-nav" aria-label="Open menu"><i data-icon="menu"></i></button>
     <div class="title" id="topTitle">Builder</div>
-    <button class="btn sm ghost note-btn" id="addNote" title="Add a sticky note to this page"><i data-icon="plus"></i>Note</button>
+    <button class="btn sm ghost note-btn" id="addNote" title="New sticky note. It stays on screen on every page until you minimize it."><i data-icon="plus"></i>Note</button>
+    <button class="btn sm ghost" id="notesBtn" title="Notes"><i data-icon="file-text"></i>Notes<span class="meta notes-count" id="notesCount"></span></button>
   </header>
 
   <div class="content">
@@ -62,7 +64,7 @@
             <button class="btn primary" id="parseBtn"><i data-icon="arrow-up"></i>Open in builder</button>
           </div>
         </div>
-        <div class="tip">Ctrl+Enter opens the command. Saved profiles, Odysseus cookbooks and llama-swap models are under “Import from…”; every local GGUF has a prefab under Models.</div>
+        <div class="tip">Ctrl+Enter opens the command. Saved profiles and your Odysseus cookbook presets are under “Import from…”; every local GGUF has a prefab under Models.</div>
       </div>
 
       <div id="builderMain" hidden>
@@ -90,17 +92,16 @@
             <div class="card"><div class="card-head"><h2>Environment</h2><span class="spacer"></span><span class="hint">set before the program</span></div><div class="stack" id="bEnv"></div></div>
             <div class="card"><div class="card-head"><h2>Other flags</h2></div><div class="stack" id="bOther"></div></div>
             <div class="card"><div class="card-head"><h2>Always applied</h2><span class="spacer"></span><button class="btn sm" id="bAlwaysEdit"><i data-icon="pencil"></i>Edit</button></div>
-              <p class="hint">Added to every launch and to what llama-swap gets, unless this preset sets them itself.</p><div class="chips" id="bAlways"></div></div>
+              <p class="hint">Added to every launch and to every model the engine starts, unless this preset sets them itself.</p><div class="chips" id="bAlways"></div></div>
           </div>
         </div>
         <div class="card">
           <div class="card-head">
             <h2>Command</h2><span class="pill accent" id="bSource" hidden></span>
             <span class="spacer"></span>
-            <div class="seg" id="bFormat" role="group" aria-label="Format" title="Odysseus: the Cookbook's own command shape, which llama-swap reads"><button data-v="odysseus">Odysseus</button><button data-v="plain">As written</button></div>
+            <div class="seg" id="bFormat" role="group" aria-label="Format" title="Odysseus: the Cookbook's own command shape, which the engine reads"><button data-v="odysseus">Odysseus</button><button data-v="plain">As written</button></div>
             <div class="seg" id="bLayout" role="group" aria-label="Layout"><button data-v="multi" class="on">Lines</button><button data-v="single">One line</button></div>
             <button class="btn sm" id="bCopy"><i data-icon="copy"></i>Copy</button>
-            <button class="btn sm" id="bYaml"><i data-icon="file-code"></i>llama-swap</button>
             <button class="btn sm" id="bRaw"><i data-icon="pencil"></i>Edit raw</button>
           </div>
           <pre class="code" id="bPreview"></pre>
@@ -115,7 +116,7 @@
     <!-- PROFILES -->
     <section class="view" id="view-profiles">
       <div class="view-head">
-        <div><h1>Profiles</h1><p class="sub">Your saved launch commands — as many per model as you like. Every one is served to llama-swap in Odysseus' format.</p></div>
+        <div><h1>Profiles</h1><p class="sub">Your saved launch commands — as many per model as you like. Every one is served to the engine in Odysseus' format.</p></div>
         <span class="spacer"></span>
         <select id="pModel" style="width:auto; max-width:260px" aria-label="Model"></select>
         <input type="search" id="pSearch" placeholder="Filter…" style="width:200px">
@@ -254,21 +255,20 @@
     <!-- SCHEDULE -->
     <section class="view" id="view-schedule">
       <div class="view-head">
-        <div><h1>Schedule</h1><p class="sub">Which models share the GPUs. Plan it here, try it first, and watch llama-swap carry it out.</p></div>
+        <div><h1>Schedule</h1><p class="sub">Which models share the GPUs. Plan it here, try it first, and watch the engine carry it out.</p></div>
       </div>
       <div class="tabs" data-tabs="schedule">
-        <button data-pane="live" class="on">Live</button><button data-pane="plan">Plan</button><button data-pane="simulate">Simulate</button><button data-pane="export">Export</button>
+        <button data-pane="live" class="on">Live</button><button data-pane="plan">Plan</button><button data-pane="simulate">Simulate</button>
       </div>
       <div class="pane on" data-pane="live"><div id="scLive"></div></div>
       <div class="pane" data-pane="plan"><div id="scPlan"></div></div>
       <div class="pane" data-pane="simulate"><div id="scSim"></div></div>
-      <div class="pane" data-pane="export"><div id="scExport"></div></div>
     </section>
 
     <!-- LOGS -->
     <section class="view" id="view-logs">
       <div class="view-head">
-        <div><h1>Logs</h1><p class="sub">Long-term history in the embedded database: GPU readings, llama-swap request speeds, and everything this app did.</p></div>
+        <div><h1>Logs</h1><p class="sub">Long-term history in the embedded database: GPU readings, request speeds, and everything this app did.</p></div>
       </div>
       <div class="tabs" data-tabs="logs">
         <button data-pane="gpu" class="on">GPU</button><button data-pane="requests">Requests</button><button data-pane="events">Events</button>
@@ -312,15 +312,16 @@
 
     <!-- ASSISTANT -->
     <section class="view" id="view-assistant">
+      <div class="assist-settings" id="aSettings" hidden></div>
       <div class="chat-wrap">
         <div class="chat-head">
-          <span id="aModel" class="pill"></span>
-          <span id="aStatus" class="status-line"></span>
+          <div id="aModels" class="assist-models"></div>
           <span class="spacer"></span>
           <span class="meter" title="Estimated tokens the next turn sends"><span id="aTokens"></span><span class="progress"><i id="aMeter" style="width:0%"></i></span></span>
+          <button class="btn sm" id="aSettingsBtn" title="Which model it runs on, how it remembers, how long the chat gets"><i data-icon="cog"></i>Settings</button>
           <button class="btn sm" id="aDigest"><i data-icon="eye"></i>What it sees</button>
           <button class="btn sm" id="aMemory" title="The assistant's memory: search it, see what is in it"><i data-icon="database"></i>Memory</button>
-          <button class="btn sm" id="aStop" title="Stop the assistant's model server"><i data-icon="square"></i>Stop model</button>
+          <button class="btn sm" id="aCompact" title="Summarise the chat so far into a short note and keep only the last exchange, to free the context window"><i data-icon="layers"></i>Compact</button>
           <button class="btn sm danger" id="aReset"><i data-icon="trash"></i>Reset chat</button>
         </div>
         <div class="messages" id="aMessages"></div>
@@ -334,11 +335,12 @@
     <!-- ENV FLAGS -->
     <section class="view" id="view-env">
       <div class="view-head">
-        <div><h1>Env flags</h1><p class="sub">Environment variables that matter for llama.cpp, with the last numbers seen when each was set.</p></div>
+        <div><h1>Flags</h1><p class="sub">The llama-server flags and environment variables that matter, what each does, and how your saved profiles use them.</p></div>
         <span class="spacer"></span>
         <input type="search" id="eSearch" placeholder="Filter…" style="width:200px">
       </div>
-      <div class="card"><div class="table-wrap"><table id="eTable"></table></div></div>
+      <div class="row" style="margin-bottom:10px"><div class="seg" id="flagKinds" role="group" aria-label="Show"><button data-k="all" class="on">All</button><button data-k="flag">llama-server flags</button><button data-k="env">Environment variables</button></div><span class="spacer"></span><span class="muted mono-sm" id="flagCount"></span></div>
+      <div class="card"><div class="table-wrap"><table id="flagTable"></table></div></div>
     </section>
 
     <!-- SETTINGS -->
@@ -347,7 +349,17 @@
         <div><h1>Settings</h1><p class="sub">Saved in the database. Environment variables only set the defaults.</p></div>
       </div>
       <div class="settings-grid" id="sGrid"></div>
-      <div class="card" id="iExport"></div>
+    </section>
+
+    <!-- SERVERS -->
+    <section class="view" id="view-servers">
+      <div class="view-head">
+        <div><h1>Servers</h1><p class="sub">Configure SSH servers, install Argos keys, choose model directories, and set the default server. Local is this container.</p></div>
+        <span class="spacer"></span>
+        <button class="btn" id="svImport" title="Copy the servers Odysseus already knows"><i data-icon="plug"></i>Import from Odysseus</button>
+        <button class="btn primary" id="svAdd"><i data-icon="plus"></i>Add server</button>
+      </div>
+      <div id="svList"></div>
     </section>
 
     <!-- INTEGRATIONS -->

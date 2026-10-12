@@ -5,7 +5,7 @@ import time
 from src.assistant import pick_quant
 
 from .conftest import fake_command
-from .fakes import make_hub, serve
+from .fakes import make_engine, make_hub, serve
 
 
 def sse(resp) -> list[dict]:
@@ -29,7 +29,7 @@ def test_pick_quant():
 
 def test_chat_needs_a_model(client):
     events = sse(client.post("/api/assistant/chat", json={"message": "hi"}))
-    assert events[-1]["type"] == "error" and "Set up Qwen3-0.6B" in events[-1]["error"]
+    assert events[-1]["type"] == "error" and "Pick a model" in events[-1]["error"] and "Set up Qwen3-0.6B" in events[-1]["error"]
 
 
 def test_managed_chat_digest_reset(client, app):
@@ -107,6 +107,7 @@ def test_setup_uses_local_file_or_downloads(client, app):
     assert cmd == (f'HIP_VISIBLE_DEVICES=0 llama-server --model "{path}" --host 127.0.0.1 --port ${{PORT}} '
                    '-ngl 99 -c 8192 --flash-attn on -lm dio --split-mode none --jinja')
     assert pb.settings.get("assistant")["profile_id"] == r["profile"]["profile_id"]
+    assert pb.settings.get("assistant")["mode"] == "engine" and pb.settings.get("assistant")["model"] == r["model"],         "the assistant uses the profile through the engine, picked like any other model"
     again = client.post("/api/assistant/setup").get_json()["profile"]
     assert again["profile_id"] == r["profile"]["profile_id"]  # updated, not duplicated
 
@@ -119,3 +120,71 @@ def test_setup_uses_local_file_or_downloads(client, app):
         while not os.path.exists(path) and time.time() < deadline:
             time.sleep(0.05)
         assert os.path.getsize(path) == 64
+
+
+# ----- compacting, loading and unloading ------------------------------------------------
+def test_compact_button_summarises_all_but_the_last_two(client, app):
+    store = app.extensions["pb"].store
+    with serve(make_engine([], [], model_ids=["qwen3-0.6b"], chat_reply="Tried q8_0 cache on GPU1; 62 t/s.")) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
+        client.put("/api/settings/assistant", json={"mode": "engine", "model": "qwen3-0.6b"})
+        for i in range(3):
+            store.add_message("user", f"question {i}")
+            store.add_message("assistant", f"answer {i}")
+        r = client.post("/api/assistant/compact").get_json()
+        assert r["compacted"] == 4 and "62 t/s" in r["summary"]
+        assert [m["content"] for m in store.list_messages() if not m["compacted"]] == ["question 2", "answer 2"]
+        assert client.post("/api/assistant/compact").get_json()["compacted"] == 0, "nothing left to compact"
+        assert "62 t/s" in client.get("/api/assistant").get_json()["summary"]
+
+
+def test_models_load_unload_and_unload_when_idle(client, app):
+    running, calls = [], []
+    a = app.extensions["pb"].assistant
+    with serve(make_engine([], [], model_ids=["qwen3-0.6b", "nomic-embed"], running=running, calls=calls)) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
+        client.put("/api/settings/assistant", json={"mode": "engine", "model": "qwen3-0.6b", "idle_unload_min": 5})
+        client.put("/api/settings/memory", json={"model": "nomic-embed", "endpoint": ""})
+        m = client.get("/api/assistant").get_json()["models"]
+        assert (m["chat"]["model"], m["chat"]["state"], m["chat"]["controllable"]) == ("qwen3-0.6b", "stopped", True)
+        assert (m["embed"]["model"], m["embed"]["where"]) == ("nomic-embed", "engine") and m["idle_unload_min"] == 5
+
+        assert client.post("/api/assistant/models/chat/load").get_json()["ok"]
+        assert ("GET", "/upstream/qwen3-0.6b/health") in calls
+        running.append({"model": "qwen3-0.6b", "state": "ready"})
+        assert client.get("/api/assistant").get_json()["models"]["chat"]["state"] == "ready"
+
+        now = time.time()
+        assert a.unload_idle(now=now + 60) == [], "used a minute ago"
+        assert a.unload_idle(now=now + 6 * 60) == ["chat"]
+        assert ("POST", "/api/models/unload/qwen3-0.6b") in calls and running == []
+        running.append({"model": "nomic-embed", "state": "ready"})
+        assert a.unload_idle(now=now + 60 * 60) == [], "a model the assistant did not use is left alone"
+
+        client.post("/api/assistant/models/embed/load")
+        assert client.post("/api/assistant/models/embed/unload").get_json()["model"]["state"] == "stopped"
+
+        client.put("/api/settings/assistant", json={"idle_unload_min": 0})
+        client.post("/api/assistant/models/chat/load")
+        running.append({"model": "qwen3-0.6b", "state": "ready"})
+        assert a.unload_idle(now=now + 99 * 60) == [], "0 means never"
+
+        client.put("/api/settings/assistant", json={"mode": "endpoint", "endpoint": "http://elsewhere:8080/v1", "model": "m"})
+        r = client.post("/api/assistant/models/chat/load")
+        assert r.status_code == 409 and "another server" in r.get_json()["error"]
+    assert client.post("/api/assistant/models/other/load").status_code == 404
+
+
+def test_choices_offer_profiles_library_models_and_embeddings(client, app):
+    root = app.extensions["pb"].settings.get("paths")["models_dir"]
+    for rel in ("qwen/Qwen3-0.6B-Q8_0.gguf", "embed/nomic-embed-text-v1.5.Q8_0.gguf", "whisper/ggml-base.bin"):
+        os.makedirs(os.path.join(root, os.path.dirname(rel)), exist_ok=True)
+        open(os.path.join(root, rel), "wb").write(b"x")
+    path = os.path.join(root, "qwen", "Qwen3-0.6B-Q8_0.gguf").replace("\\", "/")
+    client.post("/api/profiles", json={"name": "Assistant fast", "launch_command": f"llama-server --model {path} -c 8192 --port 8080"})
+    r = client.get("/api/assistant/choices").get_json()
+    assert r["engine_connected"] is False
+    profiles = [c for c in r["chat"] if c["group"] == "Profiles"]
+    assert len(profiles) == 1 and profiles[0]["label"] == "Assistant fast" and profiles[0]["id"].startswith("qwen3-0.6b-q8_0")
+    assert "qwen3-0.6b-q8_0" in [c["id"] for c in r["chat"]]
+    assert [c["id"] for c in r["embed"]] == ["nomic-embed-text-v1.5.q8_0"], "embedding models only, and no audio models"

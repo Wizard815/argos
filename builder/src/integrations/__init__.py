@@ -1,4 +1,4 @@
-"""Read-only integrations with Odysseus' cookbook and llama-swap."""
-from . import llama_swap, odysseus
+"""Talking to the engine in this container."""
+from . import engine_api
 
-__all__ = ["llama_swap", "odysseus"]
+__all__ = ["engine_api"]

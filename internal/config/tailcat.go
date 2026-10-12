@@ -2,10 +2,8 @@ package config
 
 import (
 	"fmt"
-	"net/url"
-	"strings"
 
-	"github.com/mostlygeek/llama-swap/internal/tailcat"
+	"github.com/Wizard815/Argos/internal/tailcat"
 )
 
 const TailcatEphemeralKey = "ephemeral"
@@ -19,46 +17,6 @@ type TailcatConfig struct {
 	Debug  bool     `yaml:"debug"`
 
 	AllowedClients []string `yaml:"-"`
-}
-
-func validatePeerTailcat(peer *rawPeerConfig) error {
-	u, err := url.Parse(peer.Proxy)
-	if err != nil {
-		return fmt.Errorf("invalid peer proxy URL (%s): %w", peer.Proxy, err)
-	}
-	isTailcat := strings.EqualFold(u.Scheme, "tailcat")
-	if !isTailcat {
-		if peer.TailcatKey != "" {
-			return fmt.Errorf("tailcatKey is only valid with a tailcat:// proxy")
-		}
-		return nil
-	}
-
-	if !strings.EqualFold(u.Scheme, "tailcat") || u.Opaque != "" || u.User != nil || u.Host == "" ||
-		u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return fmt.Errorf("invalid Tailcat peer proxy URL %q: expected tailcat://<connection-token> with no credentials, path, query, fragment, or port", peer.Proxy)
-	}
-	// Connection blobs use base64url and therefore never contain a colon. This
-	// catches explicit ports without passing the case-sensitive token through
-	// URL hostname normalization.
-	if strings.Contains(u.Host, ":") {
-		return fmt.Errorf("invalid Tailcat peer proxy URL %q: explicit ports are not allowed (Tailcat uses port 80)", peer.Proxy)
-	}
-	blob := u.Host
-	if err := tailcat.ValidateConnectionBlob(blob); err != nil {
-		return fmt.Errorf("invalid Tailcat connection token: %w", err)
-	}
-	peer.tailcatBlob = blob
-	peer.ProxyURL = &url.URL{Scheme: "http", Host: "server.tailcat"}
-
-	if peer.TailcatKey != "" && peer.TailcatKey != TailcatEphemeralKey {
-		loaded, err := tailcat.LoadPrivateKey(peer.TailcatKey, false)
-		if err != nil {
-			return fmt.Errorf("tailcatKey: %w", err)
-		}
-		peer.tailcatPrivateKey = loaded
-	}
-	return nil
 }
 
 func validateTailcatConfig(cfg *Config) error {
@@ -102,24 +60,6 @@ func validateTailcatConfig(cfg *Config) error {
 		}
 		tc.Models = models
 	}
-
-	// One stable client identity may safely share transports to the same
-	// destination, but using it for different Tailcat servers creates an
-	// ambiguous network identity and is rejected up front.
-	type destination struct{ server string }
-	used := map[string]destination{}
-	for peerID, peer := range cfg.Peers {
-		clientKey, blob, pk, found := peer.Tailcat()
-		if !found || clientKey == "" || clientKey == TailcatEphemeralKey {
-			continue
-		}
-		client := pk.Identity()
-		server, _ := tailcat.ConnectionDestination(blob)
-		if prev, ok := used[client]; ok && prev.server != server {
-			return fmt.Errorf("peers.%s.tailcatKey reuses client node key %s for a different Tailcat destination", peerID, client)
-		}
-		used[client] = destination{server: server}
-	}
 	return nil
 }
 
@@ -137,11 +77,6 @@ func publicTailcatModelIDs(cfg Config) map[string]struct{} {
 	for _, profile := range cfg.Profiles {
 		for pin := range profile.Pins {
 			ids[pin] = struct{}{}
-		}
-	}
-	for peerID, peer := range cfg.Peers {
-		for _, model := range peer.Models {
-			ids[PeerModelFQN(peerID, model)] = struct{}{}
 		}
 	}
 	return ids

@@ -371,10 +371,7 @@
     </div>
   </div>
   <p class="text-sm text-muted-foreground">
-    This is an experimental feature. Please use <a
-      class="underline hover:text-foreground"
-      href="https://github.com/mostlygeek/llama-swap/discussions/771">discussion #771</a
-    > for instructions and to share feedback.
+    Live GPU, CPU and memory readings from this machine.
   </p>
 
   <!-- GPU Section -->

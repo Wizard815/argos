@@ -1,4 +1,4 @@
-"""Long-term logs: events, GPU history, llama-swap request history."""
+"""Long-term logs: events, GPU history, Argos request history."""
 from __future__ import annotations
 
 import time

@@ -10,11 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/event"
-	"github.com/mostlygeek/llama-swap/internal/perf"
-	"github.com/mostlygeek/llama-swap/internal/store"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/event"
+	"github.com/Wizard815/Argos/internal/perf"
+	"github.com/Wizard815/Argos/internal/store"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 // apiModel is one entry in the /api/events modelStatus payload.
@@ -24,7 +23,6 @@ type apiModel struct {
 	Description   string         `json:"description"`
 	State         string         `json:"state"`
 	Unlisted      bool           `json:"unlisted"`
-	PeerID        string         `json:"peerID"`
 	Aliases       []string       `json:"aliases,omitempty"`
 	Capabilities  map[string]any `json:"capabilities,omitempty"`
 	ContextLength int            `json:"context_length,omitempty"`
@@ -32,7 +30,7 @@ type apiModel struct {
 	// detail view can show what will actually be run for this model. When the
 	// model has an Odysseus per-model choice, these come from the chosen
 	// variant -- the effective launch -- and Profile names the choice. Cmd
-	// still carries llama-swap's ${PORT} macro, exactly as written in config.
+	// still carries Argos's ${PORT} macro, exactly as written in config.
 	Cmd     string   `json:"cmd,omitempty"`
 	Env     []string `json:"env,omitempty"`
 	Profile string   `json:"profile,omitempty"`
@@ -114,7 +112,7 @@ func (s *Server) handleAPIActiveProfile(w http.ResponseWriter, r *http.Request) 
 }
 
 // modelStatus returns every configured model joined with its current process
-// state (defaulting to "stopped"), followed by peer models.
+// state (defaulting to "stopped").
 func (s *Server) modelStatus() []apiModel {
 	running := s.local.RunningModels()
 
@@ -171,12 +169,6 @@ func (s *Server) modelStatus() []apiModel {
 			BaseModelId:   s.baseModelID(id),
 			Available:     s.odysseusAvailableLabels(id),
 		})
-	}
-
-	for peerID, peer := range s.cfg.Peers {
-		for _, modelID := range peer.Models {
-			models = append(models, apiModel{Id: config.PeerModelFQN(peerID, modelID), PeerID: peerID})
-		}
 	}
 
 	return models
@@ -457,9 +449,8 @@ func (s *Server) handleAPITailcat(w http.ResponseWriter, r *http.Request) {
 // tailcatExposedModelIDs returns the sorted model IDs a Tailcat caller can
 // currently request, using the same active-profile routing rules as the
 // listener itself (ServeTailcatHTTP's tailcatModelAllowed check): local
-// models and their aliases, selectors, the active profile's pins, and peer
-// models addressed either by their fully qualified name or, where
-// unambiguous, their bare name. A "*" entry expands to every candidate.
+// models and their aliases, selectors and the active profile's pins. A "*"
+// entry expands to every candidate.
 func (s *Server) tailcatExposedModelIDs() []string {
 	tc := s.cfg.Tailcat
 	if tc == nil {
@@ -475,15 +466,6 @@ func (s *Server) tailcatExposedModelIDs() []string {
 	}
 	for selectorID := range s.cfg.Selectors {
 		candidates[selectorID] = struct{}{}
-	}
-	for peerID, peer := range s.cfg.Peers {
-		for _, modelID := range peer.Models {
-			candidates[config.PeerModelFQN(peerID, modelID)] = struct{}{}
-			if resolvedPeer, resolvedModel, found := s.cfg.ResolvePeerModel(modelID); found &&
-				resolvedPeer == peerID && resolvedModel == modelID {
-				candidates[modelID] = struct{}{}
-			}
-		}
 	}
 	if profile, ok := s.cfg.Profiles[s.ActiveProfile()]; ok {
 		for pin, target := range profile.Pins {

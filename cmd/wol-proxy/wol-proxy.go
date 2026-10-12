@@ -29,7 +29,7 @@ var (
 	flagListen   = flag.String("listen", ":8080", "listen address to listen on")
 	flagLog      = flag.String("log", "info", "log level (debug, info, warn, error)")
 	flagTimeout  = flag.Int("timeout", 60, "seconds requests wait for upstream response before failing")
-	flagAPIKey   = flag.String("api-key", "", "API key sent as Bearer token to the upstream SSE endpoint (falls back to LLAMA_SWAP_API_KEY env var)")
+	flagAPIKey   = flag.String("api-key", "", "API key sent as Bearer token to the upstream SSE endpoint (falls back to ARGOS_API_KEY env var)")
 )
 
 func main() {
@@ -86,7 +86,7 @@ func main() {
 
 	apiKey := *flagAPIKey
 	if apiKey == "" {
-		apiKey = os.Getenv("LLAMA_SWAP_API_KEY")
+		apiKey = os.Getenv("ARGOS_API_KEY")
 	}
 
 	proxy := newProxy(upstreamURL, apiKey)

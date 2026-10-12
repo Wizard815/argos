@@ -46,7 +46,7 @@ def seed(app):
     st = app.extensions["pb"].store
     st.add_event("launch", "tiel-coder exited with code 1: out of memory on ROCm1", level="error")
     st.add_event("bench", "benchmark qwen3: 62.0 t/s gen")
-    st.add_note("builder", "Cache idea", "turbov3 kv cache with -b 4096 might be quicker")
+    st.add_note("Cache idea", "turbov3 kv cache with -b 4096 might be quicker")
     return st
 
 

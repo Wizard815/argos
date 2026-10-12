@@ -9,7 +9,6 @@ function makeModel(overrides: Partial<Model> = {}): Model {
     name: "Test Model",
     description: "",
     unlisted: false,
-    peerID: "",
     ...overrides,
   };
 }
@@ -73,7 +72,6 @@ describe("groupModels", () => {
     makeModel({ id: "chat-model", capabilities: { vision: true } }),
     makeModel({ id: "audio-model", capabilities: { audio_transcriptions: true } }),
     makeModel({ id: "no-caps-model" }),
-    makeModel({ id: "peer1/peer-model", peerID: "peer1" }),
     makeModel({ id: "unlisted-model", unlisted: true, capabilities: { vision: true } }),
   ];
 
@@ -81,12 +79,6 @@ describe("groupModels", () => {
     const result = groupModels(models);
     expect(result.localMatching.length + result.local.length).toBe(3);
     expect([...result.localMatching, ...result.local].every((m) => !m.unlisted)).toBe(true);
-  });
-
-  it("separates peer models into peers", () => {
-    const result = groupModels(models);
-    expect(result.peers).toHaveLength(1);
-    expect(result.peers[0].id).toBe("peer1/peer-model");
   });
 
   it("without capabilities, all local models go to local (non-matching)", () => {

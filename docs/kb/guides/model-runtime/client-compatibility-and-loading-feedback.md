@@ -10,7 +10,7 @@ updated: 2026-08-28
 # Client compatibility and loading feedback
 
 Clients should read `/v1/models` before choosing a model and be prepared for a
-request to wait while llama-swap loads it. Set `sendLoadingState: true` when a
+request to wait while Argos loads it. Set `sendLoadingState: true` when a
 client can display a loading response rather than timing out or retrying
 blindly. `includeAliasesInList` also exposes configured aliases in model lists.
 

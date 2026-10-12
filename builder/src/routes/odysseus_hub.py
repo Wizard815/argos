@@ -2,6 +2,7 @@
 and sending what the builder knows (a preset, its measured speeds) into Odysseus."""
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -19,8 +20,45 @@ def client() -> Odysseus:
     return Odysseus(o["url"], o["token"])
 
 
+def cookbook_presets() -> dict:
+    """Odysseus' saved Cookbook presets, read through its API: ``{"presets": [...], "error": ""}``.
+
+    Needs only the Odysseus URL and token. A short cache keeps the engine's polling from hammering Odysseus.
+    """
+    c = ctx()
+    o = c.settings.get("odysseus")
+    if not (o["url"] and o["token"] and o.get("use_presets")):
+        return {"presets": [], "error": ""}
+    cached = c.export_state.get("_ody_presets")
+    if cached and cached["key"] == (o["url"], o["token"]) and time.time() - cached["at"] < 20:
+        return cached["value"]
+    try:
+        value = {"presets": [p for p in as_list(client().cookbook()["presets"], "presets") if isinstance(p, dict)], "error": ""}
+    except OdysseusError as exc:
+        value = {"presets": [], "error": str(exc)}
+    c.export_state["_ody_presets"] = {"at": time.time(), "key": (o["url"], o["token"]), "value": value}
+    return value
+
+
 def _fail(exc: OdysseusError):
     return err(str(exc), 502 if not exc.status else (exc.status if exc.status in (401, 403, 404) else 502))
+
+
+# the cheapest read that proves an area exists on this Odysseus
+_PROBES = {"notes": "notes", "brain": "memories", "calendar": "events", "library": "documents", "cookbook": "cookbook",
+           "gallery": "gallery", "tasks": "tasks", "tools": "tools"}
+
+
+def _probe_areas(o: Odysseus) -> dict:
+    """For an Odysseus with no /capabilities: try each area, and call it available unless it answers 404."""
+    found = {}
+    for area, method in _PROBES.items():
+        try:
+            getattr(o, method)()
+            found[area] = True
+        except OdysseusError as exc:
+            found[area] = exc.status not in (404, 405)
+    return found
 
 
 @bp.get("/api/ody/status")
@@ -29,27 +67,29 @@ def status():
     if not (o["url"] and o["token"]):
         return ok(configured=False, areas={a: False for a in AREAS})
     try:
-        caps = client().capabilities()
+        c = client()
+        caps = c.capabilities()
     except OdysseusError as exc:
+        if exc.status == 404:  # an older or different Odysseus: no capabilities route, so look for each area
+            try:
+                areas = _probe_areas(client())
+            except OdysseusError as exc2:
+                return ok(configured=True, connected=False, error=str(exc2), areas={a: False for a in AREAS})
+            return ok(configured=True, connected=True, areas=areas, writable={}, scopes=[], updated=False, capabilities=False)
         return ok(configured=True, connected=False, error=str(exc), areas={a: False for a in AREAS})
     tools = caps.get("tools") or {}
     scopes = set(caps.get("token_scopes") or [])
-    areas = {
-        "notes": bool((tools.get("todos") or {}).get("read")),
-        "brain": bool((tools.get("memory") or {}).get("read")),
-        "calendar": bool((tools.get("calendar") or {}).get("read")),
-        "library": bool((tools.get("documents") or {}).get("read")),
-        "cookbook": bool((tools.get("cookbook") or {}).get("read")),
-        # the update adds these to /capabilities; an older Odysseus does not list them
-        "gallery": bool((tools.get("gallery") or {}).get("read")),
-        "tasks": bool((tools.get("tasks") or {}).get("read")),
-        "tools": bool((tools.get("skills") or {}).get("read")),
-    }
+
+    def has(tool: str) -> bool:
+        return bool((tools.get(tool) or {}).get("read"))
+
+    areas = {"notes": has("todos"), "brain": has("memory"), "calendar": has("calendar"), "library": has("documents"),
+             "cookbook": has("cookbook"), "gallery": has("gallery"), "tasks": has("tasks"), "tools": has("skills")}
     writable = {"notes": bool((tools.get("todos") or {}).get("write")), "brain": bool((tools.get("memory") or {}).get("write")),
                 "calendar": bool((tools.get("calendar") or {}).get("write")), "library": bool((tools.get("documents") or {}).get("write")),
                 "tasks": bool((tools.get("tasks") or {}).get("run"))}
     return ok(configured=True, connected=True, areas=areas, writable=writable, scopes=sorted(scopes),
-              updated=any(k in tools for k in ("gallery", "tasks", "skills")))
+              updated=any(k in tools for k in ("gallery", "tasks", "skills")), capabilities=True)
 
 
 @bp.get("/api/ody/<area>")
@@ -76,6 +116,8 @@ def area_list(area):
             return ok(items=as_list(c.tasks(), "tasks"))
         return ok(items=as_list(c.tools(), "skills"))
     except OdysseusError as exc:
+        if exc.status in (404, 405):
+            return ok(items=[], unavailable=True, text="")
         return _fail(exc)
 
 

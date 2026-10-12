@@ -9,7 +9,7 @@ updated: 2026-08-28
 
 # Startup preloading and hooks
 
-Use startup hooks when an external action must run as llama-swap starts, and
+Use startup hooks when an external action must run as Argos starts, and
 preload only models your machine can keep resident. A model with `ttl: 0` stays
 loaded after it has been requested; preloading does not make an incompatible
 model fit in memory.

@@ -24,7 +24,7 @@ That single instance serves both halves:
 `-config-dir` merges the model fixture in; see [The running-config
 fixture](#the-running-config-fixture). `run.sh` passes it for you.
 
-> **Do not point `--base-url` at a remote llama-swap you did not build.**
+> **Do not point `--base-url` at a remote Argos you did not build.**
 > `/api/mcp` does not exist in releases and answers 404. The CLI refuses to
 > start in that case rather than running a silent, tool-less suite.
 
@@ -190,7 +190,7 @@ fails regardless of its text. A case with no assertions is rejected at load
 time rather than passing for free.
 
 `safety/negative.yaml` is the group that matters most and is easiest to overlook: five
-questions about features llama-swap **does not have**. The correct answer is to
+questions about features Argos **does not have**. The correct answer is to
 say so. A model that invents a plausible config key passes nothing there, and
 no other case in the suite would catch it.
 
@@ -216,7 +216,7 @@ model, because a model grading itself ratifies its own mistakes.
 
 ## The running-config fixture
 
-`fixture/models.yaml` is a checked-in llama-swap config: 24 models with the
+`fixture/models.yaml` is a checked-in Argos config: 24 models with the
 nested blocks a real setup has — `capabilities`, `filters`, `timeouts`,
 `metadata`, model-scoped `macros` — plus two groups. `run.sh` merges it into
 the server with `-config-dir`, so `config__get_config` answers over the same
@@ -262,7 +262,7 @@ Constraints to respect while editing:
 
 ## Comparing models
 
-`--model` accepts anything the running llama-swap serves. The baseline is
+`--model` accepts anything the running Argos serves. The baseline is
 `sippy/gemma-4-12B` and that is the score being optimized, but a case that
 fails on **every** model is usually a bad case or missing documentation rather
 than a prompt problem — and that distinction decides which surface to edit.

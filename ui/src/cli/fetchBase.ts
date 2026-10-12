@@ -3,7 +3,7 @@
  *
  * chatApi.ts builds `"/" + endpoint` and agentTools.ts hardcodes
  * MCP_ENDPOINT = "/api/mcp". Both are correct in a browser, where the page is
- * served by the same llama-swap they talk to, and both are unusable under
+ * served by the same Argos they talk to, and both are unusable under
  * Node's fetch, which rejects relative URLs. Neither module can attach an
  * Authorization header either, for the same same-origin reason.
  *

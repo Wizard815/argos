@@ -113,7 +113,7 @@
 # unused depends on the config the eval was started with -- only that the agent
 # reads both before answering.
 - id: running-config-unused-features
-  question: What llama-swap features am I not using?
+  question: What Argos features am I not using?
   tags: [config, running-config, discovery]
   expect_tools: [config__get_config]
   expect_tools_any: [docs__list_docs, docs__search_docs]
@@ -125,4 +125,4 @@
   rubric:
     - Names features that are genuinely absent from the running config
     - Says what each one would do, rather than only listing key names
-    - Invents no feature llama-swap does not have
+    - Invents no feature Argos does not have

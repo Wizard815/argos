@@ -1,8 +1,8 @@
-# llama-swap knowledge base
+# Argos knowledge base
 
 Short, focused articles that the Help page's Docs agent can search and read.
 Every file here is indexed at build time and served over MCP at `/api/mcp`, so an
-LLM running on your own hardware can answer questions about llama-swap using
+LLM running on your own hardware can answer questions about Argos using
 real text instead of guesswork.
 
 ## Layout

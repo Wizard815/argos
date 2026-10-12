@@ -57,7 +57,7 @@ describe("hardware api", () => {
     const snapshot = {
       schema_version: 1,
       captured_at: "2026-08-03T12:00:00Z",
-      capture: { scope: "inference_host", method: "detected", detector: { name: "llama-swap", version: "246" } },
+      capture: { scope: "inference_host", method: "detected", detector: { name: "argos", version: "246" } },
       architecture: { name: "x86_64" },
       operating_system: { family: "linux", name: "Ubuntu", version: "24.04", kernel: "6.8" },
       environment: { kind: "native", name: null, version: null },
@@ -221,30 +221,26 @@ describe("api store event handling", () => {
             id: "real",
             name: "Real",
             capabilities: { vision: true },
-            meta: { llamaswap: { type: "model", aliases: ["variant", "alternate"] } },
+            meta: { argos: { type: "model", aliases: ["variant", "alternate"] } },
           },
           {
             id: "variant",
-            meta: { llamaswap: { type: "alias", modelID: "real" } },
-          },
-          {
-            id: "remote/remote-model",
-            meta: { llamaswap: { type: "peer", peerID: "remote" } },
+            meta: { argos: { type: "alias", modelID: "real" } },
           },
           {
             id: "pool",
             meta: {
-              llamaswap: {
+              argos: {
                 type: "selector",
                 strategy: "spillover",
-                targets: ["real", "remote/remote-model"],
+                targets: ["real", "other"],
                 spillover: 4,
               },
             },
           },
           {
             id: "public",
-            meta: { llamaswap: { type: "profile" } },
+            meta: { argos: { type: "profile" } },
           },
         ],
       }),
@@ -260,14 +256,10 @@ describe("api store event handling", () => {
       capabilities: { vision: true },
       playgroundType: "model",
     });
-    expect(get(playgroundModels).find((model) => model.id === "remote/remote-model")).toMatchObject({
-      peerID: "remote",
-      playgroundType: "peer",
-    });
     expect(get(selectorModels).map((model) => model.id)).toEqual(["pool"]);
     expect(get(selectorModels)[0]).toMatchObject({
       strategy: "spillover",
-      targets: ["real", "remote/remote-model"],
+      targets: ["real", "other"],
       spillover: 4,
     });
     expect(get(profileModels).map((model) => model.id)).toEqual(["public"]);

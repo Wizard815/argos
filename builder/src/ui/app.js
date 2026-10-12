@@ -35,7 +35,11 @@ const ICONS = {
   cog: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
+  minus: '<path d="M5 12h14"/>',
   star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+  server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
+  key: '<path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
 };
 
 function icon(name) {
@@ -283,7 +287,7 @@ const S = {
   lastBench: {},        // launch id -> last recorded run
 };
 const VIEWS = { builder: "Builder", models: "Models", profiles: "Profiles", playground: "Playground", perf: "Perf sheet",
-  schedule: "Schedule", inventory: "Inventory", logs: "Logs", assistant: "Assistant", env: "Env flags", integrations: "Odysseus", settings: "Settings" };
+  schedule: "Schedule", inventory: "Inventory", logs: "Logs", assistant: "Assistant", env: "Flags", servers: "Servers", integrations: "Odysseus", settings: "Settings" };
 const onShow = {
   models: () => { loadLibrary(); loadCatalog(); loadDownloads(); },
   profiles: () => renderProfiles(),
@@ -293,6 +297,7 @@ const onShow = {
   logs: () => loadLogs(),
   assistant: () => loadAssistant(),
   env: () => loadEnv(),
+  servers: () => loadServers(),
   integrations: () => loadIntegrations(),
   settings: () => loadSettings().then(renderSettings).then(loadIntegrations),
   playground: () => { renderLaunches(); pollSelected(true); },
@@ -308,7 +313,6 @@ function show(view) {
   document.body.classList.remove("nav-open");
   if (location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
   onShow[view]?.();
-  loadNotes(view);
 }
 
 // ── Shared data ──────────────────────────────────────────────
@@ -340,7 +344,6 @@ async function loadIntegrations() {
     S.integrations = await api("GET", "/api/integrations");
   } catch (e) { fail(e); return; }
   fillImportSelect();
-  if (S.integrations && S.integrations.export && $("#iExport")) renderEngineExport(S.integrations.export);
   if (S.view === "integrations") { await loadOdyStatus(); renderIntegrations(); }
 }
 function importSources() {
@@ -380,8 +383,7 @@ const SETTINGS = [
   { name: "n-cpu-moe", label: "MoE layers on CPU", flag: "-ncmoe", type: "number", ph: "0" },
   { name: "port", label: "Port", flag: "--port", ph: "8080 or ${PORT}" },
   { name: "host", label: "Host", flag: "--host", ph: "127.0.0.1" },
-  { name: "cache-type-k", label: "KV cache K", flag: "-ctk", combo: () => seenOpts("cache_type", KV_TYPES) },
-  { name: "cache-type-v", label: "KV cache V", flag: "-ctv", combo: () => seenOpts("cache_type", KV_TYPES) },
+  { name: "cache-type", label: "KV cache", flag: "-ctk / -ctv", combo: () => seenOpts("cache_type", KV_TYPES) },
   { name: "load-mode", label: "Load mode", flag: "-lm", ph: "dio", combo: () => seenOpts("load_mode", ["", "dio", "mmap"]) },
   { name: "split-mode", label: "Split mode", flag: "-sm", combo: () => seenOpts("split_mode", ["", "none", "layer", "row", "tensor"]) },
   { name: "flash-attn", label: "Flash attention", flag: "-fa", seg: [["", "default"], ["on", "on"], ["off", "off"], ["auto", "auto"]] },
@@ -396,7 +398,12 @@ const FILES = [
     combo: () => seenOpts("spec_type", ["", "draft-mtp", "draft", "ngram-simple", "ngram-map-k", "ngram-mod", "ngram-cache"]) },
   { name: "spec-draft-n-max", label: "Draft tokens", flag: "--spec-draft-n-max", type: "number", ph: "3" },
 ];
-const KEY_NAMES = new Set([...SETTINGS, ...FILES].map((f) => f.name).concat(["no-mmap"]));
+const KEY_NAMES = new Set([...SETTINGS, ...FILES].map((f) => f.name).concat(["no-mmap", "cache-type-k", "cache-type-v"]));
+/** K and V use one type. A command that already mixes them shows both, until you pick one value for both. */
+function kvShown() {
+  const k = argValue("cache-type-k"), v = argValue("cache-type-v");
+  return k && v && k !== v ? `${k} / ${v}` : (k || v || "");
+}
 
 const B = { cmd: "", parsed: null, profileId: null, source: "", layout: "multi", format: "odysseus",
   queue: Promise.resolve(), controls: {}, saved: { cmd: "", name: "" } };
@@ -446,7 +453,7 @@ async function editAlways() {
     h("label", { class: "field" }, h("span", {}, "Environment (KEY=VALUE per line)"), env),
     h("label", { class: "field" }, h("span", {}, "Flags"), flags),
     h("label", { class: "check" }, onLaunch, "Apply to launches here (playground, measure)"),
-    h("label", { class: "check" }, onExport, "Apply to what llama-swap gets")), [
+    h("label", { class: "check" }, onExport, "Apply to every model the engine starts")), [
     { label: "Cancel", run: (c) => c() },
     { label: "Save", cls: "primary", icon: "save", run: async (c) => {
       try {
@@ -472,7 +479,11 @@ function buildField(f) {
       f.options.map((o) => h("option", { value: o }, o || "default")));
   } else {
     control = h("input", { type: f.type || "text", placeholder: f.ph || (f.combo ? "default" : ""), dataset: { fk: f.name }, list: f.list || null, spellcheck: "false" });
-    const commit = () => { if (control.value.trim() !== (argValue(f.name) ?? "")) edit({ [f.name]: control.value.trim() || null }); };
+    const commit = () => {
+      const val = control.value.trim();
+      if (f.name === "cache-type") { if (val !== kvShown()) edit({ "cache-type-k": val || null, "cache-type-v": val || null }); return; }
+      if (val !== (argValue(f.name) ?? "")) edit({ [f.name]: val || null });
+    };
     control.addEventListener("change", commit);
     control.addEventListener("keydown", (e) => { if (e.key === "Enter") commit(); });
   }
@@ -499,7 +510,7 @@ function initBuilder() {
   $("#bName").addEventListener("input", renderDirty);
   $("#bDelete").onclick = async () => {
     const p = S.profiles.find((x) => x.profile_id === B.profileId);
-    if (!p || !(await confirmBox(`Delete the preset “${p.name}”? llama-swap drops its variant on the next refresh.`))) return;
+    if (!p || !(await confirmBox(`Delete the preset “${p.name}”? The engine drops its variant on the next refresh.`))) return;
     try {
       await api("DELETE", `/api/profiles/${p.profile_id}`);
       toast(`Deleted “${p.name}”.`, "ok");
@@ -524,7 +535,6 @@ function initBuilder() {
   $("#bSaveNew").onclick = () => saveProfile(true);
   $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim()); };
   $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? B.parsed.multiline : B.parsed.command); };
-  $("#bYaml").onclick = showYaml;
   $("#bRaw").onclick = () => { $("#bRawText").value = B.parsed.multiline; $("#bRawBox").hidden = false; $("#bPreview").hidden = true; $("#bRawText").focus(); };
   $("#bRawCancel").onclick = () => { $("#bRawBox").hidden = true; $("#bPreview").hidden = false; };
   $("#bRawApply").onclick = async () => {
@@ -595,7 +605,7 @@ function renderBuilder() {
         : (argValue(f.name) == null ? "" : (argValue(f.name) || "on"));
       $$("button", c).forEach((b) => b.classList.toggle("on", b.dataset.v === cur));
     } else if (c !== document.activeElement) {
-      c.value = argValue(f.name) ?? "";
+      c.value = f.name === "cache-type" ? kvShown() : (argValue(f.name) ?? "");
     }
   }
   keepFocus(() => {
@@ -675,7 +685,7 @@ async function saveProfile(asNew) {
     toast(updating ? `Updated “${name}”.` : `Saved “${name}”.`, "ok");
     if (updating) {
       const r = await api("POST", `/api/profiles/${B.profileId}/apply`, { load });
-      if (r.refresh === "ok") toast(load ? `llama-swap has the new settings; loading ${r.variant_id} now.` : "llama-swap has the new settings.", "ok");
+      if (r.refresh === "ok") toast(load ? `The engine has the new settings; loading ${r.variant_id} now.` : "The engine has the new settings.", "ok");
       else if (r.refresh !== "skipped") toast(r.refresh, "err");
     }
     renderBuilder();
@@ -692,26 +702,17 @@ function reviewChanges(d, name) {
     const rows = d.changes.map((c) => h("tr", { class: `diff-${c.change}` },
       h("td", {}, h("code", { class: c.env ? "tk-env" : "tk-flag" }, c.name)), h("td", { class: "before" }, v(c.before)), h("td", {}, "→"), h("td", { class: "after" }, v(c.after))));
     const load = h("input", { type: "checkbox", checked: d.running === true });
-    const where = !d.llama_swap ? "llama-swap is not connected (Integrations), so this only saves the preset."
-      : d.variant_id ? `In llama-swap this is ${d.variant_id}${d.running ? ", loaded right now" : ""}. Only this model restarts with the new settings; other models stay loaded.`
-        : "llama-swap will list this preset after its next refresh.";
+    const where = !d.engine ? "The engine is not reachable, so this only saves the preset."
+      : d.variant_id ? `In the engine this is ${d.variant_id}${d.running ? ", loaded right now" : ""}. Only this model restarts with the new settings; other models stay loaded.`
+        : "The engine will list this preset after its next refresh.";
     modal(`Save changes to “${name}”?`, h("div", { class: "stack" },
       h("table", { class: "diff" }, h("thead", {}, h("tr", {}, h("th", {}, "Setting"), h("th", {}, "Before"), h("th", {}), h("th", {}, "After"))), h("tbody", {}, rows)),
       h("p", { class: "hint", style: "margin:0" }, where),
-      d.llama_swap && d.variant_id ? h("label", { class: "check" }, load, "Load it with the new settings now") : null), [
+      d.engine && d.variant_id ? h("label", { class: "check" }, load, "Load it with the new settings now") : null), [
       { label: "Cancel", run: (c) => c() },
       { label: "Save", cls: "primary", icon: "save", run: (c) => { result = { load: load.checked }; c(); } }],
     () => resolve(result));
   });
-}
-
-async function showYaml() {
-  await B.queue;
-  const yaml = B.parsed.llama_swap_yaml;
-  modal("llama-swap config entry", h("div", { class: "stack" },
-    h("p", { class: "hint", style: "margin:0" }, "Paste under models: in llama-swap's config.yaml. The port is swapped for ${PORT} so llama-swap can assign it."),
-    h("pre", { class: "code" }, yaml)),
-  [{ label: "Copy", icon: "copy", cls: "primary", run: () => copyText(yaml) }]);
 }
 
 // ── Profiles view ────────────────────────────────────────────
@@ -1003,7 +1004,7 @@ function renderPerf() {
     h("div", { class: "tps" }, num(b.tokens_per_second), h("small", {}, ` t/s · pp ${num(b.prompt_per_second, 0)} t/s`)),
     h("div", { class: "chips" }, settingChips(b)),
     h("div", { class: "row" }, h("span", { class: "muted mono-sm", style: "flex:1" }, `${b.runs} run${b.runs === 1 ? "" : "s"} · ${ago(b.created_at)}`),
-      btn("Open", () => openRunInBuilder(b), "sm", "sliders")))) : h("div", { class: "empty" }, "No successful runs yet. Benchmark something in the Playground."));
+      btn("Open", () => openRunInBuilder(b), "sm", "sliders"), btn("Inventory", () => openRunInInventory(b), "sm ghost", "database")))) : h("div", { class: "empty" }, "No successful runs yet. Benchmark something in the Playground."));
   const rows = perfRows();
   const maxTps = Math.max(1, ...rows.map((r) => r.tokens_per_second || 0));
   renderTable($("#fTable"), [
@@ -1020,12 +1021,23 @@ function renderPerf() {
     { key: "log_source", label: "Src", cell: (r) => h("span", { class: `pill ${r.success ? "ok" : "bad"}`, title: r.note || "" }, r.success ? r.log_source || "run" : "no data") },
     { label: "", cell: (r) => h("td", { class: "actions" },
       iconBtn("sliders", "Open in builder", () => openRunInBuilder(r)),
+      iconBtn("database", "Open in Inventory", () => openRunInInventory(r)),
       iconBtn("file-text", "View log", () => showLog(r.launch_id || r.run_id)),
       iconBtn("trash", "Delete run", async () => {
         if (!(await confirmBox("Delete this run from the perf sheet?"))) return;
         try { await api("DELETE", `/api/runs/${encodeURIComponent(r.run_id)}`); loadPerf(); } catch (e) { fail(e); }
       }, "danger")) },
   ], rows, perfSort, S.runs.length ? "No runs match." : "No runs recorded yet.");
+}
+/** Jump to the model's page in Inventory: every load, its GPUs, VRAM and speeds. */
+async function openRunInInventory(r) {
+  show("inventory");
+  try { if (!IV.data) IV.data = await api("GET", "/api/inventory"); } catch (e) { return fail(e); }
+  const want = [r.model_id, r.base_model].filter(Boolean).map((s) => s.toLowerCase());
+  const models = IV.data.models || [];
+  const m = models.find((x) => want.includes((x.model_id || "").toLowerCase())) || models.find((x) => want.includes((x.name || "").toLowerCase()));
+  if (!m) return toast(`${r.base_model || r.model_id} is not in Inventory yet. Press Scan there to add it.`, "err");
+  openModel(m.model_id);
 }
 function exportCsv() {
   const rows = perfRows();
@@ -1148,22 +1160,33 @@ function hfPicker(kind, baseModel, repoHint) {
 
 // ── Env flags ────────────────────────────────────────────────
 async function loadEnv() {
-  try { S.env = (await api("GET", "/api/env-flags")).rows; } catch (e) { fail(e); return; }
-  renderEnvTable();
+  try { [S.env, S.flags] = [(await api("GET", "/api/env-flags")).rows, (await api("GET", "/api/flags")).rows]; } catch (e) { fail(e); return; }
+  renderFlagsTable();
 }
-const envSort = { key: null, asc: false };
-function renderEnvTable() {
+// One table for both: llama-server flags (--jinja, -lm dio, --temp …) and environment variables (HIP_VISIBLE_DEVICES …).
+const flagSort = { key: null, asc: true };
+const FLAGS = { kind: "all" };
+function renderFlagsTable() {
   const q = $("#eSearch").value.trim().toLowerCase();
-  const rows = S.env.filter((e) => !q || `${e.flag} ${e.category} ${e.description} ${e.recommended}`.toLowerCase().includes(q));
-  renderTable($("#eTable"), [
-    { key: "flag", label: "Variable", cell: (e) => h("code", { class: "tk-env" }, e.flag) },
-    { key: "category", label: "Category", cell: (e) => h("span", { class: "pill" }, e.category || DASH) },
-    { label: "What it does", cell: (e) => h("td", { style: "min-width:240px" }, e.description, e.recommended ? h("div", { class: "muted mono-sm" }, e.recommended) : null) },
-    { key: "last_used_for", label: "Last used for", cell: (e) => e.last_used_for || DASH },
-    { key: "last_tps", label: "Gen t/s", num: true, cell: (e) => num(e.last_tps) },
-    { key: "last_pps", label: "Prompt t/s", num: true, cell: (e) => num(e.last_pps) },
-    { key: "last_run_at", label: "When", cell: (e) => h("span", { class: "muted" }, ago(e.last_run_at)) },
-  ], rows, envSort, "No matches.");
+  const flags = (S.flags || []).map((f) => ({ kind: "flag", name: f.spellings.join(" · "), category: f.category, description: f.description,
+    note: f.notes, profiles: f.profiles || 0, values: f.values || [], search: `${f.flag} ${f.spellings.join(" ")} ${f.category} ${f.description} ${f.notes}` }));
+  const env = (S.env || []).map((e) => ({ kind: "env", name: e.flag, category: e.category || "", description: e.description, note: e.recommended,
+    profiles: 0, values: [], last: e, search: `${e.flag} ${e.category} ${e.description} ${e.recommended}` }));
+  const all = [...flags, ...env];
+  const rows = all.filter((r) => (FLAGS.kind === "all" || r.kind === FLAGS.kind) && (!q || r.search.toLowerCase().includes(q)));
+  $("#flagCount").textContent = `${flags.length} flags · ${env.length} environment variables`;
+  renderTable($("#flagTable"), [
+    { key: "name", label: "Name", sort: (r) => r.name.replace(/^-+/, "").toLowerCase(), cell: (r) => h("td", {}, h("code", { class: r.kind === "env" ? "tk-env" : "tk-flag" }, r.name)) },
+    { key: "kind", label: "Type", sort: (r) => r.kind, cell: (r) => h("span", { class: `pill${r.kind === "env" ? " accent" : ""}` }, r.kind === "env" ? "env" : "flag") },
+    { key: "category", label: "Group", cell: (r) => (r.category ? h("span", { class: "pill" }, r.category) : DASH) },
+    { label: "What it does", cell: (r) => h("td", { style: "min-width:260px" }, r.description, r.note ? h("div", { class: "muted mono-sm" }, r.note) : null) },
+    { key: "use", label: "Your use", sort: (r) => r.profiles || (r.last && r.last.last_run_at) || 0, cell: (r) => r.kind === "flag"
+      ? (r.profiles || r.values.length ? h("td", {}, r.profiles ? h("div", { class: "mono-sm" }, `${r.profiles} profile${r.profiles === 1 ? "" : "s"}`) : null,
+        r.values.length ? h("div", { class: "chips" }, r.values.map((v) => h("span", { class: "chip" }, v))) : null) : DASH)
+      : (r.last.last_used_for ? h("td", {}, h("div", { class: "mono-sm" }, r.last.last_used_for),
+        h("div", { class: "muted mono-sm" }, [r.last.last_tps ? `${num(r.last.last_tps)} t/s gen` : null, r.last.last_pps ? `${num(r.last.last_pps)} prompt` : null,
+          r.last.last_run_at ? ago(r.last.last_run_at) : null].filter(Boolean).join(" · "))) : DASH) },
+  ], rows, flagSort, "No matches.");
 }
 
 // ── Integrations ─────────────────────────────────────────────
@@ -1187,30 +1210,6 @@ const statusLine = (ok, text) => h("div", { class: "row", style: "margin-bottom:
   h("span", { class: `dot ${ok ? "on" : "bad"}` }), h("span", { class: ok ? "" : "muted", style: "min-width:0; overflow-wrap:anywhere" }, text));
 const setupHint = (lines) => h("div", { class: "stack" }, h("p", { class: "hint", style: "margin:0" }, "Not configured. Set these environment variables and restart:"),
   h("pre", { class: "code" }, lines.join("\n")));
-function renderEngineExport(x) {
-  const origin = location.origin;
-  const viaUrl = ["odysseus:", "  enabled: true", `  baseURL: "${origin}"`,
-    `  token: "${x.token_required ? "<your export token>" : "any"}"  # llama-swap needs a value`,
-    "  refreshSeconds: 60", '  profilePrefix: "pb"', '  outputFile: "/app/config.d/odysseus.generated.yaml"', "  ensureDio: true"].join("\n");
-  const viaFile = ["odysseus:", "  enabled: true", `  stateFile: "${x.file || "/app/argos-data/cookbook_state.json"}"`,
-    "  refreshSeconds: 60", '  profilePrefix: "pb"', '  outputFile: "/app/config.d/odysseus.generated.yaml"', "  ensureDio: true"].join("\n");
-  fill($("#iExport"),
-    h("div", { class: "card-head" }, h("h2", {}, "Presets for the engine (llama-swap-rescan)"), h("span", { class: "spacer" }),
-      h("span", { class: "pill accent" }, `${x.presets} presets`), x.tasks ? h("span", { class: "pill" }, `${x.tasks} tasks`) : null),
-    h("p", { class: "hint" }, "This app serves your profiles at ", h("code", {}, "/api/cookbook/state"),
-      " in Odysseus' cookbook_state.json shape, so llama-swap-rescan's Odysseus integration reads it exactly like Odysseus — every profile becomes a variant ",
-      h("code", {}, "<model-id>--<profile name>"), ". No five-per-model limit.",
-      x.include_odysseus ? " Odysseus' own presets are passed through, so pointing llama-swap here keeps them." : ""),
-    statusLine(!x.error, x.file ? (x.error ? `${x.file}: ${x.error}` : `writing ${x.file}${x.written_at ? ` · last ${ago(x.written_at)}` : ""}`)
-      : "No export file set (Settings → Export) — llama-swap can still read the URL."),
-    (x.warnings || []).length ? h("div", { class: "stack", style: "margin-bottom:10px" }, x.warnings.map((w) => h("div", { class: "muted mono-sm" }, `⚠ ${w}`))) : null,
-    h("div", { class: "cols2" },
-      h("div", { class: "stack" }, h("span", { class: "muted mono-sm" }, "llama-swap config.yaml — over HTTP"), h("pre", { class: "code" }, viaUrl),
-        h("div", { class: "row end" }, btn("Copy", () => copyText(viaUrl), "sm", "copy"))),
-      h("div", { class: "stack" }, h("span", { class: "muted mono-sm" }, "or from the export file (shared volume)"), h("pre", { class: "code" }, viaFile),
-        h("div", { class: "row end" }, btn("Copy", () => copyText(viaFile), "sm", "copy")))));
-}
-
 // ── Odysseus hub ─────────────────────────────────────────────
 const ODY = { status: null, area: "notes", data: {} };
 const ODY_AREAS = { notes: "Notes", brain: "Brain", calendar: "Calendar", library: "Library", cookbook: "Cookbook", tasks: "Tasks", gallery: "Gallery", tools: "Tools" };
@@ -1227,9 +1226,10 @@ function renderIntegrations() {
   const url = h("input", { type: "text", value: o.url || "", placeholder: "http://odysseus:7000", spellcheck: "false" });
   const token = h("input", { type: "password", value: o.token || "", placeholder: "ody_… from Odysseus → Settings → API tokens" });
   const brain = h("input", { type: "checkbox", checked: o.brain_in_memory !== false });
+  const presets = h("input", { type: "checkbox", checked: o.use_presets !== false });
   const save = async () => {
     try {
-      await api("PUT", "/api/settings/odysseus", { url: url.value.trim(), token: token.value, brain_in_memory: brain.checked });
+      await api("PUT", "/api/settings/odysseus", { url: url.value.trim(), token: token.value, brain_in_memory: brain.checked, use_presets: presets.checked });
       await loadSettings(); await loadOdyStatus(); renderIntegrations(); loadOdyArea(ODY.area);
       toast(ODY.status.connected ? "Connected to Odysseus." : (ODY.status.error || "Saved."), ODY.status.connected ? "ok" : "err");
     } catch (e) { fail(e); }
@@ -1247,13 +1247,15 @@ function renderIntegrations() {
     h("div", { class: "fields" },
       h("label", { class: "field" }, h("span", {}, "Odysseus URL"), url),
       h("label", { class: "field" }, h("span", {}, "API token"), token),
-      h("label", { class: "check wide" }, brain, "Let the assistant's memory include Odysseus' Brain")),
+      h("label", { class: "check wide" }, brain, "Let the assistant's memory include Odysseus' Brain"),
+      h("label", { class: "check wide" }, presets, "Use Odysseus' saved Cookbook presets as models")),
     h("div", { class: "row", style: "margin-top:10px" }, btn("Save & connect", save, "primary sm", "save"),
       st && st.error ? h("span", { class: "hint", style: "margin:0" }, st.error) : null),
     chips ? h("div", { class: "chips", style: "margin-top:10px" }, chips) : null,
     h("p", { class: "hint" }, "Make the token in Odysseus → Settings → API tokens with the scopes for what you want here: ",
       Object.values(ODY_SCOPES).join(", "), ". Gallery, tasks and tools need the Odysseus update that adds them to its API."),
-    cb ? h("p", { class: "hint" }, "Cookbook import file: ", cb.configured ? (cb.ok ? `${cb.commands.length} commands from ${cb.location}` : `${cb.location}: ${cb.error}`) : "not set (Settings)") : null);
+    cb && cb.configured ? h("p", { class: "hint" }, cb.ok ? `Cookbook presets from Odysseus: ${cb.commands.length}. They show up under Import in the builder and are served to the engine.` : `Cookbook presets: ${cb.error}`) : null,
+    st && st.connected && st.capabilities === false ? h("p", { class: "hint" }, "This Odysseus does not list its capabilities, so Argos tried each area. Anything it lacks is simply left out.") : null);
   loadOdyArea(ODY.area);
 }
 function odyRow(main, sub, actions) {
@@ -1361,25 +1363,30 @@ async function openPrefab(m, launchIt = false) {
 function renderLibrary() {
   const lib = S.library;
   if (!lib) return;
-  $("#mSub").textContent = `Every GGUF in ${lib.models_dir}, each with a ready-made prefab command.`;
+  $("#mSub").textContent = `Every model in ${lib.models_dir}. GGUFs get a ready-made prefab command; audio and image models are listed so you can see what you have.`;
   const q = $("#mSearch").value.trim().toLowerCase();
-  const rows = lib.models.filter((m) => !q || `${m.name} ${m.dir} ${m.kind} ${m.quant}`.toLowerCase().includes(q));
-  $("#mCount").textContent = `${lib.models.length} model${lib.models.length === 1 ? "" : "s"}`;
+  const media = lib.media || [];
+  const rows = [...lib.models, ...media].filter((m) => !q || `${m.name} ${m.dir} ${m.kind} ${m.task || ""} ${m.quant} ${m.format || ""}`.toLowerCase().includes(q));
+  const audio = media.filter((m) => m.kind === "audio").length, image = media.length - audio;
+  $("#mCount").textContent = [`${lib.models.length} model${lib.models.length === 1 ? "" : "s"}`, audio ? `${audio} audio` : null, image ? `${image} image` : null].filter(Boolean).join(" · ");
   const empty = !lib.exists
     ? h("span", {}, `The models folder ${lib.models_dir} does not exist. Mount your GGUF folder there (e.g. `, h("b", {}, "-v /path/to/LLMBin:/app/models"), ") or change it in Settings.")
     : lib.models.length ? "No models match." : h("span", {}, "No .gguf files yet. Get one from the ", h("b", {}, "Download"), " tab.");
   renderTable($("#mTable"), [
     { key: "name", label: "Model", cell: (m) => h("td", { class: "trunc", title: m.path }, h("span", { class: "strong" }, m.name),
       h("div", { class: "muted mono-sm" }, m.dir === "." ? m.id : `${m.dir} · ${m.id}`)) },
-    { key: "kind", label: "Kind", cell: (m) => h("span", { class: `pill${m.kind === "chat" ? "" : " accent"}` }, m.kind) },
+    { key: "kind", label: "Kind", cell: (m) => h("td", {}, h("span", { class: `pill${m.kind === "chat" ? "" : m.listed_only ? ` media-${m.kind}` : " accent"}` }, m.kind),
+      m.task ? h("div", { class: "muted mono-sm" }, m.task) : null) },
     { key: "quant", label: "Quant", cell: (m) => (m.quant ? h("span", { class: "chip" }, m.quant) : DASH) },
     { key: "size", label: "Size", num: true, cell: (m) => size(m.size) },
     { label: "Files", cell: (m) => h("div", { class: "chips" },
       m.shards < 0 ? h("span", { class: "pill bad" }, `incomplete ${-m.shards} parts`) : m.shards > 1 ? h("span", { class: "chip" }, `${m.shards} parts`) : null,
-      m.mmproj.length ? h("span", { class: "chip", title: m.mmproj.join("\n") }, "mmproj") : null) },
+      m.mmproj.length ? h("span", { class: "chip", title: m.mmproj.join("\n") }, "mmproj") : null,
+      m.format && m.format !== "gguf" ? h("span", { class: "chip" }, m.format) : null) },
     { key: "profiles", label: "Profiles", num: true, cell: (m) => (m.profiles
       ? h("button", { class: "btn sm ghost", onclick: () => showProfilesFor(m.id) }, String(m.profiles)) : DASH) },
-    { label: "", cell: (m) => h("td", { class: "actions" },
+    { label: "", cell: (m) => m.listed_only ? h("td", { class: "actions" }, h("span", { class: "muted mono-sm",
+      title: "llama-server does not run audio or image models, so there is no profile to edit or launch." }, "listed only")) : h("td", { class: "actions" },
       btn("Edit", () => editModel(m), "sm primary", "pencil"),
       btn("Prefab", () => openPrefab(m), "sm", "sliders"),
       iconBtn("play", "Launch the prefab", () => openPrefab(m, true))) },
@@ -1580,7 +1587,7 @@ function renderGpu() {
   if (!d.rows.length) {
     fill($("#gLegend"));
     fill($("#gCharts"), h("div", { class: "empty", style: "grid-column:1/-1" },
-      d.collector.enabled ? "No GPU readings in this range yet. With LLAMA_SWAP_URL set they come from llama-swap; otherwise from /sys/class/drm (AMD) or nvidia-smi."
+      d.collector.enabled ? "No GPU readings in this range yet. They come from the engine; otherwise from /sys/class/drm (AMD) or nvidia-smi."
         : h("span", {}, "Telemetry is off. Turn it on in ", h("b", {}, "Settings"), ".")));
     fill($("#gTable"));
     return;
@@ -1631,8 +1638,8 @@ async function loadRequests() {
   const rng = $("#rRange").value, model = $("#rModel").value;
   let res;
   try { res = await api("GET", `/api/requests?range=${rng}&limit=500${model ? `&model=${encodeURIComponent(model)}` : ""}`); } catch (e) { fail(e); return; }
-  const url = S.settings?.integrations.llama_swap_url;
-  $("#rHint").textContent = url ? `synced from ${url}` : "Set the llama-swap URL in Settings to collect request history.";
+  const url = S.settings?.integrations.engine_url;
+  $("#rHint").textContent = url ? "synced from the engine" : "Request history appears once the engine is running.";
   if (!model) {
     const cur = $("#rModel").value;
     fill($("#rModel"), h("option", { value: "" }, "All models"), res.stats.map((s) => h("option", { value: s.model }, s.model)));
@@ -1657,7 +1664,7 @@ async function loadRequests() {
     { label: "In / out", num: true, cell: (r) => `${num(r.input_tokens, 0)} / ${num(r.output_tokens, 0)}` },
     { key: "duration_ms", label: "Time", num: true, cell: (r) => (r.duration_ms ? `${num(r.duration_ms / 1000, 1)} s` : DASH) },
     { key: "status", label: "Status", cell: (r) => (r.status || r.error ? h("span", { class: `pill ${r.status >= 400 || r.error ? "bad" : "ok"}`, title: r.error || "" }, String(r.status || "error"))
-      : h("span", { class: "muted", title: "llama-swap did not report a status for this request" }, DASH)) },
+      : h("span", { class: "muted", title: "the engine did not report a status for this request" }, DASH)) },
   ], res.requests, { key: null, asc: false }, "No requests.");
 }
 
@@ -1772,25 +1779,56 @@ async function loadAssistant() {
 }
 
 function assistantNav() {
-  const sv = A.state?.server;
-  fill($("#navAssistant"), sv && sv.mode === "managed" && sv.running ? h("span", { class: `dot ${sv.ready ? "on" : "warn"}` }) : null);
+  const chat = A.state?.models?.chat;
+  const state = chat && chat.state;
+  fill($("#navAssistant"), state === "ready" || state === "starting" ? h("span", { class: `dot ${state === "ready" ? "on" : "warn"}`, title: `assistant model ${state}` }) : null);
+}
+
+/** The chat model and the memory's embedding model: what each is, whether it is loaded, and Load / Unload. */
+function renderAssistantModels(models) {
+  const el = $("#aModels");
+  if (!models) return fill(el);
+  const STATES = { ready: ["on", "loaded"], starting: ["warn", "loading"], stopping: ["warn", "unloading"], stopped: ["", "not loaded"],
+    unknown: ["", "state unknown"], none: ["", "off"] };
+  const part = (which, label, m) => {
+    const [dot, text] = STATES[m.state] || STATES.unknown;
+    const loaded = m.state === "ready" || m.state === "starting";
+    const act = async (action) => {
+      try {
+        fill(el.querySelector(`[data-m="${which}"] .assist-model-act`), h("span", { class: "muted mono-sm" }, action === "load" ? "loading…" : "unloading…"));
+        const r = await api("POST", `/api/assistant/models/${which}/${action}`);
+        A.state.models = r.models;
+        toast(`${action === "load" ? "Loaded" : "Unloaded"} ${r.model.model}.`, "ok");
+      } catch (e) { fail(e); }
+      renderAssistantModels(A.state.models);
+      assistantNav();
+    };
+    const name = m.model || (which === "embed" ? "none (search by words)" : "no model set");
+    const where = m.where && m.where !== "engine" && m.where !== "here" ? ` @ ${m.where}` : "";
+    return h("div", { class: "assist-model", dataset: { m: which }, title: m.last_used ? `last used ${ago(m.last_used)}` : "" },
+      h("span", { class: "muted mono-sm" }, label),
+      h("span", { class: "strong ellipsis", style: "max-width:220px" }, name + where),
+      m.model ? h("span", { class: "status-line" }, h("span", { class: `dot ${dot}` }), text) : null,
+      h("span", { class: "assist-model-act" }, m.controllable
+        ? (loaded ? btn("Unload", () => act("unload"), "sm ghost", "square") : btn("Load", () => act("load"), "sm ghost", "play"))
+        : null));
+  };
+  fill(el, part("chat", "Chat", models.chat), part("embed", "Memory", models.embed),
+    h("span", { class: "muted mono-sm", title: "Change it under Settings" }, models.idle_unload_min ? `unloads after ${models.idle_unload_min} min unused` : "never unloads by itself"));
 }
 
 function renderAssistant() {
   const st = A.state;
   if (!st) return;
   const sv = st.server;
-  $("#aModel").textContent = sv.mode === "endpoint" ? `${sv.model || "model"} @ ${sv.endpoint || "?"}` : (sv.profile ? sv.profile.name : "no model set");
-  fill($("#aStatus"), sv.mode === "managed" && sv.profile
-    ? [h("span", { class: `dot ${sv.ready ? "on" : sv.running ? "warn" : ""}` }), sv.ready ? "ready" : sv.running ? "loading" : "starts on first message"]
-    : null);
-  $("#aStop").disabled = !(sv.mode === "managed" && sv.running);
+  renderAssistantModels(st.models);
+  $("#aCompact").disabled = st.messages.filter((m) => !m.compacted).length <= 2;
   $("#aTokens").textContent = `${num(st.tokens, 0)} / ${num(st.budget, 0)} tokens`;
   $("#aMeter").style.width = `${Math.min(100, (st.tokens / st.budget) * 100).toFixed(0)}%`;
   assistantNav();
   const box = $("#aMessages");
   const msgs = st.messages;
-  const needsSetup = sv.mode === "managed" && !sv.profile;
+  const needsSetup = (sv.mode === "managed" && !sv.profile) || (sv.mode === "engine" && !sv.model);
   const kids = [];
   if (!msgs.length) {
     kids.push(h("div", { class: "hero", style: "padding-top:4vh" },
@@ -1798,7 +1836,7 @@ function renderAssistant() {
       h("div", { class: "tag" }, "Ask about your GPUs, speeds, models and profiles. It reads this app's logs."),
       needsSetup ? h("div", { class: "stack", style: "align-items:center;margin-top:16px" },
         h("p", { class: "hint", style: "margin:0;max-width:520px" }, "The assistant runs a small model beside your others: Qwen3-0.6B (Q8_0, under 1 GB). It is reused if it's already in your models folder, otherwise downloaded from Hugging Face."),
-        h("div", { class: "row" }, btn("Set up Qwen3-0.6B", setupAssistant, "primary", "download"), btn("Use another profile…", () => show("settings"), ""))) :
+        h("div", { class: "row" }, btn("Set up Qwen3-0.6B", setupAssistant, "primary", "download"), btn("Pick a model…", () => openAssistantSettings(true), ""))) :
         h("div", { class: "suggest" }, SUGGESTIONS.map((q) => h("button", { onclick: () => { $("#aInput").value = q; sendChat(); } }, q)))));
   }
   let shownDivider = false;
@@ -1867,14 +1905,135 @@ async function sendChat() {
   input.focus();
 }
 
+// ── Assistant settings: its own page ─────────────────────────
+// The chat model and the embedding model are picked from what Argos has: your profiles, the models in the library,
+// and anything else the engine lists. Another OpenAI-compatible server is under Advanced, for the rare case.
+async function openAssistantSettings(open = true) {
+  A.settingsOpen = open;
+  $("#aSettings").hidden = !open;
+  $(".chat-wrap").hidden = open;
+  if (!open) return loadAssistant();
+  try { await loadSettings(); A.choices = await api("GET", "/api/assistant/choices"); } catch (e) { A.choices = null; }
+  renderAssistantSettings();
+}
+
+/** A <select> of model choices grouped like the API returns them, with a first "none" option when asked. */
+function modelSelect(items, value, { none = null, connected = true } = {}) {
+  const sel = h("select", {});
+  if (none) sel.append(h("option", { value: "" }, none));
+  const groups = {};
+  items.forEach((c) => { (groups[c.group] = groups[c.group] || []).push(c); });
+  Object.entries(groups).forEach(([g, cs]) => sel.append(h("optgroup", { label: g }, cs.map((c) =>
+    h("option", { value: c.id }, `${c.label}${c.label !== c.id ? ` · ${c.id}` : ""}${connected && !c.listed ? " (engine has not listed it yet)" : ""}`)))));
+  if (value && !items.some((c) => c.id === value)) sel.append(h("optgroup", { label: "Currently set" }, h("option", { value }, value)));
+  sel.value = value || "";
+  return sel;
+}
+
+function renderAssistantSettings() {
+  const cfg = S.settings.assistant, mem = S.settings.memory;
+  const ch = A.choices || { chat: [], embed: [], engine_connected: false };
+  const field = (label, input, hint, wide) => h("label", { class: `field${wide ? " wide" : ""}` }, h("span", {}, label), input, hint ? h("span", { class: "muted mono-sm" }, hint) : null);
+
+  // the chat model: one of Argos's models, or (Advanced) another server
+  let current = cfg.mode === "engine" ? cfg.model : "";
+  if (cfg.mode === "managed" && cfg.profile_id) {  // older setups started a profile beside the engine: show its engine model
+    const p = S.profiles.find((x) => x.profile_id === cfg.profile_id);
+    const c = p && ch.chat.find((x) => x.group === "Profiles" && x.label === p.name);
+    current = c ? c.id : "";
+  }
+  const chat = modelSelect(ch.chat, current, { none: "choose a model…", connected: ch.engine_connected });
+  const useOther = h("input", { type: "checkbox", checked: cfg.mode === "endpoint" });
+  const endpoint = h("input", { type: "text", value: cfg.endpoint || "", placeholder: "http://other-box:8080/v1", spellcheck: "false" });
+  const endpointModel = h("input", { type: "text", value: cfg.mode === "endpoint" ? cfg.model || "" : "", placeholder: "model id on that server", spellcheck: "false" });
+  const syncOther = () => { chat.disabled = useOther.checked; };
+  useOther.addEventListener("change", syncOther);
+  syncOther();
+
+  // the conversation
+  const ctx = h("input", { type: "number", value: cfg.context_tokens });
+  const keep = h("input", { type: "number", value: cfg.keep_recent });
+  const temp = h("input", { type: "number", step: "0.1", value: cfg.temperature });
+  const idle = h("select", {}, [[0, "Never"], [5, "5 minutes"], [10, "10 minutes"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [240, "4 hours"]]
+    .map(([v, l]) => h("option", { value: v }, l)));
+  idle.value = String(cfg.idle_unload_min ?? 15);
+  if (idle.value === "") idle.append(h("option", { value: cfg.idle_unload_min, selected: true }, `${cfg.idle_unload_min} minutes`));
+
+  // memory
+  const memOn = h("input", { type: "checkbox", checked: !!mem.enabled });
+  const embed = modelSelect(ch.embed, mem.model, { none: "none: search by words only", connected: ch.engine_connected });
+  const results = h("input", { type: "number", value: mem.results });
+  const memEndpoint = h("input", { type: "text", value: mem.endpoint || "", placeholder: "blank = the engine (normal)", spellcheck: "false" });
+
+  const save = async () => {
+    try {
+      const body = { context_tokens: ctx.value, keep_recent: keep.value, temperature: temp.value, idle_unload_min: idle.value };
+      if (useOther.checked) {
+        if (!endpoint.value.trim()) throw new Error("Type the other server's URL, or untick “Use another server”.");
+        Object.assign(body, { mode: "endpoint", endpoint: endpoint.value.trim(), model: endpointModel.value.trim() });
+      } else {
+        Object.assign(body, { mode: "engine", model: chat.value });
+      }
+      await api("PUT", "/api/settings/assistant", body);
+      await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, endpoint: memEndpoint.value.trim(), results: results.value });
+      await loadSettings();
+      toast("Saved the assistant settings.", "ok");
+      openAssistantSettings(false);
+    } catch (e) { fail(e); }
+  };
+
+  const engineNote = ch.engine_connected ? null
+    : h("p", { class: "hint" }, "The engine is not answering right now, so these lists come from your library and profiles. They load once the engine is up.");
+  fill($("#aSettings"),
+    h("div", { class: "view-head" }, h("div", {}, h("h1", {}, "Assistant settings"), h("p", { class: "sub" }, "A small model that knows your GPUs, speeds and history. Pick it from the models Argos has.")),
+      h("span", { class: "spacer" }), btn("Back to chat", () => openAssistantSettings(false), "", "arrow-left"), btn("Save", save, "primary", "save")),
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Chat model")),
+      h("p", { class: "hint" }, "Any of your models or profiles. The engine loads it on the first message (or with Load on the chat page) and it shares the GPUs like any other model. A small one is plenty: Qwen3-0.6B fits in under 1 GB."),
+      engineNote,
+      h("div", { class: "fields" },
+        field("Model", chat, ch.chat.length ? `${ch.chat.length} to choose from` : "No models yet: add one under Models, or set up Qwen3-0.6B.", true),
+        h("div", { class: "row wide" }, btn("Set up Qwen3-0.6B", async () => { await setupAssistant(); openAssistantSettings(true); }, "sm", "download"),
+          h("span", { class: "muted mono-sm" }, "Uses the file if it is already in your models folder, otherwise downloads it, saves a profile for it and picks it."))),
+      h("details", { class: "advanced", open: cfg.mode === "endpoint" }, h("summary", {}, "Advanced: use a model on another server"),
+        h("div", { class: "fields", style: "margin-top:8px" },
+          h("label", { class: "check wide" }, useOther, "Use another OpenAI-compatible server instead of Argos"),
+          field("URL", endpoint, "Its /v1 address.", true), field("Model id", endpointModel)))),
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Conversation")),
+      h("div", { class: "fields" },
+        field("Context window (tokens)", ctx, "Must match the -c of the model above. At about 70% full, or when you press Compact, older turns are summarised."),
+        field("Messages kept as written", keep, "The newest ones are never summarised."),
+        field("Temperature", temp, "Lower is steadier for questions about numbers."),
+        field("Unload when unused for", idle, "Frees the GPU memory. Only models the assistant itself used are unloaded; Load brings one back.", true))),
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Memory"), h("span", { class: "spacer" }),
+        h("span", { class: `pill ${mem.enabled && mem.model ? "ok" : ""}` }, mem.enabled && mem.model ? "searching by meaning" : "searching by words")),
+      h("p", { class: "hint" }, "The assistant remembers your events, notes, profiles, benchmarks and loads. An embedding model turns each record into numbers that describe its meaning, so a question about “cache settings that were slow” also finds records that never use those words. Without one it matches words only."),
+      h("p", { class: "hint" }, "Pick one of your embedding models (nomic-embed, bge, e5, gte…). There is nothing to connect: the engine serves it like any other model and loads it when the memory needs it."),
+      h("div", { class: "fields" },
+        h("label", { class: "check wide" }, memOn, "Use the memory"),
+        field("Embedding model", embed, ch.embed.length ? `${ch.embed.length} embedding model${ch.embed.length === 1 ? "" : "s"} in your library` : "No embedding models in your library yet. Download one under Models (search “nomic-embed”).", true),
+        field("Records per question", results)),
+      h("details", { class: "advanced" }, h("summary", {}, "Advanced: embeddings from another server"),
+        h("div", { class: "fields", style: "margin-top:8px" },
+          field("Embeddings URL", memEndpoint, "Leave blank. Only set this if the embedding model runs somewhere other than Argos.", true)))));
+}
+
 function initAssistant() {
+  $("#aSettingsBtn").onclick = () => openAssistantSettings(true);
   $("#aSend").onclick = sendChat;
   $("#aInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } });
   $("#aReset").onclick = async () => {
     if (!(await confirmBox("Clear the whole conversation and its summary?", "Reset chat"))) return;
     try { await api("POST", "/api/assistant/reset"); toast("Chat cleared.", "ok"); loadAssistant(); } catch (e) { fail(e); }
   };
-  $("#aStop").onclick = async () => { await api("POST", "/api/assistant/stop").catch(fail); loadAssistant(); };
+  $("#aCompact").onclick = async () => {
+    const b = $("#aCompact");
+    b.disabled = true;
+    try {
+      const r = await api("POST", "/api/assistant/compact");
+      toast(r.compacted ? `Compacted ${r.compacted} messages into the summary.` : "Nothing to compact yet.", "ok");
+    } catch (e) { fail(e); }
+    loadAssistant();
+  };
   $("#aDigest").onclick = async () => {
     try {
       const res = await api("GET", "/api/assistant/digest");
@@ -1888,25 +2047,17 @@ function initAssistant() {
 // ── Settings ─────────────────────────────────────────────────
 const SETTINGS_FORM = [
   { group: "paths", title: "Paths", fields: [
-    { k: "models_dir", label: "Models folder", hint: "Library and download target. In Docker, mount your GGUF folder here (llama-swap uses /app/models)." }] },
-  { group: "integrations", title: "Engine (llama-swap-rescan)", hint: "The scheduler that runs your models. Everything live comes from here: GPU readings, requests, the pool, loads.", fields: [
-    { k: "llama_swap_url", label: "Engine URL", ph: "http://llama-swap:8080" }] },
+    { k: "models_dir", label: "Models folder", hint: "Library and download target. In Docker, mount your GGUF folder here (Argos scans /app/models)." }] },
   { group: "odysseus", title: "Odysseus", hint: "Also on the Odysseus page, where you can see what the token may do.", fields: [
     { k: "url", label: "Odysseus URL", ph: "http://odysseus:7000" },
     { k: "token", label: "API token", type: "password", hint: "ody_… from Odysseus → Settings → API tokens." },
-    { k: "brain_in_memory", label: "Let the assistant's memory include Odysseus' Brain", type: "check" }] },
-  { group: "integrations", title: "Odysseus cookbook import", fields: [
-    { k: "odysseus_cookbook", label: "Odysseus cookbook_state.json", ph: "/app/odysseus-data/cookbook_state.json", hint: "Optional: Odysseus' own presets show up in the builder's import list." }] },
-  { group: "memory", title: "Assistant memory", hint: "Every record here gets an embedding so the assistant finds what matters to a question. Blank model = search by words only.", fields: [
-    { k: "enabled", label: "Use the memory", type: "check" },
-    { k: "endpoint", label: "Embeddings endpoint", ph: "blank = the engine's /v1" },
-    { k: "model", label: "Embedding model", ph: "nomic-embed-text-v2-q8" },
-    { k: "results", label: "Records per question", type: "number" }] },
-  { group: "always", title: "Always set", hint: "Added to every launch and every export when the command does not set them already. A preset's own value wins.", fields: [
+    { k: "brain_in_memory", label: "Let the assistant's memory include Odysseus' Brain", type: "check" },
+    { k: "use_presets", label: "Use Odysseus' saved Cookbook presets as models", type: "check" }] },
+  { group: "always", title: "Always set", hint: "Added to every model the engine starts and every launch here, when the command does not set them already. A preset's own value wins.", fields: [
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HSA_OVERRIDE_GFX_VERSION=9.0.6" },
     { k: "flags", label: "Flags", ph: "-lm dio --no-warmup", wide: true },
     { k: "on_launch", label: "Apply to launches here (playground, measure)", type: "check" },
-    { k: "on_export", label: "Apply to what llama-swap gets", type: "check" }] },
+    { k: "on_export", label: "Apply to every model the engine starts", type: "check" }] },
   { group: "builder", title: "Builder", fields: [
     { k: "command_format", label: "Command format", type: "select", wide: true, options: [["odysseus", "Odysseus (Cookbook shape)"], ["plain", "As written"]] }] },
   { group: "prefab", title: "Prefab defaults", hint: "Every model's prefab starts from these; embedding, vision and MTP models get their extras on top.", fields: [
@@ -1922,24 +2073,11 @@ const SETTINGS_FORM = [
     { k: "hf_endpoint", label: "Hugging Face endpoint", ph: "https://huggingface.co" },
     { k: "hf_token", label: "HF token", type: "password", hint: "Only for gated or private repos." },
     { k: "vram_gb", label: "VRAM for fit (GB)", type: "number", hint: "0 = detect from telemetry / sysfs / nvidia-smi." }] },
-  { group: "telemetry", title: "Telemetry", fields: [
+  { group: "telemetry", title: "Telemetry", hint: "GPU readings for Logs, Inventory and the Schedule. Everything stays on this machine: the engine samples the GPUs it runs on, and Argos reads them from it.", fields: [
     { k: "enabled", label: "Record GPU history", type: "check" },
-    { k: "source", label: "Source", type: "select", wide: true, options: [["auto", "auto (llama-swap, then local)"], ["llama-swap", "llama-swap only"], ["local", "local sysfs / nvidia-smi"], ["off", "off"]] },
+    { k: "source", label: "Source", type: "select", wide: true, options: [["auto", "Auto: the engine, else this machine directly"], ["engine", "The engine (rocm-smi / nvidia-smi / sysfs)"], ["local", "This machine directly (sysfs / nvidia-smi)"], ["off", "Off"]] },
     { k: "interval_s", label: "Every (seconds)", type: "number" },
     { k: "raw_days", label: "Keep raw readings (days)", type: "number", hint: "Hourly rollups are kept forever." }] },
-  { group: "export", title: "Export for llama-swap", fields: [
-    { k: "file", label: "Also write cookbook_state.json to", ph: "/data/export/cookbook_state.json" },
-    { k: "include_odysseus", label: "Pass Odysseus' own presets through", type: "check" },
-    { k: "include_tasks", label: "Include running launches as tasks", type: "check" },
-    { k: "token", label: "Require X-Odysseus-Internal-Token", type: "password" }] },
-  { group: "assistant", title: "Assistant", fields: [
-    { k: "mode", label: "Runs on", type: "select", wide: true, options: [["managed", "a profile launched here"], ["endpoint", "an OpenAI-compatible URL"]] },
-    { k: "profile_id", label: "Profile", type: "profile", wide: true },
-    { k: "endpoint", label: "Endpoint", ph: "http://llama-swap:8080/v1" },
-    { k: "model", label: "Model ID at the endpoint", ph: "qwen3-0.6b-q8_0" },
-    { k: "context_tokens", label: "Context window (tokens)", type: "number", hint: "Must match the profile's -c; compaction starts at ~70%." },
-    { k: "keep_recent", label: "Messages kept verbatim", type: "number" },
-    { k: "temperature", label: "Temperature", type: "number", step: "0.1" }] },
 ];
 
 function settingsField(f, val) {
@@ -1982,6 +2120,183 @@ function renderSettings() {
 }
 
 
+
+// ── Servers ──────────────────────────────────────────────────
+// Laid out like Odysseus' Cookbook → Settings → Servers: one card per machine, split into Connection, Environment,
+// Model directories (tags with a download-target check and a remove ✖) and Status, plus an inline key panel.
+// Local is this container; the rest are reached over SSH.
+const SV = { servers: [], draft: null, keyOpen: new Set(), keys: {} };
+const SV_COLORS = [["", "Auto"], ["#ff5555", "Red"], ["#ffb86c", "Orange"], ["#f1fa8c", "Yellow"], ["#50fa7b", "Green"],
+  ["#8be9fd", "Cyan"], ["#6c8cff", "Blue"], ["#bd93f9", "Purple"], ["#ff79c6", "Pink"]];
+const svAuto = (i) => SV_COLORS[1 + (i % (SV_COLORS.length - 1))][0];
+const blankServer = () => ({ id: null, name: "", kind: "ssh", host: "", port: 22, gpu: "auto", env_kind: "none", env_value: "", llama_server: "",
+  model_dirs: [], download_dir: "", color: "", status: "unknown", engines: {}, has_key: false, is_default: false });
+
+async function loadServers() {
+  try {
+    SV.servers = (await api("GET", "/api/servers")).servers;
+    $("#navServers").textContent = SV.servers.length > 1 ? SV.servers.length : "";
+    renderServers();
+  } catch (e) { fail(e); }
+}
+
+const svSmall = (text, title) => h("span", { class: "sv-msg", title: title || text }, text);
+
+function svStatusText(s) {
+  if (s.id == null) return "";
+  if (s.status === "connected") return `Connected · ${num(s.latency_ms, 0)} ms`;
+  if (s.status === "no-key") return "Key needed";
+  if (s.status === "failed") return `Failed · ${s.last_error || "no answer"}`;
+  return "";
+}
+
+function svModels(s) {
+  const m = (s.engines || {}).models;
+  if (!m || s.status !== "connected") return null;
+  const ok = m.same && !(m.dirs_missing || []).length;
+  const bits = [`${m.found} model file${m.found === 1 ? "" : "s"} in ${m.folders || 0} folder${m.folders === 1 ? "" : "s"}`];
+  bits.push(m.argos ? (m.same ? `sees all ${m.argos} that Argos sees` : `missing ${m.argos - m.common} of the ${m.argos} Argos sees`) : "Argos sees none yet");
+  const detail = [
+    (m.dirs_missing || []).length ? `Folder not found on the server: ${m.dirs_missing.join(", ")}` : "",
+    (m.missing_here || []).length ? `Not on the server: ${m.missing_here.join(", ")}` : "",
+    (m.differ_in_size || []).length ? `Same name, different size: ${m.differ_in_size.join(", ")}` : "",
+    (m.only_here || []).length ? `Only on the server: ${m.only_here.join(", ")}` : ""].filter(Boolean).join("\n");
+  return h("div", { class: `sv-models ${ok ? "ok" : "warn"}`, title: detail || "Same model files as Argos" },
+    h("span", { class: `dot ${ok ? "on" : "warn"}` }), bits.join(" · "), detail ? h("span", { class: "muted" }, " — hover for the list") : null);
+}
+
+function svEngines(s) {
+  const e = s.engines || {};
+  if (s.id == null || s.status !== "connected") return null;
+  const chip = (label, value) => h("span", { class: `pill ${value ? "ok" : ""}`, title: value || "not found on this server" }, `${label} ${value ? "✓" : "—"}`);
+  return h("div", { class: "chips sv-engines" }, chip("llama.cpp", e.llama_server), chip("vLLM", e.vllm), chip("SGLang", e.sglang), chip("Docker", e.docker),
+    h("span", { class: `pill ${e.gpu && e.gpu !== "none" ? "ok" : ""}` }, `GPU: ${e.gpu || "none"}${(e.gpus || []).length ? ` (${[...new Set(e.gpus)].join(", ")})` : ""}`));
+}
+
+function serverCard(s, index) {
+  const local = s.kind === "local";
+  const isNew = s.id == null;
+  const color = s.color || svAuto(index);
+  const dirs = (s.model_dirs || []).map((d) => d.path);
+  if (!dirs.length) dirs.push("/app/models");
+  let target = s.download_dir || "";
+  const name = h("input", { class: "sv-name", value: s.name || (local ? "Local" : ""), placeholder: "Name", disabled: local, spellcheck: "false" });
+  const colorSel = h("select", { class: "sv-color", title: "Server colour" }, SV_COLORS.map(([v, l]) => h("option", { value: v }, v ? l : `Auto · ${SV_COLORS.find((c) => c[0] === svAuto(index))[1]}`)));
+  colorSel.value = s.color || "";
+  const host = h("input", { class: "sv-host", value: s.host || "", placeholder: "e.g. user@ip", readonly: local, spellcheck: "false" });
+  const port = h("input", { class: "sv-port", value: local ? "" : s.port || 22, placeholder: "Port", title: "SSH port (default 22)", readonly: local });
+  const envKind = h("select", { class: "sv-env" }, [["none", "None"], ["venv", "venv"], ["conda", "conda"], ["custom", "custom"]].map(([v, l]) => h("option", { value: v }, l)));
+  envKind.value = s.env_kind || "none";
+  const envValue = h("input", { class: "sv-path", value: s.env_value || "", placeholder: "~/venv or conda-env", spellcheck: "false" });
+  const bin = h("input", { class: "sv-bin", value: s.llama_server || "", placeholder: (s.engines || {}).llama_server ? `llama-server: ${s.engines.llama_server}` : "llama-server path (blank = find it)", spellcheck: "false" });
+  const read = () => ({
+    name: name.value.trim(), host: host.value.trim(), port: Number(port.value) || 22, gpu: s.gpu || "auto", env_kind: envKind.value, env_value: envValue.value.trim(),
+    llama_server: bin.value.trim(), model_dirs: dirs.map((path) => ({ path })),
+    download_dir: target && dirs.includes(target) ? target : "", color: colorSel.value });
+  // Model directories, as Odysseus draws them: a tag per folder; the circled check marks where downloads go
+  // (click a tag to move it there), ✖ removes the folder.
+  const tags = h("div", { class: "sv-dirs" });
+  const newDir = h("input", { class: "sv-dir-input", placeholder: "/path/to/models", spellcheck: "false", "aria-label": "Add a model directory" });
+  const addDir = () => { const v = newDir.value.trim().replace(/\/+$/, "") || ""; if (v && !dirs.includes(v)) dirs.push(v); newDir.value = ""; drawDirs(); };
+  newDir.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addDir(); } });
+  const drawDirs = () => {
+    fill(tags, dirs.map((d, j) => {
+      const on = (target || dirs[0]) === d;
+      return h("span", { class: `sv-dir${on ? " target" : ""}`, title: on ? "Downloads go here" : "Click to send downloads here", dataset: { dir: d },
+        onclick: () => { target = d; drawDirs(); } },
+        h("span", { class: `sv-dl${on ? " active" : ""}` }, dlCheck(on)),
+        h("span", { class: "sv-dir-path" }, d),
+        dirs.length === 1 ? null : h("span", { class: "sv-rm", title: "Remove", onclick: (e) => { e.stopPropagation(); dirs.splice(j, 1); if (target === d) target = ""; drawDirs(); } }, "✖"));
+    }));
+  };
+  const save = async () => {
+    try {
+      const body = read();
+      if (isNew) { await api("POST", "/api/servers", { ...body, kind: "ssh" }); SV.draft = null; }
+      else await api("PUT", `/api/servers/${s.id}`, local ? { llama_server: body.llama_server, model_dirs: body.model_dirs, download_dir: body.download_dir, color: body.color, name: undefined } : body);
+      toast(`Saved ${body.name || "server"}.`, "ok");
+      await loadServers();
+    } catch (x) { fail(x); }
+  };
+  const check = async () => {
+    try {
+      const r = (await api("POST", `/api/servers/${s.id}/check`)).server;
+      toast(r.status === "connected" ? `${r.name}: connected.` : `${r.name}: ${r.last_error || r.status}`, r.status === "connected" ? "ok" : "err");
+      await loadServers();
+    } catch (x) { fail(x); }
+  };
+  const toggleKey = () => { SV.keyOpen.has(s.id) ? SV.keyOpen.delete(s.id) : SV.keyOpen.add(s.id); renderServers(); };
+  const del = async () => {
+    if (isNew) { SV.draft = null; return renderServers(); }
+    if (!(await confirmBox(`Remove the server “${s.name}”? Models on it are not touched.`, "Remove"))) return;
+    try { await api("DELETE", `/api/servers/${s.id}`); await loadServers(); } catch (x) { fail(x); }
+  };
+  const makeDefault = async () => { if (isNew || s.is_default) return; try { await api("POST", `/api/servers/${s.id}/default`); await loadServers(); } catch (x) { fail(x); } };
+  const ico = (n) => icon(n);
+  const small = (label, fn, iconName, cls = "") => h("button", { class: `sv-btn ${cls}`, onclick: fn }, ico(iconName), label);
+
+  const keyPanel = !local && !isNew && SV.keyOpen.has(s.id) ? (() => {
+    const cmd = h("textarea", { class: "sv-key-cmd", rows: 3, readonly: true, spellcheck: "false" }, SV.keys[s.id] || (s.has_key ? "Loading…" : "Click Generate key."));
+    const copy = h("button", { class: "sv-btn", disabled: !(SV.keys[s.id]), onclick: () => copyText(cmd.value) }, "Copy command");
+    const genBtn = h("button", { class: "sv-btn", onclick: async () => {
+      const replacing = !!(s.has_key && SV.keys[s.id]);
+      if (replacing && !(await confirmBox("Replace this server's key? The old one stops working.", "Replace"))) return;
+      try {
+        const r = await api("POST", `/api/servers/${s.id}/key`, { force: replacing });
+        SV.keys[s.id] = r.command; cmd.value = r.command; copy.disabled = false; genBtn.textContent = "New key";
+        if (!s.has_key) loadServers();
+      } catch (x) { fail(x); }
+    } }, s.has_key ? "New key" : "Generate key");
+    if (s.has_key && !SV.keys[s.id]) api("GET", `/api/servers/${s.id}/key`).then((r) => { SV.keys[s.id] = r.command; cmd.value = r.command; copy.disabled = false; }).catch(fail);
+    return h("div", { class: "sv-key" },
+      h("div", { class: "sv-key-row" }, genBtn, copy, h("span", { class: "muted" }, "Run this command in your terminal once, then click Check.")), cmd);
+  })() : null;
+
+  const section = (title, hint, ...kids) => h("div", { class: "sv-section" },
+    h("div", { class: "sv-section-title" }, title, hint ? h("span", { class: "muted" }, ` — ${hint}`) : null), ...kids);
+  const card = h("div", { class: "sv", style: `--sv-color:${color}` },
+    h("div", { class: "sv-head" },
+      h("span", { class: `dot ${s.status === "connected" ? "on" : s.status === "failed" ? "bad" : s.status === "no-key" ? "warn" : ""}` }),
+      h("span", { class: "sv-title" }, s.name || (isNew ? "New server" : "Local")),
+      svSmall(svStatusText(s)),
+      h("span", { class: "spacer" }),
+      isNew ? null : small("Check", check, "check"),
+      !local && !isNew ? small("Key", toggleKey, "key", SV.keyOpen.has(s.id) ? "on" : "") : null,
+      isNew ? small("Cancel", del, "x") : h("span", { class: `sv-default${s.is_default ? " on" : ""}`, title: s.is_default ? "Default server" : "Make this the default server", onclick: makeDefault },
+        s.is_default ? h("span", { class: "sv-tick" }, "✓") : null, "default")),
+    section("Connection", local ? "this container" : "SSH: user@host and port", h("div", { class: "sv-row" }, name, colorSel, host, port)),
+    section("Environment", "what runs before llama-server, and where it is", h("div", { class: "sv-row" }, envKind, envValue, bin)),
+    section("Model directories", "the circled check is where downloads go; click a folder to move it",
+      tags, h("div", { class: "sv-row sv-add-row" }, newDir, h("button", { class: "sv-btn", onclick: addDir }, icon("plus"), "Add directory"))),
+    isNew ? null : section("Status", null, svEngines(s) || h("span", { class: "muted mono-sm" }, s.status === "connected" ? "" : "Check to see what this server has."), svModels(s)),
+    keyPanel,
+    h("div", { class: "sv-foot" }, !local && !isNew ? small("Delete", del, "trash", "danger") : null, small("Save", save, "save")));
+  drawDirs();
+  return card;
+}
+
+/** Odysseus' download-target mark: a circle, with a check inside on the folder downloads go to. */
+function dlCheck(on) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 2.6,
+    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, v);
+  svg.innerHTML = '<circle cx="12" cy="12" r="9"></circle>' + (on ? '<polyline points="8 12 11 15 16 9"></polyline>' : "");
+  return svg;
+}
+
+function renderServers() {
+  fill($("#svList"), [SV.draft ? serverCard(SV.draft, SV.servers.length) : null, ...SV.servers.map((s, i) => serverCard(s, i))]);
+}
+document.addEventListener("DOMContentLoaded", () => {
+  $("#svAdd").addEventListener("click", () => { SV.draft = blankServer(); renderServers(); });
+  $("#svImport").addEventListener("click", async () => {
+    try {
+      const r = await api("POST", "/api/servers/import/odysseus");
+      toast(r.created.length ? `Imported ${r.created.join(", ")}. Open Key on each, then Check.` : "Nothing new to import from Odysseus.", "ok");
+      SV.servers = r.servers; renderServers();
+    } catch (x) { fail(x); }
+  });
+});
 
 // ── Inventory ────────────────────────────────────────────────
 // Long-term history. New quants, cache types, flags and models are recorded as "new" and shown under New & unknown.
@@ -2063,7 +2378,7 @@ function renderInvModels() {
     { key: "last", label: "Last", sort: (m) => m.last_loaded || 0, cell: (m) => h("td", { class: "nowrap" }, ago(m.last_loaded)) },
     { key: "vram", label: "VRAM", num: true, sort: (m) => m.vram_gib_avg || 0, cell: (m) => (m.vram_gib_avg ? `${num(m.vram_gib_avg)} GiB` : DASH) },
     { key: "tps", label: "Decode t/s", num: true, sort: (m) => m.tps_avg || 0, cell: (m) => (m.tps_avg ? num(m.tps_avg) : DASH) },
-  ], rows, IV.sortM, "Nothing here yet. Press Scan, or load a model through llama-swap.", { onRow: (m) => openModel(m.model_id) });
+  ], rows, IV.sortM, "Nothing here yet. Press Scan, or load a model.", { onRow: (m) => openModel(m.model_id) });
   const search = h("input", { type: "search", placeholder: "Filter by name, quant, cache…", value: IV.filter, style: "width:260px" });
   search.addEventListener("input", debounce(() => { IV.filter = search.value; renderInvModels(); }, 150));
   const used = all.filter((m) => m.sessions);
@@ -2246,7 +2561,7 @@ function concurrencyChart(box, cfgs) {
   const maxX = Math.max(1, ...series.flatMap((s) => s.pts.map((p) => p.x)));
   const title = h("h3", {}, "Decode speed by requests at once", h("small", {}, "t/s median"));
   const note = h("p", { class: "hint", style: "margin:6px 0 0" },
-    "How much each extra simultaneous request costs. --parallel sets how many can run at once; this shows how many actually did. Only requests llama-swap served count, not benchmarks.");
+    "How much each extra simultaneous request costs. --parallel sets how many can run at once; this shows how many actually did. Only requests the engine served count, not benchmarks.");
   if (maxX < 2) return fill(box, title, h("div", { class: "empty" }, "Every request so far ran alone, so there is nothing to compare yet."), note);
   const W = Math.max(260, box.clientWidth || 400), H = 190, m = { l: 44, r: 16, t: 10, b: 24 };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
@@ -2302,7 +2617,7 @@ function renderInvSessions() {
     { label: "Settings", cell: settings },
     { label: "GPU busy · VRAM peak", cell: gpus },
     { key: "r", label: "Requests", num: true, sort: (s) => s.requests.requests, cell: (s) => (s.requests.requests ? `${s.requests.requests} · ${num(s.requests.tg_avg)} t/s` : DASH) },
-  ], IV.sessions, IV.sortS, "No loads recorded in this range. Loads are recorded while the llama-swap URL is set under Integrations.",
+  ], IV.sessions, IV.sortS, "No loads recorded in this range. Loads are recorded while the engine is running.",
   { onRow: (s) => openModel(s.model_id) });
   fill(el, h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, `Loads (${IV.sessions.length})`), h("span", { class: "spacer" }), models, range,
     h("a", { class: "btn sm", href: `/api/inventory/sessions.csv?${qs}`, download: "model-sessions.csv" }, icon("download"), "CSV")),
@@ -2380,7 +2695,7 @@ function renderInvReview() {
 function renderInvHost() {
   const el = $("#ivHost");
   if (!IV.data) return fill(el, h("div", { class: "empty" }, "Loading…"));
-  const H = IV.data.host, app = H.app && H.app.data, ls = H["llama-swap"] && H["llama-swap"].data;
+  const H = IV.data.host, app = H.app && H.app.data, ls = H["engine"] && H["engine"].data;
   const kv = (rows) => kvTable(rows.filter((r) => r[1] != null && r[1] !== ""));
   const accel = ls && ls.hardware && ls.hardware.accelerators ? ls.hardware.accelerators : [];
   const hw = ls && ls.hardware;
@@ -2389,8 +2704,8 @@ function renderInvHost() {
         h("span", { class: "hint" }, `${IV.data.host_changes.app || 0} change(s) recorded`)),
       app ? kv([["Host", app.hostname], ["In a container", app.container ? "yes" : "no"], ["Platform", app.platform], ["Python", app.python], ["CPUs", app.cpus], ["Memory", app.mem_gib ? `${app.mem_gib} GiB` : ""]])
         : h("div", { class: "empty" }, "Press Scan to record this host.")),
-    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "llama-swap"), h("span", { class: "spacer" }),
-        h("span", { class: "hint" }, `${IV.data.host_changes["llama-swap"] || 0} change(s) recorded`)),
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Engine"), h("span", { class: "spacer" }),
+        h("span", { class: "hint" }, `${IV.data.host_changes["engine"] || 0} change(s) recorded`)),
       ls ? h("div", { class: "stack" },
         kv([["Version", ls.version && ls.version.version], ["Commit", ls.version && ls.version.commit], ["Built", ls.version && ls.version.build_date],
           ["OS", hw && hw.operating_system && `${hw.operating_system.name || hw.operating_system.family} ${hw.operating_system.version || ""}`],
@@ -2400,11 +2715,11 @@ function renderInvHost() {
         accel.length ? simpleTable(["GPU", "Model", "Architecture", "Memory", "Driver", "Power limit"], accel.map((a) => [a.index, a.model || a.kind, a.architecture || DASH,
           a.memory && a.memory.capacity_bytes ? `${num(a.memory.capacity_bytes / 2 ** 30, 1)} GiB` : DASH, a.driver ? `${a.driver.name || ""} ${a.driver.version || ""}` : DASH, a.power_limit_watts ? `${a.power_limit_watts} W` : DASH])) : null,
         h("details", {}, h("summary", { class: "muted" }, "raw snapshot"), h("pre", { class: "pre" }, JSON.stringify(ls, null, 2))))
-        : h("div", { class: "empty" }, "No llama-swap facts yet. Set the llama-swap URL under Integrations and press Scan; /api/hardware needs llama-swap-rescan.")));
+        : h("div", { class: "empty" }, "No engine facts yet. Press Scan once the engine is running.")));
 }
 
 // ── Schedule ─────────────────────────────────────────────────
-// The plan is made here and exported to llama-swap-rescan's pool router; Live shows what the router is doing.
+// The plan is made here and applied to the engine's pool router; Live shows what the router is doing.
 const SC = {
   pane: "live", data: null, live: null,
   plan: null, sizes: {}, persistent: new Set(), dirty: false,   // the Plan form, kept until Save
@@ -2446,7 +2761,7 @@ async function loadSchedule() {
 function syncPlanForm() {
   const p = SC.data.plan;
   SC.plan = { enabled: p.enabled, cards: p.cards.join(", "), reserve_gib: p.reserve_gib, protect_seconds: p.protect_seconds,
-    placement: p.placement, export_file: p.export_file };
+    placement: p.placement };
   SC.sizes = { ...p.sizes };
   SC.persistent = new Set(p.persistent);
 }
@@ -2475,7 +2790,6 @@ function renderSchedule() {
   if (!SC.data) return;
   renderPlan();
   renderSim();
-  renderScheduleExport();
 }
 
 // ----- live ------------------------------------------------------------------------------
@@ -2484,12 +2798,12 @@ function renderLive() {
   if (!L) return fill(el, h("div", { class: "empty" }, "Loading…"));
   if (!L.connected) {
     return fill(el, h("div", { class: "card" }, h("div", { class: "empty" }, h("b", {}, "Not connected."), h("br"), L.error || "",
-      h("br"), "Set the llama-swap URL under ", h("a", { href: "#integrations" }, "Integrations"), "; this view reads llama-swap-rescan's /api/pool.")));
+      h("br"), "This view reads the engine's /api/pool once it is running.")));
   }
   const P = L.pool;
   if (!P.enabled) {
-    return fill(el, h("div", { class: "card" }, h("div", { class: "empty" }, h("b", {}, `llama-swap is using the “${P.router || "group"}” router.`), h("br"),
-      "Turn scheduling on in the Plan tab and write the Export file. llama-swap switches to the pool router when it reloads.")));
+    return fill(el, h("div", { class: "card" }, h("div", { class: "empty" }, h("b", {}, `The engine is using the “${P.router || "group"}” router.`), h("br"),
+      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")));
   }
   const byId = Object.fromEntries(P.models.map((m) => [m.id, m]));
   const running = P.models.filter((m) => m.state !== "stopped");
@@ -2544,7 +2858,7 @@ function renderPlan() {
   const placement = h("select", {}, [["auto", "auto — choose a card for each model"], ["off", "off — plan by total VRAM only"]].map(([v, l]) => h("option", { value: v }, l)));
   placement.value = P.placement;
   placement.addEventListener("change", () => { P.placement = placement.value; touch(); });
-  const cardsInput = field("Cards (GiB each)", "cards", { placeholder: "32, 32" }, "numbered from 0 like HIP_VISIBLE_DEVICES; blank = llama-swap detects them");
+  const cardsInput = field("Cards (GiB each)", "cards", { placeholder: "32, 32" }, "numbered from 0 like HIP_VISIBLE_DEVICES; blank = the engine detects them");
   const detected = D.detected_cards;
   const useDetected = detected.length ? btn(`Use detected (${detected.map((g) => num(g.total_gib, 1)).join(", ")})`, () => {
     P.cards = detected.map((g) => num(g.total_gib, 1).replace(",", "")).join(", ");
@@ -2561,7 +2875,7 @@ function renderPlan() {
   };
   renderTable(table, [
     { key: "name", label: "Model", sort: (r) => r.id, cell: (r) => h("td", { class: "cell-model", title: r.id }, h("span", { class: "swatch", style: `--c:${segColor(r.id)}` }), r.id,
-      r.known === false ? h("span", { class: "pill warn", style: "margin-left:6px", title: "llama-swap does not list this model yet, so it is left out of the export" }, "not in llama-swap") : null) },
+      r.known === false ? h("span", { class: "pill warn", style: "margin-left:6px", title: "the engine does not list this model yet, so it is left out of the plan" }, "not in the engine") : null) },
     { key: "kind", label: "Type", sort: (r) => r.kind, cell: (r) => h("span", { class: "chip" }, r.kind === "profile" ? "profile" : r.model_kind) },
     { key: "ctx", label: "Context", num: true, cell: (r) => (r.ctx ? num(r.ctx, 0) : DASH) },
     { key: "est", label: "Estimate", num: true, sort: (r) => r.estimate && r.estimate.gib, cell: (r) => r.estimate
@@ -2587,10 +2901,10 @@ function renderPlan() {
   fill(el,
     h("div", { class: "card" },
       h("div", { class: "card-head" }, h("h2", {}, "Pool"), h("span", { class: "spacer" }),
-        SC.dirty ? h("span", { class: "pill warn" }, "unsaved changes") : null, btn("Save plan", () => savePlan(), "sm primary", "save")),
-      h("p", { class: "hint" }, "All models share the GPUs. A model loads next to the others while its VRAM fits; only when it does not is the cheapest idle model unloaded."),
+        SC.dirty ? h("span", { class: "pill warn" }, "unsaved changes") : appliedPill(D), btn("Save plan", () => savePlan(), "sm primary", "save")),
+      h("p", { class: "hint" }, "All models share the GPUs. A model loads next to the others while its VRAM fits; only when it does not is the cheapest idle model unloaded. Saving applies the plan to the engine; loaded models whose own settings did not change stay loaded."),
       h("div", { class: "fields" },
-        h("label", { class: "check wide" }, enable, "Use the pool router (when off, nothing is exported and llama-swap keeps its own router)"),
+        h("label", { class: "check wide" }, enable, "Use the pool router (when off, the engine keeps its own router)"),
         cardsInput,
         field("Reserve (GiB)", "reserve_gib", { type: "number", step: "0.5", min: "0" }, "left free for KV growth and buffers"),
         field("Protect (seconds)", "protect_seconds", { type: "number", step: "30", min: "0" }, "a model used this recently is evicted last"),
@@ -2600,7 +2914,19 @@ function renderPlan() {
       h("div", { class: "card-head" }, h("h2", {}, "Models"), h("span", { class: "spacer" }), search,
         h("label", { class: "check" }, only, "profiles only")),
       h("p", { class: "hint" }, "Size sets how much VRAM a model needs. Blank uses the measurement, or an estimate from the file, context and cache type. Measure launches the model here and records what it really takes."),
-      h("div", { class: "table-wrap" }, table)));
+      D.skipped.length ? h("p", { class: "hint" }, "Waiting for the engine to list ", D.skipped.join(", "), ". They join the plan once it does (a new profile appears within a minute).") : null,
+      h("div", { class: "table-wrap" }, table)),
+    h("details", { class: "card" }, h("summary", { class: "strong" }, "What the engine reads"),
+      h("div", { class: "row", style: "margin:8px 0" }, h("span", { class: "hint", style: "flex:1;margin:0" }, D.known_from
+        ? "Model ids are checked against the engine's live list." : "The engine is not answering, so model ids are not checked."), btn("Copy", () => copyText(D.fragment), "sm", "copy")),
+      h("pre", { class: "pre" }, D.fragment)));
+}
+/** Whether the saved plan reached the engine. */
+function appliedPill(D) {
+  const a = D.applied || {};
+  if (!a.connected) return h("span", { class: "pill warn", title: "Argos is running without its engine (outside Docker), so the plan only feeds the simulator." }, "no engine");
+  if (a.error) return h("span", { class: "pill bad", title: a.error }, "not applied");
+  return a.at ? h("span", { class: "pill ok", title: new Date(a.at * 1000).toLocaleString() }, `applied ${ago(a.at)}`) : h("span", { class: "pill" }, "saved");
 }
 
 // ----- measuring -------------------------------------------------------------------------
@@ -2700,54 +3026,43 @@ function renderSimResult() {
     h("div", { class: "table-wrap" }, table));
 }
 
-// ----- export ----------------------------------------------------------------------------
-function renderScheduleExport() {
-  const D = SC.data, P = SC.plan, el = $("#scExport"), ex = D.export;
-  const path = h("input", { type: "text", value: P.export_file, spellcheck: "false", placeholder: "/app/config.d/scheduler.generated.yaml" });
-  path.addEventListener("input", () => { P.export_file = path.value; SC.dirty = true; });
-  const write = async () => {
-    try { SC.data = await api("PUT", "/api/schedule", planBody()); SC.dirty = false; syncPlanForm(); SC.data = await api("POST", "/api/schedule/export"); renderSchedule(); toast("Wrote the scheduling plan.", "ok"); } catch (e) { fail(e); await loadSchedule(); }
-  };
-  fill(el,
-    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Send the plan to llama-swap"), h("span", { class: "spacer" }), btn("Save and write", write, "sm primary", "save")),
-      h("p", { class: "hint" }, "llama-swap reads this file from its -config-dir and reloads when it changes. Models that are running and whose own config did not change stay loaded. The file is rewritten when you save the plan, change a profile, or a model appears."),
-      h("div", { class: "fields" }, h("label", { class: "field wide" }, h("span", {}, "Export file"), path)),
-      h("div", { class: "status-line", style: "margin-top:10px" },
-        ex.error ? h("span", { class: "pill bad" }, ex.error) : ex.written_at ? h("span", { class: "pill ok" }, `written ${ago(ex.written_at)}`) : h("span", { class: "pill" }, "not written yet"),
-        D.known_from ? h("span", { class: "pill ok", title: "model ids are checked against llama-swap's live list" }, "checked against llama-swap")
-          : h("span", { class: "pill warn", title: "set the llama-swap URL so ids can be checked; llama-swap rejects a config naming models it does not have" }, "ids not checked"))),
-    D.skipped.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Left out")),
-      h("p", { class: "hint" }, "llama-swap does not list these yet, and it refuses a config that names a model it does not have. They are added once llama-swap picks them up (a new profile appears within its Odysseus refresh)."),
-      h("div", { class: "chips" }, D.skipped.map((s) => h("span", { class: "chip" }, s)))) : null,
-    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "What gets written"), h("span", { class: "spacer" }), btn("Copy", () => copyText(D.fragment), "sm", "copy")),
-      h("pre", { class: "pre" }, D.fragment)),
-    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Set up llama-swap once")),
-      h("div", { class: "stack" },
-        h("p", { class: "hint", style: "margin:0" }, "Start llama-swap with a config directory, and point the export file into it:"),
-        h("pre", { class: "pre" }, "llama-swap -config /app/config.yaml -config-dir /app/config.d -watch-config"),
-        h("p", { class: "hint", style: "margin:0" }, "Do not also set routing.router or models.*.vram in the main config; this file owns the routing block. Sizes are exported under routing.router.settings.pool.sizes so no model has to be defined twice."))));
-}
-
-
 // ── Sticky notes & movable panels ────────────────────────────
 // Every card can be dragged by its ⠿ grip; the order is saved per page on the server.
-// Notes are cards too: they belong to a page, autosave, and keep a history of their text.
+// Notes are one set for the whole app. An open note floats over every page and stays where you put it while you
+// switch pages; minimizing sends it to the Notes menu in the top bar; deleting removes it for good.
 const NOTE_COLORS = ["yellow", "blue", "green", "pink", "gray"];
 const LAYOUT = { data: {}, drag: null, loaded: false };
+const NOTES = { list: [], menu: null };
 
-// Notes float over the page: drag them by the top bar, resize from the corner, 📌 shows one on every page.
-async function loadNotes(view) {
+async function loadNotes() {
+  try { NOTES.list = (await api("GET", "/api/notes")).notes; } catch (e) { return; /* notes are optional */ }
   const layer = noteLayer();
   layer.replaceChildren();
-  try {
-    const notes = (await api("GET", `/api/notes?view=${encodeURIComponent(view)}`)).notes;
-    notes.forEach((n, i) => layer.append(noteCard(n, i)));
-  } catch (e) { /* notes are optional */ }
+  NOTES.list.filter((n) => n.is_open).forEach((n, i) => layer.append(noteCard(n, i)));
+  noteChanged();
 }
 function noteLayer() {
   let layer = $("#noteLayer");
   if (!layer) { layer = h("div", { id: "noteLayer", class: "note-layer" }); $(".main").append(layer); }
   return layer;
+}
+/** Keep the local list, the menu badge and an open menu in step after any change. */
+function noteChanged(n, removed = false) {
+  if (n) {
+    const i = NOTES.list.findIndex((x) => x.id === n.id);
+    if (removed) { if (i >= 0) NOTES.list.splice(i, 1); }
+    else if (i >= 0) NOTES.list[i] = n; else NOTES.list.push(n);
+  }
+  const hidden = NOTES.list.filter((x) => !x.is_open).length;
+  $("#notesCount").textContent = hidden || "";
+  $("#notesBtn").title = hidden ? `Notes: ${hidden} minimized` : "Notes";
+  if (NOTES.menu) renderNotesMenu();
+}
+const noteName = (n) => n.title || (n.body || "").split("\n").find((l) => l.trim()) || "Untitled note";
+async function putNote(id, fields) {
+  const n = (await api("PUT", `/api/notes/${id}`, fields)).note;
+  noteChanged(n);
+  return n;
 }
 function noteCard(n, i = 0) {
   let current = n;
@@ -2760,23 +3075,24 @@ function noteCard(n, i = 0) {
   // default spot: stacked down the right edge
   const x0 = n.x != null ? n.x : Math.max(8, box().width - 300 - 24 - i * 18), y0 = n.y != null ? n.y : 12 + i * 28;
   Object.assign(card.style, { left: `${x0}px`, top: `${y0}px`, width: `${n.w || 280}px`, height: `${n.h || 200}px` });
-  const showMeta = () => { meta.textContent = `${current.view === "*" ? "on every page · " : ""}saved ${ago(current.updated_at)} · ${current.versions} version${current.versions === 1 ? "" : "s"}`; };
-  const put = async (fields) => { try { current = (await api("PUT", `/api/notes/${n.id}`, fields)).note; showMeta(); } catch (e) { fail(e); } };
+  const showMeta = () => { meta.textContent = `saved ${ago(current.updated_at)}`; };
+  const put = async (fields) => { try { current = await putNote(n.id, fields); showMeta(); } catch (e) { fail(e); } };
   const save = debounce(() => put({ title: title.value, body: text.value }), 700);
   title.addEventListener("input", save);
   text.addEventListener("input", save);
-  const pin = iconBtn("bookmark", "Show on every page", async () => {
-    await put({ view: current.view === "*" ? S.view : "*" });
-    pin.classList.toggle("on", current.view === "*");
-  }, `ghost${n.view === "*" ? " on" : ""}`);
   const colors = h("div", { class: "note-colors" }, NOTE_COLORS.map((c) => h("button", { class: `swatch-btn note-${c}`, title: c, "aria-label": `Color ${c}`,
     onclick: async () => { await put({ color: c }); card.className = `note note-${c}`; } })));
-  const head = h("div", { class: "note-head", title: "Drag to move" }, h("span", { class: "grip" }, "⠿"), title, colors, pin,
-    iconBtn("refresh", "History", () => noteHistory(n.id, (nn) => { current = nn; title.value = nn.title; text.value = nn.body; showMeta(); }), "ghost"),
-    iconBtn("trash", "Delete note (its history is kept)", async () => {
-      if (!(await confirmBox("Delete this note? Its history stays in the database."))) return;
-      try { await api("DELETE", `/api/notes/${n.id}`); card.remove(); } catch (e) { fail(e); }
-    }, "ghost danger"));
+  const minimize = iconBtn("minus", "Minimize to the Notes menu", async () => {
+    await put({ title: title.value, body: text.value, is_open: false });
+    card.remove();
+  }, "ghost");
+  const del = iconBtn("trash", "Delete for good", async () => {
+    if (!(await confirmBox("Delete this note for good? It cannot be brought back. Minimize it instead to keep it in the Notes menu."))) return;
+    try { await api("DELETE", `/api/notes/${n.id}`); card.remove(); noteChanged(current, true); } catch (e) { fail(e); }
+  }, "ghost danger");
+  const head = h("div", { class: "note-head", title: "Drag to move" }, h("span", { class: "grip" }, "⠿"), title, colors, minimize, del);
+  // the last note touched sits on top
+  card.addEventListener("pointerdown", () => { layer.append(card); }, true);
   // drag by the head with pointer events (works with mouse, pen and touch)
   head.addEventListener("pointerdown", (e) => {
     if (e.target.closest("input, button")) return;
@@ -2805,25 +3121,76 @@ function noteCard(n, i = 0) {
   showMeta();
   return card;
 }
-async function noteHistory(id, onRestore) {
-  let versions;
-  try { versions = (await api("GET", `/api/notes/${id}/history`)).versions; } catch (e) { return fail(e); }
-  modal("Note history", h("div", { class: "stack" }, versions.map((v, i) => h("div", { class: "note-version" },
-    h("div", { class: "row" }, h("b", { class: "strong" }, new Date(v.ts * 1000).toLocaleString()), h("span", { class: "muted" }, i === 0 ? "current" : ago(v.ts)),
-      h("span", { class: "spacer" }), i === 0 ? null : btn("Restore", async () => {
-        try { const n = (await api("POST", `/api/notes/${id}/restore/${v.id}`)).note; onRestore(n); toast("Restored. The newer text is still in the history.", "ok"); } catch (e) { fail(e); }
-      }, "sm")),
-    v.title ? h("div", { class: "strong" }, v.title) : null, h("pre", { class: "pre", style: "max-height:160px" }, v.body || "(empty)")))),
-  [{ label: "Close", run: (c) => c() }]);
+/** Bring a minimized note out. Several can be open at once. */
+async function openNote(id, focus = false) {
+  const layer = noteLayer();
+  const existing = layer.querySelector(`[data-note="${id}"]`);
+  if (existing) { layer.append(existing); return existing; }
+  try {
+    const n = await putNote(id, { is_open: true });
+    const card = noteCard(n, layer.children.length);
+    layer.append(card);
+    if (focus) card.querySelector(".note-body").focus();
+    return card;
+  } catch (e) { fail(e); return null; }
 }
 async function addNote() {
   try {
-    const n = (await api("POST", "/api/notes", { view: S.view, color: "yellow" })).note;
+    const n = (await api("POST", "/api/notes", { color: "yellow" })).note;
+    noteChanged(n);
     const layer = noteLayer();
     const card = noteCard(n, layer.children.length);
     layer.append(card);
     card.querySelector(".note-body").focus();
   } catch (e) { fail(e); }
+}
+// The Notes menu: every note, open or minimized. Open brings one out, Minimize puts one away.
+function toggleNotesMenu(force) {
+  const want = force != null ? force : !NOTES.menu;
+  if (!want) {
+    if (NOTES.menu) NOTES.menu.remove();
+    NOTES.menu = null;
+    document.removeEventListener("pointerdown", notesMenuOutside, true);
+    $("#notesBtn").classList.remove("on");
+    return;
+  }
+  if (!NOTES.menu) {
+    NOTES.menu = h("div", { class: "notes-menu", role: "dialog", "aria-label": "Notes" });
+    $(".main").append(NOTES.menu);
+    document.addEventListener("pointerdown", notesMenuOutside, true);
+  }
+  $("#notesBtn").classList.add("on");
+  renderNotesMenu();
+}
+function notesMenuOutside(e) {
+  if (!NOTES.menu || NOTES.menu.contains(e.target) || e.target.closest("#notesBtn")) return;
+  toggleNotesMenu(false);
+}
+function renderNotesMenu() {
+  const menu = NOTES.menu;
+  if (!menu) return;
+  const hidden = NOTES.list.filter((n) => !n.is_open), open = NOTES.list.filter((n) => n.is_open);
+  const row = (n) => h("div", { class: `notes-menu-row note-${n.color}` },
+    h("span", { class: "notes-dot" }),
+    h("div", { class: "notes-menu-main", onclick: () => openNote(n.id, true) },
+      h("div", { class: "strong ellipsis" }, noteName(n)),
+      h("div", { class: "muted mono-sm ellipsis" }, `${ago(n.updated_at)}${n.body ? ` · ${n.body.replace(/\s+/g, " ").slice(0, 70)}` : ""}`)),
+    n.is_open
+      ? iconBtn("minus", "Minimize", async () => {
+        try { await putNote(n.id, { is_open: false }); const c = noteLayer().querySelector(`[data-note="${n.id}"]`); if (c) c.remove(); } catch (e) { fail(e); }
+      }, "ghost")
+      : iconBtn("eye", "Open", () => openNote(n.id, true), "ghost"),
+    iconBtn("trash", "Delete for good", async () => {
+      if (!(await confirmBox(`Delete “${noteName(n)}” for good? It cannot be brought back.`))) return;
+      try { await api("DELETE", `/api/notes/${n.id}`); const c = noteLayer().querySelector(`[data-note="${n.id}"]`); if (c) c.remove(); noteChanged(n, true); } catch (e) { fail(e); }
+    }, "ghost danger"));
+  fill(menu,
+    h("div", { class: "notes-menu-head" }, h("b", { class: "strong" }, "Notes"), h("span", { class: "spacer" }),
+      hidden.length > 1 ? btn("Open all", async () => { for (const n of hidden) await openNote(n.id); }, "sm ghost") : null,
+      btn("New note", () => { addNote(); }, "sm", "plus")),
+    NOTES.list.length ? null : h("div", { class: "empty" }, "No notes yet. New note makes one; it stays on screen as you move between pages."),
+    hidden.length ? [h("div", { class: "notes-menu-label" }, `Minimized (${hidden.length})`), hidden.map(row)] : null,
+    open.length ? [h("div", { class: "notes-menu-label" }, `On screen (${open.length})`), open.map(row)] : null);
 }
 function panelId(card) {
   if (card.dataset.panel) return card.dataset.panel;
@@ -3036,7 +3403,14 @@ function boot() {
   $("#fSearch").addEventListener("input", debounce(renderPerf, 120));
   $("#fModel").addEventListener("change", renderPerf);
   $("#fCsv").onclick = exportCsv;
-  $("#eSearch").addEventListener("input", debounce(renderEnvTable, 120));
+  $("#eSearch").addEventListener("input", debounce(renderFlagsTable, 120));
+  $("#flagKinds").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-k]");
+    if (!b) return;
+    FLAGS.kind = b.dataset.k;
+    $$("#flagKinds button").forEach((x) => x.classList.toggle("on", x === b));
+    renderFlagsTable();
+  });
   $("#iRefresh").onclick = loadIntegrations;
   fill($("#ivRefresh"), icon("refresh"), "Scan");
   $("#ivRefresh").onclick = refreshInventory;
@@ -3057,6 +3431,9 @@ function boot() {
   $("#aMemory").onclick = showMemory;
   $("#bOdysseus").onclick = sendToOdysseus;
   $("#addNote").onclick = addNote;
+  $("#notesBtn").onclick = () => toggleNotesMenu();
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && NOTES.menu) toggleNotesMenu(false); });
+  loadNotes();
   loadSeen();
   initBuilder();
   initPlayground();

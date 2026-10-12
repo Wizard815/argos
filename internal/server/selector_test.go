@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/swaputil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -35,14 +35,10 @@ groups:
   balanced:
     swap: false
     members: [a, b, c]
-peers:
-  remote:
-    proxy: http://example.com
-    models: [remote-model]
 selectors:
   public:
     strategy: pin
-    targets: [variant, remote/remote-model]
+    targets: [variant, a]
     name: Public Model
     description: Public selector
     metadata:
@@ -70,7 +66,7 @@ profiles:
 
 func selectorTestServer(t *testing.T, cfg config.Config, local *stubRouter) *Server {
 	t.Helper()
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = cfg
 	s.routes()
 	t.Cleanup(func() { s.store.Close() })
@@ -164,36 +160,6 @@ func TestServer_SelectorStrategySpillover(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no available spillover targets")
-}
-
-func TestServer_SelectorStrategySpillover_RemoteModels(t *testing.T) {
-	cfg := config.Config{
-		Peers: config.PeerDictionaryConfig{
-			"remote": {Models: []string{"a", "b"}},
-		},
-		Selectors: map[string]config.SelectorConfig{
-			"pool": {
-				Strategy: config.SelectorStrategySpillover,
-				Targets:  []string{"remote/a", "remote/b"},
-				Settings: config.SelectorSettings{Spillover: 1},
-			},
-		},
-	}
-	tracker := newSelectorSpilloverTracker(cfg)
-
-	first, err := strategySpillover("pool", tracker, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "remote/a", first)
-
-	second, err := strategySpillover("pool", tracker, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "remote/b", second)
-
-	tracker.release("pool", first)
-	tracker.release("pool", second)
-	target, err := strategySpillover("pool", tracker, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "remote/a", target)
 }
 
 func TestServer_SelectorMiddleware_RewritesBeforeFiltersAndRecordsActivity(t *testing.T) {
@@ -385,18 +351,18 @@ func TestServer_Selector_ModelListings(t *testing.T) {
 	assert.Equal(t, "Public Model", public.Name)
 	assert.Equal(t, "Public selector", public.Description)
 	assert.Equal(t, "loaded", public.Status["value"])
-	require.Contains(t, public.Meta, "llamaswap")
-	metadata, ok := public.Meta["llamaswap"].(map[string]any)
+	require.Contains(t, public.Meta, "argos")
+	metadata, ok := public.Meta["argos"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "testing", metadata["purpose"])
 	assert.Equal(t, "selector", metadata["type"])
 	assert.Equal(t, config.SelectorStrategyPin, metadata["strategy"])
-	assert.Equal(t, []any{"variant", "remote/remote-model"}, metadata["targets"])
+	assert.Equal(t, []any{"variant", "a"}, metadata["targets"])
 	assert.NotContains(t, metadata, "spillover")
 
 	balanced, found := byID["balanced"]
 	require.True(t, found)
-	balancedMetadata, ok := balanced.Meta["llamaswap"].(map[string]any)
+	balancedMetadata, ok := balanced.Meta["argos"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, config.SelectorStrategySpillover, balancedMetadata["strategy"])
 	assert.Equal(t, []any{"a", "b", "c"}, balancedMetadata["targets"])

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/process"
+	"github.com/Wizard815/Argos/internal/process"
 )
 
 // A reload carries over children whose configuration did not change. DetachRunning

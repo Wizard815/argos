@@ -4,8 +4,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/router/scheduler"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/router/scheduler"
 )
 
 // PoolReporter is implemented by routers that can describe their pool for the

@@ -19,8 +19,8 @@ func writeFakeModel(t *testing.T, dir, name string) string {
 	return p
 }
 
-// genFile mirrors the shape llama-swap itself parses out of the generated
-// fragment, so a test failure here means llama-swap would misread the file.
+// genFile mirrors the shape Argos itself parses out of the generated
+// fragment, so a test failure here means Argos would misread the file.
 type genFile struct {
 	Models map[string]struct {
 		Cmd string   `yaml:"cmd"`
@@ -74,7 +74,7 @@ func TestScan_SkipsNonFirstShards(t *testing.T) {
 }
 
 // TestScan_OmitsEnvAndTTLWhenUnset guards the existing behaviour: a scan that
-// does not ask for env/ttl must not start writing them, because llama-swap
+// does not ask for env/ttl must not start writing them, because Argos
 // reloads (and restarts every running model) whenever the generated file
 // changes.
 func TestScan_OmitsEnvAndTTLWhenUnset(t *testing.T) {
@@ -126,7 +126,7 @@ func TestScan_WritesEnvAndTTL(t *testing.T) {
 			t.Errorf("%s: TTL is nil, want 0", id)
 			continue
 		}
-		// 0 must survive as 0 -- it means "never unload" to llama-swap, and
+		// 0 must survive as 0 -- it means "never unload" to Argos, and
 		// must not be confused with unset (-1 means inherit globalTTL).
 		if *m.TTL != 0 {
 			t.Errorf("%s: TTL = %d, want 0", id, *m.TTL)

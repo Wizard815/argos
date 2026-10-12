@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// SysProvider serves facts about the machine llama-swap is running on.
+// SysProvider serves facts about the machine Argos is running on.
 //
-// Today that is only the clock. The namespace is chosen to grow: llama-swap
+// Today that is only the clock. The namespace is chosen to grow: Argos
 // already collects system and GPU statistics (perf.Monitor, served at
 // /api/performance) and a hardware snapshot (hw.HardwareSnapshot, served at
 // /api/hardware), and both belong here. Wiring them in is a change to this
@@ -42,7 +42,7 @@ func (p *SysProvider) Tools(context.Context) ([]Tool, error) {
 		{
 			Name:  "now",
 			Title: "Current date and time",
-			Description: "Get the current date and time on the machine running llama-swap, in UTC and in the " +
+			Description: "Get the current date and time on the machine running Argos, in UTC and in the " +
 				"server's local timezone. Optionally also in a named timezone.",
 			// Read-only, but deliberately not idempotent: the answer changing
 			// is the entire point.

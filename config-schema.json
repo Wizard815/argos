@@ -1,8 +1,8 @@
 {
     "$schema": "https://json-schema.org/draft-07/schema#",
-    "$id": "llama-swap-config-schema.json",
-    "title": "llama-swap configuration",
-    "description": "Configuration file for llama-swap",
+    "$id": "argos-config-schema.json",
+    "title": "Argos configuration",
+    "description": "Configuration file for Argos",
     "type": "object",
     "required": [
         "models"
@@ -10,7 +10,7 @@
     "definitions": {
         "odysseus": {
             "type": "object",
-            "description": "Integrate an Odysseus instance so Odysseus owns a model's launch command while llama-swap owns the process. Odysseus records each launched command in cookbook_state.json; llama-swap polls it and generates one variant model per command plus a profile whose pins rewrite the base model ID to that variant. The base models, and therefore llama-swap's default launch, are untouched, so with no profile active nothing changes. Local fork addition.",
+            "description": "Integrate an Odysseus instance so Odysseus owns a model's launch command while Argos owns the process. Odysseus records each launched command in cookbook_state.json; Argos polls it and generates one variant model per command plus a profile whose pins rewrite the base model ID to that variant. The base models, and therefore Argos's default launch, are untouched, so with no profile active nothing changes. Local fork addition.",
             "properties": {
                 "enabled": {"type": "boolean", "default": false, "description": "Turn the integration on. Off by default so existing configs are unaffected."},
                 "baseURL": {"type": "string", "description": "Odysseus root URL, e.g. http://192.168.20.5:7005 from the host or http://odysseus:7000 on a shared Docker network. Required when enabled."},
@@ -22,7 +22,7 @@
                 "statuses": {"type": "array", "items": {"type": "string"}, "description": "Which Odysseus task statuses to consider. Empty means both running and stopped."},
                 "outputFile": {"type": "string", "description": "Generated config fragment. Must live in the -config-dir so the merge and the -watch-config watcher pick it up. Required when enabled."},
                 "ensureDio": {"type": "boolean", "default": true, "description": "Inject -lm dio into any command that has no load mode. FEATURES.md calls it required on this stack. Set false to inject nothing."},
-                "stateFile": {"type": "string", "description": "Read cookbook_state.json straight off disk instead of calling the API -- bind-mount Odysseus' data directory read-only into llama-swap. Preferred: Odysseus restricts the X-Odysseus-Internal-Token bypass to direct loopback clients (app.py:385, _is_trusted_loopback), so a request from another container gets 401 however correct the token is, and the bearer-token path authenticates as \"api\" which fails require_admin's admin check. Reading the file needs no credential. When set, baseURL and the token are unused."},
+                "stateFile": {"type": "string", "description": "Read cookbook_state.json straight off disk instead of calling the API -- bind-mount Odysseus' data directory read-only into Argos. Preferred: Odysseus restricts the X-Odysseus-Internal-Token bypass to direct loopback clients (app.py:385, _is_trusted_loopback), so a request from another container gets 401 however correct the token is, and the bearer-token path authenticates as \"api\" which fails require_admin's admin check. Reading the file needs no credential. When set, baseURL and the token are unused."},
                 "timeoutSeconds": {"type": "integer", "minimum": 1, "default": 20, "description": "Timeout for one HTTP call to Odysseus."}
             },
             "additionalProperties": false
@@ -260,7 +260,7 @@
                 "path"
             ],
             "additionalProperties": false,
-            "description": "Store configuration for durable llama-swap state."
+            "description": "Store configuration for durable Argos state."
         },
         "ui": {
             "type": "object",
@@ -357,7 +357,7 @@
                     "pins": {
                         "type": "object",
                         "minProperties": 1,
-                        "description": "Model IDs to rewrite while this profile is active. Targets may be concrete models, aliases, peer models, or selector IDs. An empty string or null disables the model ID.",
+                        "description": "Model IDs to rewrite while this profile is active. Targets may be concrete models, aliases, or selector IDs. An empty string or null disables the model ID.",
                         "propertyNames": {
                             "type": "string",
                             "minLength": 1
@@ -497,7 +497,7 @@
                         "type": "string",
                         "default": "http://localhost:${PORT}",
                         "format": "uri",
-                        "description": "URL where llama-swap routes API requests. If custom port is used in cmd, this must be set."
+                        "description": "URL where Argos routes API requests. If custom port is used in cmd, this must be set."
                     },
                     "aliases": {
                         "type": "array",
@@ -703,7 +703,7 @@
                 "none"
             ],
             "default": "proxy",
-            "description": "Controls what is logged to stdout. 'proxy': logs generated by llama-swap, 'upstream': copy of upstream process stdout logs, 'both': both interleaved together, 'none': no logs written to stdout."
+            "description": "Controls what is logged to stdout. 'proxy': logs generated by Argos, 'upstream': copy of upstream process stdout logs, 'both': both interleaved together, 'none': no logs written to stdout."
         },
         "apiKeys": {
             "type": "array",
@@ -735,7 +735,7 @@
                 "admin": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Expose llama-swap's complete HTTP surface through Tailcat. False exposes only health, model listings, and allowlisted inference endpoints."
+                    "description": "Expose Argos's complete HTTP surface through Tailcat. False exposes only health, model listings, and allowlisted inference endpoints."
                 },
                 "debug": {
                     "type": "boolean",
@@ -745,100 +745,6 @@
             },
             "additionalProperties": false,
             "description": "Tailcat HTTP policy. A Tailcat listener starts only when -listen-tailcat supplies a server PrivateKey JSON file."
-        },
-        "peers": {
-            "type": "object",
-            "additionalProperties": {
-                "type": "object",
-                "required": [
-                    "proxy",
-                    "models"
-                ],
-                "properties": {
-                    "proxy": {
-                        "type": "string",
-                        "format": "uri",
-                        "description": "A valid base URL to proxy requests to. Requested path to llama-swap will be appended to the end of the proxy value."
-                    },
-                    "apiKey": {
-                        "type": "string",
-                        "default": "",
-                        "description": "A string key to be injected into the request. If blank, no key will be added. Key will be injected into headers: Authorization: Bearer <key> and x-api-key: <key>."
-                    },
-                    "tailcatKey": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Optional Tailcat client PrivateKey JSON file, or 'ephemeral'. Valid only when proxy uses tailcat://. Omitted and 'ephemeral' both create a process-lifetime identity per peer."
-                    },
-                    "models": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "minLength": 1
-                        },
-                        "description": "A list of models served by the peer."
-                    },
-                    "filters": {
-                        "type": "object",
-                        "properties": {
-                            "stripParams": {
-                                "type": "string",
-                                "default": "",
-                                "pattern": "^[a-zA-Z0-9_, ]*$",
-                                "description": "Comma separated list of parameters to remove from the request. Useful for removing parameters that the peer doesn't support."
-                            },
-                            "setParams": {
-                                "type": "object",
-                                "additionalProperties": true,
-                                "default": {},
-                                "description": "Dictionary of parameters to set/override in requests to this peer. Useful for injecting provider-specific settings. A key ending in '?' (e.g. 'max_tokens?') is set-if-undefined: it is only applied when the request does not already contain that parameter. Protected params like 'model' cannot be overridden. Values can be strings, numbers, booleans, arrays, or objects."
-                            }
-                        },
-                        "additionalProperties": false,
-                        "default": {},
-                        "description": "Dictionary of filter settings for peer requests. Supports stripParams and setParams."
-                    },
-                    "timeouts": {
-                        "type": "object",
-                        "properties": {
-                            "connect": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "default": 30,
-                                "description": "TCP connection timeout in seconds."
-                            },
-                            "keepalive": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "default": 30,
-                                "description": "TCP keepalive connection timeout in seconds."
-                            },
-                            "responseHeader": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "default": 0,
-                                "description": "Time to wait for response headers in seconds."
-                            },
-                            "tlsHandshake": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "default": 10,
-                                "description": "TLS handshake timeout in seconds."
-                            },
-                            "idleConn": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "default": 90,
-                                "description": "Idle connection timeout in seconds."
-                            }
-                        },
-                        "additionalProperties": false,
-                        "description": "Timeout settings for proxy connections to this peer."
-                    }
-                }
-            },
-            "default": {},
-            "description": "A dictionary of remote peers and models they provide. Peers can be another llama-swap or any server that provides the /v1/ generative API endpoints supported by llama-swap."
         },
         "upstream": {
             "type": "object",

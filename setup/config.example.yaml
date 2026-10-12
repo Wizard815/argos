@@ -1,0 +1,248 @@
+# Argos config -- backend-aware template (ROCm / CUDA / custom builds)
+# STATUS: written from the repo's docs and source; NOT run against real GPUs.
+#
+# Copy to config.yaml next to docker-compose.yml, edit, then restart argos.
+#
+# THE IDEA
+#   Argos does not care what runs a model. A model is just a command line
+#   (`cmd`) that starts an OpenAI-compatible server on ${PORT}. To say "this
+#   model launches on the AMD build, that one on the NVIDIA build, that one on
+#   my custom fork", you pick a BACKEND per model group. A backend is one macro
+#   (below). Turn backends on by uncommenting them; use as many as you like.
+#
+#   Profiles (context, KV type, --parallel, GPU pin) live in each group's
+#   cmdTemplate. No per-model VRAM is declared; llama-server takes what that
+#   profile needs.
+#
+# TWO WAYS TO RUN A BACKEND  (see "BACKENDS" below)
+#   MODE 1  in-container binary   the Argos image already contains the build
+#                                 (BASE_IMAGE = your llama.cpp image). Simple,
+#                                 but ONE image usually holds ONE stack
+#                                 (ROCm or CUDA), plus any extra builds that
+#                                 use the same libraries.
+#   MODE 2  sibling container     Argos runs `docker run <backend-image> ...`
+#                                 so each backend has its OWN image and its
+#                                 own GPU access. This is the way to use ROCm
+#                                 and CUDA together. Needs the docker CLI inside
+#                                 the Argos image and /var/run/docker.sock
+#                                 mounted (see the compose override). That socket
+#                                 is root-equivalent on the host.
+#
+# FIRST START:
+#   1. start, then have the engine scan your model folders:
+#        curl -X POST http://<host>:8080/api/models/rescan
+#      duplicate check (must print nothing):
+#        grep -hE '^  [a-z0-9]' config.d/models.*.generated.yaml | sort | uniq -d
+#   2. open Argos (port 7861) -> Schedule -> Plan, check the cards, Save.
+#      Saving writes the routing into config.d. Do not also set `routing:`
+#      in this file: the engine refuses two routing blocks.
+
+healthCheckTimeout: 300     # large models / vLLM can take minutes to load
+globalTTL: 900              # idle seconds before unload (0 = never)
+logLevel: info
+logToStdout: both
+modelTogglesFile: /app/config.d/model_toggles.json
+
+# =============================================================================
+# BACKENDS  -- enable by uncommenting. Each one is a macro prefix for a command.
+# =============================================================================
+# Use `${bk-NAME} <llama-server args>` inside any cmdTemplate/cmd below.
+#
+# -- MODE 1: binaries inside the Argos image ----------------------------------
+macros:
+  # AMD / ROCm build  (e.g. your MX-llama-cpp image's llama-server)
+  bk-rocm: /usr/local/bin/llama-server
+  #
+  # NVIDIA / CUDA build (only works in Mode 1 if the SAME image also has CUDA libs)
+  # bk-cuda: /opt/llama-cuda/bin/llama-server
+  #
+  # Custom / forked llama.cpp -- point at any binary in the image or a mounted path
+  # bk-custom: /opt/my-llama/bin/llama-server
+
+  # -- MODE 2: sibling containers (use these INSTEAD of the lines above) -------
+  # `--network container:argos` puts the sibling in Argos's network namespace, so
+  # it listens on localhost:${PORT} and Argos's default proxy works with no
+  # port publishing. Container name `argos` must match container_name in
+  # the compose file. -v paths are HOST paths: ${env.HOST_MODELS_DIR} is mapped
+  # to the same /app/models so ${MODEL_PATH} is valid inside the sibling.
+  #
+  # bk-rocm: >
+  #   docker run --rm --init --network container:argos
+  #   --device /dev/kfd --device /dev/dri --group-add ${env.VIDEO_GID}
+  #   -v ${env.HOST_MODELS_DIR}:/app/models:ro
+  #   ${env.ROCM_IMAGE} llama-server
+  #
+  # bk-cuda: >
+  #   docker run --rm --init --network container:argos
+  #   --gpus all
+  #   -v ${env.HOST_MODELS_DIR}:/app/models:ro
+  #   ${env.CUDA_IMAGE} llama-server
+  #
+  # bk-custom: >
+  #   docker run --rm --init --network container:argos
+  #   --device /dev/kfd --device /dev/dri --group-add ${env.VIDEO_GID}
+  #   -v ${env.HOST_MODELS_DIR}:/app/models:ro
+  #   -v ${env.HOST_CUSTOM_BIN}:/opt/custom:ro
+  #   ${env.ROCM_IMAGE} /opt/custom/llama-server
+
+modelScan:
+  enabled: true
+  dirs:
+    - /app/models
+  outputFile: /app/config.d/models.generated.yaml
+  # Everything not claimed by a group below uses this (default: ROCm, both cards).
+  cmdTemplate: >
+    ${bk-rocm} --host 0.0.0.0 --port ${PORT}
+    -ngl 99 -c 32768 --parallel 1 --flash-attn on
+    --cache-type-k q8_0 --cache-type-v q8_0
+    --split-mode layer --jinja -m ${MODEL_PATH}
+
+  # Group `match` patterns must NOT overlap (duplicate model names fail the load).
+  # Models are sent to a backend by NAME PATTERN or by FOLDER (dirs). Easiest
+  # for mixed GPUs: keep GGUFs in /app/models/rocm/... and /app/models/cuda/...
+  # and give each group its own dirs.
+  #
+  # Flags: --parallel N splits -c across N chat slots (each gets about c/N).
+  #   --split-mode none = single GPU; layer = spread across GPUs.
+  #   -lm dio was needed on the author's ROCm stack only; add it if your
+  #   llama-server supports it and loads hang.
+  groups:
+
+    # ---- AMD / ROCm, GPU 0 --------------------------------------------------
+    - match: "(e2b|e4b|8b)"
+      dirs: [/app/models]
+      env:
+        - "HIP_VISIBLE_DEVICES=0"
+      cmdTemplate: >
+        ${bk-rocm} --host 0.0.0.0 --port ${PORT}
+        -ngl 99 -c 32768 --parallel 2 --flash-attn on
+        --cache-type-k q8_0 --cache-type-v q8_0
+        --split-mode none --jinja -m ${MODEL_PATH}
+      outputFile: /app/config.d/models.rocm0.generated.yaml
+
+    # ---- NVIDIA / CUDA, GPU 0  (enable together with bk-cuda above) ---------
+    # Everything under /app/models/cuda goes to the CUDA build. `match` is a
+    # regex on the full path, so a folder name works as the selector.
+    # - match: "/cuda/"
+    #   dirs: [/app/models]
+    #   env:
+    #     - "CUDA_VISIBLE_DEVICES=0"
+    #   cmdTemplate: >
+    #     ${bk-cuda} --host 0.0.0.0 --port ${PORT}
+    #     -ngl 99 -c 32768 --parallel 2 --flash-attn on
+    #     --cache-type-k q8_0 --cache-type-v q8_0
+    #     --split-mode none --jinja -m ${MODEL_PATH}
+    #   outputFile: /app/config.d/models.cuda0.generated.yaml
+
+    # ---- custom llama.cpp fork (e.g. MTP / experimental) ---------------------
+    # - match: "/custom/|mtp-"
+    #   dirs: [/app/models]
+    #   env:
+    #     - "HIP_VISIBLE_DEVICES=1"
+    #   cmdTemplate: >
+    #     ${bk-custom} --host 0.0.0.0 --port ${PORT}
+    #     -ngl 99 -c 16384 --parallel 1 --flash-attn on --jinja -m ${MODEL_PATH}
+    #   outputFile: /app/config.d/models.custom.generated.yaml
+
+    # ---- embeddings: tiny, always resident -----------------------------------
+    - match: "embed"
+      dirs: [/app/models]
+      env:
+        - "HIP_VISIBLE_DEVICES=0"
+      ttl: 0
+      cmdTemplate: >
+        ${bk-rocm} --host 0.0.0.0 --port ${PORT}
+        -ngl 99 -c 8192 --embedding --pooling mean --split-mode none
+        -m ${MODEL_PATH}
+      outputFile: /app/config.d/models.embeddings.generated.yaml
+
+# =============================================================================
+# NON-GGUF BACKENDS: vLLM, SGLang (hand-written models; modelScan only finds
+# .gguf files). Any OpenAI-compatible server works the same way: start it on
+# ${PORT}, set checkEndpoint, and Argos proxies to it. Cost to add: one block.
+# Caveats:
+#   * vLLM/SGLang want HF-format model folders (safetensors), not GGUF.
+#   * They reserve a fixed share of VRAM up front (vLLM
+#     --gpu-memory-utilization, default 0.9), so they do NOT coexist with other
+#     models on that GPU. Put them in an exclusive group, or give them a GPU
+#     no other model uses (pin with CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES).
+#   * Cold start is slow; healthCheckTimeout above covers it.
+#   * With `docker run`, add cmdStop so the container really stops.
+# =============================================================================
+# models:
+#   vllm-qwen3-8b:
+#     proxy: "http://127.0.0.1:${PORT}"
+#     checkEndpoint: /health
+#     ttl: 600
+#     cmd: >
+#       docker run --rm --init --name ${MODEL_ID} --network container:argos
+#       --gpus device=1 --ipc=host
+#       -v ${env.HOST_HF_DIR}:/root/.cache/huggingface
+#       vllm/vllm-openai:latest
+#       --model Qwen/Qwen3-8B --port ${PORT}
+#       --gpu-memory-utilization 0.85 --max-model-len 32768
+#     cmdStop: docker stop ${MODEL_ID}
+#
+#   sglang-llama:
+#     proxy: "http://127.0.0.1:${PORT}"
+#     checkEndpoint: /health
+#     cmd: >
+#       docker run --rm --init --name ${MODEL_ID} --network container:argos
+#       --gpus device=1 --ipc=host
+#       -v ${env.HOST_HF_DIR}:/root/.cache/huggingface
+#       lmsysorg/sglang:latest
+#       python3 -m sglang.launch_server --model-path meta-llama/Llama-3.1-8B-Instruct
+#       --host 0.0.0.0 --port ${PORT}
+#     cmdStop: docker stop ${MODEL_ID}
+#
+# ALREADY RUNNING SOMEWHERE ELSE (a vLLM you start yourself, another box)?
+# Argos routes only to servers it starts and stops. Start that server
+# through Argos with one of the backends above, or point your app at it
+# directly.
+
+# =============================================================================
+# ROUTING -- which models may share the GPUs
+# =============================================================================
+# Normally you plan this on Argos's Schedule page (the VRAM-aware pool router:
+# per-card placement, FIFO queue, a busy model is never evicted). Saving the
+# plan writes config.d/scheduler.generated.yaml and the engine reloads it.
+#
+# The block below is the manual alternative (the group router). Use it only
+# with the pool turned OFF on the Schedule page.
+#   swap       true = one member at a time;  false = members coexist
+#   exclusive  true = loading a member unloads every OTHER group
+#   persistent true = other groups cannot choose these as eviction targets
+# With mixed GPU types, give each GPU type its own non-exclusive group so
+# they never evict each other, and put the whole-machine models in `heavy`.
+# A request never evicts a model that is mid-request; it queues (FIFO, higher
+# fifo.priority first).
+#
+# routing:
+#   router:
+#     use: group
+#     settings:
+#       groups:
+#         amd-gpu0:     { swap: false, exclusive: false, members: [small-rocm-model] }
+#         nvidia-gpu0:  { swap: false, exclusive: false, members: [small-cuda-model] }
+#         heavy:        { swap: true,  exclusive: true,  members: [big-model] }
+#         services:     { persistent: true, swap: false, exclusive: false, members: [nomic-embed-text-v1.5.q8_0] }
+#
+# The pool needs each card's GiB for NVIDIA or mixed GPUs (it detects AMD
+# cards with rocm-smi). setup.sh asks for them; the Schedule page can change them.
+
+# globalConcurrencyLimit: 8     # all models combined; extras get HTTP 429
+
+# =============================================================================
+# HOW YOUR PROFILES REACH THE ENGINE -- keep this block
+# =============================================================================
+# Argos (port 7861, same container) serves the profiles you save and the
+# Odysseus presets it imports, in the Cookbook format; the engine reads them
+# from there and makes one model per profile (<model-id>--<profile>).
+odysseus:
+  enabled: true
+  baseURL: "http://127.0.0.1:7861"
+  token: "any"
+  refreshSeconds: 60
+  profilePrefix: "pb"
+  outputFile: "/app/config.d/odysseus.generated.yaml"
+  ensureDio: true

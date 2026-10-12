@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/router/scheduler"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/router/scheduler"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 // These tests cover baseRouter's own machinery — the run loop, process
@@ -610,7 +610,7 @@ func TestBaseRouter_ConcurrencyLimitRejectsBeforeLoadingStream(t *testing.T) {
 	if got := w.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type=%q want application/json", got)
 	}
-	if strings.Contains(w.Body.String(), "llama-swap loading model") {
+	if strings.Contains(w.Body.String(), "Argos loading model") {
 		t.Fatalf("429 body contains loading stream: %q", w.Body.String())
 	}
 	// OpenAI clients read body["error"]["message"], so "error" must decode as
@@ -650,7 +650,7 @@ func TestBaseRouter_DispatchErrorFramedIntoLoadingStream(t *testing.T) {
 
 	body := w.Body.String()
 	// The loading text is streamed a few characters per frame, so reassemble it.
-	if content := extractStreamedContent(body); !strings.Contains(content, "llama-swap loading model") {
+	if content := extractStreamedContent(body); !strings.Contains(content, "Argos loading model") {
 		t.Fatalf("loading stream did not start, so this is not the path under test: %q", content)
 	}
 	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {

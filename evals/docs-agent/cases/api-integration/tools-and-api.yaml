@@ -13,7 +13,7 @@
     - Explains that without it the tools array is ignored silently
 
 - id: tools-capability-flag
-  question: What does capabilities.tools true actually do for a model in llama-swap?
+  question: What does capabilities.tools true actually do for a model in Argos?
   tags: [tools]
   expect_any: ["advertis", "report", "/v1/models", "function_calling"]
   expect_tools: [docs__search_docs]
@@ -26,7 +26,7 @@
     - Says it changes nothing about proxying behaviour
 
 - id: tools-mcp-endpoint-path
-  question: What URL do I point an MCP client at to use llama-swap's documentation tools?
+  question: What URL do I point an MCP client at to use Argos's documentation tools?
   tags: [mcp]
   expect_regex: ["/api/mcp"]
   expect_tools: [docs__search_docs]
@@ -37,7 +37,7 @@
     - Gives the /api/mcp path
 
 - id: api-keys-protect
-  question: How do I require an API key to access my llama-swap instance?
+  question: How do I require an API key to access my Argos instance?
   tags: [security]
   expect_regex: ["apiKeys"]
   expect_tools: [docs__search_docs]
@@ -72,7 +72,7 @@
     - Shows a yaml snippet applying it to a model
 
 - id: peers-remote-model
-  question: How do I serve a model that runs on another machine through my llama-swap?
+  question: How do I serve a model that runs on another machine through my Argos?
   tags: [peers]
   expect_regex: ["peers"]
   expect_tools: [docs__search_docs]

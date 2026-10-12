@@ -1,16 +1,16 @@
 ---
-title: Connecting an MCP client to llama-swap
-summary: Point any MCP client at /api/mcp to search and read llama-swap's documentation.
+title: Connecting an MCP client to Argos
+summary: Point any MCP client at /api/mcp to search and read Argos's documentation.
 category: guides
 tags: [mcp, tools, agent, api, integration]
 config_keys: [apiKeys]
 updated: 2026-09-04
 ---
 
-# Connecting an MCP client to llama-swap
+# Connecting an MCP client to Argos
 
-llama-swap serves its own documentation as an MCP server at `/api/mcp`. Any
-MCP client can point at a running instance and ask about llama-swap
+Argos serves its own documentation as an MCP server at `/api/mcp`. Any
+MCP client can point at a running instance and ask about Argos
 configuration — the same tools the web UI's Help page uses.
 
 ```
@@ -21,7 +21,7 @@ http://localhost:8080/api/mcp
 
 The endpoint speaks **MCP revision 2026-07-28 and nothing else.** That is the
 revision which removed the `initialize`/`initialized` handshake and the
-`Mcp-Session-Id` header, which is what lets llama-swap serve MCP from a single
+`Mcp-Session-Id` header, which is what lets Argos serve MCP from a single
 stateless POST route with no session bookkeeping.
 
 A client pinned to an older revision gets a clear JSON-RPC error rather than
@@ -35,27 +35,27 @@ mysterious behaviour:
 ```
 
 If you see that, the client needs updating; there is nothing to configure on
-the llama-swap side.
+the Argos side.
 
 ## Authentication
 
 If your config sets `apiKeys`, the MCP endpoint requires one like every other
-llama-swap API. Present it as a bearer token:
+Argos API. Present it as a bearer token:
 
 ```
 Authorization: Bearer sk-your-key
 ```
 
 `x-api-key` and HTTP Basic work too. With no `apiKeys` configured the endpoint
-is open, so treat it the same way you treat the rest of llama-swap — see
+is open, so treat it the same way you treat the rest of Argos — see
 `guides/api-integration/api-keys-and-auth`.
 
 ## The tools
 
 Tool names are namespaced `<provider>__<tool>`. The prefix says where a tool comes
-from, which keeps names unique once llama-swap starts proxying other MCP servers.
+from, which keeps names unique once Argos starts proxying other MCP servers.
 
-**`docs__*` — llama-swap's own documentation**
+**`docs__*` — Argos's own documentation**
 
 | tool | what it does |
 | --- | --- |
@@ -71,7 +71,7 @@ from, which keeps names unique once llama-swap starts proxying other MCP servers
 | `config__get_config` | the configuration this instance is running right now, as YAML, with credentials redacted; pass a jq `query` to select part of it |
 
 `config__get_config` returns the *effective* config: defaults filled in, `${env.*}`
-and macro references already expanded. `apiKeys`, `peers.<id>.apiKey`, secret-looking
+and macro references already expanded. `apiKeys`, secret-looking
 `cmd`/`env` arguments, and any recognizable credential token are replaced with
 `[REDACTED]` before the result leaves the server. It is what lets an agent give advice
 about the setup actually in front of it.

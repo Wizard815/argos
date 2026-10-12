@@ -9,7 +9,7 @@ updated: 2026-08-25
 
 # Automatic model unloading with ttl
 
-By default llama-swap keeps a model loaded until something else needs the GPU.
+By default Argos keeps a model loaded until something else needs the GPU.
 TTL frees the VRAM after a period of inactivity instead.
 
 Docker needs one extra setting: use `cmdStop: docker stop ${MODEL_ID}` so an
@@ -57,10 +57,10 @@ It applies to every unload — TTL expiry, a manual unload, or a swap. A model
 whose `unloadTimeout` is `0` uses the global value.
 
 Raise it for anything slow to shut down: containers, vLLM, anything with a
-`cmdStop` that talks to another daemon. Too low and llama-swap force-kills a
+`cmdStop` that talks to another daemon. Too low and Argos force-kills a
 process mid-shutdown, which can leave a container running and its VRAM held.
 
-For Docker, set `cmdStop: docker stop ${MODEL_ID}`. llama-swap otherwise stops
+For Docker, set `cmdStop: docker stop ${MODEL_ID}`. Argos otherwise stops
 the local Docker client process, which can leave the container running. A
 ten-minute idle timeout for a container therefore needs both settings:
 

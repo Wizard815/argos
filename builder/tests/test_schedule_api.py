@@ -1,11 +1,11 @@
-"""The Schedule HTTP API: rows, plan, export, simulator, measuring and the live view."""
+"""The Schedule HTTP API: rows, plan, applying it to the engine, simulator, measuring and the live view."""
 import os
 import time
 
 import yaml
 
 from .conftest import fake_command
-from .fakes import make_llama_swap, serve
+from .fakes import make_engine, serve
 from .ggufs import llama_kvs, write_gguf
 
 GIB = 2 ** 30
@@ -82,12 +82,26 @@ def test_plan_defaults_validation_and_precedence(app, client):
     assert client.get("/api/schedule").get_json()["plan"]["cards"] == [32.0, 32.0]
 
 
-# ----- export -----------------------------------------------------------------------
-def test_export_writes_the_routing_block_and_follows_profile_changes(app, client, tmp_path):
+def test_setup_can_seed_the_plan_and_the_schedule_view_wins(client, monkeypatch):
+    monkeypatch.setenv("ARGOS_SCHEDULE_POOL", "1")
+    monkeypatch.setenv("ARGOS_SCHEDULE_CARDS", "32, 32")
+    plan = client.get("/api/schedule").get_json()["plan"]
+    assert plan["enabled"] is True and plan["cards"] == [32.0, 32.0]
+    client.put("/api/schedule", json={"enabled": False, "cards": [24]})
+    plan = client.get("/api/schedule").get_json()["plan"]
+    assert plan["enabled"] is False and plan["cards"] == [24.0], "what you save in the Schedule view wins"
+    monkeypatch.setenv("ARGOS_SCHEDULE_CARDS", "lots")
+    assert client.get("/api/schedule").status_code == 200, "a bad value is ignored"
+
+
+# ----- applying the plan to the engine ---------------------------------------------
+def test_saving_applies_the_routing_block_and_follows_profile_changes(app, client, tmp_path, monkeypatch):
     paths = make_models(app, big=10)
-    client.put("/api/settings/integrations", json={"llama_swap_url": ""})
+    client.put("/api/settings/integrations", json={"engine_url": ""})
     out = tmp_path / "config.d" / "scheduler.generated.yaml"
-    client.put("/api/schedule", json={"enabled": True, "cards": [32, 32], "export_file": str(out)})
+    monkeypatch.setenv("ARGOS_SCHEDULE_FILE", str(out))
+    j = client.put("/api/schedule", json={"enabled": True, "cards": [32, 32]}).get_json()
+    assert j["applied"]["connected"] and j["applied"]["at"] and not j["applied"]["error"]
 
     doc = yaml.safe_load(out.read_text())
     pool = doc["routing"]["router"]["settings"]["pool"]
@@ -102,39 +116,42 @@ def test_export_writes_the_routing_block_and_follows_profile_changes(app, client
     assert yaml.safe_load(out.read_text()) is None, "turning scheduling off empties the file"
 
 
-def test_export_requires_a_file_and_skips_models_llama_swap_does_not_list(app, client, tmp_path):
+def test_without_an_engine_nothing_is_written_and_unknown_models_are_skipped(app, client, tmp_path, monkeypatch):
     paths = make_models(app, big=10)
-    assert client.post("/api/schedule/export").status_code == 400
+    monkeypatch.delenv("ARGOS_SCHEDULE_FILE", raising=False)
+    assert client.put("/api/schedule", json={"enabled": True}).get_json()["applied"]["connected"] is False
+    assert client.post("/api/schedule/export").status_code in (404, 405), "there is no export: saving applies the plan"
     save_profile(client, "Fast", paths["big"])
     out = tmp_path / "s.yaml"
+    monkeypatch.setenv("ARGOS_SCHEDULE_FILE", str(out))
 
-    with serve(make_llama_swap([], [], model_ids=["big"])) as url:  # llama-swap has not made the variant yet
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
-        j = client.put("/api/schedule", json={"enabled": True, "persistent": ["big", "ghost"],
-                                              "export_file": str(out)}).get_json()
+    with serve(make_engine([], [], model_ids=["big"])) as url:  # the engine has not made the variant yet
+        client.put("/api/settings/integrations", json={"engine_url": url})
+        j = client.put("/api/schedule", json={"enabled": True, "persistent": ["big", "ghost"]}).get_json()
     pool = yaml.safe_load(out.read_text())["routing"]["router"]["settings"]["pool"]
     assert pool["persistent"] == ["big"] and pool["sizes"].keys() == {"big"}
-    assert "big--fast" in j["skipped"] and "ghost" in j["skipped"], "llama-swap would reject ids it does not have"
+    assert "big--fast" in j["skipped"] and "ghost" in j["skipped"], "Argos would reject ids it does not have"
     assert j["known_from"] == "live"
     assert app.extensions["pb"].schedule_state["_retry"] is True, "re-checked soon, so the new profile gets in"
 
 
-def test_without_the_live_list_nothing_is_filtered(app, client, tmp_path):
+def test_without_the_live_list_nothing_is_filtered(app, client, tmp_path, monkeypatch):
     make_models(app, big=10)
-    client.put("/api/settings/integrations", json={"llama_swap_url": "", "llama_swap_config": "/some/config.yaml"})
+    client.put("/api/settings/integrations", json={"engine_url": ""})
     out = tmp_path / "s.yaml"
-    j = client.put("/api/schedule", json={"enabled": True, "persistent": ["whatever"], "export_file": str(out)}).get_json()
+    monkeypatch.setenv("ARGOS_SCHEDULE_FILE", str(out))
+    j = client.put("/api/schedule", json={"enabled": True, "persistent": ["whatever"]}).get_json()
     pool = yaml.safe_load(out.read_text())["routing"]["router"]["settings"]["pool"]
     assert "big" in pool["sizes"] and pool["persistent"] == ["whatever"]
     assert j["skipped"] == [] and j["known_from"] == ""
 
 
-def test_export_reports_an_unwritable_path(app, client, tmp_path):
+def test_a_plan_the_engine_cannot_get_is_reported(app, client, tmp_path, monkeypatch):
     blocker = tmp_path / "file"
     blocker.write_text("x")
-    client.put("/api/schedule", json={"export_file": str(blocker / "sub" / "s.yaml")})
-    r = client.post("/api/schedule/export")
-    assert r.status_code == 500 and r.get_json()["error"]
+    monkeypatch.setenv("ARGOS_SCHEDULE_FILE", str(blocker / "sub" / "s.yaml"))
+    r = client.put("/api/schedule", json={"enabled": True}).get_json()
+    assert r["applied"]["error"]
     assert any(e["kind"] == "schedule" and e["level"] == "error" for e in client.get("/api/events").get_json()["events"])
 
 
@@ -275,8 +292,8 @@ def test_live_passes_the_pool_through_and_reports_problems(app, client):
     assert j["connected"] is False and "Integrations" in j["error"]
 
     state = pool_state(a=("ready", ["0"]))
-    with serve(make_llama_swap([], [], pool=state)) as url:
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
+    with serve(make_engine([], [], pool=state)) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
         j = client.get("/api/schedule/live").get_json()
         assert j["connected"] is True and j["pool"]["models"][0]["id"] == "a"
     j = client.get("/api/schedule/live").get_json()
@@ -286,8 +303,8 @@ def test_live_passes_the_pool_through_and_reports_problems(app, client):
 def test_watcher_logs_loads_moves_unloads_and_long_waits(app, client):
     watch = hook(app, "watch_pool")
     state = pool_state(a=("ready", ["0"]), b=("stopped", []))
-    with serve(make_llama_swap([], [], pool=state)) as url:
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
+    with serve(make_engine([], [], pool=state)) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
         watch()  # the first look only records what is there
         assert not [e for e in client.get("/api/events?kind=schedule").get_json()["events"]]
 
@@ -303,10 +320,10 @@ def test_watcher_logs_loads_moves_unloads_and_long_waits(app, client):
                                    "a request for c has waited 45s"])
 
 
-def test_watcher_ignores_a_llama_swap_without_the_pool(app, client):
+def test_watcher_ignores_a_engine_without_the_pool(app, client):
     watch = hook(app, "watch_pool")
-    with serve(make_llama_swap([], [])) as url:  # answers {"enabled": false}
-        client.put("/api/settings/integrations", json={"llama_swap_url": url})
+    with serve(make_engine([], [])) as url:  # answers {"enabled": false}
+        client.put("/api/settings/integrations", json={"engine_url": url})
         watch()
         watch()
     assert client.get("/api/events?kind=schedule").get_json()["events"] == []

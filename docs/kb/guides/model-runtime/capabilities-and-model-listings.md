@@ -10,7 +10,7 @@ updated: 2026-08-28
 # Model capabilities and model listings
 
 Use `capabilities` to advertise what a model can accept or produce. This is
-listing metadata only: llama-swap reports it through `/v1/models`, but it does
+listing metadata only: Argos reports it through `/v1/models`, but it does
 not change routing or how requests are proxied. In particular,
 `capabilities.tools: true` makes the model listing report
 `capabilities.function_calling: true` and advertise `tools` and `tool_choice`

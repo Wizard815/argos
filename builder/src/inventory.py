@@ -9,11 +9,11 @@ fixed list; the lists below only decide whether a first sighting needs a human
 look (``status = new``) or is already familiar (``status = known``).
 
 Sources:
-  - llama-swap's ``/running`` (every running model with its command) and the pool's
+  - Argos's ``/running`` (every running model with its command) and the pool's
     ``/api/pool`` (which GPUs, the planned VRAM) drive *sessions*: one row each time a
     model is loaded, closed when it stops;
-  - the model library, saved profiles and llama-swap's model list drive *models seen*;
-  - llama-swap's ``/api/hardware`` and ``/api/version`` plus a few local facts are
+  - the model library, saved profiles and Argos's model list drive *models seen*;
+  - Argos's ``/api/hardware`` and ``/api/version`` plus a few local facts are
     kept as *host snapshots* whenever they change.
 """
 from __future__ import annotations
@@ -182,7 +182,7 @@ class Inventory:
         """Make the open sessions match what is running now.
 
         ``running``: model id -> {"cmd", "state", "cards", "size_gib", "load_seconds", "measured_gib"}. Call it only
-        after a successful look at llama-swap: an unreachable llama-swap must not look like "everything stopped".
+        after a successful look at Argos: an unreachable Argos must not look like "everything stopped".
         """
         now = now or time.time()
         opened, closed, moved = [], [], []
@@ -223,7 +223,7 @@ class Inventory:
             cards = [c.strip() for c in pinned.split(",") if c.strip().isdigit()]
         self.store.open_session({
             "model_id": mid, "started_at": now, "last_seen": now, "observed_running": int(observed),
-            "source": "llama-swap", "gpus": cards, "size_gib": info.get("size_gib"),
+            "source": "engine", "gpus": cards, "size_gib": info.get("size_gib"),
             "measured_gib": info.get("measured_gib"), "load_seconds": info.get("load_seconds"),
             "quant": facts.get("quant"), "ftype": facts.get("ftype"), "arch": facts.get("arch"), "ctx": facts.get("ctx"),
             "cache_k": facts.get("cache_k"), "cache_v": facts.get("cache_v"), "split_mode": facts.get("split_mode"),
@@ -240,7 +240,7 @@ class Inventory:
         self.store.update_session(s["id"], ended_at=ended, open=0)
 
     def close_all(self, now: Optional[float] = None) -> None:
-        """Used at shutdown or when llama-swap goes away for good."""
+        """Used at shutdown or when Argos goes away for good."""
         for s in self.store.list_sessions(open_only=True, limit=5000):
             self._close(s, now or time.time())
 
@@ -286,26 +286,26 @@ class Inventory:
         def live_stage() -> None:
             known = {r["model_id"] for r in self.store.list_models_seen()}
             for mid in sorted((live_ids or set()) - known):
-                self.store.upsert_model_seen({"model_id": mid, "name": mid, "origin": "llama-swap"})
+                self.store.upsert_model_seen({"model_id": mid, "name": mid, "origin": "engine"})
                 out["models_new"].append(mid)
-                self.event("inventory", f"llama-swap lists a new model: {mid}", data={"model": mid})
+                self.event("inventory", f"Argos lists a new model: {mid}", data={"model": mid})
 
         def host_stage() -> None:
             out["host_changed"] = self.snapshot_host(hardware, version)
 
         stage("library", library_stage)
         stage("commands", commands_stage)
-        stage("llama-swap models", live_stage)
+        stage("Argos models", live_stage)
         stage("host", host_stage)
         out["traits_new"] = [t["id"] for t in self.store.list_traits() if t["id"] not in before and t["status"] == "new"]
         return out
 
     def snapshot_host(self, hardware: Optional[dict], version: Optional[dict]) -> bool:
-        """Keep the host/container facts when they changed. Local facts always; llama-swap's when it answered."""
+        """Keep the host/container facts when they changed. Local facts always; Argos's when it answered."""
         changed = False
         local = {"hostname": socket.gethostname(), "platform": platform.platform(), "python": platform.python_version(),
                  "cpus": os.cpu_count(), "container": _in_container(), "mem_gib": _mem_gib()}
-        for source, data in (("app", local), ("llama-swap", {"hardware": _stable(hardware), "version": version}
+        for source, data in (("app", local), ("engine", {"hardware": _stable(hardware), "version": version}
                                                          if hardware or version else None)):
             if not data:
                 continue
@@ -430,7 +430,7 @@ class Inventory:
         new = [t for t in self.store.list_traits(status="new")][:8]
         if new:
             lines.append("New to review: " + ", ".join(f"{t['kind']} {t['value']} (x{t['count']})" for t in new))
-        host = [h for h in self.store.list_host_snapshots(10) if h["source"] == "llama-swap"]
+        host = [h for h in self.store.list_host_snapshots(10) if h["source"] == "engine"]
         if host:
             accel = (host[0]["data"].get("hardware") or {}).get("accelerators") or []
             if accel:

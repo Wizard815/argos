@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/cache"
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/hw"
-	"github.com/mostlygeek/llama-swap/internal/store"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/cache"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/hw"
+	"github.com/Wizard815/Argos/internal/store"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 func TestServer_InflightMiddleware_AddsAndRemovesEntriesAroundRequestHandling(t *testing.T) {
@@ -298,7 +298,7 @@ func waitInflightEvent(t *testing.T, events <-chan swaputil.InFlightRequestsEven
 }
 
 func TestServer_APIVersion(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	s.build = BuildInfo{Version: "1.2.3", Commit: "deadbeef", Date: "2026-05-19"}
 
 	w := httptest.NewRecorder()
@@ -317,14 +317,14 @@ func TestServer_APIVersion(t *testing.T) {
 }
 
 func TestServer_APIHardware(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	s.hardware = &hw.HardwareSnapshot{
 		SchemaVersion: hw.SchemaVersion,
 		CapturedAt:    time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC),
 		Capture: hw.HardwareCapture{
 			Scope:    hw.CaptureScopeInferenceHost,
 			Method:   hw.CaptureMethodDetected,
-			Detector: &hw.DetectorInfo{Name: "llama-swap", Version: "246"},
+			Detector: &hw.DetectorInfo{Name: "argos", Version: "246"},
 		},
 		Architecture:    hw.Architecture{Name: "x86_64"},
 		OperatingSystem: hw.OperatingSystem{Family: "linux"},
@@ -349,7 +349,7 @@ func TestServer_APIHardware(t *testing.T) {
 }
 
 func TestServer_APIHardwareUnavailable(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/hardware", nil))
 	if w.Code != http.StatusServiceUnavailable {
@@ -358,7 +358,7 @@ func TestServer_APIHardwareUnavailable(t *testing.T) {
 }
 
 func TestServer_APIMetricsActivity_Empty(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/metrics/activity", nil))
@@ -376,7 +376,7 @@ func TestServer_APIMetricsActivity_Empty(t *testing.T) {
 }
 
 func TestServer_APIMetricsActivity(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	s.metrics.enableCaptures = true
 	s.metrics.captureCache = cache.New(1024 * 1024)
 
@@ -419,7 +419,7 @@ func TestServer_APIMetricsActivity(t *testing.T) {
 }
 
 func TestServer_APIMetricsActivityFilters(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	// ids 1..4 at ts_created 1000..1003, models m1/m2/m1/m3.
 	for i, model := range []string{"m1", "m2", "m1", "m3"} {
@@ -484,7 +484,7 @@ func TestServer_APIMetricsActivityFilters(t *testing.T) {
 }
 
 func TestServer_APIMetricsActivityInvalidFilters(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	for _, query := range []string{
 		"?min_id=abc",
@@ -506,7 +506,7 @@ func TestServer_APIMetricsActivityInvalidFilters(t *testing.T) {
 }
 
 func TestServer_APIMetricsStats(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	for _, entry := range []ActivityLogEntry{
 		{Timestamp: time.Unix(1, 0), Model: "m1", Tokens: TokenMetrics{InputTokens: 1, OutputTokens: 2, CachedTokens: 1, PromptPerSecond: 10, TokensPerSecond: 20}},
 		{Timestamp: time.Unix(2, 0), Model: "m1", Tokens: TokenMetrics{InputTokens: 3, OutputTokens: 4, PromptPerSecond: 30, TokensPerSecond: 40}},
@@ -535,7 +535,7 @@ func TestServer_APIMetricsStats(t *testing.T) {
 }
 
 func TestServer_APICancelInflight(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	ctx, cancel := context.WithCancel(context.Background())
 	id := s.inflight.Add(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx), cancel)
 	defer s.inflight.Remove(id)
@@ -560,7 +560,7 @@ func TestServer_APICancelInflight(t *testing.T) {
 
 func TestServer_InflightMetricsRecordsCompletedOnce(t *testing.T) {
 	local := newStubRouter([]string{"m1"}, `{"usage":{"prompt_tokens":1,"completion_tokens":2}}`)
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = configWithModels("m1")
 
 	w := httptest.NewRecorder()
@@ -589,7 +589,7 @@ func configWithModels(models ...string) config.Config {
 }
 
 func TestServer_APIPerformance_Unavailable(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/performance", nil))
@@ -600,7 +600,7 @@ func TestServer_APIPerformance_Unavailable(t *testing.T) {
 }
 
 func TestServer_APIEvents_InitialPayload(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	s.cfg.UI.Activity.SessionID = []string{"X-Trace-ID"}
 
 	ctx, cancel := context.WithCancel(context.Background())

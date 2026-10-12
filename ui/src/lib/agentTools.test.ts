@@ -114,7 +114,7 @@ describe("fetchToolDefinitions", () => {
     tools: [
       {
         name: "get_doc",
-        title: "Read a llama-swap document",
+        title: "Read an Argos document",
         description: "Read one document by id.",
         inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
         annotations: { readOnlyHint: true },
@@ -134,7 +134,7 @@ describe("fetchToolDefinitions", () => {
           // inputSchema becomes the OpenAI `parameters` schema unchanged.
           parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
           // The MCP `title` is kept as UI-only display metadata.
-          title: "Read a llama-swap document",
+          title: "Read an Argos document",
         },
       },
     ]);
@@ -282,8 +282,8 @@ describe("isUsableToolName", () => {
 
 describe("friendlyToolName", () => {
   it("prefers the MCP title when present", () => {
-    expect(friendlyToolName("docs__search_docs", "Search llama-swap documentation")).toBe(
-      "Search llama-swap documentation"
+    expect(friendlyToolName("docs__search_docs", "Search Argos documentation")).toBe(
+      "Search Argos documentation"
     );
   });
 

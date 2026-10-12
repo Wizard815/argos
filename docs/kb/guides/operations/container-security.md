@@ -1,6 +1,6 @@
 ---
 title: Container security
-summary: Choose root or non-root llama-swap container images and retain only the host access your deployment needs.
+summary: Choose root or non-root Argos container images and retain only the host access your deployment needs.
 category: guides
 tags: [containers, docker, podman, security, non-root]
 config_keys: []
@@ -14,7 +14,7 @@ volume mounts and hardware devices such as `/dev/dri` convenient to use, but it
 also increases the impact of a container escape or privilege-escalation flaw.
 
 Use an image tagged `non-root` when the deployment does not require root. For
-example, `llama-swap:cpu-non-root` runs as the unprivileged `app` user. Check
+example, `Argos:cpu-non-root` runs as the unprivileged `app` user. Check
 that mounted files and required device nodes are readable by that user; you may
 need to adjust host ownership or add the needed host group to the container.
 

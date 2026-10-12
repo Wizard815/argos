@@ -1,4 +1,4 @@
-// Package mcptools holds the tools llama-swap serves over MCP, independent of
+// Package mcptools holds the tools Argos serves over MCP, independent of
 // the HTTP and JSON-RPC transport in internal/server.
 //
 // The split mirrors internal/router vs internal/server: transport in one place,
@@ -107,7 +107,7 @@ func SplitName(qualified string) (providerID, name string, ok bool) {
 }
 
 // ValidateName reports whether a fully qualified tool name is usable by every
-// client llama-swap serves. See MaxNameLen for why the rules are stricter than
+// client Argos serves. See MaxNameLen for why the rules are stricter than
 // MCP's own.
 func ValidateName(name string) error {
 	if name == "" {

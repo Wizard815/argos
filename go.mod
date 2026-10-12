@@ -1,4 +1,4 @@
-module github.com/mostlygeek/llama-swap
+module github.com/Wizard815/Argos
 
 go 1.27.1
 

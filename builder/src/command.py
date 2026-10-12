@@ -87,7 +87,7 @@ def canonical(flag: str) -> str:
     return _SPELLING.get(flag) or flag.lstrip("-")
 
 
-# How a newly added flag is written: the short forms llama-swap configs and the
+# How a newly added flag is written: the short forms Argos configs and the
 # Cookbook use for these, the long form for everything else.
 PREFERRED_SPELLING = {"n-gpu-layers": "-ngl", "ctx-size": "-c", "load-mode": "-lm"}
 
@@ -298,7 +298,7 @@ def _clean(raw: str) -> str:
 
     Drops comment lines, joins backslash continuations, turns ``export K=V``
     (own line, or ``export K=V; cmd``) into a leading ``K=V`` assignment and
-    unwraps ``$(printf %s '/path')`` -- the same translations llama-swap's
+    unwraps ``$(printf %s '/path')`` -- the same translations Argos's
     Odysseus integration applies.
     """
     lines = [ln for ln in (raw or "").splitlines() if not ln.strip().startswith("#")]
@@ -360,12 +360,12 @@ def parse_command(raw: str) -> LaunchCommand:
 
 
 def swap_model_id(model_path: str) -> str:
-    """The model ID llama-swap's modelscan gives a GGUF file (its SanitizeModelID).
+    """The model ID Argos's modelscan gives a GGUF file (its SanitizeModelID).
 
     ``/app/models/Qwen3-8B-Q4_K_M.gguf`` -> ``qwen3-8b-q4_k_m``. Shard suffixes
     stay, exactly as modelscan keeps them.
     """
-    stem = re.sub(r"\.gguf$", "", (model_path or "").rstrip("/").split("/")[-1], flags=re.IGNORECASE)
+    stem = re.sub(r"\.gguf$", "", re.split(r"[\\/]", (model_path or "").rstrip("/\\"))[-1], flags=re.IGNORECASE)
     return re.sub(r"[^a-zA-Z0-9._-]+", "-", stem.lower()).strip("-") or "model"
 
 
@@ -378,7 +378,7 @@ def to_odysseus(cmd: LaunchCommand, port: Any = 8080, host: str = "0.0.0.0") -> 
 
         [ENV=..] llama-server --model "<gguf>" --host 0.0.0.0 --port N -ngl N -c N <extras>
 
-    ``--host``/``--port`` are added when missing (llama-swap health-checks the
+    ``--host``/``--port`` are added when missing (Argos health-checks the
     port); ``-ngl``/``-c`` move to the front only when set. Every other flag
     keeps its order and spelling. Anything that is not llama-server (a wrapper
     script, a benchmark tool) is returned unchanged: reordering its arguments
@@ -413,19 +413,5 @@ def guess_base_model(model: str) -> str:
     return re.sub(r"(-0+1-of-\d+)?\.gguf$", "", name, flags=re.IGNORECASE)
 
 
-def to_llama_swap_yaml(name: str, cmd: LaunchCommand) -> str:
-    """Render a llama-swap ``models:`` entry, with the port swapped for ``${PORT}``."""
-    c = cmd.copy()
-    env, c.env = c.env, {}
-    c.set("port", "${PORT}")
-    body = c.to_string(multiline=True).replace("\n", "\n      ")
-    key = name.replace('"', "'") or "model"
-    out = [f'models:\n  "{key}":\n    cmd: |\n      {body}']
-    if env:
-        out.append("    env:")
-        out += [f'      - "{k}={v}"' for k, v in env.items()]
-    return "\n".join(out) + "\n"
-
-
 __all__ = ["Arg", "LaunchCommand", "FLAGS", "canonical", "parse_command", "guess_base_model",
-           "swap_model_id", "to_odysseus", "to_llama_swap_yaml"]
+           "swap_model_id", "to_odysseus"]

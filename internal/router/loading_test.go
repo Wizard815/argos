@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 func TestLoadingWriter_SSEHeadersAndInitialMessage(t *testing.T) {
@@ -42,7 +42,7 @@ func TestLoadingWriter_SSEHeadersAndInitialMessage(t *testing.T) {
 	if !strings.Contains(content, "━━━━━\n") {
 		t.Errorf("missing separator in streamed content: %q", content)
 	}
-	if !strings.Contains(content, "llama-swap loading model: test-model\n") {
+	if !strings.Contains(content, "Argos loading model: test-model\n") {
 		t.Errorf("missing initial message in streamed content: %q", content)
 	}
 }

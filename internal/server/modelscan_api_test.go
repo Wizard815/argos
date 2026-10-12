@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 // TestServer_RunModelScan_Groups verifies that runModelScan scans the

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/swaputil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -33,10 +33,6 @@ models:
     proxy: http://localhost:1234
     name: Hidden Model
     unlisted: true
-peers:
-  remote:
-    proxy: http://example.com
-    models: [remote-model]
 profiles:
   coding:
     description: Coding profile
@@ -53,7 +49,7 @@ profiles:
 
 func profileTestServer(t *testing.T, cfg config.Config, local *stubRouter) *Server {
 	t.Helper()
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = cfg
 	s.routes()
 	t.Cleanup(func() { s.store.Close() })
@@ -246,13 +242,12 @@ func TestServer_Profile_ModelListings(t *testing.T) {
 	assert.Contains(t, records, "public")
 	assert.Empty(t, records["public"].Name)
 	assert.Equal(t, "Real Model", records["real"].Name)
-	assert.Equal(t, "remote: remote-model", records["remote/remote-model"].Name)
 	assert.Contains(t, records, "expose")
 	assert.Empty(t, records["expose"].Name)
 	assert.NotContains(t, records, "disabled")
 	assert.NotContains(t, records, "hidden")
-	require.Contains(t, records["public"].Meta, "llamaswap")
-	metadata, ok := records["public"].Meta["llamaswap"].(map[string]any)
+	require.Contains(t, records["public"].Meta, "argos")
+	metadata, ok := records["public"].Meta["argos"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "profile", metadata["type"])
 
@@ -263,7 +258,6 @@ func TestServer_Profile_ModelListings(t *testing.T) {
 	}
 	assert.Contains(t, byID, "real")
 	assert.Contains(t, byID, "hidden")
-	assert.Equal(t, "remote", byID["remote/remote-model"].PeerID)
 	assert.NotContains(t, byID, "public")
 	assert.NotContains(t, byID, "expose")
 	assert.NotContains(t, byID, "disabled")

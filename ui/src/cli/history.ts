@@ -23,7 +23,7 @@ export const DEFAULT_HISTORY = path.resolve(
   "../../../evals/docs-agent/runs/history.md",
 );
 
-const TITLE = "# llama-swap Docs Agent — eval history";
+const TITLE = "# Argos Docs Agent — eval history";
 
 const PREAMBLE = `One row per run of \`evals/docs-agent/run.sh\`, newest last. Written automatically;
 edit the notes if you like, but leave the table alone — it is parsed back to

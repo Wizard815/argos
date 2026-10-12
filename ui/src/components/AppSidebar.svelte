@@ -15,7 +15,7 @@
   import ConnectionStatus from "./ConnectionStatus.svelte";
 
   function handleTitleChange(newTitle: string): void {
-    const sanitized = newTitle.replace(/\n/g, "").trim().substring(0, 64) || "llama-swap";
+    const sanitized = newTitle.replace(/\n/g, "").trim().substring(0, 64) || "argos";
     appTitle.set(sanitized);
   }
 
@@ -38,10 +38,7 @@
   }
 
   let visibleLocalModels = $derived(
-    $models.filter((model) => !model.peerID && ($showUnlistedModels || !model.unlisted)),
-  );
-  let visiblePeerModels = $derived(
-    $models.filter((model) => model.peerID && ($showUnlistedModels || !model.unlisted)),
+    $models.filter((model) => $showUnlistedModels || !model.unlisted),
   );
 
   type DotColor = "grey" | "yellow" | "green";
@@ -171,14 +168,6 @@
                   {#each visibleLocalModels as model (model.id)}
                     {@render modelMenuItem(model)}
                   {/each}
-                  {#if visiblePeerModels.length > 0}
-                    <li class="text-sidebar-foreground/70 px-2 pt-2 pb-1 text-xs font-medium">
-                      Peers
-                    </li>
-                    {#each visiblePeerModels as model (model.id)}
-                      {@render modelMenuItem(model)}
-                    {/each}
-                  {/if}
                 </Sidebar.MenuSub>
               </Collapsible.Content>
             </Collapsible.Root>

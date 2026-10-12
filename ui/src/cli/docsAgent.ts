@@ -38,7 +38,7 @@ const REPO_ROOT = path.resolve(HERE, "../../..");
 const DEFAULT_CASES = path.join(REPO_ROOT, "evals/docs-agent/cases");
 const DEFAULT_RUNS = path.join(REPO_ROOT, "evals/docs-agent/runs");
 
-const DEFAULT_BASE_URL = process.env.LLAMA_SWAP_URL ?? "http://localhost:8080";
+const DEFAULT_BASE_URL = process.env.ARGOS_URL ?? "http://localhost:8080";
 const DEFAULT_MODEL = process.env.DOCS_AGENT_MODEL ?? "sippy/gemma-4-12B";
 const DEFAULT_JUDGE_MODEL =
   process.env.DOCS_AGENT_JUDGE_MODEL ?? "sippy/gptoss-120B";
@@ -56,7 +56,7 @@ Commands:
   judge              Score a saved results file with an LLM judge.
 
 Common options:
-  --base-url URL     llama-swap serving both /v1 and /api/mcp (default ${DEFAULT_BASE_URL})
+  --base-url URL     Argos serving both /v1 and /api/mcp (default ${DEFAULT_BASE_URL})
   --model NAME       agent model (default ${DEFAULT_MODEL})
   --api-key KEY      bearer token, if the server sets apiKeys
   --system-prompt F  file to use instead of DOCS_AGENT_SYSTEM_PROMPT ("none" for empty)

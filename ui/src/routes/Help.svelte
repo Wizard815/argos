@@ -4,7 +4,7 @@
   import { refreshPlaygroundModels } from "$lib/hooks/playground-models.svelte";
 
   /**
-   * Help: ask llama-swap's own documentation a question.
+   * Help: ask Argos's own documentation a question.
    *
    * It was a Playground tab until it became its own page. The Playground is
    * for trying a model out; this is for finding out how something works, which

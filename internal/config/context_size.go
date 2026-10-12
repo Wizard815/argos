@@ -19,7 +19,7 @@ var contextSizeFlags = map[string]struct{}{
 //
 // A client reads the allocated window (not the GGUF training maximum) to decide
 // how much conversation it may send. Once a child is running, /props answers
-// that; before it is loaded, this command line is the only place llama-swap
+// that; before it is loaded, this command line is the only place Argos
 // knows the number, and a client that cannot find it falls back to a guess for
 // its truncation and compaction decisions.
 //

@@ -1,12 +1,11 @@
 """Serve saved profiles as an Odysseus ``cookbook_state.json``.
 
-llama-swap-rescan's Odysseus integration (internal/odysseus) reads either
-``GET <baseURL>/api/cookbook/state`` or a ``stateFile`` and expects::
+The engine's Odysseus integration (internal/odysseus) reads ``GET <baseURL>/api/cookbook/state`` and expects::
 
     {"tasks":   [{"id", "name", "modelId", "status", "ts", "payload": {"repo_id", "_cmd"}}],
      "presets": [{"name", "model", "cmd", "remoteHost", "port", "label", "fields"}]}
 
-Each preset becomes a llama-swap variant ``<model-id>--<label>``, where the
+Each preset becomes an engine variant ``<model-id>--<label>``, where the
 model ID comes from the ``--model`` .gguf file name. So every exported command
 is put in Odysseus' shape with a real .gguf path, and labels are made unique
 per model (two presets with one label would collide on that variant ID).
@@ -14,19 +13,15 @@ Unlike the Cookbook (five saves per model), every profile is exported.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
-import tempfile
 from typing import Any, Optional
 
 from .always import apply_always
 from .command import parse_command, swap_model_id, to_odysseus
-from .integrations import odysseus
 
 
 def _label_key(label: str) -> str:
-    # llama-swap's SanitizeProfileLabel
+    # Argos's SanitizeProfileLabel
     key = re.sub(r"[^a-zA-Z0-9._-]+", "-", label.strip().lower()).strip("-")
     return key[:40].strip("-")
 
@@ -45,7 +40,7 @@ def profile_presets(profiles: list[dict], taken: Optional[dict] = None,
         s = cmd.summary()
         model_path = s["model"]
         if not model_path.lower().endswith(".gguf"):
-            warnings.append(f"profile {p['name']!r}: --model is not a .gguf path, llama-swap cannot map it")
+            warnings.append(f"profile {p['name']!r}: --model is not a .gguf path, Argos cannot map it")
             continue
         mid = swap_model_id(model_path)
         label, n = p["name"], 2
@@ -68,7 +63,7 @@ def profile_presets(profiles: list[dict], taken: Optional[dict] = None,
 
 
 def variant_id(preset: dict) -> str:
-    """The llama-swap model id a preset becomes: ``<model-id>--<label>``, or "" if it has no .gguf."""
+    """The Argos model id a preset becomes: ``<model-id>--<label>``, or "" if it has no .gguf."""
     try:
         model = parse_command(preset.get("cmd") or "").summary()["model"]
     except ValueError:
@@ -97,43 +92,45 @@ def launch_tasks(launches: list) -> list[dict]:
     return tasks
 
 
-def build_state(profiles: list[dict], launches: list, settings: dict, odysseus_source: str,
-                always: Optional[dict] = None) -> dict:
-    """The full state document. Odysseus' own presets/tasks pass through first."""
+def normalize_preset(p: dict) -> dict:
+    """An Odysseus preset in the shape the engine reads. Different Odysseus versions name the host and label differently."""
+    out = dict(p)
+    out["cmd"] = p.get("cmd") or p.get("_cmd") or ""
+    out["remoteHost"] = p.get("remoteHost") or p.get("host") or ""
+    out["label"] = p.get("label") or p.get("name") or ""
+    out["port"] = str(p.get("port") or "")
+    out.setdefault("name", out["label"])
+    out.setdefault("model", p.get("modelId") or "")
+    return out
+
+
+def build_state(profiles: list[dict], launches: list, odysseus: Optional[dict] = None,
+                always: Optional[dict] = None, include_tasks: bool = False) -> dict:
+    """The full state document. Odysseus' own presets (``odysseus = {"presets": [...], "error": ""}``) pass through first."""
     state: dict[str, Any] = {"tasks": [], "presets": [], "warnings": []}
     taken: dict[str, set] = {}
-    if settings.get("include_odysseus") and odysseus_source:
-        try:
-            raw = odysseus.load_state(odysseus_source)
-            state["tasks"] += [t for t in raw.get("tasks") or [] if isinstance(t, dict)]
-            for pr in raw.get("presets") or []:
-                if not isinstance(pr, dict):
-                    continue
-                state["presets"].append(pr)
-                try:
-                    mid = swap_model_id(parse_command(pr.get("cmd") or "").summary()["model"])
-                    taken.setdefault(mid, set()).add(_label_key(pr.get("label") or ""))
-                except ValueError:
-                    pass
-        except Exception as exc:  # noqa: BLE001 - a broken source must not hide our profiles
-            state["warnings"].append(f"odysseus passthrough: {exc}")
-    # oldest first, so a profile keeps its label (and llama-swap its variant ID) when others are added
+    if odysseus:
+        if odysseus.get("error"):
+            state["warnings"].append(f"odysseus presets: {odysseus['error']}")
+        for pr in odysseus.get("presets") or []:
+            if not isinstance(pr, dict):
+                continue
+            pr = normalize_preset(pr)
+            if not pr["cmd"].strip():
+                continue
+            state["presets"].append(pr)
+            try:
+                mid = swap_model_id(parse_command(pr["cmd"]).summary()["model"])
+                taken.setdefault(mid, set()).add(_label_key(pr["label"]))
+            except ValueError:
+                pass
+    # oldest first, so a profile keeps its label (and the engine its variant ID) when others are added
     presets, warnings = profile_presets(sorted(profiles, key=lambda p: p.get("created_at") or 0), taken, always)
     state["presets"] += presets
     state["warnings"] += warnings
-    if settings.get("include_tasks"):
+    if include_tasks:
         state["tasks"] += launch_tasks(launches)
     return state
 
 
-def write_state_file(path: str, state: dict) -> None:
-    """Atomic write, so llama-swap never reads a half-written file."""
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=".cookbook-", suffix=".json")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({k: v for k, v in state.items() if k != "warnings"}, f, indent=2)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, path)
-
-
-__all__ = ["build_state", "profile_presets", "variant_id", "launch_tasks", "write_state_file"]
+__all__ = ["build_state", "normalize_preset", "profile_presets", "variant_id", "launch_tasks"]

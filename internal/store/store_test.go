@@ -371,7 +371,7 @@ func TestStore_PruneActivity(t *testing.T) {
 
 func TestStore_NewFilePersistsActivity(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "llama-swap.sqlite")
+	path := filepath.Join(t.TempDir(), "argos.sqlite")
 
 	store, err := New(path)
 	if err != nil {
@@ -399,7 +399,7 @@ func TestStore_NewFilePersistsActivity(t *testing.T) {
 }
 
 func TestStore_NewFileUsesWAL(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "llama-swap.sqlite")
+	path := filepath.Join(t.TempDir(), "argos.sqlite")
 	store, err := New(path)
 	if err != nil {
 		t.Fatalf("New file store: %v", err)

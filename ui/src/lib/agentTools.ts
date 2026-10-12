@@ -2,7 +2,7 @@ import { playgroundSessionHeaders } from "./playgroundSession";
 import type { ToolDefinition } from "./chatApi";
 
 /**
- * A minimal MCP client for llama-swap's own /api/mcp endpoint.
+ * A minimal MCP client for Argos's own /api/mcp endpoint.
  *
  * The server speaks MCP 2026-07-28, the revision that dropped the
  * initialize/initialized handshake and the session header, so a client is just
@@ -57,7 +57,7 @@ interface McpTool {
  * backend, so it is dropped here rather than sent and turned into an error the
  * user cannot act on.
  *
- * llama-swap's own registry already enforces the tighter rule, so this only
+ * Argos's own registry already enforces the tighter rule, so this only
  * fires for a proxied upstream that does not.
  */
 const MAX_FUNCTION_NAME_LEN = 64;

@@ -2,15 +2,15 @@
 
 A *config* is one distinct way the model was launched: its flags and env vars, with
 the things that never change performance (port, host, API key, log options) left
-out and the model file reduced to its name, so the same command from llama-swap's
+out and the model file reduced to its name, so the same command from Argos's
 container and from this app's container counts as one config.
 
 Speeds come from two places:
-  - llama-swap's per-request activity (``requests``), each request matched to the
+  - Argos's per-request activity (``requests``), each request matched to the
     load (``model_sessions``) it ran under, which carries the command;
   - benchmarks run here (``runs``), which carry their own command.
 
-Concurrency is measured, not assumed: llama-swap logs each request when it ends,
+Concurrency is measured, not assumed: Argos logs each request when it ends,
 with its duration, so every request is an interval and the number of requests of
 the same model overlapping it is how many were being served at once.
 """

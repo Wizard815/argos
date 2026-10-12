@@ -42,7 +42,7 @@ func validateStorePath(path string) error {
 }
 
 func checkDirWritableWindows(dir string) error {
-	tmp, err := os.CreateTemp(dir, ".llama-swap-write-test-*")
+	tmp, err := os.CreateTemp(dir, ".argos-write-test-*")
 	if err != nil {
 		return err
 	}

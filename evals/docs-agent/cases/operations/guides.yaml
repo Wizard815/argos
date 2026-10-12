@@ -1,5 +1,5 @@
 - id: operations-startup-hooks
-  question: Where do I configure commands that run around llama-swap lifecycle events?
+  question: Where do I configure commands that run around Argos lifecycle events?
   expect_regex: ["hooks"]
   expect_tools_any: [docs__search_docs, docs__get_doc]
   require_tools: true

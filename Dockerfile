@@ -26,22 +26,27 @@ RUN command -v curl >/dev/null 2>&1 || (apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*)
 
+# the Servers view reaches other machines over SSH (ssh to connect, ssh-keygen for each server's key)
+RUN command -v ssh >/dev/null 2>&1 && command -v ssh-keygen >/dev/null 2>&1 || (apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client \
+    && rm -rf /var/lib/apt/lists/*)
+
 # uv brings its own Python, so the base image does not need one
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY builder/requirements.txt /tmp/requirements.txt
 RUN UV_PYTHON_INSTALL_DIR=/opt/python uv venv --python 3.14 /opt/venv \
     && uv pip install --python /opt/venv/bin/python -r /tmp/requirements.txt
 
-COPY --from=engine /src/build/llama-swap-linux-amd64 /app/llama-swap
+COPY --from=engine /src/build/argos-linux-amd64 /app/argos
 COPY builder/src /app/builder/src
 COPY docker/argos.config.yaml /app/config.yaml
 COPY docker/argos-entrypoint.sh /app/argos-entrypoint.sh
 
-ENV LLAMA_SWAP_URL=http://127.0.0.1:8080 \
+ENV ARGOS_ENGINE_URL=http://127.0.0.1:8080 \
     MODELS_DIR=/app/models \
     ARGOS_DB=/data/argos.db \
     ARGOS_RUNS_DIR=/data/runs \
-    ARGOS_EXPORT_FILE=/app/config.d/scheduler.generated.yaml \
+    ARGOS_SCHEDULE_FILE=/app/config.d/scheduler.generated.yaml \
     HOST=0.0.0.0 \
     PORT=7861
 

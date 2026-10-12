@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/swaputil"
 	"github.com/tidwall/gjson"
 )
 
@@ -187,27 +187,6 @@ func TestServer_ApplyFilters(t *testing.T) {
 			t.Errorf("top_p = %v, want 0.1", got)
 		}
 	})
-}
-
-func TestServer_ResolveFilters_QualifiedPeer(t *testing.T) {
-	want := config.Filters{StripParams: "temperature"}
-	cfg := config.Config{Peers: config.PeerDictionaryConfig{
-		"remote": {
-			Models:  []string{"org/model"},
-			Filters: want,
-		},
-	}}
-
-	useModelName, got, ok := resolveFilters(cfg, "remote/org/model")
-	if !ok {
-		t.Fatal("qualified peer filters were not resolved")
-	}
-	if useModelName != "" {
-		t.Fatalf("useModelName = %q, want empty for peer", useModelName)
-	}
-	if got.StripParams != want.StripParams {
-		t.Fatalf("StripParams = %q, want %q", got.StripParams, want.StripParams)
-	}
 }
 
 func TestServer_FormFilterMiddleware(t *testing.T) {

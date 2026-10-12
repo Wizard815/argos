@@ -49,7 +49,7 @@ func TestOdysseus_BuildFromPresets(t *testing.T) {
 
 // TestOdysseus_ChoicesBuildOneUnionProfile is the core of the per-model design:
 // choosing a preset for SOME models pins only those models. A model without a
-// choice gets no pin, so it keeps llama-swap's own launch and nothing carries
+// choice gets no pin, so it keeps Argos's own launch and nothing carries
 // over between models.
 func TestOdysseus_ChoicesBuildOneUnionProfile(t *testing.T) {
 	res, err := Build(State{Presets: []Preset{
@@ -82,7 +82,7 @@ func TestOdysseus_ChoicesBuildOneUnionProfile(t *testing.T) {
 		t.Errorf("pin points at %v, want the --fast variant", pins)
 	}
 	if _, carried := pins["qwen3.6-35b-a3b-ud-q6_k_xl"]; carried {
-		t.Error("the unchosen model was pinned -- it must keep llama-swap's own launch")
+		t.Error("the unchosen model was pinned -- it must keep Argos's own launch")
 	}
 	if res.ChoicesResolved["qwen3.8-27b-ud-q6_k_xl"] != "qwen3.8-27b-ud-q6_k_xl--fast" {
 		t.Errorf("ChoicesResolved = %v", res.ChoicesResolved)

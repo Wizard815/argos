@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/cache"
-	"github.com/mostlygeek/llama-swap/internal/event"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/store"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
-	"github.com/mostlygeek/llama-swap/internal/tailcat"
+	"github.com/Wizard815/Argos/internal/cache"
+	"github.com/Wizard815/Argos/internal/event"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/store"
+	"github.com/Wizard815/Argos/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/tailcat"
 	"github.com/tidwall/gjson"
 )
 

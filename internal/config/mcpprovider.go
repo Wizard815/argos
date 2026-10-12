@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wizard815/Argos/internal/mcptools"
 	"github.com/itchyny/gojq"
-	"github.com/mostlygeek/llama-swap/internal/mcptools"
 	"gopkg.in/yaml.v3"
 )
 
@@ -72,7 +72,7 @@ var errConfigValueTooLarge = errors.New("config query result has too many values
 // errConfigQueryOutOfMemory signals that the heap guard cancelled the query.
 var errConfigQueryOutOfMemory = errors.New("config query used too much memory")
 
-// ConfigProvider serves the running llama-swap configuration so an agent can
+// ConfigProvider serves the running Argos configuration so an agent can
 // give advice about the setup in front of it rather than in the abstract.
 //
 // The configuration is captured by value when the provider is built. A hot
@@ -125,15 +125,15 @@ func (p *ConfigProvider) Tools(context.Context) ([]mcptools.Tool, error) {
 	return []mcptools.Tool{
 		{
 			Name:  "get_config",
-			Title: "Query the current llama-swap configuration",
-			Description: "Query the configuration llama-swap is running right now with a jq expression. " +
+			Title: "Query the current Argos configuration",
+			Description: "Query the configuration Argos is running right now with a jq expression. " +
 				"The result is YAML, with API keys and other credentials redacted. Values are fully " +
 				"resolved: ${env.*} and macro references are already expanded, and values equal to " +
 				"their defaults are omitted. Pass \"query\" to select exactly the part you need, so " +
 				"nothing has to be truncated; omit it for the whole document. For example: " +
 				"\".models | keys\" lists the configured model ids, \".models.qwen3\" shows one model, " +
 				"\".models | to_entries | map({id: .key, ttl: .value.ttl})\" pulls one field from every " +
-				"model, and \".peers\" shows the peers. Quote any id that is not a plain word: " +
+				"model, and \".selectors\" shows the selectors. Quote any id that is not a plain word: " +
 				"\".models[\"qwen3-8b\"]\". Use this to review or troubleshoot the active setup before " +
 				"suggesting changes.",
 			Annotations: configAnnotations(),
@@ -222,9 +222,9 @@ func (p *ConfigProvider) Call(ctx context.Context, name string, args map[string]
 
 	var b strings.Builder
 	if query == "." {
-		b.WriteString("Current llama-swap configuration (credentials redacted, values resolved):\n\n")
+		b.WriteString("Current Argos configuration (credentials redacted, values resolved):\n\n")
 	} else {
-		fmt.Fprintf(&b, "Current llama-swap configuration, jq query %s (credentials redacted, values resolved):\n\n", query)
+		fmt.Fprintf(&b, "Current Argos configuration, jq query %s (credentials redacted, values resolved):\n\n", query)
 	}
 	b.WriteString("```yaml\n")
 	b.WriteString(strings.TrimRight(out.body, "\n"))
@@ -430,7 +430,7 @@ func jqPathQuery(path string) string {
 }
 
 // configProviderDefaults returns rendered defaults in the same YAML shape as
-// RedactedYAML. Defaults for entries in maps (models, peers, selectors, and
+// RedactedYAML. Defaults for entries in maps (models, selectors, and
 // groups) are added by pruneConfigDefaults because an empty config has none.
 func configProviderDefaults(cfg Config) (map[string]any, error) {
 	base, err := LoadConfigFromReader(strings.NewReader("{}"))
@@ -462,20 +462,6 @@ func configProviderDefaults(cfg Config) (map[string]any, error) {
 		return nil, err
 	}
 	defaults["__model"] = modelDefaults
-
-	// PeerConfig validates its required fields during unmarshaling. Supply
-	// placeholders solely to obtain the defaults, then remove those placeholders.
-	peer := PeerConfig{}
-	if err := yaml.Unmarshal([]byte("proxy: http://default.invalid\nmodels: [default]\n"), &peer); err != nil {
-		return nil, err
-	}
-	peerDefaults, err := configProviderYAMLMap(peer)
-	if err != nil {
-		return nil, err
-	}
-	delete(peerDefaults, "proxy")
-	delete(peerDefaults, "models")
-	defaults["__peer"] = peerDefaults
 
 	selector := SelectorConfig{}
 	if err := yaml.Unmarshal([]byte("{}"), &selector); err != nil {
@@ -513,7 +499,7 @@ func configProviderYAMLMap(v any) (map[string]any, error) {
 
 // pruneConfigDefaults recursively drops settings equal to their defaults.
 // Map-entry defaults need special handling because the empty base config has no
-// representative model, peer, selector, or group entry to compare against.
+// representative model, selector, or group entry to compare against.
 func pruneConfigDefaults(value, defaults any, path string) (any, bool) {
 	currentMap, isMap := value.(map[string]any)
 	defaultMap, defaultsAreMap := defaults.(map[string]any)
@@ -530,7 +516,7 @@ func pruneConfigDefaults(value, defaults any, path string) (any, bool) {
 
 		childDefaults, known := defaultMap[key]
 		switch childPath {
-		case "models", "peers", "selectors", "groups", "routing.router.settings.groups":
+		case "models", "selectors", "groups", "routing.router.settings.groups":
 			entryDefaults := defaultMap["__"+strings.TrimSuffix(childPath, "s")]
 			if childPath == "routing.router.settings.groups" {
 				// The recursive defaults at this path are the routing defaults,

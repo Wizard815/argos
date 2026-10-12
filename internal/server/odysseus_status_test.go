@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 // TestServer_ModelStatus_IncludesLaunchConfig guards the data behind the UI's
@@ -23,7 +23,7 @@ func TestServer_ModelStatus_IncludesLaunchConfig(t *testing.T) {
 		},
 		"without-cmd": {},
 	}}
-	s := newTestServerWithConfig(cfg, &stubRouter{}, &stubRouter{})
+	s := newTestServerWithConfig(cfg, &stubRouter{})
 
 	statuses := s.modelStatus()
 	byID := make(map[string]apiModel, len(statuses))

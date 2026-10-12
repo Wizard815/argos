@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mostlygeek/llama-swap/internal/mcptools"
+	"github.com/Wizard815/Argos/internal/mcptools"
 )
 
 // mcpProtocolVersion is the only MCP revision this endpoint speaks.
@@ -107,14 +107,14 @@ type mcpImplementation struct {
 }
 
 const mcpInstructions = "Tools are namespaced by provider. The docs__* tools answer questions about " +
-	"llama-swap's own configuration: call docs__list_docs for an index, docs__search_docs to find " +
+	"Argos's own configuration: call docs__list_docs for an index, docs__search_docs to find " +
 	"something by keyword, docs__get_doc to read a document in full, and docs__get_config_schema to " +
 	"check what a configuration key accepts. Document ids starting with 'reference/config/' return " +
 	"sections of config.example.yaml verbatim. config__get_config answers a jq query against the " +
 	"configuration this server is running right now, with credentials redacted, for advice about " +
 	"the active setup: pass a \"query\" such as \".models | keys\" or \".models.qwen3\" to read " +
 	"exactly the part you need. " +
-	"The sys__* tools report facts about the machine llama-swap is running on."
+	"The sys__* tools report facts about the machine Argos is running on."
 
 func (s *Server) mcpDiscover() discoverResult {
 	// Computed rather than a literal so that unioning an upstream's
@@ -131,7 +131,7 @@ func (s *Server) mcpDiscover() discoverResult {
 		TTLMs:             toolListTTLMs,
 		CacheScope:        "public",
 		Meta: map[string]any{
-			metaKeyServerInfo: mcpImplementation{Name: "llama-swap", Version: s.build.Version},
+			metaKeyServerInfo: mcpImplementation{Name: "argos", Version: s.build.Version},
 		},
 	}
 }

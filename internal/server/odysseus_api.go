@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/odysseus"
+	"github.com/Wizard815/Argos/internal/odysseus"
 )
 
 // odysseusState is the integration's runtime bookkeeping: when it last ran, what
@@ -315,7 +315,7 @@ func (s *Server) handleAPIOdysseusStatus(w http.ResponseWriter, r *http.Request)
 //
 // The choice is persisted immediately and a refresh is triggered, which
 // regenerates the union profile with a pin for exactly this model. Models
-// without a choice keep llama-swap's own launch -- nothing carries over.
+// without a choice keep Argos's own launch -- nothing carries over.
 func (s *Server) handleAPIOdysseusModelProfile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	o := s.cfg.Odysseus

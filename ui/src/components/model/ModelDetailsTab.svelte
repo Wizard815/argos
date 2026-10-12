@@ -20,7 +20,7 @@
   // ---- Odysseus per-model profile picker ----
   // The model's `profile` field is its current choice and `cmd`/`env` are the
   // EFFECTIVE launch (the chosen variant's), so what this card shows is what
-  // llama-swap will actually run.
+  // Argos will actually run.
   let odysseus = $state<{ labels: string[]; chosen: string } | null>(null);
   let saving = $state(false);
   let saveError = $state("");
@@ -135,10 +135,10 @@
           onValueChange={(value) => value && void handleProfileChange(value)}
         >
           <Select.Trigger class="w-56" aria-label="Odysseus launch profile" disabled={saving}>
-            {model.profile || "llama-swap default"}
+            {model.profile || "Argos default"}
           </Select.Trigger>
           <Select.Content>
-            <Select.Item value={NONE}>llama-swap default</Select.Item>
+            <Select.Item value={NONE}>Argos default</Select.Item>
             {#each odysseus.labels as label (label)}
               <Select.Item value={label}>{label}</Select.Item>
             {/each}
@@ -190,7 +190,7 @@
       </div>
     {/if}
     <p class="text-muted-foreground mt-3 text-xs">
-      The <code>&#36;&#123;PORT&#125;</code> macro is replaced with the port llama-swap allocates
+      The <code>&#36;&#123;PORT&#125;</code> macro is replaced with the port Argos allocates
       for this model, so this is what is run after substitution.
     </p>
   </Card.Content>

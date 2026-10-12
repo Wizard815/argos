@@ -1,7 +1,7 @@
 export type ConnectionState = "connected" | "connecting" | "disconnected";
 
 export type ModelStatus = "ready" | "starting" | "stopping" | "stopped" | "shutdown" | "unknown";
-export type PlaygroundModelType = "model" | "peer" | "selector" | "profile";
+export type PlaygroundModelType = "model" | "selector" | "profile";
 
 export interface ModelCapabilities {
   vision?: boolean;
@@ -19,17 +19,16 @@ export interface Model {
   name: string;
   description: string;
   unlisted: boolean;
-  peerID: string;
   playgroundType?: PlaygroundModelType;
   aliases?: string[];
   capabilities?: ModelCapabilities;
   context_length?: number;
-  // selector-only fields from the v1/models llamaswap metadata
+  // selector-only fields from the v1/models argos metadata
   strategy?: string;
   targets?: string[];
   spillover?: number;
-  // launch configuration, from the v1/models llamaswap metadata. cmd still
-  // contains llama-swap's ${PORT} macro, exactly as written in config. When the
+  // launch configuration, from the v1/models argos metadata. cmd still
+  // contains Argos's ${PORT} macro, exactly as written in config. When the
   // model has an Odysseus per-model choice, this is the CHOSEN variant's
   // command -- the effective launch -- and profile names that choice.
   cmd?: string;

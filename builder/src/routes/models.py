@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import os
+import re
 
 from flask import Blueprint, request
 
 from ..downloader import DownloadError, fit
-from ..library import library_with_profiles, prefab_command, scan_models
-from ..telemetry import read_amd_sysfs, read_llama_swap, read_nvidia_smi
+from ..integrations import engine_api
+from ..library import library_with_profiles, prefab_command, scan_media, scan_models
+from ..telemetry import read_amd_sysfs, read_engine, read_nvidia_smi
 from ..web import body, check_id, ctx, err, ok
 from .core import _render
 
@@ -23,7 +25,26 @@ def library():
     c = ctx()
     d = models_dir()
     models = library_with_profiles(scan_models(d), c.store.list_profiles())
-    return ok(models_dir=d, exists=os.path.isdir(d), models=models)
+    return ok(models_dir=d, exists=os.path.isdir(d), models=models, media=scan_media(d))
+
+
+EMBED = re.compile(r"(?i)embed|(?<![a-z])(bge|e5|gte)-|rerank")
+
+
+@bp.get("/api/models/available")
+def models_available():
+    """Model ids to offer in dropdowns: what the engine lists (loaded or not), and the library's embedding models."""
+    c = ctx()
+    url = c.settings.get("integrations")["engine_url"]
+    engine, error = [], ""
+    if url:
+        try:
+            engine = sorted(engine_api.model_ids(url))
+        except Exception as exc:  # noqa: BLE001 - the dropdown still works from the library
+            error = str(exc)
+    library = scan_models(models_dir())
+    return ok(engine=engine, embeddings=[m for m in engine if EMBED.search(m)] or sorted({m["id"] for m in library if m.get("kind") == "embedding"}),
+              library=sorted({m["id"] for m in library}), engine_error=error, engine_connected=bool(url and not error))
 
 
 @bp.post("/api/library/prefab")
@@ -43,8 +64,8 @@ def hardware_info() -> dict:
     vram_setting = float(c.settings.get("downloads")["vram_gb"] or 0)
     gpus, source = c.store.gpu_latest(), "telemetry"
     if not gpus:
-        url = c.settings.get("integrations")["llama_swap_url"]
-        readers = ([("llama-swap", lambda: read_llama_swap(url))] if url else []) + \
+        url = c.settings.get("integrations")["engine_url"]
+        readers = ([("engine", lambda: read_engine(url))] if url else []) + \
                   [("sysfs", read_amd_sysfs), ("nvidia-smi", read_nvidia_smi)]
         for source, reader in readers:
             try:

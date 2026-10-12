@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 func TestReplaceRequestModel(t *testing.T) {
@@ -746,9 +746,6 @@ func TestFetchContext_UpstreamPath(t *testing.T) {
 			"author/model": {},
 			"real":         {Aliases: []string{"nick"}},
 		},
-		Peers: config.PeerDictionaryConfig{
-			"remote": {Models: []string{"peer-model"}},
-		},
 	}
 
 	cases := []struct {
@@ -760,7 +757,6 @@ func TestFetchContext_UpstreamPath(t *testing.T) {
 	}{
 		{"known model", "/upstream/m1/v1/chat/completions", "m1", "m1", false},
 		{"model with slash", "/upstream/author/model/v1/chat", "author/model", "author/model", false},
-		{"peer model", "/upstream/peer-model/v1/chat", "peer-model", "peer-model", false},
 		{"unknown model", "/upstream/nope/v1/chat/completions", "", "", true},
 		{"bare model path", "/upstream/m1/", "m1", "m1", false},
 	}
@@ -783,43 +779,6 @@ func TestFetchContext_UpstreamPath(t *testing.T) {
 			}
 			if data.Metadata == nil {
 				t.Error("metadata map not initialized")
-			}
-		})
-	}
-}
-
-func TestFindModelInPath_PeerNamespaces(t *testing.T) {
-	cfg := config.Config{
-		Models: map[string]config.ModelConfig{"local": {}},
-		Peers: config.PeerDictionaryConfig{
-			"p1": {Models: []string{"shared", "org/model"}},
-			"p2": {Models: []string{"shared", "unique"}},
-		},
-	}
-
-	tests := []struct {
-		path      string
-		wantName  string
-		wantModel string
-		wantRest  string
-		wantFound bool
-	}{
-		{"/p1/shared/v1/chat", "p1/shared", "p1/shared", "/v1/chat", true},
-		{"/p2/shared/v1/chat", "p2/shared", "p2/shared", "/v1/chat", true},
-		{"/p1/org/model/v1/chat", "p1/org/model", "p1/org/model", "/v1/chat", true},
-		{"/unique/v1/chat", "unique", "unique", "/v1/chat", true},
-		{"/shared/v1/chat", "", "", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			name, modelID, rest, found := FindModelInPath(cfg, tt.path)
-			if name != tt.wantName || modelID != tt.wantModel || rest != tt.wantRest || found != tt.wantFound {
-				t.Fatalf(
-					"FindModelInPath(%q) = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
-					tt.path, name, modelID, rest, found,
-					tt.wantName, tt.wantModel, tt.wantRest, tt.wantFound,
-				)
 			}
 		})
 	}
@@ -904,8 +863,8 @@ func TestSendResponse_JSONEnvelope(t *testing.T) {
 	if envelope.Error.Type != ErrorTypeInvalidRequest {
 		t.Errorf("error.type = %q, want %q", envelope.Error.Type, ErrorTypeInvalidRequest)
 	}
-	if envelope.Src != "llama-swap" {
-		t.Errorf("src = %q, want llama-swap", envelope.Src)
+	if envelope.Src != "argos" {
+		t.Errorf("src = %q, want Argos", envelope.Src)
 	}
 }
 
@@ -919,7 +878,7 @@ func TestSendResponse_TextFormats(t *testing.T) {
 		if got := w.Header().Get("Content-Type"); got != "text/plain" {
 			t.Fatalf("Content-Type = %q, want text/plain", got)
 		}
-		if got, want := w.Body.String(), "llama-swap: model not found"; got != want {
+		if got, want := w.Body.String(), "Argos: model not found"; got != want {
 			t.Errorf("body = %q, want %q", got, want)
 		}
 	})
@@ -967,7 +926,6 @@ func TestSendError_MapsSentinelErrors(t *testing.T) {
 		wantStatus int
 	}{
 		{"no model in context", ErrNoModelInContext, http.StatusNotFound},
-		{"no peer model", ErrNoPeerModelFound, http.StatusNotFound},
 		{"no local model", ErrNoLocalModelFound, http.StatusNotFound},
 		{"no router", ErrNoRouterFound, http.StatusNotFound},
 		{"unknown", errors.New("boom"), http.StatusInternalServerError},

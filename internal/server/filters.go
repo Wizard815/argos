@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mostlygeek/llama-swap/internal/chain"
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/chain"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/swaputil"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -111,15 +111,11 @@ func CreateFormFilterMiddleware(cfg config.Config) chain.Middleware {
 	}
 }
 
-// resolveFilters returns the filter settings for a requested model. UseModelName
-// only applies to local models; peers carry filters but no name rewrite.
+// resolveFilters returns the filter settings for a requested model.
 func resolveFilters(cfg config.Config, requested string) (useModelName string, filters config.Filters, ok bool) {
 	if realName, found := cfg.RealModelName(requested); found {
 		mc := cfg.Models[realName]
 		return mc.UseModelName, mc.Filters.Filters, true
-	}
-	if peerID, _, found := cfg.ResolvePeerModel(requested); found {
-		return "", cfg.Peers[peerID].Filters, true
 	}
 	return "", config.Filters{}, false
 }

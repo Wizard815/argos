@@ -22,11 +22,11 @@ models:
     env:
       - "HF_TOKEN=hf_BBBBBBBBBBBBBBBBBBBBBBBB"
       - "CUDA_VISIBLE_DEVICES=1"
-peers:
   upstream1:
+    cmd: "remote-wrapper --port ${PORT}"
     proxy: "http://10.0.0.5:8080"
-    apiKey: "peer-shared-secret"
-    models: ["remote-model"]
+    env:
+      - "OPENAI_API_KEY=peer-shared-secret"
 `
 
 func loadRedactFixture(t *testing.T) Config {
@@ -69,7 +69,7 @@ func TestConfig_RedactedYAML_KeepsHarmlessValues(t *testing.T) {
 	for _, keep := range []string{
 		"/models/qwen3.gguf",     // resolved macro value, not a secret
 		"CUDA_VISIBLE_DEVICES=1", // non-secret env entry survives intact
-		"http://10.0.0.5:8080",   // peer proxy URL is not a credential
+		"http://10.0.0.5:8080",   // a proxy URL is not a credential
 	} {
 		if !strings.Contains(out, keep) {
 			t.Errorf("redacted config dropped harmless value %q:\n%s", keep, out)
@@ -131,14 +131,14 @@ func TestConfig_RedactedYAML_PrunesEmptyDefaults(t *testing.T) {
 }
 
 func TestConfig_RedactedYAML_PathSelectsSubtree(t *testing.T) {
-	out, found, err := loadRedactFixture(t).RedactedYAML("peers.upstream1")
+	out, found, err := loadRedactFixture(t).RedactedYAML("models.upstream1")
 	if err != nil || !found {
 		t.Fatalf("RedactedYAML: found=%v err=%v", found, err)
 	}
 	if !strings.Contains(out, "proxy: http://10.0.0.5:8080") {
 		t.Errorf("subtree missing expected key:\n%s", out)
 	}
-	if strings.Contains(out, "models:\n    qwen3") {
+	if strings.Contains(out, "qwen3") {
 		t.Errorf("subtree leaked a sibling section:\n%s", out)
 	}
 }
@@ -156,7 +156,7 @@ func TestConfig_RedactedYAML_UnknownPath(t *testing.T) {
 func TestConfig_ConfigTopLevelKeys(t *testing.T) {
 	keys := loadRedactFixture(t).ConfigTopLevelKeys()
 	joined := strings.Join(keys, ",")
-	for _, want := range []string{"models", "peers", "macros", "apiKeys"} {
+	for _, want := range []string{"models", "macros", "apiKeys"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("top-level keys %v missing %q", keys, want)
 		}

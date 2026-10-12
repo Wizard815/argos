@@ -1,6 +1,6 @@
 # vllm-wrapper
 
-`vllm-wrapper` is a standalone helper program designed to be used as a model's `cmd` and `cmdStop` in llama-swap configurations for vLLM servers that have been started with `--enable-sleep-mode`.
+`vllm-wrapper` is a standalone helper program designed to be used as a model's `cmd` and `cmdStop` in Argos configurations for vLLM servers that have been started with `--enable-sleep-mode`.
 
 It provides two subcommands:
 
@@ -9,7 +9,7 @@ It provides two subcommands:
 
 ## Why use this?
 
-When using vLLM with llama-swap, you can leverage vLLM's sleep mode to drastically reduce swap-in times. Instead of stopping and starting the vLLM process (which incurs a cold start), you can put the vLLM daemon to sleep when not in use (via `cmdStop`) and wake it up when needed (via `cmd`). This keeps the vLLM process running, preserving the GPU context and allowing for near-instant wake-ups.
+When using vLLM with Argos, you can leverage vLLM's sleep mode to drastically reduce swap-in times. Instead of stopping and starting the vLLM process (which incurs a cold start), you can put the vLLM daemon to sleep when not in use (via `cmdStop`) and wake it up when needed (via `cmd`). This keeps the vLLM process running, preserving the GPU context and allowing for near-instant wake-ups.
 
 ## Prerequisites
 
@@ -31,13 +31,13 @@ Or install via `go install`:
 go install ./cmd/vllm-wrapper
 ```
 
-## Usage in llama-swap
+## Usage in Argos
 
 ### As a model's `cmd`
 
 #### Daemon startup
 
-For native vLLM installations or when `llama-swap` splits the command into separate arguments, use the `--` separator. Everything after `--` is treated as the daemon executable and its arguments, launched directly without `sh -c`:
+For native vLLM installations or when `argos` splits the command into separate arguments, use the `--` separator. Everything after `--` is treated as the daemon executable and its arguments, launched directly without `sh -c`:
 
 ```yaml
 models:
@@ -59,7 +59,7 @@ models:
 
 Benefits of argv-based startup:
 - Enables native vLLM without Docker.
-- Supports vLLM executables defined through llama-swap macros.
+- Supports vLLM executables defined through Argos macros.
 - Allows readable multiline commands in YAML.
 - Preserves individual vLLM options (can be commented out).
 - Avoids shell parsing overhead.
@@ -81,10 +81,10 @@ models:
     #   --stop-pid: PID of the serve proxy to terminate after a successful sleep request
 ```
 
-When llama-swap stops the model, it will:
+When Argos stops the model, it will:
 1. Send a sleep request to the vLLM daemon (POST to `/sleep` with JSON `{"level": 1}`).
 2. If `--stop-pid` is provided, send SIGTERM to the specified `vllm-wrapper serve` process after the sleep request succeeds.
-3. Exit with status 0, leaving the vLLM daemon running but asleep while allowing llama-swap to complete the unload operation.
+3. Exit with status 0, leaving the vLLM daemon running but asleep while allowing Argos to complete the unload operation.
 
 ## Example Configuration
 
@@ -111,7 +111,7 @@ models:
 
 ## Systemd setup for native vLLM startup
 
-`llama-swap` runs as the system service user `llama`, while vLLM is started as a transient user service with `systemd-run --user`.
+`argos` runs as the system service user `llama`, while vLLM is started as a transient user service with `systemd-run --user`.
 
 Enable the user systemd manager:
 
@@ -141,7 +141,7 @@ sudo systemctl daemon-reload
 sudo systemctl restart llama.service
 ```
 
-Use `systemd-run` in the `llama-swap` model command:
+Use `systemd-run` in the `argos` model command:
 
 ```yaml
 cmd: |
@@ -150,7 +150,7 @@ cmd: |
   --listen :${PORT}
   --wait-timeout 5m
   --journal-unit: vllm-qwen.service
-  # optional systemd user unit whose new journal entries are forwarded to the wrapper's stdout, making vLLM logs available through llama-swap's upstream log stream.
+  # optional systemd user unit whose new journal entries are forwarded to the wrapper's stdout, making vLLM logs available through Argos's upstream log stream.
   --
   systemd-run
   --user

@@ -1,11 +1,11 @@
 // Package modelscan implements directory scanning that turns .gguf files
-// found on disk into a generated llama-swap `models:` YAML fragment, so a
+// found on disk into a generated Argos `models:` YAML fragment, so a
 // large, frequently-changing model directory does not need to be hand
 // maintained in config.yaml.
 //
 // The generated fragment is written to its own file inside the process's
 // --config-dir. It is never merged into the user's hand-written config.yaml
-// directly; llama-swap's own -config-dir merge (internal/config/merge.go)
+// directly; Argos's own -config-dir merge (internal/config/merge.go)
 // combines it with the rest of the configuration, and (when -watch-config is
 // enabled) the existing poll-based config watcher picks up the change and
 // hot-reloads automatically. This package does not trigger a reload itself.
@@ -34,16 +34,16 @@ type Options struct {
 
 	// CmdTemplate is the ModelConfig.Cmd value to use for every discovered
 	// model, with the literal substring "${MODEL_PATH}" replaced by the
-	// model's absolute file path. Any llama-swap macro such as "${PORT}" or
+	// model's absolute file path. Any Argos macro such as "${PORT}" or
 	// a user-defined macro name is left untouched, so it is still resolved
-	// by llama-swap itself at process-launch time.
+	// by Argos itself at process-launch time.
 	CmdTemplate string
 
 	// NamePrefix is prepended to every generated model ID, e.g. "local-".
 	NamePrefix string
 
 	// OutputPath is the file to write. It must live inside the directory
-	// passed as -config-dir so llama-swap's config-dir merge (and, with
+	// passed as -config-dir so Argos's config-dir merge (and, with
 	// -watch-config, its file watcher) picks it up.
 	OutputPath string
 
@@ -65,13 +65,13 @@ type Options struct {
 	// Env is the ModelConfig.Env list written onto every model this scan
 	// produces. Lets a scan target set per-model environment (e.g.
 	// "HIP_VISIBLE_DEVICES=0" to pin a group of models to one GPU) without
-	// hand-writing every model entry. Matches llama-swap's own Env format:
+	// hand-writing every model entry. Matches Argos's own Env format:
 	// a plain "KEY=value" list, appended to the container's environment.
 	Env []string
 
 	// TTL is the ModelConfig.UnloadAfter value (seconds) written onto every
 	// model this scan produces. A pointer so that "not set" is
-	// distinguishable from 0: llama-swap treats ttl: 0 as "never unload
+	// distinguishable from 0: Argos treats ttl: 0 as "never unload
 	// this model", while -1 means "use globalTTL", so an unset TTL must not
 	// be written as either.
 	TTL *int
@@ -86,7 +86,7 @@ type Options struct {
 // independent of config).
 //
 // The yaml tags must stay in sync with config.ModelConfig's tags for the
-// fields named here, since llama-swap parses the generated file with that
+// fields named here, since Argos parses the generated file with that
 // struct.
 type generatedModel struct {
 	Cmd string   `yaml:"cmd"`
@@ -272,7 +272,7 @@ func Scan(opts Options) ([]byte, []string, error) {
 
 // WriteIfChanged writes data to opts.OutputPath, but only if the content
 // differs from what's already there (or the file doesn't exist yet).
-// Returns whether it wrote. Skipping a no-op write matters here: llama-swap's
+// Returns whether it wrote. Skipping a no-op write matters here: Argos's
 // -watch-config watcher reloads on any file change, and a reload tears down
 // and restarts every currently-running model process — so scanning on every
 // /v1/models call must not cause a write (and therefore a restart of

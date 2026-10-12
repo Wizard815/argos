@@ -13,7 +13,7 @@
     - Does not claim 0 means unload immediately
 
 - id: hard-default-unloadtimeout
-  question: What is the default value of unloadTimeout in llama-swap?
+  question: What is the default value of unloadTimeout in Argos?
   tags: [defaults]
   expect_regex: ["\\b10\\b"]
   expect_tools_any: [docs__get_config_schema, docs__search_docs]
@@ -25,7 +25,7 @@
     - Identifies the unit as seconds
 
 - id: hard-default-healthcheck
-  question: How long does llama-swap wait for a model to become healthy before giving up, by default?
+  question: How long does Argos wait for a model to become healthy before giving up, by default?
   tags: [defaults]
   expect_regex: ["120"]
   expect_tools_any: [docs__get_config_schema, docs__search_docs]
@@ -37,7 +37,7 @@
     - Names the healthCheckTimeout setting
 
 - id: hard-startport-default
-  question: If I never set startPort, what port number does llama-swap assign to the first model it starts?
+  question: If I never set startPort, what port number does Argos assign to the first model it starts?
   tags: [defaults, trap]
   expect_regex: ["5800"]
   forbid_regex: ["10001"]
@@ -56,7 +56,7 @@
   expect_tools: [docs__search_docs]
   reference: |
     `ttl: 600` unloads after 10 minutes idle. For a container you also need
-    `cmdStop: docker stop ${MODEL_ID}`, because otherwise llama-swap signals
+    `cmdStop: docker stop ${MODEL_ID}`, because otherwise Argos signals
     the `docker run` client rather than the container, and you should raise
     `unloadTimeout` above the default 10s since `docker stop` is slow.
   rubric:
@@ -75,4 +75,4 @@
     host side, ${PORT}, varies.
   rubric:
     - Identifies 8080 / the right-hand side as the container-internal port
-    - Says the ${PORT} side is the host port llama-swap assigned
+    - Says the ${PORT} side is the host port Argos assigned

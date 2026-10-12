@@ -1,12 +1,12 @@
 # Hello!
 
-Here you will find the knowledge base for llama-swap. It's
-easy to get started in llama-swap with just a few lines
+Here you will find the knowledge base for Argos. It's
+easy to get started in Argos with just a few lines
 of YAML. However, the real power comes from the dozens
 of configuration options to control routing and resource
 loading exactly as you want it.
 
-llama-swap doesn't come with traditional documentation.
+Argos doesn't come with traditional documentation.
 Instead, it includes a documentation agent that reads from
 the knowledge base to answer your questions directly.
 
@@ -14,7 +14,7 @@ Three steps to get started:
 
 1. Download gemma-4-12B
 2. Install llama-server
-3. Write your first configuration file and start llama-swap
+3. Write your first configuration file and start Argos
 
 ## Downloading gemma-4-12B
 
@@ -37,7 +37,7 @@ If you have a smaller GPU or none at all, use the lighter
 
 (find instructions for your os) - to be written.
 
-## Installing llama-swap
+## Installing Argos
 
 (to be written)
 
@@ -68,10 +68,10 @@ models:
       stripParams: "temperature, top_k, top_p, repeat_penalty, min_p, presence_penalty"
 ```
 
-## Run llama-swap
+## Run Argos
 
-Start up llama-swap and visit http://localhost:8080
+Start up Argos and visit http://localhost:8080
 
 ```bash
-llama-swap -config config.yaml -listen localhost:8080
+argos -config config.yaml -listen localhost:8080
 ```

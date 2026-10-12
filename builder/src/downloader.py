@@ -4,7 +4,7 @@ Search and repo listings use the Hub's JSON API; files come from
 ``<endpoint>/<repo>/resolve/main/<file>``. Downloads run in background
 threads, write ``<file>.part`` and resume it with a Range request, and land
 in ``<models_dir>/<repo name>/<file>`` -- a plain folder of .gguf files that
-llama-swap-rescan's recursive modelscan picks up as-is. ``HF_ENDPOINT``
+Argos's recursive modelscan picks up as-is. ``HF_ENDPOINT``
 (Settings -> Downloads) points everything at a mirror.
 """
 from __future__ import annotations

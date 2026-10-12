@@ -1,5 +1,5 @@
 """Workspace: sticky notes, panel layout, the models-folder file browser, extra-file downloads,
-and changing a profile safely (see the changes, confirm, reload just that model in llama-swap)."""
+and changing a profile safely (see the changes, confirm, reload just that model in Argos)."""
 from __future__ import annotations
 
 import os
@@ -11,7 +11,7 @@ from flask import Blueprint, request
 from ..command import parse_command
 from ..cookbook import variant_id
 from ..downloader import DownloadError
-from ..integrations import llama_swap
+from ..integrations import engine_api
 from ..library import scan_models
 from ..web import body, ctx, err, ok
 from . import core
@@ -24,48 +24,29 @@ LAYOUT_KEY = "_layout"
 # ----- notes ----------------------------------------------------------------------------------
 @bp.get("/api/notes")
 def notes_list():
-    return ok(notes=ctx().store.list_notes(request.args.get("view") or None))
+    """One set of notes for the whole app. ``is_open`` ones float over every page; the rest are in the Notes menu."""
+    return ok(notes=ctx().store.list_notes())
 
 
 @bp.post("/api/notes")
 def notes_add():
     d = body()
-    view = str(d.get("view") or "").strip()
-    if not view:
-        return err("view is required")
-    return ok(note=ctx().store.add_note(view, str(d.get("title") or ""), str(d.get("body") or ""), str(d.get("color") or "yellow")))
+    return ok(note=ctx().store.add_note(str(d.get("title") or ""), str(d.get("body") or ""), str(d.get("color") or "yellow"),
+                                        bool(d.get("is_open", True))))
 
 
 @bp.put("/api/notes/<int:note_id>")
 def notes_update(note_id):
-    note = ctx().store.update_note(note_id, **{k: v for k, v in body().items() if k in ("title", "body", "color", "view", "x", "y", "w", "h")})
-    return ok(note=note) if note else err("not found", 404)
-
-
-@bp.get("/api/notes/<int:note_id>/history")
-def notes_history(note_id):
-    if not ctx().store.get_note(note_id):
-        return err("not found", 404)
-    return ok(versions=ctx().store.note_versions(note_id))
-
-
-@bp.post("/api/notes/<int:note_id>/restore/<int:version_id>")
-def notes_restore(note_id, version_id):
-    """Bring back an old version. It becomes the newest one; nothing is lost."""
-    c = ctx()
-    v = next((x for x in c.store.note_versions(note_id) if x["id"] == version_id), None)
-    if not v:
-        return err("not found", 404)
-    c.store.NOTE_MERGE_S, merge = 0, c.store.NOTE_MERGE_S  # a restore is always its own version
     try:
-        note = c.store.update_note(note_id, title=v["title"], body=v["body"])
-    finally:
-        c.store.NOTE_MERGE_S = merge
-    return ok(note=note)
+        note = ctx().store.update_note(note_id, **{k: v for k, v in body().items() if k in ("title", "body", "color", "x", "y", "w", "h", "is_open")})
+    except (TypeError, ValueError):
+        return err("x, y, w and h must be numbers")
+    return ok(note=note) if note else err("not found", 404)
 
 
 @bp.delete("/api/notes/<int:note_id>")
 def notes_delete(note_id):
+    """Deletes the note for good. Minimizing keeps it in the Notes menu."""
     return ok() if ctx().store.delete_note(note_id) else err("not found", 404)
 
 
@@ -199,7 +180,7 @@ def _variant_for_profile(profile_id: str) -> str:
 
 @bp.post("/api/profiles/diff")
 def profiles_diff():
-    """Before saving: what would change, which llama-swap model it is, and whether that model is loaded right now."""
+    """Before saving: what would change, which Argos model it is, and whether that model is loaded right now."""
     c, d = ctx(), body()
     new = d.get("launch_command") or ""
     old = c.store.get_profile(d["profile_id"]) if d.get("profile_id") else None
@@ -208,47 +189,46 @@ def profiles_diff():
         changes.insert(0, {"name": "profile name", "before": old["name"], "after": d.get("name"), "change": "changed", "env": False})
     variant = _variant_for_profile(old["profile_id"]) if old else ""
     running = None
-    url = c.settings.get("integrations")["llama_swap_url"]
+    url = c.settings.get("integrations")["engine_url"]
     if url and variant:
         try:
-            running = any(m.get("model") == variant for m in llama_swap.running(url))
+            running = any(m.get("model") == variant for m in engine_api.running(url))
         except Exception:  # noqa: BLE001 - unknown, not "not running"
             running = None
-    return ok(changes=changes, existing=bool(old), variant_id=variant, running=running, llama_swap=bool(url))
+    return ok(changes=changes, existing=bool(old), variant_id=variant, running=running, engine=bool(url))
 
 
 @bp.post("/api/profiles/<profile_id>/apply")
 def profiles_apply(profile_id):
-    """After saving: hand the new command to llama-swap and, if asked, load that one model.
+    """After saving: hand the new command to Argos and, if asked, load that one model.
 
-    llama-swap restarts only the model whose command changed; every other model stays loaded.
+    Argos restarts only the model whose command changed; every other model stays loaded.
     """
     c, d = ctx(), body()
     if not c.store.get_profile(profile_id):
         return err("not found", 404)
-    core.write_export()
     variant = _variant_for_profile(profile_id)
-    url = c.settings.get("integrations")["llama_swap_url"]
+    url = c.settings.get("integrations")["engine_url"]
     steps = {"variant_id": variant, "exported": True, "refresh": "skipped", "load": "skipped"}
     if not url:
-        steps["refresh"] = "no llama-swap URL set"
+        steps["refresh"] = "no Argos URL set"
         return ok(**steps)
     try:
-        llama_swap.odysseus_refresh(url)
+        engine_api.odysseus_refresh(url)
         steps["refresh"] = "ok"
-    except Exception as exc:  # noqa: BLE001 - llama-swap may read the export file instead (stateFile)
-        steps["refresh"] = f"llama-swap did not refresh: {exc}"
+    except Exception as exc:  # noqa: BLE001 - Argos may read the export file instead (stateFile)
+        steps["refresh"] = f"Argos did not refresh: {exc}"
     if d.get("load") and variant:
         def load():
-            time.sleep(float(d.get("delay_s", 3)))  # let llama-swap pick up the new config first
+            time.sleep(float(d.get("delay_s", 3)))  # let Argos pick up the new config first
             try:
-                llama_swap.load_model(url, variant)
-                c.event("profile", f"loaded {variant} in llama-swap with the new settings", data={"model": variant})
+                engine_api.load_model(url, variant)
+                c.event("profile", f"loaded {variant} in Argos with the new settings", data={"model": variant})
             except Exception as exc:  # noqa: BLE001
-                c.event("profile", f"could not load {variant} in llama-swap: {exc}", level="warn", data={"model": variant})
+                c.event("profile", f"could not load {variant} in Argos: {exc}", level="warn", data={"model": variant})
         threading.Thread(target=load, daemon=True).start()
         steps["load"] = "started"
-    c.event("profile", f"applied profile changes to llama-swap ({variant or 'no variant yet'})", data=steps)
+    c.event("profile", f"applied profile changes to Argos ({variant or 'no variant yet'})", data=steps)
     return ok(**steps)
 
 

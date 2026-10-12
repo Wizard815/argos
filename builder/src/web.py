@@ -16,6 +16,7 @@ from .inventory import Inventory
 from .measure import Measurer
 from .memory import Memory
 from .scheduler import Plans
+from .servers import Servers
 from .settings import Settings
 from .telemetry import Collector
 
@@ -36,6 +37,7 @@ class Ctx:
     measurer: Measurer
     inventory: Inventory
     memory: Memory
+    servers: Servers
     export_state: dict = field(default_factory=dict)
     schedule_state: dict = field(default_factory=dict)
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/router"
+	"github.com/Wizard815/Argos/internal/router"
 )
 
 // The single_gpu half of the GPU toggle mode is applied here, at launch time:

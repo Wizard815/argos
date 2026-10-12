@@ -1,28 +1,28 @@
-// Package odysseus integrates Odysseus (the Cookbook launcher) with llama-swap
-// so Odysseus stays the author of a model's launch command and llama-swap stays
+// Package odysseus integrates Odysseus (the Cookbook launcher) with Argos
+// so Odysseus stays the author of a model's launch command and Argos stays
 // the process supervisor.
 //
 // Odysseus spawns llama-server in tmux and keeps the command it used in
 // cookbook_state.json (task.payload._cmd). This package reads that state over
-// Odysseus's HTTP API, derives which llama-swap model each command belongs to,
-// and renders a llama-swap config fragment containing:
+// Odysseus's HTTP API, derives which Argos model each command belongs to,
+// and renders an Argos config fragment containing:
 //
 //   - one variant model per (model, command), id "<base>--<profile>"
-//   - one llama-swap profile per Odysseus command, whose `pins` rewrite the
+//   - one Argos profile per Odysseus command, whose `pins` rewrite the
 //     base model ID to that variant
 //
 // The base model stays exactly as modelscan generated it, so with no profile
 // active -- which is the state at startup and after every config reload --
-// llama-swap runs its own default and the Odysseus commands are opt-in.
+// Argos runs its own default and the Odysseus commands are opt-in.
 //
-// Why a variant + profile rather than editing the model: llama-swap runs
+// Why a variant + profile rather than editing the model: Argos runs
 // exactly one process per model ID and allows exactly one active profile, and
 // config sources merge with `models` and `profiles` as identity-keyed maps
 // (internal/config/merge.go identityMapPaths), so a second file may add new
 // model and profile keys but must never redefine one. Generating new IDs keeps
 // every source unambiguous.
 //
-// Two shell constructs have to be translated, because llama-swap executes the
+// Two shell constructs have to be translated, because Argos executes the
 // command directly (internal/process/process_command.go:511) with no shell:
 //
 //	export FOO=bar                  -> the model's `env:` list
@@ -44,7 +44,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/Wizard815/Argos/internal/config"
 )
 
 // InternalTokenHeader is the header Odysseus' own tool layer uses to reach
@@ -78,15 +78,15 @@ type Options struct {
 	// Statuses filters tasks by task.status. Empty means running + stopped.
 	Statuses []string
 
-	// Names maps a llama-swap base model ID to its configured display name.
+	// Names maps an Argos base model ID to its configured display name.
 	// Generated variants inherit it, so a profile swap does not read as a
 	// different model in the UI, the activity table or the log panel.
 	Names map[string]string
 
-	// Choices maps a llama-swap base model ID to the Odysseus preset label the
+	// Choices maps an Argos base model ID to the Odysseus preset label the
 	// operator picked for it. When set, Build emits a single union profile whose
 	// pins cover ONLY the chosen models, so a model without a choice keeps
-	// llama-swap's own launch and nothing carries over between models.
+	// Argos's own launch and nothing carries over between models.
 	Choices map[string]string
 
 	// ChoicesPath is where per-model choices are persisted, so they survive
@@ -177,7 +177,7 @@ type State struct {
 	Presets []Preset `json:"presets"`
 }
 
-// SanitizeProfileLabel turns an Odysseus preset label into a llama-swap profile
+// SanitizeProfileLabel turns an Odysseus preset label into an Argos profile
 // name fragment: lowercase, alphanumerics, dot, dash and underscore only.
 func SanitizeProfileLabel(label string) string {
 	l := strings.ToLower(strings.TrimSpace(label))
@@ -264,7 +264,7 @@ var (
 // SanitizeModelID mirrors modelscan's sanitizeName so a derived ID matches the
 // ID modelscan already generated from the same file. This is the join key: an
 // Odysseus task names a HuggingFace repo (unsloth/Qwen3.6-35B-A3B-MTP-GGUF),
-// which is not a llama-swap model ID, while the .gguf path in the command is.
+// which is not an Argos model ID, while the .gguf path in the command is.
 func SanitizeModelID(name string) string {
 	id := strings.ToLower(name)
 	id = reNonID.ReplaceAllString(id, "-")
@@ -279,7 +279,7 @@ func SanitizeModelID(name string) string {
 type Parsed struct {
 	Argv       []string
 	Env        []string
-	ModelID    string // derived llama-swap base model ID
+	ModelID    string // derived Argos base model ID
 	ModelPath  string
 	MMProjPath string // --mmproj, when the model is multimodal
 	Warnings   []string
@@ -287,7 +287,7 @@ type Parsed struct {
 
 // ParseCommand normalises one Odysseus command: pulls the export lines out to
 // env, joins backslash continuations, unwraps command substitution, and hands
-// the port to llama-swap's ${PORT} macro.
+// the port to Argos's ${PORT} macro.
 func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 	var p Parsed
 
@@ -300,7 +300,7 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 		if m := reExport.FindStringSubmatch(line); m != nil {
 			entry := m[1] + "=" + strings.Trim(strings.TrimSpace(m[2]), `'"`)
 			if !reEnvKey.MatchString(entry) {
-				return p, fmt.Errorf("env %q does not match llama-swap's ^[A-Z_][A-Z0-9_]*=.*$", entry)
+				return p, fmt.Errorf("env %q does not match Argos's ^[A-Z_][A-Z0-9_]*=.*$", entry)
 			}
 			p.Env = withEnv(p.Env, entry)
 			continue
@@ -325,16 +325,16 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 		return m[2]
 	})
 	if strings.Contains(joined, "$(") || strings.Contains(joined, "`") {
-		return p, fmt.Errorf("command substitution left in command (llama-swap has no shell): %q", truncate(joined, 120))
+		return p, fmt.Errorf("command substitution left in command (Argos has no shell): %q", truncate(joined, 120))
 	}
 
 	// $$ escapes the $ -- within a Go regexp replacement, "${PORT}" would be
 	// read as a *named group* reference and expand to nothing, silently
-	// deleting the port llama-swap needs for its health check.
+	// deleting the port Argos needs for its health check.
 	joined = rePort.ReplaceAllString(joined, "${1}$${PORT}")
 
-	// Split with llama-swap's own splitter, so what this package parses is
-	// exactly what llama-swap will parse again at launch time.
+	// Split with Argos's own splitter, so what this package parses is
+	// exactly what Argos will parse again at launch time.
 	argv, err := config.SanitizeCommand(joined)
 	if err != nil {
 		return p, err
@@ -345,7 +345,7 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 
 	// The environment is also written inline, as
 	// `HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_VISIBLE_DEVICES=0,1 llama-server ...`.
-	// llama-swap runs the command with no shell, so a leading assignment left in
+	// Argos runs the command with no shell, so a leading assignment left in
 	// argv becomes argv[0] and the model cannot start at all: move them to env,
 	// where the export lines above already go, so the device pinning they carry
 	// survives too.
@@ -375,7 +375,7 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 		}
 	}
 	if p.ModelID == "" {
-		return p, fmt.Errorf("no .gguf model path in the command, so it cannot be mapped to a llama-swap model")
+		return p, fmt.Errorf("no .gguf model path in the command, so it cannot be mapped to an Argos model")
 	}
 	if p.MMProjPath == "" {
 		// a multimodal model without --mmproj cannot see images; flag it rather
@@ -391,7 +391,7 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 	}
 	if !hasPort(argv) {
 		argv = append(argv, "--port", "${PORT}")
-		p.Warnings = append(p.Warnings, "no --port in the command; appended --port ${PORT} so llama-swap can health-check it")
+		p.Warnings = append(p.Warnings, "no --port in the command; appended --port ${PORT} so Argos can health-check it")
 	}
 	p.Argv = argv
 	return p, nil
@@ -399,7 +399,7 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 
 // takeEnvPrefixes moves the leading VAR=value arguments off argv and onto env,
 // preserving their order. The same ^[A-Z_][A-Z0-9_]*= rule the export lines are
-// held to applies here, so anything that is not a valid llama-swap env entry --
+// held to applies here, so anything that is not a valid Argos env entry --
 // a lowercase name, a flag like --model=x.gguf (whose name is not uppercase) --
 // stays in argv and is still reported as a command that does not start with
 // llama-server, rather than being silently treated as environment.
@@ -415,7 +415,7 @@ func takeEnvPrefixes(argv, env []string) ([]string, []string) {
 // the same key. Both the export lines and the inline prefixes land in this list,
 // so a variable written both ways - `export HIP_VISIBLE_DEVICES=0,1` and an
 // inline `HIP_VISIBLE_DEVICES=0,1 llama-server ...` - otherwise reaches
-// llama-swap twice. Replacing matches what a shell does (the later assignment
+// Argos twice. Replacing matches what a shell does (the later assignment
 // wins) and keeps the first occurrence's position, so the env stays in the order
 // the operator wrote it.
 func withEnv(env []string, entry string) []string {
@@ -429,8 +429,8 @@ func withEnv(env []string, entry string) []string {
 	return append(env, entry)
 }
 
-// SplitCommand joins argv back into a llama-swap cmd string, quoting only what
-// shlex actually treats specially (llama-swap splits with shlex.Posix.Split).
+// SplitCommand joins argv back into an Argos cmd string, quoting only what
+// shlex actually treats specially (Argos splits with shlex.Posix.Split).
 func SplitCommand(argv []string) string {
 	out := make([]string, len(argv))
 	for i, a := range argv {
@@ -504,16 +504,16 @@ func (o Options) ProfileName() string {
 }
 
 // Build converts Odysseus' saved launch configs and currently-tracked tasks
-// into llama-swap variant models, plus -- when the operator has picked a preset
+// into Argos variant models, plus -- when the operator has picked a preset
 // for specific models -- one union profile whose pins cover only those models.
 //
 // Variant names carry the Odysseus label verbatim (sanitised to a safe ID), so
 // a config saved as "turbo4" becomes the variant "<base>--turbo4" and the
 // profile pin points the base model at exactly that.
 //
-// Models without a choice get no pin, so they keep llama-swap's own launch:
+// Models without a choice get no pin, so they keep Argos's own launch:
 // nothing carries over between models. This is what makes the feature
-// per-model, where llama-swap's own profile engine alone would make one active
+// per-model, where Argos's own profile engine alone would make one active
 // profile rewrite every pinned model at once.
 func Build(state State, opts Options) (*Result, error) {
 	prefix := opts.ProfilePrefix
@@ -636,7 +636,7 @@ func Build(state State, opts Options) (*Result, error) {
 		if len(pins) > 0 {
 			res.Profiles[profileName] = map[string]any{
 				"description": fmt.Sprintf(
-					"Per-model launch overrides chosen in llama-swap from Odysseus saved configs (%d model(s))",
+					"Per-model launch overrides chosen in Argos from Odysseus saved configs (%d model(s))",
 					len(pins)),
 				"pins": pins,
 			}
@@ -655,7 +655,7 @@ func Build(state State, opts Options) (*Result, error) {
 // choices survive config reloads and container restarts.
 type ChoiceState struct {
 	// Model -> Odysseus preset label. An empty or missing entry means "use
-	// llama-swap's own launch for this model".
+	// Argos's own launch for this model".
 	Choices map[string]string `json:"choices"`
 }
 
@@ -711,15 +711,15 @@ func prefixWarnings(taskID string, in []string) []string {
 	return out
 }
 
-// Render produces the config fragment. Shape matches what llama-swap's
+// Render produces the config fragment. Shape matches what Argos's
 // -config-dir merge expects: a `models:` identity map and a `profiles:`
 // identity map, both of which may add new keys but never redefine an existing
 // one.
 func Render(res *Result) ([]byte, error) {
 	var b strings.Builder
-	b.WriteString("# Generated by llama-swap's Odysseus integration -- do not hand-edit.\n" +
+	b.WriteString("# Generated by Argos's Odysseus integration -- do not hand-edit.\n" +
 		"# Source: Odysseus /api/cookbook/state (task.payload._cmd). Regenerated on refresh.\n" +
-		"# The base models, and therefore llama-swap's own default launch, are untouched:\n" +
+		"# The base models, and therefore Argos's own default launch, are untouched:\n" +
 		"# these variants are only used while one of these profiles is active.\n\n")
 
 	doc := map[string]any{}

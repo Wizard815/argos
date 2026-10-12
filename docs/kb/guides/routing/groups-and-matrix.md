@@ -9,7 +9,7 @@ updated: 2026-08-25
 
 # Running several models at once: groups and matrix
 
-Out of the box llama-swap runs one model at a time. The `routing` section
+Out of the box Argos runs one model at a time. The `routing` section
 changes that. There are two engines and you pick one:
 
 ```yaml

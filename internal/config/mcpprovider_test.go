@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/mcptools"
+	"github.com/Wizard815/Argos/internal/mcptools"
 )
 
 const configProviderFixture = `
@@ -19,11 +19,11 @@ apiKeys:
 models:
   qwen3:
     cmd: "llama-server --model /m/qwen3.gguf --port ${PORT}"
-peers:
   edge:
+    cmd: "remote-wrapper --port ${PORT}"
     proxy: "http://edge:8080"
-    apiKey: "peer-token-value"
-    models: ["m1"]
+    env:
+      - "OPENAI_API_KEY=peer-token-value"
 `
 
 func newTestConfigProvider(t *testing.T) *ConfigProvider {
@@ -95,7 +95,7 @@ func TestConfigProvider_GetConfigWithQuery(t *testing.T) {
 	if !strings.Contains(got, `jq query .models.qwen3`) {
 		t.Errorf("result does not name the query:\n%s", got)
 	}
-	if !strings.Contains(got, "cmd:") || strings.Contains(got, "peers:") {
+	if !strings.Contains(got, "cmd:") || strings.Contains(got, "edge") {
 		t.Errorf("query did not scope the output to the model:\n%s", got)
 	}
 }
@@ -106,9 +106,9 @@ func TestConfigProvider_GetConfigQueryTransforms(t *testing.T) {
 		t.Errorf("`.models | keys` did not list the model ids:\n%s", got)
 	}
 
-	got = callConfig(t, newTestConfigProvider(t), `{"query":".peers | to_entries | map(.value.proxy)"}`).Content
+	got = callConfig(t, newTestConfigProvider(t), `{"query":".models | to_entries | map(.value.proxy)"}`).Content
 	if !strings.Contains(got, "http://edge:8080") {
-		t.Errorf("a pipeline over peers did not reach the proxy:\n%s", got)
+		t.Errorf("a pipeline over models did not reach the proxy:\n%s", got)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestConfigProvider_GetConfigOmitsDefaults(t *testing.T) {
 			t.Errorf("result includes default value %q:\n%s", defaultValue, got)
 		}
 	}
-	for _, configuredValue := range []string{"cmd:", "proxy: http://edge:8080", "models:", "m1"} {
+	for _, configuredValue := range []string{"cmd:", "proxy: http://edge:8080", "models:", "edge:"} {
 		if !strings.Contains(got, configuredValue) {
 			t.Errorf("result dropped configured value %q:\n%s", configuredValue, got)
 		}
@@ -226,11 +226,11 @@ func TestConfigProvider_GetConfigQueryRuntimeError(t *testing.T) {
 // The environment holds the credentials redaction exists to keep out of the
 // result, so jq's env access must stay closed.
 func TestConfigProvider_GetConfigQueryCannotReadEnvironment(t *testing.T) {
-	t.Setenv("LLAMA_SWAP_TEST_SECRET", "do-not-leak")
+	t.Setenv("ARGOS_TEST_SECRET", "do-not-leak")
 
 	for _, query := range []string{"env", "$ENV"} {
 		res := callConfig(t, newTestConfigProvider(t), fmt.Sprintf(`{"query":%q}`, query))
-		if strings.Contains(res.Content, "do-not-leak") || strings.Contains(res.Content, "LLAMA_SWAP_TEST_SECRET") {
+		if strings.Contains(res.Content, "do-not-leak") || strings.Contains(res.Content, "ARGOS_TEST_SECRET") {
 			t.Errorf("query %q leaked the process environment:\n%s", query, res.Content)
 		}
 	}
@@ -360,7 +360,7 @@ func TestConfigProvider_GetConfigQueryGuardLeavesNormalQueriesAlone(t *testing.T
 	provider.limits.heapGrowth = 16 << 20
 	provider.limits.heapPoll = 2 * time.Millisecond
 
-	for _, query := range []string{".", ".models | keys", `.models["qwen3"].cmd`, ".peers"} {
+	for _, query := range []string{".", ".models | keys", `.models["qwen3"].cmd`, ".models.edge"} {
 		res := callConfig(t, provider, fmt.Sprintf(`{"query":%q}`, query))
 		if res.IsError {
 			t.Errorf("query %s was refused:\n%s", query, res.Content)

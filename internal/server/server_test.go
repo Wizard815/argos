@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/docagent"
-	"github.com/mostlygeek/llama-swap/internal/event"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/mcptools"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/router"
-	"github.com/mostlygeek/llama-swap/internal/store"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/docagent"
+	"github.com/Wizard815/Argos/internal/event"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/mcptools"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/router"
+	"github.com/Wizard815/Argos/internal/store"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 // stubRouter is a minimal router.LocalRouter for Server dispatch tests.
@@ -80,13 +80,13 @@ func (s *stubRouter) ProcessLogger(modelID string) (*logmon.Monitor, bool) {
 }
 
 // newTestServer wires a Server with stub routers and a built mux.
-func newTestServer(local router.LocalRouter, peer router.Router) *Server {
-	return newTestServerWithConfig(config.Config{}, local, peer)
+func newTestServer(local router.LocalRouter) *Server {
+	return newTestServerWithConfig(config.Config{}, local)
 }
 
 // newTestServerWithConfig is newTestServer with a caller-supplied config, for
 // tests that exercise config-driven middleware wiring in routes().
-func newTestServerWithConfig(cfg config.Config, local router.LocalRouter, peer router.Router) *Server {
+func newTestServerWithConfig(cfg config.Config, local router.LocalRouter) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	proxylog := logmon.NewWriter(io.Discard)
 	st, err := store.New("")
@@ -102,7 +102,6 @@ func newTestServerWithConfig(cfg config.Config, local router.LocalRouter, peer r
 		metrics:     newMetricsMonitor(proxylog, 0, 0, st),
 		store:       st,
 		local:       local,
-		peer:        peer,
 		shutdownCtx: ctx,
 		shutdownFn:  cancel,
 	}
@@ -113,8 +112,8 @@ func newTestServerWithConfig(cfg config.Config, local router.LocalRouter, peer r
 // newTestServerWithReference is newTestServer plus an indexed documentation
 // library, for the /api/mcp tests. Handlers read s.reference at request time,
 // so no re-registration is needed.
-func newTestServerWithReference(local router.LocalRouter, peer router.Router, fsys fs.FS) *Server {
-	s := newTestServer(local, peer)
+func newTestServerWithReference(local router.LocalRouter, fsys fs.FS) *Server {
+	s := newTestServer(local)
 	s.reference = docagent.New(fsys)
 
 	registry, err := mcptools.New(
@@ -226,7 +225,6 @@ func TestServer_New_MatrixConfig(t *testing.T) {
 func TestServer_RouteToLocalModel(t *testing.T) {
 	s := newTestServer(
 		newStubRouter([]string{"local-model"}, "local response"),
-		newStubRouter(nil, ""),
 	)
 
 	w := httptest.NewRecorder()
@@ -240,46 +238,11 @@ func TestServer_RouteToLocalModel(t *testing.T) {
 	}
 }
 
-func TestServer_RouteToPeerModel(t *testing.T) {
-	s := newTestServer(
-		newStubRouter(nil, ""),
-		newStubRouter([]string{"peer-model"}, "peer response"),
-	)
-
-	w := httptest.NewRecorder()
-	s.ServeHTTP(w, chatRequest("peer-model"))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
-	}
-	if w.Body.String() != "peer response" {
-		t.Errorf("body=%q want %q", w.Body.String(), "peer response")
-	}
-}
-
-func TestServer_RouteToLocalModel_PrefersLocalCollision(t *testing.T) {
-	s := newTestServer(
-		newStubRouter([]string{"shared"}, "local response"),
-		newStubRouter([]string{"shared"}, "peer response"),
-	)
-
-	w := httptest.NewRecorder()
-	s.ServeHTTP(w, chatRequest("shared"))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
-	}
-	if w.Body.String() != "local response" {
-		t.Errorf("body=%q want local response", w.Body.String())
-	}
-}
-
 func TestServer_GlobalConcurrencyLimit(t *testing.T) {
 	t.Run("zero disables the limiter, unbounded requests pass", func(t *testing.T) {
 		s := newTestServerWithConfig(
 			config.Config{GlobalConcurrencyLimit: 0},
 			newStubRouter([]string{"local-model"}, "ok"),
-			newStubRouter(nil, ""),
 		)
 
 		for i := 0; i < 5; i++ {
@@ -304,7 +267,6 @@ func TestServer_GlobalConcurrencyLimit(t *testing.T) {
 		s := newTestServerWithConfig(
 			config.Config{GlobalConcurrencyLimit: 1},
 			blocking,
-			newStubRouter(nil, ""),
 		)
 
 		done := make(chan struct{})
@@ -330,7 +292,6 @@ func TestServer_GlobalConcurrencyLimit(t *testing.T) {
 func TestServer_UnknownModelReturns404(t *testing.T) {
 	s := newTestServer(
 		newStubRouter([]string{"local-model"}, ""),
-		newStubRouter(nil, ""),
 	)
 
 	w := httptest.NewRecorder()
@@ -344,7 +305,6 @@ func TestServer_UnknownModelReturns404(t *testing.T) {
 func TestServer_AudioAPIRoutesTaskRequest(t *testing.T) {
 	s := newTestServer(
 		newStubRouter([]string{"local-audio"}, "local audio response"),
-		newStubRouter(nil, ""),
 	)
 
 	w := httptest.NewRecorder()
@@ -365,7 +325,7 @@ func TestServer_AudioAPIRewritesUpstreamPath(t *testing.T) {
 		gotPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
 	}
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, audioTaskRequest("m1"))
@@ -376,7 +336,7 @@ func TestServer_AudioAPIRewritesUpstreamPath(t *testing.T) {
 }
 
 func TestServer_UnknownPathReturns404(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/does-not-exist", nil))
@@ -387,7 +347,7 @@ func TestServer_UnknownPathReturns404(t *testing.T) {
 }
 
 func TestServer_Health(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	for _, path := range []string{"/health", "/wol-health"} {
 		w := httptest.NewRecorder()
@@ -399,7 +359,7 @@ func TestServer_Health(t *testing.T) {
 }
 
 func TestServer_CORSPreflight(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
 	w := httptest.NewRecorder()
@@ -415,7 +375,7 @@ func TestServer_CORSPreflight(t *testing.T) {
 
 func TestServer_Unload(t *testing.T) {
 	local := newStubRouter([]string{"m1"}, "")
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/unload", nil))
@@ -437,7 +397,7 @@ func TestServer_Unload(t *testing.T) {
 func TestServer_Running(t *testing.T) {
 	local := newStubRouter([]string{"m1"}, "")
 	local.running = map[string]process.ProcessState{"m1": process.StateReady}
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = config.Config{Models: map[string]config.ModelConfig{
 		"m1": {
 			Cmd:         "llama-server",
@@ -480,7 +440,7 @@ func TestServer_Running(t *testing.T) {
 
 func TestServer_Preload(t *testing.T) {
 	local := newStubRouter([]string{"m1"}, "ok")
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = config.Config{Hooks: config.HooksConfig{
 		OnStartup: config.HookOnStartup{Preload: []string{"m1"}},
 	}}
@@ -528,8 +488,7 @@ func TestServer_New_OnStartupProfile(t *testing.T) {
 
 func TestServer_Shutdown_StopsRoutersAndIsIdempotent(t *testing.T) {
 	local := newStubRouter([]string{"local-model"}, "")
-	peer := newStubRouter(nil, "")
-	s := newTestServer(local, peer)
+	s := newTestServer(local)
 
 	if err := s.Shutdown(time.Second); err != nil {
 		t.Fatalf("Shutdown: %v", err)
@@ -540,9 +499,6 @@ func TestServer_Shutdown_StopsRoutersAndIsIdempotent(t *testing.T) {
 	if got := local.shutdownCalls.Load(); got != 1 {
 		t.Errorf("local shutdownCalls=%d want 1", got)
 	}
-	if got := peer.shutdownCalls.Load(); got != 1 {
-		t.Errorf("peer shutdownCalls=%d want 1", got)
-	}
 }
 
 func TestServer_LogStream_ModelID(t *testing.T) {
@@ -552,7 +508,7 @@ func TestServer_LogStream_ModelID(t *testing.T) {
 	local := newStubRouter([]string{"mymodel"}, "")
 	local.loggers = map[string]*logmon.Monitor{"mymodel": buf}
 
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = config.Config{Models: map[string]config.ModelConfig{"mymodel": {}}}
 
 	// Pre-cancel the context so the streaming loop exits immediately after
@@ -573,7 +529,7 @@ func TestServer_LogStream_ModelID(t *testing.T) {
 }
 
 func TestServer_LogStream_UnknownID_Returns400(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/logs/stream/no-such-model", nil))

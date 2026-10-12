@@ -88,7 +88,7 @@ macros:
   model_dir: "${env.MODEL_DIR}"
 
 apiKeys:
-  - "${env.LLAMA_SWAP_KEY}"
+  - "${env.ARGOS_KEY}"
 ```
 
 Two things to know:
@@ -104,7 +104,7 @@ commit. See `guides/api-integration/api-keys-and-auth`.
 ## Macros work almost everywhere
 
 Not just `cmd` — `cmdStop`, `proxy`, `checkEndpoint`, `metadata`, `filters`,
-`apiKeys` and peer settings all accept macros. Inside `metadata` they even
+and `apiKeys` all accept macros. Inside `metadata` they even
 substitute into nested lists and objects.
 
 ## Related

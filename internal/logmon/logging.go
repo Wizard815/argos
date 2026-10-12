@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mostlygeek/llama-swap/internal/event"
+	"github.com/Wizard815/Argos/internal/event"
 )
 
 const DataEventID = 0x04

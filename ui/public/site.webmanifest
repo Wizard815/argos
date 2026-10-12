@@ -1,6 +1,6 @@
 {
-  "name": "llama-swap",
-  "short_name": "llama-swap",
+  "name": "argos",
+  "short_name": "argos",
   "icons": [
     {
       "src": "/web-app-manifest-192x192.png",

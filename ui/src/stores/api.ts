@@ -347,11 +347,10 @@ interface ModelListRecord {
   capabilities?: Model["capabilities"];
   context_length?: number;
   meta?: {
-    llamaswap?: {
+    argos?: {
       type?: PlaygroundModelType | "alias";
       aliases?: string[];
       modelID?: string;
-      peerID?: string;
       strategy?: string;
       targets?: string[];
       spillover?: number;
@@ -371,7 +370,7 @@ async function loadPlaygroundModels(request: number): Promise<Model[]> {
     const records = responseData.data ?? [];
     const aliasesByModel = new Map<string, Set<string>>();
     for (const record of records) {
-      const metadata = record.meta?.llamaswap;
+      const metadata = record.meta?.argos;
       if (metadata?.aliases) {
         aliasesByModel.set(record.id, new Set(metadata.aliases));
       }
@@ -382,9 +381,9 @@ async function loadPlaygroundModels(request: number): Promise<Model[]> {
       }
     }
     const newModels = records
-      .filter((record) => record.meta?.llamaswap?.type !== "alias")
+      .filter((record) => record.meta?.argos?.type !== "alias")
       .map((record): Model => {
-        const metadata = record.meta?.llamaswap;
+        const metadata = record.meta?.argos;
         const metadataType = metadata?.type;
         const playgroundType: PlaygroundModelType = metadataType && metadataType !== "alias"
           ? metadataType
@@ -395,7 +394,6 @@ async function loadPlaygroundModels(request: number): Promise<Model[]> {
           name: record.name ?? "",
           description: record.description ?? "",
           unlisted: false,
-          peerID: metadata?.peerID ?? "",
           playgroundType,
           aliases: [...(aliasesByModel.get(record.id) ?? [])],
           capabilities: record.capabilities,

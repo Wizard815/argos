@@ -9,21 +9,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
-	"github.com/mostlygeek/llama-swap/internal/logmon"
-	"github.com/mostlygeek/llama-swap/internal/process"
-	"github.com/mostlygeek/llama-swap/internal/swaputil"
+	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/process"
+	"github.com/Wizard815/Argos/internal/swaputil"
 )
 
 func TestServer_HandleListModels(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	s.cfg = config.Config{
 		Models: map[string]config.ModelConfig{
 			"visible": {Name: "Visible", Description: "a model"},
 			"hidden":  {Unlisted: true},
-		},
-		Peers: config.PeerDictionaryConfig{
-			"peer1": {Models: []string{"remote-model"}},
 		},
 	}
 
@@ -49,7 +46,7 @@ func TestServer_HandleListModels(t *testing.T) {
 	for _, m := range resp.Data {
 		ids[m.ID] = true
 	}
-	if !ids["visible"] || !ids["peer1/remote-model"] {
+	if !ids["visible"] {
 		t.Errorf("missing expected models: %v", ids)
 	}
 	if ids["hidden"] {
@@ -57,51 +54,8 @@ func TestServer_HandleListModels(t *testing.T) {
 	}
 }
 
-func TestServer_HandleListModels_PeerNamespaces(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
-	s.cfg = config.Config{
-		Models: map[string]config.ModelConfig{"shared": {}},
-		Peers: config.PeerDictionaryConfig{
-			"cuda":  {Models: []string{"shared"}},
-			"strix": {Models: []string{"shared"}},
-		},
-	}
-
-	w := httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
-
-	var resp struct {
-		Data []modelRecord `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	ids := make(map[string]bool)
-	for _, model := range resp.Data {
-		ids[model.ID] = true
-	}
-	for _, id := range []string{"shared", "cuda/shared", "strix/shared"} {
-		if !ids[id] {
-			t.Errorf("missing model %q from %v", id, ids)
-		}
-	}
-	if len(ids) != 3 {
-		t.Errorf("model IDs = %v, want exactly local and two qualified peers", ids)
-	}
-
-	statusIDs := make(map[string]bool)
-	for _, model := range s.modelStatus() {
-		statusIDs[model.Id] = true
-	}
-	for _, id := range []string{"shared", "cuda/shared", "strix/shared"} {
-		if !statusIDs[id] {
-			t.Errorf("missing status model %q from %v", id, statusIDs)
-		}
-	}
-}
-
 func TestServer_HandleListModels_Aliases(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 	s.cfg = config.Config{
 		IncludeAliasesInList: true,
 		Models: map[string]config.ModelConfig{
@@ -128,15 +82,12 @@ func TestServer_HandleListModels_Aliases(t *testing.T) {
 func TestServer_HandleListModels_Status(t *testing.T) {
 	local := newStubRouter(nil, "")
 	local.running = map[string]process.ProcessState{"loaded-model": process.StateReady}
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = config.Config{
 		IncludeAliasesInList: true,
 		Models: map[string]config.ModelConfig{
 			"loaded-model":   {Aliases: []string{"loaded-alias"}},
 			"unloaded-model": {},
-		},
-		Peers: config.PeerDictionaryConfig{
-			"peer1": {Models: []string{"remote-model"}},
 		},
 	}
 
@@ -163,9 +114,6 @@ func TestServer_HandleListModels_Status(t *testing.T) {
 	}
 	if statuses["unloaded-model"] != "unloaded" {
 		t.Errorf("unloaded-model status = %q, want unloaded", statuses["unloaded-model"])
-	}
-	if statuses["peer1/remote-model"] != "unloaded" {
-		t.Errorf("peer1/remote-model status = %q, want unloaded", statuses["peer1/remote-model"])
 	}
 }
 
@@ -200,7 +148,7 @@ func TestServer_FindModelInPath(t *testing.T) {
 
 func TestServer_HandleUpstream(t *testing.T) {
 	local := newStubRouter([]string{"m1"}, "upstream-body")
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = config.Config{Models: map[string]config.ModelConfig{"m1": {}}}
 
 	t.Run("proxies to local", func(t *testing.T) {
@@ -241,7 +189,7 @@ func TestServer_HandleComfyUI(t *testing.T) {
 		gotContext, _ = swaputil.ReadContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = config.Config{Models: map[string]config.ModelConfig{config.ComfyUIModelID: {}}}
 	s.routes()
 
@@ -352,25 +300,17 @@ func TestServer_HandleComfyUI_RequiresExactLocalModel(t *testing.T) {
 		name  string
 		cfg   config.Config
 		local *stubRouter
-		peer  *stubRouter
 	}{
 		{
 			name:  "missing model",
 			cfg:   config.Config{},
 			local: newStubRouter(nil, ""),
-			peer:  newStubRouter(nil, ""),
-		},
-		{
-			name:  "peer model",
-			cfg:   config.Config{Models: map[string]config.ModelConfig{}},
-			local: newStubRouter(nil, ""),
-			peer:  newStubRouter([]string{config.ComfyUIModelID}, "peer"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := newTestServer(tt.local, tt.peer)
+			s := newTestServer(tt.local)
 			s.cfg = tt.cfg
 			s.routes()
 			w := httptest.NewRecorder()
@@ -384,7 +324,7 @@ func TestServer_HandleComfyUI_RequiresExactLocalModel(t *testing.T) {
 
 func TestServer_HandleComfyUI_UsesAuthentication(t *testing.T) {
 	local := newStubRouter([]string{config.ComfyUIModelID}, "ok")
-	s := newTestServer(local, newStubRouter(nil, ""))
+	s := newTestServer(local)
 	s.cfg = config.Config{
 		RequiredAPIKeys: []string{"secret"},
 		Models:          map[string]config.ModelConfig{config.ComfyUIModelID: {}},
@@ -441,7 +381,7 @@ func TestProxy_HandleUpstreamPreservesEscapedPath(t *testing.T) {
 				got = r.URL.EscapedPath()
 				w.WriteHeader(http.StatusOK)
 			}
-			s := newTestServer(local, newStubRouter(nil, ""))
+			s := newTestServer(local)
 			models := make(map[string]config.ModelConfig, len(tt.models))
 			for _, model := range tt.models {
 				models[model] = config.ModelConfig{}
@@ -473,7 +413,6 @@ func upstreamMetricsServer(t *testing.T, response string) *Server {
 		inflight:    newInflightTracker(),
 		metrics:     newTestMetricsMonitor(t, proxylog, 10, 0),
 		local:       newStubRouter([]string{"m1"}, response),
-		peer:        newStubRouter(nil, ""),
 	}
 	s.routes()
 	return s
@@ -486,7 +425,7 @@ func TestServer_HandleUpstream_IgnorePaths(t *testing.T) {
 	t.Run("matched path, model not loaded, returns 409", func(t *testing.T) {
 		local := newStubRouter([]string{"m1"}, "upstream-body")
 		// running is nil/empty: model is not in RunningModels() => not loaded.
-		s := newTestServer(local, newStubRouter(nil, ""))
+		s := newTestServer(local)
 		s.cfg = config.Config{
 			Models: map[string]config.ModelConfig{"m1": {}},
 			Upstream: config.UpstreamConfig{
@@ -508,7 +447,7 @@ func TestServer_HandleUpstream_IgnorePaths(t *testing.T) {
 	t.Run("matched path, model already loaded, serves normally", func(t *testing.T) {
 		local := newStubRouter([]string{"m1"}, "upstream-body")
 		local.running = map[string]process.ProcessState{"m1": process.StateReady}
-		s := newTestServer(local, newStubRouter(nil, ""))
+		s := newTestServer(local)
 		s.cfg = config.Config{
 			Models: map[string]config.ModelConfig{"m1": {}},
 			Upstream: config.UpstreamConfig{
@@ -526,7 +465,7 @@ func TestServer_HandleUpstream_IgnorePaths(t *testing.T) {
 
 	t.Run("non-matched path, model not loaded, serves normally", func(t *testing.T) {
 		local := newStubRouter([]string{"m1"}, "upstream-body")
-		s := newTestServer(local, newStubRouter(nil, ""))
+		s := newTestServer(local)
 		s.cfg = config.Config{
 			Models: map[string]config.ModelConfig{"m1": {}},
 			Upstream: config.UpstreamConfig{
@@ -542,26 +481,6 @@ func TestServer_HandleUpstream_IgnorePaths(t *testing.T) {
 		}
 	})
 
-	t.Run("matched path, peer model, serves normally", func(t *testing.T) {
-		// Peer routers do not appear via RunningModels on the local router;
-		// they should fall through to normal dispatch without 409.
-		local := newStubRouter(nil, "")
-		peer := newStubRouter([]string{"m1"}, "peer-body")
-		s := newTestServer(local, peer)
-		s.cfg = config.Config{
-			Models: map[string]config.ModelConfig{"m1": {}},
-			Upstream: config.UpstreamConfig{
-				IgnorePaths: []*regexp.Regexp{pattern},
-			},
-		}
-
-		w := httptest.NewRecorder()
-		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/upstream/m1/foo.js", nil))
-
-		if w.Code != http.StatusOK || w.Body.String() != "peer-body" {
-			t.Fatalf("status=%d body=%q, want 200 'peer-body'", w.Code, w.Body.String())
-		}
-	})
 }
 
 func TestServer_HandleUpstream_MetricsRecordsSupportedPath(t *testing.T) {
@@ -727,14 +646,13 @@ func upstreamInflightServer(t *testing.T, local *stubRouter, mc config.ModelConf
 		inflight:    newInflightTracker(),
 		metrics:     newTestMetricsMonitor(t, proxylog, 10, 0),
 		local:       local,
-		peer:        newStubRouter(nil, ""),
 	}
 	s.routes()
 	return s
 }
 
 func TestServer_HandleMetrics_Unavailable(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -744,7 +662,7 @@ func TestServer_HandleMetrics_Unavailable(t *testing.T) {
 }
 
 func TestServer_Redirects(t *testing.T) {
-	s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+	s := newTestServer(newStubRouter(nil, ""))
 
 	for path, want := range map[string]string{"/": "/ui", "/upstream": "/ui/models"} {
 		w := httptest.NewRecorder()
@@ -760,7 +678,7 @@ func TestServer_Redirects(t *testing.T) {
 
 func TestServer_HandleListModels_Capabilities(t *testing.T) {
 	newServer := func(mc config.ModelConfig) *Server {
-		s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+		s := newTestServer(newStubRouter(nil, ""))
 		s.cfg = config.Config{Models: map[string]config.ModelConfig{"m": mc}}
 		return s
 	}
@@ -965,10 +883,10 @@ func TestServer_HandleListModels_Capabilities(t *testing.T) {
 		if m.Architecture == nil || m.Architecture["input_modalities"] == nil {
 			t.Fatal("architecture should be rendered, not from metadata")
 		}
-		if m.Meta == nil || m.Meta["llamaswap"] == nil {
-			t.Fatal("meta.llamaswap should exist")
+		if m.Meta == nil || m.Meta["argos"] == nil {
+			t.Fatal("meta.argos should exist")
 		}
-		meta := m.Meta["llamaswap"].(map[string]any)
+		meta := m.Meta["argos"].(map[string]any)
 		if _, ok := meta["architecture"]; ok {
 			t.Error("architecture should be filtered from metadata")
 		}
@@ -993,10 +911,10 @@ func TestServer_HandleListModels_Capabilities(t *testing.T) {
 		if m.Architecture != nil {
 			t.Error("should not have architecture when caps is empty")
 		}
-		if m.Meta == nil || m.Meta["llamaswap"] == nil {
-			t.Fatal("meta.llamaswap should exist")
+		if m.Meta == nil || m.Meta["argos"] == nil {
+			t.Fatal("meta.argos should exist")
 		}
-		meta := m.Meta["llamaswap"].(map[string]any)
+		meta := m.Meta["argos"].(map[string]any)
 		if _, ok := meta["architecture"]; !ok {
 			t.Error("architecture should be preserved in metadata when caps is empty")
 		}
@@ -1014,7 +932,7 @@ func TestServer_HandleListModels_Capabilities(t *testing.T) {
 // The Models list reads both from this SSE payload.
 func TestServer_ModelStatus_Capabilities(t *testing.T) {
 	newServer := func(mc config.ModelConfig) *Server {
-		s := newTestServer(newStubRouter(nil, ""), newStubRouter(nil, ""))
+		s := newTestServer(newStubRouter(nil, ""))
 		s.cfg = config.Config{Models: map[string]config.ModelConfig{"m": mc}}
 		return s
 	}

@@ -18,10 +18,6 @@ models:
       setParamsByID:
         local-thinking:
           thinking: true
-peers:
-  remote:
-    proxy: http://example.com
-    models: [peer-model]
 profiles:
   coding:
     description: Coding profile
@@ -29,11 +25,8 @@ profiles:
       direct: local
       alias: local-fast
       variant: local-thinking
-      peer: peer-model
-      peer-qualified: remote/peer-model
       disabled-empty: ""
       disabled-null: ~
-      local: peer-model
 hooks:
   on_startup:
     profile: coding
@@ -55,9 +48,6 @@ hooks:
 		{"direct", "local", "local", false},
 		{"alias", "local-fast", "local", false},
 		{"variant", "local-thinking", "local", false},
-		{"peer", "peer-model", "peer-model", false},
-		{"peer-qualified", "remote/peer-model", "remote/peer-model", false},
-		{"local", "peer-model", "peer-model", false},
 		{"disabled-empty", "", "", true},
 		{"disabled-null", "", "", true},
 	}

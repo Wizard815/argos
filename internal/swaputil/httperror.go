@@ -25,8 +25,8 @@ type ErrorDetail struct {
 	Code    string  `json:"code,omitempty"`
 }
 
-// ErrorEnvelope is the JSON body llama-swap returns for every error response.
-// "error" is the OpenAI-compatible object above; "src" marks llama-swap, rather
+// ErrorEnvelope is the JSON body Argos returns for every error response.
+// "error" is the OpenAI-compatible object above; "src" marks Argos, rather
 // than an upstream inference server, as the origin of the error.
 type ErrorEnvelope struct {
 	Src   string      `json:"src"`
@@ -36,7 +36,7 @@ type ErrorEnvelope struct {
 // marshalFallback is written when an envelope somehow fails to marshal. It is
 // the same shape as a marshalled ErrorEnvelope so clients never see a body they
 // cannot parse.
-const marshalFallback = `{"src":"llama-swap","error":{"message":"failed to marshal response","type":"server_error","param":null,"code":"internal_error"}}`
+const marshalFallback = `{"src":"argos","error":{"message":"failed to marshal response","type":"server_error","param":null,"code":"internal_error"}}`
 
 // NewErrorEnvelope builds an error envelope for an HTTP status. The error's
 // type and code are derived from status; a non-empty code overrides the derived
@@ -48,7 +48,7 @@ func NewErrorEnvelope(status int, message, code string) ErrorEnvelope {
 		code = defaultCode
 	}
 	return ErrorEnvelope{
-		Src: "llama-swap",
+		Src: "argos",
 		Error: ErrorDetail{
 			Message: message,
 			Type:    errType,

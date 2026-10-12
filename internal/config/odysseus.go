@@ -7,23 +7,23 @@ import (
 	"strings"
 )
 
-// OdysseusConfig wires llama-swap to an Odysseus instance so Odysseus can stay
-// the author of a model's launch command while llama-swap remains the process
+// OdysseusConfig wires Argos to an Odysseus instance so Odysseus can stay
+// the author of a model's launch command while Argos remains the process
 // supervisor.
 //
 // Odysseus records the command it launched for each model in
 // cookbook_state.json (task.payload._cmd) and serves it from
-// GET /api/cookbook/state. When this section is enabled, llama-swap polls that
+// GET /api/cookbook/state. When this section is enabled, Argos polls that
 // endpoint and renders a generated config fragment containing one variant model
-// per (model, command) plus a llama-swap profile per command, whose `pins`
+// per (model, command) plus an Argos profile per command, whose `pins`
 // rewrite the base model ID to that variant.
 //
-// The base models -- and therefore llama-swap's own default launch -- are never
+// The base models -- and therefore Argos's own default launch -- are never
 // touched, so with no profile active (the state at startup and after every
 // reload) nothing changes and the Odysseus commands are opt-in.
 //
 // This is a local fork addition (see internal/odysseus), not part of upstream
-// llama-swap.
+// Argos.
 type OdysseusConfig struct {
 	// Enabled turns on the integration: the refresh timer, the
 	// GET /api/odysseus/status and POST /api/odysseus/refresh endpoints, and the
@@ -61,7 +61,7 @@ type OdysseusConfig struct {
 	Statuses []string `yaml:"statuses"`
 
 	// OutputFile is the generated fragment. It must live in the directory passed
-	// as -config-dir so llama-swap's merge (and the -watch-config watcher) picks
+	// as -config-dir so Argos's merge (and the -watch-config watcher) picks
 	// it up. Defaults to <profilePrefix>.generated.yaml beside modelscan's
 	// output only when an absolute path is given; otherwise it must be set.
 	OutputFile string `yaml:"outputFile"`
@@ -78,7 +78,7 @@ type OdysseusConfig struct {
 	ChoicesPath string `yaml:"choicesPath"`
 
 	// StateFile reads cookbook_state.json straight off disk instead of calling
-	// the API -- bind-mount Odysseus' data directory read-only into llama-swap.
+	// the API -- bind-mount Odysseus' data directory read-only into Argos.
 	// Preferred over the API: Odysseus restricts the X-Odysseus-Internal-Token
 	// bypass to direct loopback clients (app.py:385, _is_trusted_loopback), so a
 	// request from another container gets 401 however correct the token is, and

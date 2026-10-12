@@ -4,15 +4,15 @@ import re
 import shlex
 
 from src.command import parse_command, swap_model_id, to_odysseus
-from src.cookbook import build_state, profile_presets, write_state_file
+from src.cookbook import build_state, profile_presets
 
 from .conftest import FIXTURES
 
 ENV = re.compile(r"^[A-Z_][A-Z0-9_]*=")
 
 
-def llama_swap_accepts(cmd: str) -> tuple[str, list[str]]:
-    """What llama-swap-rescan's internal/odysseus ParseCommand requires of a preset's cmd."""
+def engine_accepts(cmd: str) -> tuple[str, list[str]]:
+    """What Argos's internal/odysseus ParseCommand requires of a preset's cmd."""
     argv = shlex.split(re.sub(r"\\\s*\n\s*", " ", cmd))
     env = []
     while argv and ENV.match(argv[0]):
@@ -55,7 +55,7 @@ def _profile(name, cmd, created=1.0, pid=None):
             "created_at": created}
 
 
-def test_presets_are_llama_swap_compatible_and_unique_per_model():
+def test_presets_are_engine_compatible_and_unique_per_model():
     profiles = [
         _profile("fast", "llama-server -m /m/Qwen3-8B-Q4_K_M.gguf -ngl 99", 1),
         _profile("Fast!", "llama-server -m /m/Qwen3-8B-Q4_K_M.gguf -ngl 40", 2),
@@ -65,9 +65,9 @@ def test_presets_are_llama_swap_compatible_and_unique_per_model():
     presets, warnings = profile_presets(profiles)
     assert [p["label"] for p in presets] == ["fast", "Fast! 2", "fast"]
     assert "not a .gguf path" in warnings[0]
-    ids = [(llama_swap_accepts(p["cmd"])[0], p["label"]) for p in presets]
+    ids = [(engine_accepts(p["cmd"])[0], p["label"]) for p in presets]
     assert ids[0][0] == ids[1][0] == "qwen3-8b-q4_k_m"
-    assert llama_swap_accepts(presets[2]["cmd"])[1] == ["CUDA_VISIBLE_DEVICES=1"]
+    assert engine_accepts(presets[2]["cmd"])[1] == ["CUDA_VISIBLE_DEVICES=1"]
     for p in presets:
         assert set(p) >= {"name", "model", "cmd", "remoteHost", "port", "label", "fields"}
         assert p["fields"]["_manual_cmd"] == p["cmd"]
@@ -79,39 +79,31 @@ def test_no_cap_on_presets_per_model():
     assert len(presets) == 12  # the Cookbook stops at five
 
 
+ODY = {"presets": [
+    {"name": "Gemma 3 12B + vision", "model": "unsloth/gemma-3-12b-it-GGUF", "host": "root@mx",
+     "cmd": "llama-server -m /models/gemma-3-12b-it-Q4_K_M.gguf --mmproj /models/mmproj-gemma-3-12b-F16.gguf -c 8192 -ngl 99 --port 8081", "port": 8081},
+    {"name": "no command", "model": "x/y"},
+]}
+
+
 def test_state_passes_odysseus_through_and_avoids_its_labels():
-    cookbook = os.path.join(FIXTURES, "cookbook_state.json")
     profiles = [_profile("Gemma 3 12B + vision", "llama-server -m /models/gemma-3-12b-it-Q4_K_M.gguf")]
-    state = build_state(profiles, [], {"include_odysseus": True, "include_tasks": False}, cookbook)
-    labels = [p["label"] for p in state["presets"]]
-    assert labels == ["Gemma 3 12B + vision", "Gemma 3 12B + vision 2"]
-    assert len(state["tasks"]) == 2  # Odysseus' tasks, untouched
-    own_only = build_state(profiles, [], {"include_odysseus": False}, cookbook)
-    assert [p["label"] for p in own_only["presets"]] == ["Gemma 3 12B + vision"] and own_only["tasks"] == []
-    broken = build_state(profiles, [], {"include_odysseus": True}, "/nope.json")
-    assert broken["warnings"] and len(broken["presets"]) == 1
+    state = build_state(profiles, [], ODY)
+    assert [p["label"] for p in state["presets"]] == ["Gemma 3 12B + vision", "Gemma 3 12B + vision 2"]
+    theirs = state["presets"][0]
+    assert theirs["remoteHost"] == "root@mx" and theirs["port"] == "8081", "Odysseus' host and label names are mapped"
+    assert state["tasks"] == []
+    own_only = build_state(profiles, [], None)
+    assert [p["label"] for p in own_only["presets"]] == ["Gemma 3 12B + vision"]
+    broken = build_state(profiles, [], {"presets": [], "error": "not reachable"})
+    assert broken["warnings"] == ["odysseus presets: not reachable"] and len(broken["presets"]) == 1
 
 
-def test_write_state_file_is_plain_cookbook_json(tmp_path):
-    path = tmp_path / "data" / "cookbook_state.json"
-    write_state_file(str(path), {"tasks": [], "presets": [{"label": "x"}], "warnings": ["w"]})
-    assert json.loads(path.read_text()) == {"tasks": [], "presets": [{"label": "x"}]}
-    assert oct(path.stat().st_mode & 0o777) == "0o644"
-
-
-def test_state_endpoint_token_and_file_export(client, app, tmp_path):
+def test_state_endpoint_token_comes_from_the_environment(client, monkeypatch):
     client.post("/api/profiles", json={"name": "a", "launch_command": "llama-server -m /m/a.gguf"})
     state = client.get("/api/cookbook/state").get_json()
     assert "warnings" not in state and [p["label"] for p in state["presets"]][-1] == "a"
-
-    export = tmp_path / "out" / "cookbook_state.json"
-    assert client.put("/api/settings/export", json={"file": str(export), "token": "s3cret"}).get_json()["ok"]
+    monkeypatch.setenv("ARGOS_COOKBOOK_TOKEN", "s3cret")
     assert client.get("/api/cookbook/state").status_code == 401
     r = client.get("/api/cookbook/state", headers={"X-Odysseus-Internal-Token": "s3cret"})
     assert r.status_code == 200 and r.get_json()["presets"]
-    on_disk = json.loads(export.read_text())
-    assert on_disk["presets"][-1]["label"] == "a"
-    client.post("/api/profiles", json={"name": "b", "launch_command": "llama-server -m /m/b.gguf"})
-    assert json.loads(export.read_text())["presets"][-1]["label"] == "b"
-    info = client.get("/api/integrations").get_json()["export"]
-    assert info["token_required"] and info["written_at"] and not any(k.startswith("_") for k in info)
