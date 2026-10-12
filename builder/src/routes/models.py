@@ -47,6 +47,110 @@ def models_available():
               library=sorted({m["id"] for m in library}), engine_error=error, engine_connected=bool(url and not error))
 
 
+# ----- removing models, and your groups -----------------------------------------------------
+def _find_library_entry(path: str):
+    d = models_dir()
+    for m in scan_models(d) + scan_media(d):
+        if m["path"] == path:
+            return m
+    return None
+
+
+def _files_of(entry: dict) -> list[str]:
+    """Every file that makes up a model: all parts of a split GGUF, or the whole folder of a diffusers model."""
+    import glob
+    path = entry["path"]
+    if entry.get("format") == "diffusers":
+        return [path]
+    m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", path, re.IGNORECASE)
+    if m:
+        return sorted(glob.glob(glob.escape(path[: m.start()]) + "-*-of-" + m.group(2) + ".gguf"))
+    return [path]
+
+
+def _inside_models_dir(p: str) -> bool:
+    root = os.path.realpath(models_dir())
+    real = os.path.realpath(p)
+    return real != root and real.startswith(root + os.sep)
+
+
+@bp.post("/api/library/delete/check")
+def library_delete_check():
+    """What deleting a model would remove, and which profiles use it -- for the confirm question."""
+    entry = _find_library_entry(str(body().get("path") or ""))
+    if not entry:
+        return err("that model is not in the models folder", 404)
+    files = _files_of(entry)
+    profiles = [p["name"] for p in ctx().store.list_profiles() if entry["id"] and p.get("model_id") == entry["id"]]
+    return ok(model=entry["name"], files=files, size=entry["size"], profiles=profiles,
+              mmproj=[p for p in entry.get("mmproj") or [] if _only_user(p, entry)])
+
+
+def _only_user(mmproj: str, entry: dict) -> bool:
+    """True when no other model in the folder pairs with this projector, so it can go with the model."""
+    folder = os.path.dirname(mmproj)
+    return not any(m["path"] != entry["path"] and os.path.dirname(m["path"]) == folder for m in scan_models(models_dir()))
+
+
+@bp.post("/api/library/delete")
+def library_delete():
+    """Delete a model's file(s) from the models folder. Its profiles are kept (they just stop working)."""
+    import shutil
+    c, d = ctx(), body()
+    entry = _find_library_entry(str(d.get("path") or ""))
+    if not entry:
+        return err("that model is not in the models folder", 404)
+    files = _files_of(entry)
+    if d.get("with_mmproj"):
+        files += [p for p in entry.get("mmproj") or [] if _only_user(p, entry)]
+    removed, problems = [], []
+    for f in files:
+        if not _inside_models_dir(f):
+            problems.append(f"{f}: outside the models folder")
+            continue
+        try:
+            shutil.rmtree(f) if os.path.isdir(f) else os.remove(f)
+            removed.append(f)
+        except OSError as exc:
+            problems.append(f"{os.path.basename(f)}: {exc.strerror or exc}")
+    c.event("library", f"deleted {entry['name']} ({len(removed)} file{'s' if len(removed) != 1 else ''})",
+            level="warn" if problems else "info", data={"files": removed, "problems": problems})
+    if problems and not removed:
+        return err("; ".join(problems), 500)
+    return ok(removed=removed, problems=problems)
+
+
+GROUPS_KEY = "_model_groups"
+
+
+@bp.get("/api/library/groups")
+def library_groups():
+    saved = ctx().store.get_settings().get(GROUPS_KEY)
+    return ok(groups=(saved or {}).get("groups") or [])
+
+
+@bp.put("/api/library/groups")
+def library_groups_save():
+    """Your own model groups: [{name, models: [model ids]}]. A model is in at most one group."""
+    raw = body().get("groups")
+    if not isinstance(raw, list):
+        return err("groups must be a list")
+    groups, taken = [], set()
+    for g in raw[:200]:
+        name = str((g or {}).get("name") or "").strip()[:80]
+        if not name or any(x["name"].lower() == name.lower() for x in groups):
+            continue
+        models = []
+        for m in (g.get("models") or [])[:2000]:
+            m = str(m)[:300]
+            if m and m not in taken:
+                taken.add(m)
+                models.append(m)
+        groups.append({"name": name, "models": models})
+    ctx().store.set_setting(GROUPS_KEY, {"groups": groups})
+    return ok(groups=groups)
+
+
 @bp.post("/api/library/prefab")
 def prefab():
     """The starting command for one scanned model (by path), in Odysseus form."""

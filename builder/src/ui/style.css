@@ -604,3 +604,25 @@ details.advanced[open] > summary { color: var(--strong); }
 .assist-settings { max-width: 880px; }
 .assist-settings[hidden], .chat-wrap[hidden] { display: none !important; }
 .assist-settings .seg { align-self: flex-start; }
+/* grouped tables (the Models tree) and the small ⋯ menu */
+.model-groupbar { gap: 6px; margin: -2px 0 10px; flex-wrap: wrap; }
+.model-groupbar select { width: auto; height: 28px; }
+tr.group-row td { background: var(--hl-bg); border-top: 1px solid var(--border); cursor: pointer; user-select: none; padding: 7px 10px; }
+tr.group-row:hover td { background: var(--hover); }
+.group-caret { display: inline-block; width: 14px; color: var(--muted); }
+.group-name { font-weight: 600; color: var(--strong); }
+.group-count { margin-left: 8px; padding: 0 7px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.group-meta { margin-left: 10px; font-size: 11px; color: var(--muted); }
+.group-actions { float: right; display: inline-flex; gap: 2px; }
+.pop-menu { position: fixed; z-index: 80; min-width: 190px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 4px; display: flex; flex-direction: column; }
+.pop-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 0; background: transparent; color: var(--fg); text-align: left; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
+.pop-item:hover { background: var(--hover); }
+.pop-item.danger { color: var(--danger); }
+.pop-item .i { width: 14px; height: 14px; }
+/* perf sheet: settings stay on a line or two, numbers never wrap */
+.settings-cell { min-width: 170px; max-width: 300px; }
+#fTable td.actions .icon-btn { width: 24px; }
+.settings-cell .chips, .nowrap-chips { flex-wrap: wrap; }
+td.nowrap, .nowrap { white-space: nowrap; }
+#fBest td.cell-model, #fTable td.cell-model { max-width: 320px; }

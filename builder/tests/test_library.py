@@ -103,3 +103,36 @@ def test_library_routes_and_profile_counts(client, app):
     assert client.get("/api/library").get_json()["models"][0]["profiles"] == 3
     only = client.get("/api/profiles?model_id=qwen3-0.6b-q8_0").get_json()["profiles"]
     assert len(only) == 3 and all(p["model_id"] == "qwen3-0.6b-q8_0" for p in only)
+
+
+def test_delete_a_model_removes_all_its_parts_and_nothing_else(client, app):
+    m = app.config["MODELS_DIR"]
+    for part in (1, 2):
+        touch(os.path.join(m, "big", f"Big-Q4_K_M-0000{part}-of-00002.gguf"))
+    touch(os.path.join(m, "big", "mmproj-big-F16.gguf"))
+    touch(os.path.join(m, "keep", "Keep-Q8_0.gguf"))
+    touch(os.path.join(m, "sdxl", "model_index.json"))
+    touch(os.path.join(m, "sdxl", "unet", "x.safetensors"))
+    lib = client.get("/api/library").get_json()
+    big = next(x for x in lib["models"] if x["name"].startswith("Big"))
+    check = client.post("/api/library/delete/check", json={"path": big["path"]}).get_json()
+    assert len(check["files"]) == 2 and check["mmproj"] == [os.path.join(m, "big", "mmproj-big-F16.gguf")]
+    r = client.post("/api/library/delete", json={"path": big["path"], "with_mmproj": True}).get_json()
+    assert len(r["removed"]) == 3 and not r["problems"]
+    assert sorted(os.listdir(os.path.join(m, "big"))) == []
+    assert os.path.exists(os.path.join(m, "keep", "Keep-Q8_0.gguf"))
+
+    sdxl = next(x for x in client.get("/api/library").get_json()["media"] if x["name"] == "sdxl")
+    assert client.post("/api/library/delete", json={"path": sdxl["path"]}).get_json()["ok"]
+    assert not os.path.exists(os.path.join(m, "sdxl")), "a diffusers model is its whole folder"
+    assert client.post("/api/library/delete", json={"path": os.path.join(m, "..", "x.gguf")}).status_code == 404
+    assert client.post("/api/library/delete", json={"path": m}).status_code == 404
+
+
+def test_model_groups_round_trip(client):
+    assert client.get("/api/library/groups").get_json()["groups"] == []
+    r = client.put("/api/library/groups", json={"groups": [{"name": "Qwen", "models": ["a", "b"]}, {"name": "qwen", "models": ["c"]},
+                                                          {"name": "Gemma", "models": ["b", "d"]}, {"name": " "}]}).get_json()
+    assert r["groups"] == [{"name": "Qwen", "models": ["a", "b"]}, {"name": "Gemma", "models": ["d"]}],         "names are unique, a model sits in one group, blank names are dropped"
+    assert client.get("/api/library/groups").get_json()["groups"] == r["groups"]
+    assert client.put("/api/library/groups", json={"groups": "x"}).status_code == 400

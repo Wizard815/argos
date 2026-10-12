@@ -199,8 +199,8 @@
         <input type="search" id="fSearch" placeholder="Filter…" style="width:160px">
         <button class="btn" id="fCsv"><i data-icon="download"></i>CSV</button>
       </div>
-      <div class="card"><div class="card-head"><h2>Best per model</h2><span class="spacer"></span><span class="hint">by generation speed</span></div><div class="best-grid" id="fBest"></div></div>
-      <div class="card"><div class="table-wrap"><table id="fTable"></table></div></div>
+      <div class="card"><div class="card-head"><h2>Best per model</h2><span class="spacer"></span><span class="hint">each model's fastest run that worked</span></div><div class="table-wrap"><table id="fBest" class="dense"></table></div></div>
+      <div class="card"><div class="card-head" id="fRunsHead"></div><div class="table-wrap"><table id="fTable" class="dense"></table></div></div>
     </section>
 
     <!-- MODELS -->
@@ -216,6 +216,7 @@
       <div class="pane on" data-pane="library">
         <div class="card">
           <div class="card-head"><input type="search" id="mSearch" placeholder="Filter models…" style="width:240px"><span class="spacer"></span><span class="hint" id="mCount"></span></div>
+          <div class="row model-groupbar" id="mGroupBar"></div>
           <div class="table-wrap"><table id="mTable"></table></div>
         </div>
       </div>
@@ -339,7 +340,7 @@
         <span class="spacer"></span>
         <input type="search" id="eSearch" placeholder="Filter…" style="width:200px">
       </div>
-      <div class="row" style="margin-bottom:10px"><div class="seg" id="flagKinds" role="group" aria-label="Show"><button data-k="all" class="on">All</button><button data-k="flag">llama-server flags</button><button data-k="env">Environment variables</button></div><span class="spacer"></span><span class="muted mono-sm" id="flagCount"></span></div>
+      <div class="row" style="margin-bottom:10px"><div class="seg" id="flagKinds" role="group" aria-label="Show"><button data-k="all" class="on">All</button><button data-k="flag">llama-server flags</button><button data-k="env">Environment variables</button></div><span class="spacer"></span><span class="muted mono-sm" id="flagCount"></span><button class="btn sm ghost" id="flagRemoved" hidden></button><button class="btn sm primary" id="flagAdd"><i data-icon="plus"></i>Add</button></div>
       <div class="card"><div class="table-wrap"><table id="flagTable"></table></div></div>
     </section>
 

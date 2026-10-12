@@ -269,13 +269,46 @@ function renderTable(table, cols, rows, state, emptyMsg, opts = {}) {
     class: [c.num && "num", c.key && "sortable", state.key === c.key && "sorted", state.key === c.key && state.asc && "asc"].filter(Boolean).join(" "),
     onclick: c.key ? () => { state.asc = state.key === c.key ? !state.asc : false; state.key = c.key; renderTable(table, cols, rows, state, emptyMsg, opts); } : null,
   }, c.label)));
-  const body = rows.length
-    ? rows.map((r) => h("tr", {
-      class: [opts.onRow && "clickable", opts.rowClass && opts.rowClass(r)].filter(Boolean).join(" "),
-      onclick: opts.onRow ? (e) => { if (!e.target.closest("button, a, input, select")) opts.onRow(r); } : null,
-    }, cols.map((c) => { const v = c.cell(r); return v instanceof HTMLTableCellElement ? v : h("td", { class: c.num ? "num" : "" }, v); })))
-    : [h("tr", {}, h("td", { colspan: cols.length }, h("div", { class: "empty" }, emptyMsg)))];
+  const rowEl = (r) => h("tr", {
+    class: [opts.onRow && "clickable", opts.rowClass && opts.rowClass(r)].filter(Boolean).join(" "),
+    onclick: opts.onRow ? (e) => { if (!e.target.closest("button, a, input, select")) opts.onRow(r); } : null,
+  }, cols.map((c) => { const v = c.cell(r); return v instanceof HTMLTableCellElement ? v : h("td", { class: c.num ? "num" : "" }, v); }));
+  let body;
+  if (!rows.length) body = [h("tr", {}, h("td", { colspan: cols.length }, h("div", { class: "empty" }, emptyMsg)))];
+  else if (opts.group) {
+    // a tree: a header row per group ({key, label}) that collapses its rows; rows keep the column sort inside a group
+    const groups = new Map();
+    rows.forEach((r) => { const g = opts.group(r); if (!groups.has(g.key)) groups.set(g.key, { ...g, rows: [] }); groups.get(g.key).rows.push(r); });
+    const list = [...groups.values()];
+    if (opts.groupOrder) list.sort(opts.groupOrder);
+    body = list.flatMap((g) => {
+      const closed = !!(opts.collapsed && opts.collapsed.has(g.key));
+      const headRow = h("tr", { class: `group-row${closed ? " closed" : ""}`, title: closed ? "Show this group" : "Hide this group",
+        onclick: (e) => { if (!e.target.closest("button, a, input, select") && opts.onToggle) opts.onToggle(g.key); } },
+        h("td", { colspan: cols.length }, h("span", { class: "group-caret" }, closed ? "▸" : "▾"), h("span", { class: "group-name" }, g.label),
+          h("span", { class: "group-count" }, String(g.rows.length)), opts.groupExtra ? opts.groupExtra(g) : null));
+      return [headRow, ...(closed ? [] : g.rows.map(rowEl))];
+    });
+  } else body = rows.map(rowEl);
   fill(table, h("thead", {}, head), h("tbody", {}, body));
+}
+
+/** A small menu under a button: [{label, icon, run, danger}] (null entries are skipped). Closes on pick, outside click or Escape. */
+function popMenu(anchor, items) {
+  document.querySelectorAll(".pop-menu").forEach((m) => m.remove());
+  const r = anchor.getBoundingClientRect();
+  const menu = h("div", { class: "pop-menu", role: "menu" }, items.filter(Boolean).map((it) =>
+    h("button", { class: `pop-item${it.danger ? " danger" : ""}`, role: "menuitem", onclick: () => { close(); it.run(); } }, it.icon ? icon(it.icon) : null, it.label)));
+  const close = () => { menu.remove(); document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", esc); };
+  const outside = (e) => { if (!menu.contains(e.target) && e.target !== anchor) close(); };
+  const esc = (e) => { if (e.key === "Escape") close(); };
+  document.body.append(menu);
+  const w = menu.offsetWidth, hgt = menu.offsetHeight;
+  menu.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
+  menu.style.top = `${r.bottom + 4 + hgt > innerHeight ? Math.max(8, r.top - hgt - 4) : r.bottom + 4}px`;
+  document.addEventListener("pointerdown", outside, true);
+  document.addEventListener("keydown", esc);
+  return close;
 }
 
 // ── State & router ───────────────────────────────────────────
@@ -353,13 +386,27 @@ function importSources() {
     ["Odysseus cookbook", (i.odysseus && i.odysseus.commands) || []],
   ];
 }
+/** The model a profile or preset runs: its --model file name without .gguf (or the base model when there is none). */
+function importModelOf(it) {
+  const m = (it.command || "").match(/(?:^|\s)(?:-m|--model)(?:\s+|=)(?:"([^"]+)"|'([^']+)'|(\S+))/);
+  const path = m ? m[1] || m[2] || m[3] : "";
+  const file = path ? path.split(/[\\/]/).pop().replace(/\.gguf$/i, "").replace(/-0000\d-of-\d+$/, "") : "";
+  return file || it.base_model || "Other";
+}
+// Profiles and Odysseus presets, grouped under the model they run (profile names rarely say which model).
 function fillImportSelect() {
   const sel = $("#importSelect");
-  const groups = importSources().filter(([, items]) => items.length);
-  fill(sel, h("option", { value: "" }, groups.length ? "Import from…" : "Nothing to import yet"),
-    groups.map(([label, items], gi) => h("optgroup", { label }, items.map((it, ii) => h("option", { value: `${gi}:${ii}` }, it.kind ? `${it.name} (${it.kind})` : it.name)))));
-  sel.disabled = !groups.length;
-  sel._groups = groups;
+  const items = [];
+  importSources().forEach(([from, list]) => list.forEach((it) => items.push({ ...it, from })));
+  const byModel = new Map();
+  items.forEach((it, i) => { const m = importModelOf(it); if (!byModel.has(m)) byModel.set(m, []); byModel.get(m).push(i); });
+  const models = [...byModel.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }));
+  fill(sel, h("option", { value: "" }, items.length ? "Import from…" : "Nothing to import yet"),
+    models.map((m) => h("optgroup", { label: `${m}  (${byModel.get(m).length})` },
+      byModel.get(m).sort((a, b) => items[a].name.localeCompare(items[b].name)).map((i) =>
+        h("option", { value: String(i) }, `${items[i].name}${items[i].from === "Odysseus cookbook" ? "  · Odysseus" : ""}${items[i].kind ? ` (${items[i].kind})` : ""}`)))));
+  sel.disabled = !items.length;
+  sel._items = items;
 }
 
 // ── Builder ──────────────────────────────────────────────────
@@ -526,9 +573,8 @@ function initBuilder() {
   $("#composerInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#parseBtn").click(); });
   $("#blankBtn").onclick = () => openCommand("llama-server -m /models/model.gguf --port 8080 -ngl 99", { source: "blank" });
   $("#importSelect").onchange = (e) => {
-    const [gi, ii] = e.target.value.split(":").map(Number);
+    const it = e.target.value === "" ? null : e.target._items?.[Number(e.target.value)];
     e.target.value = "";
-    const it = e.target._groups?.[gi]?.[1]?.[ii];
     if (it) openCommand(it.command, { name: it.name, base_model: it.base_model, source: it.kind ? `${it.source} · ${it.kind}` : it.source, profileId: it.profileId });
   };
   $("#bSave").onclick = () => saveProfile(false);
@@ -996,30 +1042,51 @@ async function showLog(launchId) {
     modal(`Log · ${launchId}`, h("pre", { class: "log", style: "max-height:65dvh" }, text || "(empty)"));
   } catch (e) { fail(e); }
 }
+// The perf sheet: a ranked "best per model" table, then every run, grouped under its model (collapsible).
+const PF = { grouped: true, collapsed: new Set(), bestSort: { key: "tokens_per_second", asc: false } };
+try {
+  PF.grouped = localStorage.getItem("argos.perf.grouped") !== "0";
+  PF.collapsed = new Set(JSON.parse(localStorage.getItem("argos.perf.closed") || "[]"));
+} catch (e) { /* defaults */ }
+const pfSave = () => { try { localStorage.setItem("argos.perf.grouped", PF.grouped ? "1" : "0"); localStorage.setItem("argos.perf.closed", JSON.stringify([...PF.collapsed])); } catch (e) { /* ignore */ } };
+const tpsBar = (v, max) => h("div", { class: "bar-cell" }, num(v), h("span", { class: "bar" }, h("i", { style: `width:${Math.round(((v || 0) / max) * 100)}%` })));
+
 function renderPerf() {
   const m = $("#fModel").value;
   const best = S.best.filter((b) => !m || b.base_model === m);
-  fill($("#fBest"), best.length ? best.map((b) => h("div", { class: "best" },
-    h("div", { class: "model", title: b.base_model }, b.base_model),
-    h("div", { class: "tps" }, num(b.tokens_per_second), h("small", {}, ` t/s · pp ${num(b.prompt_per_second, 0)} t/s`)),
-    h("div", { class: "chips" }, settingChips(b)),
-    h("div", { class: "row" }, h("span", { class: "muted mono-sm", style: "flex:1" }, `${b.runs} run${b.runs === 1 ? "" : "s"} · ${ago(b.created_at)}`),
-      btn("Open", () => openRunInBuilder(b), "sm", "sliders"), btn("Inventory", () => openRunInInventory(b), "sm ghost", "database")))) : h("div", { class: "empty" }, "No successful runs yet. Benchmark something in the Playground."));
+  const maxBest = Math.max(1, ...best.map((b) => b.tokens_per_second || 0));
+  renderTable($("#fBest"), [
+    { key: "base_model", label: "Model", cell: (b) => h("td", { class: "cell-model", title: b.base_model }, h("div", { class: "cell-main" }, b.base_model)) },
+    { key: "tokens_per_second", label: "Gen t/s", num: true, cell: (b) => tpsBar(b.tokens_per_second, maxBest) },
+    { key: "prompt_per_second", label: "Prompt t/s", num: true, cell: (b) => num(b.prompt_per_second, 0) },
+    { label: "With", cell: (b) => h("div", { class: "chips nowrap-chips" }, settingChips(b)) },
+    { key: "runs", label: "Runs", num: true, cell: (b) => b.runs },
+    { key: "created_at", label: "Best on", cell: (b) => h("span", { class: "muted nowrap", title: new Date(b.created_at * 1000).toLocaleString() }, ago(b.created_at)) },
+    { label: "", cell: (b) => h("td", { class: "actions" }, iconBtn("sliders", "Open in builder", () => openRunInBuilder(b)), iconBtn("database", "Open in Inventory", () => openRunInInventory(b))) },
+  ], best, PF.bestSort, "No successful runs yet. Benchmark something in the Playground.");
+
   const rows = perfRows();
   const maxTps = Math.max(1, ...rows.map((r) => r.tokens_per_second || 0));
+  const groupBox = h("input", { type: "checkbox", checked: PF.grouped });
+  groupBox.addEventListener("change", () => { PF.grouped = groupBox.checked; pfSave(); renderPerf(); });
+  const names = [...new Set(rows.map((r) => r.base_model))];
+  fill($("#fRunsHead"), h("h2", {}, `Runs (${rows.length})`), h("span", { class: "spacer" }),
+    h("label", { class: "check" }, groupBox, "group by model"),
+    PF.grouped ? [btn("Collapse all", () => { names.forEach((n) => PF.collapsed.add(n)); pfSave(); renderPerf(); }, "sm ghost"),
+      btn("Expand all", () => { names.forEach((n) => PF.collapsed.delete(n)); pfSave(); renderPerf(); }, "sm ghost")] : null);
   renderTable($("#fTable"), [
-    { key: "created_at", label: "When", cell: (r) => h("span", { class: "muted", title: new Date(r.created_at * 1000).toLocaleString() }, ago(r.created_at)) },
-    { key: "base_model", label: "Model", cell: (r) => h("td", { class: "trunc", title: r.launch_command }, h("span", { class: "strong" }, r.base_model), r.profile_name ? h("div", { class: "muted mono-sm" }, r.profile_name) : null) },
-    { key: "tokens_per_second", label: "Gen t/s", num: true, cell: (r) => h("div", { class: "bar-cell" }, num(r.tokens_per_second), h("span", { class: "bar" }, h("i", { style: `width:${Math.round(((r.tokens_per_second || 0) / maxTps) * 100)}%` }))) },
-    { key: "prompt_per_second", label: "Prompt t/s", num: true, cell: (r) => num(r.prompt_per_second) },
-    { key: "input_tokens", label: "In / out", num: true, cell: (r) => `${num(r.input_tokens, 0)} / ${num(r.output_tokens, 0)}` },
-    { key: "n_ctx", label: "Ctx", num: true, cell: (r) => num(r.n_ctx, 0) },
-    { key: "gpu_layers", label: "NGL", cell: (r) => r.layers_offloaded ? `${r.gpu_layers ?? DASH} (${r.layers_offloaded})` : (r.gpu_layers ?? DASH) },
-    { label: "Settings", cell: (r) => h("div", { class: "chips" }, settingChips({ ...r, n_ctx: null, gpu_layers: null })) },
-    { key: "mem_used_gb", label: "VRAM", num: true, cell: (r) => (r.mem_used_gb ? `${num(r.mem_used_gb, 2)} GB` : DASH) },
-    { key: "gpu_util", label: "GPU", num: true, cell: (r) => (r.gpu_util != null ? `${num(r.gpu_util, 0)}%` : DASH) },
+    { key: "created_at", label: "When", cell: (r) => h("td", { class: "nowrap muted", title: new Date(r.created_at * 1000).toLocaleString() }, ago(r.created_at)) },
+    { key: "base_model", label: PF.grouped ? "Profile" : "Model", cell: (r) => h("td", { class: "cell-model", title: r.launch_command },
+      h("div", { class: "cell-main" }, PF.grouped ? r.profile_name || "(no profile)" : r.base_model),
+      h("div", { class: "cell-sub" }, [PF.grouped ? null : r.profile_name, r.input_tokens ? `${num(r.input_tokens, 0)} in / ${num(r.output_tokens, 0)} out` : null].filter(Boolean).join(" · "))) },
+    { key: "tokens_per_second", label: "Gen t/s", num: true, cell: (r) => tpsBar(r.tokens_per_second, maxTps) },
+    { key: "prompt_per_second", label: "Prompt t/s", num: true, cell: (r) => num(r.prompt_per_second, 0) },
+    { key: "n_ctx", label: "Ctx", num: true, cell: (r) => (r.n_ctx ? `${num(r.n_ctx / 1024, 0)}k` : DASH) },
+    { label: "Settings", cell: (r) => h("td", { class: "settings-cell", title: r.layers_offloaded ? `layers on GPU: ${r.layers_offloaded}` : "" }, h("div", { class: "chips" }, settingChips({ ...r, n_ctx: null }))) },
+    { key: "mem_used_gb", label: "VRAM · GPU", num: true, cell: (r) => h("td", { class: "num nowrap" }, r.mem_used_gb ? `${num(r.mem_used_gb, 1)} GB` : DASH,
+      r.gpu_util != null ? h("div", { class: "cell-sub" }, `${num(r.gpu_util, 0)}% busy`) : null) },
     { key: "log_source", label: "Src", cell: (r) => h("span", { class: `pill ${r.success ? "ok" : "bad"}`, title: r.note || "" }, r.success ? r.log_source || "run" : "no data") },
-    { label: "", cell: (r) => h("td", { class: "actions" },
+    { label: "", cell: (r) => h("td", { class: "actions nowrap" },
       iconBtn("sliders", "Open in builder", () => openRunInBuilder(r)),
       iconBtn("database", "Open in Inventory", () => openRunInInventory(r)),
       iconBtn("file-text", "View log", () => showLog(r.launch_id || r.run_id)),
@@ -1027,8 +1094,20 @@ function renderPerf() {
         if (!(await confirmBox("Delete this run from the perf sheet?"))) return;
         try { await api("DELETE", `/api/runs/${encodeURIComponent(r.run_id)}`); loadPerf(); } catch (e) { fail(e); }
       }, "danger")) },
-  ], rows, perfSort, S.runs.length ? "No runs match." : "No runs recorded yet.");
+  ], rows, perfSort, S.runs.length ? "No runs match." : "No runs recorded yet.", PF.grouped ? {
+    group: (r) => ({ key: r.base_model, label: r.base_model }),
+    groupOrder: (a, b) => Math.max(...b.rows.map((r) => r.tokens_per_second || 0)) - Math.max(...a.rows.map((r) => r.tokens_per_second || 0)),
+    collapsed: PF.collapsed,
+    onToggle: (k) => { PF.collapsed.has(k) ? PF.collapsed.delete(k) : PF.collapsed.add(k); pfSave(); renderPerf(); },
+    groupExtra: (g) => {
+      const ok = g.rows.filter((r) => r.success);
+      const top = Math.max(0, ...ok.map((r) => r.tokens_per_second || 0));
+      return h("span", { class: "group-meta" }, [top ? `best ${num(top)} t/s` : null, `last ${ago(Math.max(...g.rows.map((r) => r.created_at)))}`,
+        g.rows.length - ok.length ? `${g.rows.length - ok.length} failed` : null].filter(Boolean).join(" · "));
+    },
+  } : {});
 }
+
 /** Jump to the model's page in Inventory: every load, its GPUs, VRAM and speeds. */
 async function openRunInInventory(r) {
   show("inventory");
@@ -1164,29 +1243,88 @@ async function loadEnv() {
   renderFlagsTable();
 }
 // One table for both: llama-server flags (--jinja, -lm dio, --temp …) and environment variables (HIP_VISIBLE_DEVICES …).
+// Every row can be edited or removed, and you can add your own. Built-in rows you remove are hidden, not lost:
+// "Show removed" lists them with Restore.
 const flagSort = { key: null, asc: true };
-const FLAGS = { kind: "all" };
+const FLAGS = { kind: "all", showRemoved: false };
 function renderFlagsTable() {
   const q = $("#eSearch").value.trim().toLowerCase();
-  const flags = (S.flags || []).map((f) => ({ kind: "flag", name: f.spellings.join(" · "), category: f.category, description: f.description,
-    note: f.notes, profiles: f.profiles || 0, values: f.values || [], search: `${f.flag} ${f.spellings.join(" ")} ${f.category} ${f.description} ${f.notes}` }));
-  const env = (S.env || []).map((e) => ({ kind: "env", name: e.flag, category: e.category || "", description: e.description, note: e.recommended,
-    profiles: 0, values: [], last: e, search: `${e.flag} ${e.category} ${e.description} ${e.recommended}` }));
+  const flags = (S.flags || []).map((f) => ({ kind: "flag", id: f.flag, name: f.spellings.join(" · "), category: f.category, description: f.description,
+    note: f.notes, profiles: f.profiles || 0, values: f.values || [], raw: f, search: `${f.flag} ${f.spellings.join(" ")} ${f.category} ${f.description} ${f.notes}` }));
+  const env = (S.env || []).map((e) => ({ kind: "env", id: e.flag, name: e.flag, category: e.category || "", description: e.description, note: e.recommended,
+    profiles: 0, values: [], last: e, raw: e, search: `${e.flag} ${e.category} ${e.description} ${e.recommended}` }));
   const all = [...flags, ...env];
-  const rows = all.filter((r) => (FLAGS.kind === "all" || r.kind === FLAGS.kind) && (!q || r.search.toLowerCase().includes(q)));
-  $("#flagCount").textContent = `${flags.length} flags · ${env.length} environment variables`;
+  const removed = all.filter((r) => r.raw.removed);
+  const rows = all.filter((r) => (FLAGS.kind === "all" || r.kind === FLAGS.kind) && (!q || r.search.toLowerCase().includes(q))
+    && (FLAGS.showRemoved ? r.raw.removed : !r.raw.removed));
+  const shown = (k) => all.filter((r) => r.kind === k && !r.raw.removed).length;
+  $("#flagCount").textContent = `${shown("flag")} flags · ${shown("env")} environment variables`;
+  const toggle = $("#flagRemoved");
+  toggle.hidden = !removed.length && !FLAGS.showRemoved;
+  toggle.textContent = FLAGS.showRemoved ? "Back to the list" : `Show removed (${removed.length})`;
+  const act = async (r, method, suffix = "") => {
+    try {
+      const res = await api(method, `/api/flags/${r.kind}/${encodeURIComponent(r.id)}${suffix}`);
+      toast(suffix ? `Restored ${r.name}.` : res.result === "deleted" ? `Deleted ${r.name}.` : `Removed ${r.name}. Show removed brings it back.`, "ok");
+      loadEnv();
+    } catch (e) { fail(e); }
+  };
   renderTable($("#flagTable"), [
-    { key: "name", label: "Name", sort: (r) => r.name.replace(/^-+/, "").toLowerCase(), cell: (r) => h("td", {}, h("code", { class: r.kind === "env" ? "tk-env" : "tk-flag" }, r.name)) },
+    { key: "name", label: "Name", sort: (r) => r.name.replace(/^-+/, "").toLowerCase(), cell: (r) => h("td", {}, h("code", { class: r.kind === "env" ? "tk-env" : "tk-flag" }, r.name),
+      r.raw.custom ? h("span", { class: "pill ok", style: "margin-left:6px" }, "yours") : r.raw.edited ? h("span", { class: "pill", style: "margin-left:6px", title: "You changed this row; Restore puts the original back" }, "edited") : null) },
     { key: "kind", label: "Type", sort: (r) => r.kind, cell: (r) => h("span", { class: `pill${r.kind === "env" ? " accent" : ""}` }, r.kind === "env" ? "env" : "flag") },
     { key: "category", label: "Group", cell: (r) => (r.category ? h("span", { class: "pill" }, r.category) : DASH) },
-    { label: "What it does", cell: (r) => h("td", { style: "min-width:260px" }, r.description, r.note ? h("div", { class: "muted mono-sm" }, r.note) : null) },
+    { label: "What it does", cell: (r) => h("td", { style: "min-width:260px" }, r.description || h("span", { class: "muted" }, "no description"), r.note ? h("div", { class: "muted mono-sm" }, r.note) : null) },
     { key: "use", label: "Your use", sort: (r) => r.profiles || (r.last && r.last.last_run_at) || 0, cell: (r) => r.kind === "flag"
       ? (r.profiles || r.values.length ? h("td", {}, r.profiles ? h("div", { class: "mono-sm" }, `${r.profiles} profile${r.profiles === 1 ? "" : "s"}`) : null,
         r.values.length ? h("div", { class: "chips" }, r.values.map((v) => h("span", { class: "chip" }, v))) : null) : DASH)
       : (r.last.last_used_for ? h("td", {}, h("div", { class: "mono-sm" }, r.last.last_used_for),
         h("div", { class: "muted mono-sm" }, [r.last.last_tps ? `${num(r.last.last_tps)} t/s gen` : null, r.last.last_pps ? `${num(r.last.last_pps)} prompt` : null,
           r.last.last_run_at ? ago(r.last.last_run_at) : null].filter(Boolean).join(" · "))) : DASH) },
-  ], rows, flagSort, "No matches.");
+    { label: "", cell: (r) => h("td", { class: "actions" }, r.raw.removed
+      ? btn("Restore", () => act(r, "POST", "/restore"), "sm", "refresh")
+      : [iconBtn("pencil", "Edit", () => flagForm(r)),
+        r.raw.edited ? iconBtn("refresh", "Restore the original text", () => act(r, "POST", "/restore")) : null,
+        iconBtn("trash", r.raw.custom ? "Delete" : "Remove from the list", async () => {
+          const msg = r.raw.custom ? `Delete ${r.name}? You added it, so it is gone for good.` : `Remove ${r.name} from the list? It is hidden, and Show removed brings it back.`;
+          if (await confirmBox(msg, r.raw.custom ? "Delete" : "Remove")) act(r, "DELETE");
+        }, "danger")]) },
+  ], rows, flagSort, FLAGS.showRemoved ? "Nothing removed." : "No matches.");
+}
+
+/** Add a flag or variable (no row), or edit one. Profiles are not changed: this is the reference list. */
+function flagForm(r = null) {
+  const kind = h("select", { disabled: !!r }, [["flag", "llama-server flag"], ["env", "Environment variable"]].map(([v, l]) => h("option", { value: v }, l)));
+  kind.value = r ? r.kind : FLAGS.kind === "env" ? "env" : "flag";
+  const name = h("input", { type: "text", value: r ? r.id : "", disabled: !!r, spellcheck: "false" });
+  const spell = h("input", { type: "text", value: r && r.kind === "flag" ? r.raw.spellings.join(" ") : "", placeholder: "-c --ctx-size", spellcheck: "false" });
+  const cat = h("input", { type: "text", value: r ? r.category : "", placeholder: "e.g. Speed, gpu-select" });
+  const desc = h("textarea", { rows: 3, placeholder: "What it does" }, r ? r.description : "");
+  const note = h("textarea", { rows: 2, placeholder: "Your notes: values that work, what to watch out for" }, r ? r.note || "" : "");
+  const field = (label, input, hint) => h("label", { class: "field wide" }, h("span", {}, label), input, hint ? h("span", { class: "muted mono-sm" }, hint) : null);
+  const spellField = field("Spellings", spell, "Every way it can be written, short first.");
+  const syncKind = () => {
+    name.placeholder = kind.value === "env" ? "HIP_VISIBLE_DEVICES" : "--temp";
+    spellField.hidden = kind.value !== "flag";
+  };
+  kind.addEventListener("change", syncKind);
+  syncKind();
+  modal(r ? `Edit ${r.name}` : "Add to the Flags page", h("div", { class: "fields" },
+    field("Type", kind), field("Name", name, r ? "" : "For a flag, any spelling works (-c is stored as ctx-size)."), spellField,
+    field("Group", cat), field("What it does", desc), field(kind.value === "env" ? "Recommended" : "Notes", note)), [
+    { label: "Cancel", run: (c) => c() },
+    { label: r ? "Save" : "Add", cls: "primary", run: async (close) => {
+      const k = kind.value;
+      const b = { category: cat.value, description: desc.value, [k === "env" ? "recommended" : "notes"]: note.value };
+      if (k === "flag" && spell.value.trim()) b.spellings = spell.value;
+      try {
+        if (r) await api("PUT", `/api/flags/${k}/${encodeURIComponent(r.id)}`, b);
+        else await api("POST", `/api/flags/${k}`, { ...b, name: name.value });
+        close();
+        toast(r ? "Saved." : "Added.", "ok");
+        loadEnv();
+      } catch (e) { fail(e); }
+    } }]);
 }
 
 // ── Integrations ─────────────────────────────────────────────
@@ -1345,6 +1483,7 @@ const librarySort = { key: null, asc: true };
 
 async function loadLibrary() {
   try { S.library = await api("GET", "/api/library"); } catch (e) { fail(e); return; }
+  try { ML.groups = (await api("GET", "/api/library/groups")).groups; } catch (e) { /* groups are optional */ }
   $("#navModels").textContent = S.library.models.length || "";
   if (S.view === "models") renderLibrary();
 }
@@ -1360,18 +1499,163 @@ async function openPrefab(m, launchIt = false) {
     else openCommand(res.command, { name: "", base_model: m.name, source: "prefab" });
   } catch (e) { fail(e); }
 }
+// The library is a tree: grouped by kind, family (all Qwen together), folder, or your own groups, and every group
+// collapses. Where you left it (grouping, closed groups) is remembered in this browser.
+const ML = { groups: [], by: "kind", collapsed: new Set() };
+try {
+  ML.by = localStorage.getItem("argos.models.by") || "kind";
+  ML.collapsed = new Set(JSON.parse(localStorage.getItem("argos.models.closed") || "[]"));
+} catch (e) { /* private window: defaults */ }
+const mlSave = () => { try { localStorage.setItem("argos.models.by", ML.by); localStorage.setItem("argos.models.closed", JSON.stringify([...ML.collapsed])); } catch (e) { /* ignore */ } };
+const KIND_GROUPS = [["chat", "Chat"], ["vision", "Vision"], ["mtp", "MTP / draft"], ["embedding", "Embedding"], ["reranker", "Reranker"], ["audio", "Audio"], ["image", "Image"]];
+const cap1 = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+/** "Qwen" for qwen3.6-35b…, "Hermes" for NousResearch_Hermes-4…, the folder for audio/image models. */
+function modelFamily(m) {
+  if (m.listed_only) {
+    const seg = (m.dir || "").split(/[\\/]/).filter((x) => x && x !== ".").pop();
+    return cap1(seg || m.kind);
+  }
+  let n = m.name.replace(/^[A-Z][A-Za-z0-9]*_(?=[A-Za-z])/, "").toLowerCase().replace(/^(mtp|mmproj|draft)[-_]/, "");
+  return cap1((n.match(/^[a-z]+/) || [m.kind])[0]);
+}
+function myGroupOf(m) { return ML.groups.find((g) => g.models.includes(m.id)); }
+function libraryGroupOf(m) {
+  if (ML.by === "kind") { const k = KIND_GROUPS.find(([v]) => v === m.kind); return { key: `k:${m.kind}`, label: k ? k[1] : cap1(m.kind) }; }
+  if (ML.by === "family") { const f = modelFamily(m); return { key: `f:${f}`, label: f }; }
+  if (ML.by === "folder") return { key: `d:${m.dir}`, label: m.dir === "." ? "(top of the models folder)" : m.dir };
+  const g = myGroupOf(m);
+  return g ? { key: `g:${g.name}`, label: g.name } : { key: "g:", label: "Ungrouped" };
+}
+function libraryGroupOrder(a, b) {
+  if (ML.by === "kind") return KIND_GROUPS.findIndex(([v]) => `k:${v}` === a.key) - KIND_GROUPS.findIndex(([v]) => `k:${v}` === b.key);
+  if (ML.by === "mine") {
+    const i = (g) => (g.key === "g:" ? 1e6 : ML.groups.findIndex((x) => `g:${x.name}` === g.key));
+    return i(a) - i(b);
+  }
+  return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" });
+}
+async function saveGroups(groups, msg) {
+  try {
+    ML.groups = (await api("PUT", "/api/library/groups", { groups })).groups;
+    if (msg) toast(msg, "ok");
+    renderLibrary();
+  } catch (e) { fail(e); }
+}
+/** Put the models into groups by family (Qwen, Gemma, …). Models already in one of your groups stay where they are. */
+function autoGroup() {
+  const lib = S.library;
+  const all = [...lib.models, ...(lib.media || [])];
+  const groups = ML.groups.map((g) => ({ name: g.name, models: [...g.models] }));
+  let moved = 0;
+  for (const m of all) {
+    if (myGroupOf(m)) continue;
+    const f = modelFamily(m);
+    let g = groups.find((x) => x.name.toLowerCase() === f.toLowerCase());
+    if (!g) { g = { name: f, models: [] }; groups.push(g); }
+    g.models.push(m.id);
+    moved++;
+  }
+  ML.by = "mine"; mlSave();
+  saveGroups(groups, moved ? `Grouped ${moved} model${moved === 1 ? "" : "s"} by name.` : "Every model is already in a group.");
+}
+function newGroupBox(m = null) {
+  const name = h("input", { type: "text", placeholder: "e.g. Daily drivers", spellcheck: "false" });
+  const existing = h("select", {}, [h("option", { value: "" }, "a new group…"), ...ML.groups.map((g) => h("option", { value: g.name }, g.name))]);
+  const sync = () => { name.disabled = !!existing.value; };
+  existing.addEventListener("change", sync);
+  const body = m ? h("div", { class: "fields" },
+    h("label", { class: "field wide" }, h("span", {}, "Group"), existing),
+    h("label", { class: "field wide" }, h("span", {}, "New group name"), name))
+    : h("div", { class: "fields" }, h("label", { class: "field wide" }, h("span", {}, "Name"), name));
+  modal(m ? `Move ${m.name}` : "New group", body, [
+    { label: "Cancel", run: (c) => c() },
+    { label: m ? "Move" : "Create", cls: "primary", run: (close) => {
+      const target = (m && existing.value) || name.value.trim();
+      if (!target) return toast("Type a name for the group.", "err");
+      const groups = ML.groups.map((g) => ({ name: g.name, models: g.models.filter((x) => !m || x !== m.id) }));
+      let g = groups.find((x) => x.name.toLowerCase() === target.toLowerCase());
+      if (!g) { g = { name: target, models: [] }; groups.push(g); }
+      if (m) g.models.push(m.id);
+      close();
+      ML.by = "mine"; mlSave();
+      saveGroups(groups, m ? `Moved ${m.name} to ${g.name}.` : `Made the group ${g.name}. Move models into it with ⋯.`);
+    } }]);
+  setTimeout(() => (m && ML.groups.length ? existing : name).focus(), 30);
+}
+async function deleteModel(m) {
+  let info;
+  try { info = await api("POST", "/api/library/delete/check", { path: m.path }); } catch (e) { return fail(e); }
+  const withProj = h("input", { type: "checkbox" });
+  const body = h("div", { class: "stack" },
+    h("p", { style: "margin:0" }, `Delete ${m.name} (${size(info.size)}) from the models folder? This removes the file${info.files.length > 1 ? "s" : ""} from disk and cannot be undone.`),
+    h("pre", { class: "pre", style: "max-height:140px" }, info.files.join("\n")),
+    info.profiles.length ? h("p", { class: "hint", style: "margin:0;color:var(--warn)" },
+      `${info.profiles.length} profile${info.profiles.length === 1 ? " uses" : "s use"} it and will stop working until the file is back: ${info.profiles.join(", ")}.`) : null,
+    info.mmproj.length ? h("label", { class: "check" }, withProj, `Also delete its vision projector (${info.mmproj.map((p) => p.split(/[\\/]/).pop()).join(", ")})`) : null);
+  modal("Delete model", body, [
+    { label: "Cancel", run: (c) => c() },
+    { label: "Delete", cls: "danger", icon: "trash", run: async (close) => {
+      close();
+      try {
+        const r = await api("POST", "/api/library/delete", { path: m.path, with_mmproj: withProj.checked });
+        toast(r.problems.length ? `Deleted ${r.removed.length} file(s); ${r.problems[0]}` : `Deleted ${m.name}.`, r.problems.length ? "err" : "ok");
+      } catch (e) { fail(e); }
+      loadLibrary();
+    } }]);
+}
+function modelMenu(btnEl, m) {
+  const g = myGroupOf(m);
+  popMenu(btnEl, [
+    { label: "Move to group…", icon: "layers", run: () => newGroupBox(m) },
+    g ? { label: `Take out of ${g.name}`, icon: "x", run: () => saveGroups(ML.groups.map((x) => ({ name: x.name, models: x.models.filter((id) => id !== m.id) }))) } : null,
+    { label: "Delete from disk…", icon: "trash", danger: true, run: () => deleteModel(m) },
+  ]);
+}
+
 function renderLibrary() {
   const lib = S.library;
   if (!lib) return;
   $("#mSub").textContent = `Every model in ${lib.models_dir}. GGUFs get a ready-made prefab command; audio and image models are listed so you can see what you have.`;
   const q = $("#mSearch").value.trim().toLowerCase();
   const media = lib.media || [];
-  const rows = [...lib.models, ...media].filter((m) => !q || `${m.name} ${m.dir} ${m.kind} ${m.task || ""} ${m.quant} ${m.format || ""}`.toLowerCase().includes(q));
+  const all = [...lib.models, ...media];
+  const rows = all.filter((m) => !q || `${m.name} ${m.dir} ${m.kind} ${m.task || ""} ${m.quant} ${m.format || ""} ${modelFamily(m)} ${(myGroupOf(m) || {}).name || ""}`.toLowerCase().includes(q));
   const audio = media.filter((m) => m.kind === "audio").length, image = media.length - audio;
   $("#mCount").textContent = [`${lib.models.length} model${lib.models.length === 1 ? "" : "s"}`, audio ? `${audio} audio` : null, image ? `${image} image` : null].filter(Boolean).join(" · ");
+
+  // grouping controls
+  const by = h("select", { title: "Group the list", "aria-label": "Group by" }, [["kind", "Group: kind"], ["family", "Group: name (Qwen, Gemma…)"], ["folder", "Group: folder"],
+    ["mine", "Group: my groups"], ["none", "No groups"]].map(([v, l]) => h("option", { value: v }, l)));
+  by.value = ML.by;
+  by.addEventListener("change", () => { ML.by = by.value; mlSave(); renderLibrary(); });
+  const keys = () => [...new Set(rows.map((m) => libraryGroupOf(m).key))];
+  fill($("#mGroupBar"), by,
+    ML.by !== "none" ? [btn("Collapse all", () => { keys().forEach((k) => ML.collapsed.add(k)); mlSave(); renderLibrary(); }, "sm ghost"),
+      btn("Expand all", () => { keys().forEach((k) => ML.collapsed.delete(k)); mlSave(); renderLibrary(); }, "sm ghost")] : null,
+    h("span", { class: "spacer" }),
+    btn("Auto group", autoGroup, "sm", "layers"), btn("New group", () => newGroupBox(), "sm ghost", "plus"));
+
   const empty = !lib.exists
     ? h("span", {}, `The models folder ${lib.models_dir} does not exist. Mount your GGUF folder there (e.g. `, h("b", {}, "-v /path/to/LLMBin:/app/models"), ") or change it in Settings.")
-    : lib.models.length ? "No models match." : h("span", {}, "No .gguf files yet. Get one from the ", h("b", {}, "Download"), " tab.");
+    : all.length ? "No models match." : h("span", {}, "No .gguf files yet. Get one from the ", h("b", {}, "Download"), " tab.");
+  const groupOpts = ML.by === "none" ? {} : {
+    group: libraryGroupOf, groupOrder: libraryGroupOrder, collapsed: q ? new Set() : ML.collapsed,
+    onToggle: (k) => { ML.collapsed.has(k) ? ML.collapsed.delete(k) : ML.collapsed.add(k); mlSave(); renderLibrary(); },
+    groupExtra: (g) => {
+      const total = g.rows.reduce((a, m) => a + (m.size || 0), 0);
+      const mine = ML.by === "mine" && g.key !== "g:" ? ML.groups.find((x) => `g:${x.name}` === g.key) : null;
+      return [h("span", { class: "group-meta" }, size(total)), mine ? h("span", { class: "group-actions" },
+        iconBtn("pencil", "Rename group", () => {
+          const name = h("input", { type: "text", value: mine.name });
+          modal("Rename group", h("label", { class: "field wide" }, h("span", {}, "Name"), name), [{ label: "Cancel", run: (c) => c() },
+            { label: "Rename", cls: "primary", run: (c) => { c(); saveGroups(ML.groups.map((x) => (x === mine ? { ...x, name: name.value.trim() || x.name } : x))); } }]);
+        }, "ghost"),
+        iconBtn("x", "Remove the group (its models stay, ungrouped)", async () => {
+          if (await confirmBox(`Remove the group ${mine.name}? Its ${mine.models.length} model(s) stay in the library, ungrouped.`, "Remove group")) saveGroups(ML.groups.filter((x) => x !== mine));
+        }, "ghost")) : null];
+    },
+  };
   renderTable($("#mTable"), [
     { key: "name", label: "Model", cell: (m) => h("td", { class: "trunc", title: m.path }, h("span", { class: "strong" }, m.name),
       h("div", { class: "muted mono-sm" }, m.dir === "." ? m.id : `${m.dir} · ${m.id}`)) },
@@ -1385,12 +1669,15 @@ function renderLibrary() {
       m.format && m.format !== "gguf" ? h("span", { class: "chip" }, m.format) : null) },
     { key: "profiles", label: "Profiles", num: true, cell: (m) => (m.profiles
       ? h("button", { class: "btn sm ghost", onclick: () => showProfilesFor(m.id) }, String(m.profiles)) : DASH) },
-    { label: "", cell: (m) => m.listed_only ? h("td", { class: "actions" }, h("span", { class: "muted mono-sm",
-      title: "llama-server does not run audio or image models, so there is no profile to edit or launch." }, "listed only")) : h("td", { class: "actions" },
-      btn("Edit", () => editModel(m), "sm primary", "pencil"),
-      btn("Prefab", () => openPrefab(m), "sm", "sliders"),
-      iconBtn("play", "Launch the prefab", () => openPrefab(m, true))) },
-  ], rows, librarySort, empty);
+    { label: "", cell: (m) => {
+      const more = h("button", { class: "icon-btn ghost", title: "More: move to a group, delete", "aria-label": "More actions" }, "⋯");
+      more.addEventListener("click", () => modelMenu(more, m));
+      return m.listed_only
+        ? h("td", { class: "actions" }, h("span", { class: "muted mono-sm", title: "llama-server does not run audio or image models, so there is no profile to edit or launch." }, "listed only"), more)
+        : h("td", { class: "actions" }, btn("Edit", () => editModel(m), "sm primary", "pencil"), btn("Prefab", () => openPrefab(m), "sm", "sliders"),
+          iconBtn("play", "Launch the prefab", () => openPrefab(m, true)), more);
+    } },
+  ], rows, librarySort, empty, groupOpts);
 }
 
 // ── Models: Hugging Face downloader ──────────────────────────
@@ -2302,7 +2589,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // Long-term history. New quants, cache types, flags and models are recorded as "new" and shown under New & unknown.
 const IV = { pane: "models", data: null, sessions: [], traits: [], showAll: false, suggestions: null, assistNote: "", busy: false,
   filter: "", days: 30, model: "", sortM: { key: null, asc: false }, sortS: { key: null, asc: false },
-  selected: null, page: null, pageDays: 90 };
+  selected: null, page: null, pageDays: 90, byFamily: false, closed: new Set() };
 
 function dur(sec) {
   if (sec == null) return DASH;
@@ -2378,7 +2665,14 @@ function renderInvModels() {
     { key: "last", label: "Last", sort: (m) => m.last_loaded || 0, cell: (m) => h("td", { class: "nowrap" }, ago(m.last_loaded)) },
     { key: "vram", label: "VRAM", num: true, sort: (m) => m.vram_gib_avg || 0, cell: (m) => (m.vram_gib_avg ? `${num(m.vram_gib_avg)} GiB` : DASH) },
     { key: "tps", label: "Decode t/s", num: true, sort: (m) => m.tps_avg || 0, cell: (m) => (m.tps_avg ? num(m.tps_avg) : DASH) },
-  ], rows, IV.sortM, "Nothing here yet. Press Scan, or load a model.", { onRow: (m) => openModel(m.model_id) });
+  ], rows, IV.sortM, "Nothing here yet. Press Scan, or load a model.", { onRow: (m) => openModel(m.model_id), ...(IV.byFamily ? {
+    group: (m) => { const f = modelFamily({ name: m.name || m.model_id, kind: "other" }); return { key: f, label: f }; },
+    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: IV.closed,
+    onToggle: (k) => { IV.closed.has(k) ? IV.closed.delete(k) : IV.closed.add(k); renderInvModels(); },
+    groupExtra: (g) => h("span", { class: "group-meta" }, `${g.rows.reduce((a, m) => a + (m.sessions || 0), 0)} loads · ${dur(g.rows.reduce((a, m) => a + (m.loaded_seconds || 0), 0))} loaded`),
+  } : {}) });
+  const famBox = h("input", { type: "checkbox", checked: !!IV.byFamily });
+  famBox.addEventListener("change", () => { IV.byFamily = famBox.checked; renderInvModels(); });
   const search = h("input", { type: "search", placeholder: "Filter by name, quant, cache…", value: IV.filter, style: "width:260px" });
   search.addEventListener("input", debounce(() => { IV.filter = search.value; renderInvModels(); }, 150));
   const used = all.filter((m) => m.sessions);
@@ -2392,7 +2686,7 @@ function renderInvModels() {
       ["To review", IV.data.pending, null, "new settings under New & unknown"],
     ]),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, `Models (${rows.length})`), h("span", { class: "spacer" }),
-      h("span", { class: "hint" }, "click a model for its speeds by launch config"), search),
+      h("span", { class: "hint" }, "click a model for its speeds by launch config"), h("label", { class: "check" }, famBox, "group by name"), search),
       h("div", { class: "table-wrap" }, table)));
 }
 
@@ -3032,7 +3326,18 @@ function renderSimResult() {
 // switch pages; minimizing sends it to the Notes menu in the top bar; deleting removes it for good.
 const NOTE_COLORS = ["yellow", "blue", "green", "pink", "gray"];
 const LAYOUT = { data: {}, drag: null, loaded: false };
-const NOTES = { list: [], menu: null };
+const NOTES = { list: [], menu: null, z: 1 };
+/** Raise a note above the others. (Moving the element in the DOM would cancel the click that is in progress.) */
+const raiseNote = (card) => { card.style.zIndex = String(++NOTES.z); };
+/** Keep a note on screen: a spot saved on a wider window is pulled back inside this one (the saved spot is kept). */
+function fitNote(card) {
+  const layer = noteLayer(), w = layer.clientWidth, hgt = layer.clientHeight;
+  if (!w || !card.dataset.x) return;
+  const x = Number(card.dataset.x), y = Number(card.dataset.y);
+  card.style.left = `${Math.max(0, Math.min(x, w - Math.min(card.offsetWidth, w) - 4))}px`;
+  card.style.top = `${Math.max(0, Math.min(y, Math.max(0, hgt - 60)))}px`;
+}
+window.addEventListener("resize", debounce(() => $$("#noteLayer .note").forEach(fitNote), 100));
 
 async function loadNotes() {
   try { NOTES.list = (await api("GET", "/api/notes")).notes; } catch (e) { return; /* notes are optional */ }
@@ -3075,6 +3380,8 @@ function noteCard(n, i = 0) {
   // default spot: stacked down the right edge
   const x0 = n.x != null ? n.x : Math.max(8, box().width - 300 - 24 - i * 18), y0 = n.y != null ? n.y : 12 + i * 28;
   Object.assign(card.style, { left: `${x0}px`, top: `${y0}px`, width: `${n.w || 280}px`, height: `${n.h || 200}px` });
+  Object.assign(card.dataset, { x: x0, y: y0 });
+  requestAnimationFrame(() => fitNote(card));
   const showMeta = () => { meta.textContent = `saved ${ago(current.updated_at)}`; };
   const put = async (fields) => { try { current = await putNote(n.id, fields); showMeta(); } catch (e) { fail(e); } };
   const save = debounce(() => put({ title: title.value, body: text.value }), 700);
@@ -3092,7 +3399,7 @@ function noteCard(n, i = 0) {
   }, "ghost danger");
   const head = h("div", { class: "note-head", title: "Drag to move" }, h("span", { class: "grip" }, "⠿"), title, colors, minimize, del);
   // the last note touched sits on top
-  card.addEventListener("pointerdown", () => { layer.append(card); }, true);
+  card.addEventListener("pointerdown", () => raiseNote(card), true);
   // drag by the head with pointer events (works with mouse, pen and touch)
   head.addEventListener("pointerdown", (e) => {
     if (e.target.closest("input, button")) return;
@@ -3107,6 +3414,7 @@ function noteCard(n, i = 0) {
     const up = () => {
       head.removeEventListener("pointermove", move); head.removeEventListener("pointerup", up);
       card.classList.remove("moving");
+      Object.assign(card.dataset, { x: card.offsetLeft, y: card.offsetTop });
       put({ x: card.offsetLeft, y: card.offsetTop });
     };
     head.addEventListener("pointermove", move); head.addEventListener("pointerup", up);
@@ -3125,7 +3433,7 @@ function noteCard(n, i = 0) {
 async function openNote(id, focus = false) {
   const layer = noteLayer();
   const existing = layer.querySelector(`[data-note="${id}"]`);
-  if (existing) { layer.append(existing); return existing; }
+  if (existing) { raiseNote(existing); return existing; }
   try {
     const n = await putNote(id, { is_open: true });
     const card = noteCard(n, layer.children.length);
@@ -3411,6 +3719,8 @@ function boot() {
     $$("#flagKinds button").forEach((x) => x.classList.toggle("on", x === b));
     renderFlagsTable();
   });
+  $("#flagAdd").onclick = () => flagForm();
+  $("#flagRemoved").onclick = () => { FLAGS.showRemoved = !FLAGS.showRemoved; renderFlagsTable(); };
   $("#iRefresh").onclick = loadIntegrations;
   fill($("#ivRefresh"), icon("refresh"), "Scan");
   $("#ivRefresh").onclick = refreshInventory;

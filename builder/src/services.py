@@ -7,6 +7,7 @@ from typing import Optional
 from .command import FLAGS, guess_base_model, parse_command, swap_model_id
 from .flaglib import FLAG_LIBRARY
 from .db import Store, new_id
+from .flag_edits import FlagEdits
 from .log_analyzer import parse_log_text
 from .runner import Runner
 
@@ -133,7 +134,8 @@ class Analytics:
         rows = [{**r, "runs": counts[base]} for base, r in best.items()]
         return sorted(rows, key=lambda r: r["tokens_per_second"], reverse=True)
 
-    def env_table(self) -> list[dict]:
+    def env_table(self, edits: bool = True) -> list[dict]:
+        """Environment variables: the reference list, ones seen in runs, and your own additions and changes."""
         usage = {row["flag"]: row for row in self.store.list_env_flags()}
         out = []
         for lib in ENV_FLAG_LIBRARY:
@@ -142,11 +144,14 @@ class Analytics:
             out.append({"flag": flag, "category": row.get("category") or "seen in runs",
                         "description": row.get("description") or "",
                         "recommended": row.get("recommended") or "", **_usage(row)})
-        return out
+        if not edits:
+            return out
+        return FlagEdits(self.store).apply("env", out, blank={"category": "yours", "description": "", "recommended": "", **_usage({})})
 
 
-    def flag_table(self) -> list[dict]:
-        """llama-server flags: the reference list, plus how many saved profiles use each and with which values."""
+    def flag_table(self, edits: bool = True) -> list[dict]:
+        """llama-server flags: the reference list, how many saved profiles use each and with which values,
+        and your own additions and changes (removed rows come back marked ``removed``)."""
         uses: dict[str, dict] = {}
         for p in self.store.list_profiles():
             try:
@@ -173,7 +178,9 @@ class Analytics:
         rows = [row(f["flag"], f["category"], f["description"], f["notes"]) for f in FLAG_LIBRARY]
         for name in sorted(uses):  # flags your profiles use that the list does not know
             rows.append(row(name, "Seen in your profiles", "Not in the reference list. Check llama-server --help for what it does.", ""))
-        return rows
+        if not edits:
+            return rows
+        return FlagEdits(self.store).apply("flag", rows, blank={"category": "Yours", "description": "", "notes": "", "profiles": 0, "values": []})
 
 
 def _usage(row: dict) -> dict:

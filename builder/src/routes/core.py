@@ -284,6 +284,64 @@ def server_flags():
     return ok(rows=ctx().analytics.flag_table())
 
 
+# ----- your changes to the Flags page ----------------------------------------------------
+def _flag_known(kind: str) -> set[str]:
+    a = ctx().analytics
+    return {r["flag"] for r in (a.flag_table(edits=False) if kind == "flag" else a.env_table(edits=False))}
+
+
+@bp.post("/api/flags/<kind>")
+def flag_add(kind):
+    """Add a flag (kind "flag") or an environment variable (kind "env") of your own."""
+    from ..flag_edits import KINDS, FlagEditError, FlagEdits
+    if kind not in KINDS:
+        return err("kind is flag or env", 404)
+    try:
+        name = FlagEdits(ctx().store).add(kind, body(), _flag_known(kind))
+    except FlagEditError as exc:
+        return err(str(exc))
+    ctx().event("settings", f"added {kind} {name} to the Flags page")
+    return ok(name=name)
+
+
+@bp.put("/api/flags/<kind>/<path:name>")
+def flag_update(kind, name):
+    from ..flag_edits import KINDS, FlagEditError, FlagEdits
+    if kind not in KINDS:
+        return err("kind is flag or env", 404)
+    edits = FlagEdits(ctx().store)
+    if name not in _flag_known(kind) and name not in edits.all()[kind]:
+        return err("not on the list", 404)
+    try:
+        edits.update(kind, name, body())
+    except FlagEditError as exc:
+        return err(str(exc))
+    return ok()
+
+
+@bp.delete("/api/flags/<kind>/<path:name>")
+def flag_remove(kind, name):
+    """A row you added is deleted; a built-in one is hidden and can be restored."""
+    from ..flag_edits import KINDS, FlagEdits
+    if kind not in KINDS:
+        return err("kind is flag or env", 404)
+    edits = FlagEdits(ctx().store)
+    if name not in _flag_known(kind) and name not in edits.all()[kind]:
+        return err("not on the list", 404)
+    result = edits.remove(kind, name)
+    ctx().event("settings", f"{'deleted' if result == 'deleted' else 'hid'} {kind} {name} on the Flags page")
+    return ok(result=result)
+
+
+@bp.post("/api/flags/<kind>/<path:name>/restore")
+def flag_restore(kind, name):
+    """Bring a built-in row back as shipped: shown again, with its original texts."""
+    from ..flag_edits import KINDS, FlagEdits
+    if kind not in KINDS:
+        return err("kind is flag or env", 404)
+    return ok() if FlagEdits(ctx().store).restore(kind, name) else err("nothing to restore", 404)
+
+
 # ----- Odysseus presets, and the Odysseus-compatible state the engine reads -------------
 @bp.get("/api/integrations")
 def integrations():

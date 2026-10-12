@@ -190,3 +190,38 @@ def test_ui_files_are_versioned_so_a_browser_never_runs_an_old_app_js(client):
     assert '/static/app.js?v=' in html and '/static/style.css?v=' in html
     assert "immutable" in client.get("/static/app.js?v=123").headers["Cache-Control"]
     assert client.get("/static/app.js").headers["Cache-Control"] == "no-cache"
+
+
+def test_flags_page_add_edit_remove_and_restore(client):
+    def row(kind, name):
+        rows = client.get("/api/flags" if kind == "flag" else "/api/env-flags").get_json()["rows"]
+        return next((r for r in rows if r["flag"] == name), None)
+
+    assert client.post("/api/flags/flag", json={"name": "--my-flag", "category": "Mine", "description": "does a thing",
+                                                 "spellings": "-mf --my-flag"}).get_json()["name"] == "my-flag"
+    mine = row("flag", "my-flag")
+    assert mine["custom"] and mine["spellings"] == ["-mf", "--my-flag"] and mine["description"] == "does a thing"
+    assert client.post("/api/flags/flag", json={"name": "-c"}).status_code == 400, "ctx-size is already on the list"
+    assert client.post("/api/flags/flag", json={"name": "bad name!"}).status_code == 400
+
+    assert client.put("/api/flags/flag/ctx-size", json={"notes": "64k is my default"}).get_json()["ok"]
+    ctx = row("flag", "ctx-size")
+    assert ctx["edited"] and ctx["notes"] == "64k is my default" and ctx["description"], "other texts are kept"
+
+    assert client.delete("/api/flags/flag/ctx-size").get_json()["result"] == "hidden"
+    assert row("flag", "ctx-size")["removed"] is True
+    assert client.post("/api/flags/flag/ctx-size/restore").get_json()["ok"]
+    restored = row("flag", "ctx-size")
+    assert not restored["removed"] and not restored["edited"] and restored["notes"] != "64k is my default"
+
+    assert client.delete("/api/flags/flag/my-flag").get_json()["result"] == "deleted"
+    assert row("flag", "my-flag") is None
+    assert client.post("/api/flags/flag/my-flag/restore").status_code == 404
+
+    assert client.post("/api/flags/env", json={"name": "MY_VAR", "description": "x", "recommended": "1"}).get_json()["ok"]
+    assert row("env", "MY_VAR")["custom"] and row("env", "MY_VAR")["recommended"] == "1"
+    assert client.post("/api/flags/env", json={"name": "9BAD"}).status_code == 400
+    assert client.delete("/api/flags/env/HIP_VISIBLE_DEVICES").get_json()["result"] == "hidden"
+    assert row("env", "HIP_VISIBLE_DEVICES")["removed"]
+    assert client.put("/api/flags/env/NOPE", json={"description": "x"}).status_code == 404
+    assert client.post("/api/flags/other", json={"name": "x"}).status_code == 404
