@@ -5,3 +5,5 @@ ui/node_modules/
 builder/data.db*
 builder/runs/
 builder/**/__pycache__/
+internal/server/ui_dist/
+setup/*.bak

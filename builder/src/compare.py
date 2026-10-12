@@ -20,7 +20,7 @@ from .model_perf import UNTRACKED, model_perf, signature
 ENV_KEY = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 # what "better" means for each result: +1 higher is better, -1 lower is better
 RESULTS = [("decode", "Decode t/s", 1), ("prefill", "Prefill t/s", 1), ("vram_gib", "VRAM GiB", -1),
-           ("concurrency_max", "Most at once", 0), ("sessions", "Loads", 0), ("requests", "Requests", 0), ("benchmarks", "Benchmarks", 0)]
+           ("sessions", "Times loaded", 0), ("requests", "Requests", 0), ("benchmarks", "Benchmarks", 0)]
 
 
 class CompareError(ValueError):

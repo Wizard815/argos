@@ -12,4 +12,15 @@ odysseus:
   outputFile: "/app/config.d/odysseus.generated.yaml"
   ensureDio: true
 
+# Every GGUF under /app/models becomes a model, started with the llama-server in
+# this image (Mode 1). setup.sh writes a config.yaml with your backends (ROCm,
+# CUDA, ssh) and mounts it over this file.
+modelScan:
+  enabled: true
+  dirs: [/app/models]
+  outputFile: /app/config.d/models.generated.yaml
+  cmdTemplate: >
+    llama-server --host 127.0.0.1 --port ${PORT}
+    -ngl 99 -c 16384 --flash-attn on --jinja -m ${MODEL_PATH}
+
 models: {}

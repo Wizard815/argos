@@ -1058,8 +1058,8 @@ function renderPerf() {
   const maxBest = Math.max(1, ...best.map((b) => b.tokens_per_second || 0));
   renderTable($("#fBest"), [
     { key: "base_model", label: "Model", cell: (b) => h("td", { class: "cell-model", title: b.base_model }, h("div", { class: "cell-main" }, b.base_model)) },
-    { key: "tokens_per_second", label: "Gen t/s", num: true, cell: (b) => tpsBar(b.tokens_per_second, maxBest) },
-    { key: "prompt_per_second", label: "Prompt t/s", num: true, cell: (b) => num(b.prompt_per_second, 0) },
+    { key: "prompt_per_second", label: "Prefill (prompt) t/s", num: true, cell: (b) => num(b.prompt_per_second, 0) },
+    { key: "tokens_per_second", label: "Decode (gen) t/s", num: true, cell: (b) => tpsBar(b.tokens_per_second, maxBest) },
     { label: "With", cell: (b) => h("div", { class: "chips nowrap-chips" }, settingChips(b)) },
     { key: "runs", label: "Runs", num: true, cell: (b) => b.runs },
     { key: "created_at", label: "Best on", cell: (b) => h("span", { class: "muted nowrap", title: new Date(b.created_at * 1000).toLocaleString() }, ago(b.created_at)) },
@@ -1080,8 +1080,8 @@ function renderPerf() {
     { key: "base_model", label: PF.grouped ? "Profile" : "Model", cell: (r) => h("td", { class: "cell-model", title: r.launch_command },
       h("div", { class: "cell-main" }, PF.grouped ? r.profile_name || "(no profile)" : r.base_model),
       h("div", { class: "cell-sub" }, [PF.grouped ? null : r.profile_name, r.input_tokens ? `${num(r.input_tokens, 0)} in / ${num(r.output_tokens, 0)} out` : null].filter(Boolean).join(" · "))) },
-    { key: "tokens_per_second", label: "Gen t/s", num: true, cell: (r) => tpsBar(r.tokens_per_second, maxTps) },
-    { key: "prompt_per_second", label: "Prompt t/s", num: true, cell: (r) => num(r.prompt_per_second, 0) },
+    { key: "prompt_per_second", label: "Prefill t/s", num: true, cell: (r) => num(r.prompt_per_second, 0) },
+    { key: "tokens_per_second", label: "Decode t/s", num: true, cell: (r) => tpsBar(r.tokens_per_second, maxTps) },
     { key: "n_ctx", label: "Ctx", num: true, cell: (r) => (r.n_ctx ? `${num(r.n_ctx / 1024, 0)}k` : DASH) },
     { label: "Settings", cell: (r) => h("td", { class: "settings-cell", title: r.layers_offloaded ? `layers on GPU: ${r.layers_offloaded}` : "" }, h("div", { class: "chips" }, settingChips({ ...r, n_ctx: null }))) },
     { key: "mem_used_gb", label: "VRAM · GPU", num: true, cell: (r) => h("td", { class: "num nowrap" }, r.mem_used_gb ? `${num(r.mem_used_gb, 1)} GB` : DASH,
@@ -1104,7 +1104,7 @@ function renderPerf() {
     groupExtra: (g) => {
       const ok = g.rows.filter((r) => r.success);
       const top = Math.max(0, ...ok.map((r) => r.tokens_per_second || 0));
-      return h("span", { class: "group-meta" }, [top ? `best ${num(top)} t/s` : null, `last ${ago(Math.max(...g.rows.map((r) => r.created_at)))}`,
+      return h("span", { class: "group-meta" }, [top ? `best decode ${num(top)} t/s` : null, `last ${ago(Math.max(...g.rows.map((r) => r.created_at)))}`,
         g.rows.length - ok.length ? `${g.rows.length - ok.length} failed` : null].filter(Boolean).join(" · "));
     },
   } : {});
@@ -2650,6 +2650,12 @@ function statTiles(items) {
 function modelCell(main, sub, title) {
   return h("td", { class: "cell-model", title: title || main }, h("div", { class: "cell-main" }, main), sub ? h("div", { class: "cell-sub" }, sub) : null);
 }
+/** "62 – 205" lowest to highest speed, over 90 days of requests and benchmarks. */
+function speedRange(r, d) {
+  if (!r) return DASH;
+  return h("td", { class: "num nowrap", title: `lowest ${num(r.min, d)} · highest ${num(r.max, d)} t/s over ${r.n} requests and benchmarks (90 days)` },
+    r.min === r.max ? num(r.max, d) : [h("span", { class: "muted" }, `${num(r.min, d)} – `), h("b", { class: "strong" }, num(r.max, d))]);
+}
 function renderInvModels() {
   const el = $("#ivModels");
   if (IV.selected) return renderInvModelPage();
@@ -2663,11 +2669,11 @@ function renderInvModels() {
       [m.open ? "● loaded" : null, m.origin, m.arch, !m.present ? "gone" : null].filter(Boolean).join(" · "), m.model_id) },
     { label: "Settings seen", cell: (m) => chips([...m.quants, ...m.cache.map((c) => `kv ${c}`), ...m.split_modes.map((x) => `sm ${x}`), ...m.spec_types].slice(0, 6)) },
     { label: "GPUs", cell: (m) => (m.gpus.length ? m.gpus.join(",") : DASH) },
-    { key: "sessions", label: "Loads", num: true, sort: (m) => m.sessions, cell: (m) => m.sessions || DASH },
+    { key: "prefill", label: "Prefill t/s", num: true, sort: (m) => (m.prefill ? m.prefill.max : 0), cell: (m) => speedRange(m.prefill, 0) },
     { key: "loaded", label: "Loaded", num: true, sort: (m) => m.loaded_seconds, cell: (m) => (m.loaded_seconds ? dur(m.loaded_seconds) : DASH) },
     { key: "last", label: "Last", sort: (m) => m.last_loaded || 0, cell: (m) => h("td", { class: "nowrap" }, ago(m.last_loaded)) },
     { key: "vram", label: "VRAM", num: true, sort: (m) => m.vram_gib_avg || 0, cell: (m) => (m.vram_gib_avg ? `${num(m.vram_gib_avg)} GiB` : DASH) },
-    { key: "tps", label: "Decode t/s", num: true, sort: (m) => m.tps_avg || 0, cell: (m) => (m.tps_avg ? num(m.tps_avg) : DASH) },
+    { key: "tps", label: "Decode t/s", num: true, sort: (m) => (m.decode ? m.decode.max : 0), cell: (m) => speedRange(m.decode, 1) },
   ], rows, IV.sortM, "Nothing here yet. Press Scan, or load a model.", { onRow: (m) => openModel(m.model_id), ...(IV.byFamily ? {
     group: (m) => { const f = modelFamily({ name: m.name || m.model_id, kind: "other" }); return { key: f, label: f }; },
     groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: IV.closed,
@@ -2720,7 +2726,6 @@ function renderInvModelPage() {
     ["Decode", S.decode_median != null ? num(S.decode_median) : DASH, "t/s median"],
     ["Prefill", S.prefill_median != null ? num(S.prefill_median, 0) : DASH, "t/s median"],
     ["Requests", num(S.requests, 0), S.benchmarks ? `+ ${S.benchmarks} bench` : null],
-    ["At once", S.concurrency_max ?? DASH, "max", "the most requests this model served at the same time"],
     ["Launch configs", S.configs],
     ["Loaded", dur(S.loaded_s), null, `${S.sessions} loads`],
     m.vram_gib_avg ? ["VRAM", num(m.vram_gib_avg), "GiB"] : null,
@@ -2728,7 +2733,7 @@ function renderInvModelPage() {
   if (!cfgs.length) return fill(el, head, tiles, h("div", { class: "card" }, h("div", { class: "empty" }, "No requests, loads or benchmarks for this model in this range.")));
   const legend = cfgs.length > 1 ? h("div", { class: "legend" }, cfgs.map((c) => h("span", {}, h("span", { class: "key", style: `background:${cfgColor(c)}` }), c.label))) : null;
   const pointsFor = (k) => P.points.filter((p) => p[k] != null).map((p) => ({ ...p, y: p[k] }));
-  const decBox = h("div", { class: "chart" }), preBox = h("div", { class: "chart" }), concBox = h("div", { class: "chart" });
+  const decBox = h("div", { class: "chart" }), preBox = h("div", { class: "chart" });
   const table = h("table", { class: "dense" });
   const range3 = (st, d = 1) => (st.median == null ? DASH : h("span", { title: `p10 ${num(st.p10, d)} · p90 ${num(st.p90, d)} · ${st.n} samples` }, h("b", { class: "strong" }, num(st.median, d)), h("span", { class: "muted" }, ` ${num(st.p10, d)}–${num(st.p90, d)}`)));
   renderTable(table, [
@@ -2738,7 +2743,6 @@ function renderInvModelPage() {
     { label: "Requests", num: true, cell: (c) => `${c.requests}${c.benchmarks ? ` +${c.benchmarks}b` : ""}` },
     { label: "Prefill t/s", num: true, cell: (c) => range3(c.prefill, 0) },
     { label: "Decode t/s", num: true, cell: (c) => range3(c.decode) },
-    { label: "At once", num: true, cell: (c) => c.concurrency_max ?? DASH },
     { label: "Last used", cell: (c) => ago(c.last_used) },
     { label: "", cell: (c) => (c.command ? h("td", { class: "actions nowrap" }, iconBtn("layers", "Add to Compare", () => addToCompare({ model_id: IV.selected, config: c.id })),
       iconBtn("copy", "Copy the launch command", () => copyText(c.command), "ghost")) : "") },
@@ -2747,7 +2751,6 @@ function renderInvModelPage() {
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Speed by launch config"), h("span", { class: "spacer" }),
       h("span", { class: "hint" }, "dot = median, line = 10th to 90th percentile")), configStrips(cfgs)),
     h("div", { class: "card" }, legend, h("div", { class: "charts" }, decBox, preBox)),
-    h("div", { class: "card" }, concBox),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Launch configs"), h("span", { class: "spacer" }),
       h("span", { class: "hint" }, `prefill counts prompts of ${P.thresholds.min_prompt_tokens}+ tokens, decode ${P.thresholds.min_output_tokens}+ tokens`)),
       h("div", { class: "table-wrap" }, table)));
@@ -2762,7 +2765,7 @@ function renderInvModelPage() {
   }).catch(() => simBox.remove());
   scatterChart(decBox, { title: "Decode speed per request", unit: "t/s", points: pointsFor("decode"), byId });
   scatterChart(preBox, { title: "Prefill speed per request", unit: "t/s", points: pointsFor("prefill"), byId, digits: 0 });
-  concurrencyChart(concBox, cfgs);
+
 }
 
 /** One row per config: a dot-and-whisker strip for prefill and one for decode, each with its own axis. */

@@ -61,3 +61,9 @@ def test_the_assistant_and_memory_know_the_small_changes(app, client):
     hits = mem.search("what happened when I changed the context", 20)
     assert any(h["source"] == "change" and "ctx-size 32768→65536" in h["text"] for h in hits) or \
         any(t.startswith("Change:") for (_, _, _, t) in mem.collect())
+
+
+def test_inventory_lists_lowest_and_highest_speeds(app, client):
+    seed(app)
+    row = next(m for m in client.get("/api/inventory").get_json()["models"] if m["model_id"] == "qwen3-8b-q4_k_m")
+    assert row["decode"] == {"min": 55.0, "max": 62.0, "n": 3} and row["prefill"]["min"] == 700.0 and row["prefill"]["max"] == 800.0

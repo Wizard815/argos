@@ -329,6 +329,24 @@ class Inventory:
         for s in self.store.list_sessions(limit=20000):
             sessions.setdefault(s["model_id"], []).append(s)
         speeds = {r["model"]: r for r in self.store.request_stats(now - 90 * 86400)}
+        # lowest and highest prefill / decode speed per model over 90 days: requests (long enough to be meaningful)
+        # and benchmarks
+        from .model_perf import MIN_OUTPUT_TOKENS, MIN_PROMPT_TOKENS
+        ranges: dict[str, dict[str, list[float]]] = {}
+        for r in self.store.list_requests(since=now - 90 * 86400, limit=200000):
+            d = ranges.setdefault(r["model"], {"prefill": [], "decode": []})
+            if r.get("prompt_per_second") and (r.get("input_tokens") or 0) >= MIN_PROMPT_TOKENS:
+                d["prefill"].append(r["prompt_per_second"])
+            if r.get("tokens_per_second") and (r.get("output_tokens") or 0) >= MIN_OUTPUT_TOKENS:
+                d["decode"].append(r["tokens_per_second"])
+        for r in self.store.list_runs(limit=100000):
+            if r.get("success") and r.get("model_id") and r["created_at"] >= now - 90 * 86400:
+                d = ranges.setdefault(r["model_id"], {"prefill": [], "decode": []})
+                if r.get("prompt_per_second"):
+                    d["prefill"].append(r["prompt_per_second"])
+                if r.get("tokens_per_second"):
+                    d["decode"].append(r["tokens_per_second"])
+        span = lambda xs: {"min": round(min(xs), 1), "max": round(max(xs), 1), "n": len(xs)} if xs else None  # noqa: E731
         rows = []
         for mid in sorted(set(seen) | set(sessions)):
             ss, m = sessions.get(mid, []), seen.get(mid, {})
@@ -349,6 +367,7 @@ class Inventory:
                 "vram_gib_avg": _avg(s["measured_gib"] or s["size_gib"] for s in ss),
                 "open": any(s["open"] for s in ss),
                 "tps_avg": (speeds.get(mid) or {}).get("tg_avg"), "requests": (speeds.get(mid) or {}).get("requests"),
+                "prefill": span((ranges.get(mid) or {}).get("prefill") or []), "decode": span((ranges.get(mid) or {}).get("decode") or []),
             })
         return sorted(rows, key=lambda r: (-r["loaded_seconds"], r["name"].lower()))
 
