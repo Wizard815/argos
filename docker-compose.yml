@@ -9,8 +9,8 @@ services:
     container_name: argos
     restart: unless-stopped
     ports:
-      - "${ARGOS_API_PORT:-8080}:8080"   # the engine: OpenAI API for your apps
-      - "${ARGOS_UI_PORT:-7861}:7861"   # Argos: the web page
+      # one port: the Argos web page, the OpenAI API (/v1) and the engine's endpoints
+      - "${ARGOS_PORT:-8080}:8080"
     devices:
       - /dev/kfd
       - /dev/dri

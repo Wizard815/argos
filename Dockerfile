@@ -42,16 +42,16 @@ COPY builder/src /app/builder/src
 COPY docker/argos.config.yaml /app/config.yaml
 COPY docker/argos-entrypoint.sh /app/argos-entrypoint.sh
 
-ENV ARGOS_ENGINE_URL=http://127.0.0.1:8080 \
+ENV ARGOS_ENGINE_URL=http://127.0.0.1:8081 \
     MODELS_DIR=/app/models \
     ARGOS_DB=/data/argos.db \
     ARGOS_RUNS_DIR=/data/runs \
     ARGOS_SCHEDULE_FILE=/app/config.d/scheduler.generated.yaml \
     HOST=0.0.0.0 \
-    PORT=7861
+    PORT=8080
 
 VOLUME ["/data", "/app/config.d"]
-EXPOSE 8080 7861
+EXPOSE 8080
 WORKDIR /app
-HEALTHCHECK CMD curl -f http://localhost:8080/ && curl -f http://localhost:7861/ || exit 1
+HEALTHCHECK CMD curl -f http://localhost:8080/health || exit 1
 ENTRYPOINT ["/app/argos-entrypoint.sh"]

@@ -17,4 +17,5 @@ Everything here can also be set on the **Settings** page. Environment variables 
 | `ARGOS_SERVERS` | The same list as JSON in the environment. |
 | `ARGOS_SSH_DIR` | Where each server's SSH key is kept. Default: an `ssh` folder next to `ARGOS_DB`. |
 | `ARGOS_TELEMETRY` | `0` turns the background GPU collector off. |
-| `HOST` / `PORT` | Where the web page listens. Default `0.0.0.0:7861`. |
+| `ARGOS_PORT` | The one host port for Argos: web page, OpenAI API and engine endpoints. Default `8080`. |
+| `HOST` / `PORT` | Where the builder listens inside the container. Docker sets `8080`; running bare it defaults to `0.0.0.0:7861`. |

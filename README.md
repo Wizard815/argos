@@ -36,10 +36,7 @@ echo "BASE_IMAGE=your-llamacpp-image" > .env
 docker compose up -d --build
 ```
 
-Put your `.gguf` files in `./models` (or set `MODELS_DIR` in `.env`). Then open:
-
-- **http://localhost:7861** for Argos.
-- **http://localhost:8080** for the OpenAI API your apps talk to.
+Put your `.gguf` files in `./models` (or set `MODELS_DIR` in `.env`). Then open **http://localhost:8080**. That one port serves the Argos page, the OpenAI API your apps use (`/v1`), and the engine's endpoints. Change it with `ARGOS_PORT` in `.env`.
 
 The compose file passes your AMD GPUs through (`/dev/kfd` and `/dev/dri`). On NVIDIA, change that part for your setup.
 

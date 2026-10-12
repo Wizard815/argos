@@ -35,4 +35,4 @@ pip install -r requirements.txt
 python -m src.app
 ```
 
-Open http://localhost:7861 and set the engine's URL in Settings.
+Open http://localhost:7861 and set the engine's URL in Settings. (In Docker everything is on port 8080.)

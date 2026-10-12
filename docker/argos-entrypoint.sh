@@ -4,7 +4,8 @@ set -u
 
 mkdir -p /app/config.d /data/runs
 
-/app/argos -config /app/config.yaml -config-dir /app/config.d -watch-config -listen 0.0.0.0:8080 &
+# the engine is internal only (127.0.0.1:8081); the builder on :8080 is the one public port
+/app/argos -config /app/config.yaml -config-dir /app/config.d -watch-config -listen 127.0.0.1:8081 &
 ENGINE=$!
 
 cd /app/builder

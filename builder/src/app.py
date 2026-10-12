@@ -1,18 +1,19 @@
 """Flask backend for Argos.
 
 Run with ``python -m src.app`` (or ``python src/app.py``) and open
-http://localhost:7861. Environment variables set the defaults; most of them
+http://localhost:7861 (Docker: http://localhost:8080, one port for the UI and the
+OpenAI API; the builder passes every path it does not own to the engine). Environment variables set the defaults; most of them
 can then be changed in the Settings view (stored in the database):
 
   ARGOS_DB                 SQLite file                      (default ./data.db)
   ARGOS_RUNS_DIR           launch logs                      (default ./runs)
   MODELS_DIR               GGUF library + download target   (default ./models)
-  ARGOS_ENGINE_URL         the engine in this container      (default none; Docker sets http://127.0.0.1:8080)
+  ARGOS_ENGINE_URL         the engine in this container      (default none; Docker sets http://127.0.0.1:8081)
   HF_ENDPOINT / HF_TOKEN   Hugging Face mirror and token for downloads
   ARGOS_SSH_DIR            SSH keys for servers          (default <db folder>/ssh)
   ARGOS_SERVERS_FILE       servers.yaml / .json that seeds the Servers view at start
   ARGOS_SERVERS            the same as JSON in the environment
-  HOST / PORT              bind address                     (default 0.0.0.0:7861)
+  HOST / PORT              bind address                     (default 0.0.0.0:7861; Docker 8080)
 
 The API launches arbitrary commands by design: only expose it on networks
 where everyone who can reach it may run programs on this machine.
@@ -34,6 +35,7 @@ if __package__ in (None, ""):  # `python src/app.py`
 from .assistant import Assistant  # noqa: E402
 from .db import Store  # noqa: E402
 from .downloader import Downloads  # noqa: E402
+from . import engine_proxy  # noqa: E402
 from .log_analyzer import parse_log_text  # noqa: E402
 from .routes import assistant as assistant_routes  # noqa: E402
 from .routes import core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
@@ -186,6 +188,8 @@ def create_app(config: dict | None = None) -> Flask:
 
     for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp):
         app.register_blueprint(bp)
+    # last: anything the builder does not own goes to the engine (one port for both)
+    app.register_blueprint(engine_proxy.bp)
 
     def ui_version() -> str:
         """Changes whenever a UI file changes, so a browser never runs an old app.js against a new server."""
