@@ -1,0 +1,22 @@
+services:
+  argos:
+    build:
+      context: .
+      args:
+        # an image that already has your llama.cpp (llama-server) in it
+        BASE_IMAGE: ${BASE_IMAGE:-mx-llamacpp-mx-llamacpp-ssh}
+        BASE_TAG: ${BASE_TAG:-latest}
+    container_name: argos
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # the engine: OpenAI API for your apps
+      - "7861:7861"   # Argos: the web page
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+    volumes:
+      - ${MODELS_DIR:-./models}:/app/models
+      - ./data:/data
+      - ./config.d:/app/config.d

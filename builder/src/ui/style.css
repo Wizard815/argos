@@ -539,3 +539,6 @@ tr.diff-added .after, tr.diff-changed .after { color: var(--green); }
 .theme-pick { display: flex; flex-wrap: wrap; gap: 12px; }
 .theme-field { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
 .theme-field input[type=color] { width: 30px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }
+
+/* Scrollbars follow the theme instead of showing the system's light ones */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--fg) 28%, transparent) transparent; }

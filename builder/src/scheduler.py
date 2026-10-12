@@ -34,7 +34,7 @@ DEFAULT_PLAN: dict[str, Any] = {
     "persistent": [],        # model ids that are never evicted to make room
     "sizes": {},             # model id -> GiB, set by hand
     "measured": {},          # model id -> {"gib", "per_card", "at", "load_seconds"}, set by Measure
-    "export_file": "",       # where the YAML fragment is written
+    "export_file": os.environ.get("ARGOS_EXPORT_FILE", ""),  # where the YAML fragment is written
 }
 
 # bytes per KV element for ggml cache types (block size and header included)

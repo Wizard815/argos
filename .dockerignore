@@ -1,0 +1,7 @@
+build/
+data/
+.git/
+ui/node_modules/
+builder/data.db*
+builder/runs/
+builder/**/__pycache__/

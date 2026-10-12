@@ -1,0 +1,15 @@
+# Starting config for the Argos container. The builder (port 7861) owns the
+# model list: it serves your presets and the engine reads them from there.
+healthCheckTimeout: 300
+logRequests: true
+
+odysseus:
+  enabled: true
+  baseURL: "http://127.0.0.1:7861"
+  token: "any"
+  refreshSeconds: 60
+  profilePrefix: "pb"
+  outputFile: "/app/config.d/odysseus.generated.yaml"
+  ensureDio: true
+
+models: {}
