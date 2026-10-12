@@ -160,6 +160,10 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			return Config{}, fmt.Errorf("model %s: %w", modelId, err)
 		}
 
+		if modelConfig.VRAM < 0 {
+			return Config{}, fmt.Errorf("model %s: vram must be >= 0", modelId)
+		}
+
 		// Auto-register setParamsByID keys as aliases (skip the model's own ID)
 		for key := range modelConfig.Filters.SetParamsByID {
 			if key == modelId {
@@ -213,10 +217,16 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			config.Matrix = rs.Matrix
 		case "group", "":
 			config.Groups = rs.Groups
+		case "pool":
+			// Every model is in the one pool; groups and matrix are ignored.
+			if err := validatePool(&config); err != nil {
+				return Config{}, err
+			}
 		default:
-			return Config{}, fmt.Errorf("routing.router.use: unknown router %q (valid: group, matrix)", config.Routing.Router.Use)
+			return Config{}, fmt.Errorf("routing.router.use: unknown router %q (valid: group, matrix, pool)", config.Routing.Router.Use)
 		}
 	}
+	isPool := !hasTopLevel && config.Routing.Router.Use == "pool"
 
 	// groups XOR matrix
 	if config.Matrix != nil && len(config.Groups) > 0 {
@@ -227,7 +237,7 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		if err := ValidateMatrix(config.Matrix, config.Models); err != nil {
 			return Config{}, fmt.Errorf("matrix: %w", err)
 		}
-	} else {
+	} else if !isPool {
 		config = AddDefaultGroupToConfig(config)
 
 		// Validate group members
@@ -251,9 +261,12 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 	// Build the canonical Config.Routing from the effective result. Both legacy
 	// and new-style configs converge here. The Matrix pointer is shared so the
 	// compiled matrix program stays in one place.
-	if config.Matrix != nil {
+	switch {
+	case isPool:
+		config.Routing.Router.Use = "pool"
+	case config.Matrix != nil:
 		config.Routing.Router.Use = "matrix"
-	} else {
+	default:
 		config.Routing.Router.Use = "group"
 	}
 	config.Routing.Router.Settings.Matrix = config.Matrix

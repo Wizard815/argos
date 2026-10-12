@@ -1856,6 +1856,108 @@ routing:
 	assert.Contains(t, config.Groups, "g1")
 }
 
+func TestConfig_Routing_RouterUsePool(t *testing.T) {
+	yaml := `
+models:
+  gemma:
+    cmd: echo gemma
+    proxy: http://localhost:8080
+    vram: 18.5
+  whisper:
+    cmd: echo whisper
+    proxy: http://localhost:8081
+    aliases: [stt]
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        vramGiB: 64
+        persistent: [stt]
+`
+	cfg, err := LoadConfigFromReader(strings.NewReader(yaml))
+	require.NoError(t, err)
+	assert.Equal(t, "pool", cfg.Routing.Router.Use)
+	pool := cfg.Routing.Router.Settings.Pool
+	assert.Equal(t, 64.0, pool.VRAMGiB)
+	assert.Equal(t, float64(PoolDefaultReserveGiB), pool.ReserveGiB)
+	assert.Equal(t, PoolDefaultProtectSeconds, pool.ProtectSeconds)
+	assert.Equal(t, []string{"whisper"}, pool.Persistent, "aliases resolve to the real ID")
+	assert.Equal(t, 18.5, cfg.Models["gemma"].VRAM)
+	assert.Empty(t, cfg.Routing.Router.Settings.Groups, "the pool does not build groups")
+}
+
+func TestConfig_Routing_PoolErrors(t *testing.T) {
+	cases := map[string]string{
+		"unknown persistent": "persistent: [nope]",
+		"negative vram":      "vramGiB: -1",
+		"negative reserve":   "reserveGiB: -1",
+		"negative protect":   "protectSeconds: -5",
+	}
+	for name, setting := range cases {
+		t.Run(name, func(t *testing.T) {
+			yaml := twoModels + `
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        ` + setting + "\n"
+			_, err := LoadConfigFromReader(strings.NewReader(yaml))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "routing.router.settings.pool")
+		})
+	}
+}
+
+func TestConfig_Routing_PoolCardsAndPlacement(t *testing.T) {
+	yaml := twoModels + `
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        cards: [32, 32]
+`
+	cfg, err := LoadConfigFromReader(strings.NewReader(yaml))
+	require.NoError(t, err)
+	pool := cfg.Routing.Router.Settings.Pool
+	assert.Equal(t, []float64{32, 32}, pool.Cards)
+	assert.Equal(t, "auto", pool.Placement)
+
+	for name, setting := range map[string]string{
+		"cards and vramGiB": "cards: [32]\n        vramGiB: 32",
+		"zero card":         "cards: [32, 0]",
+		"bad placement":     "placement: sideways",
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := twoModels + `
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        ` + setting + "\n"
+			_, err := LoadConfigFromReader(strings.NewReader(bad))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "routing.router.settings.pool")
+		})
+	}
+}
+
+func TestConfig_ModelNegativeVRAM(t *testing.T) {
+	yaml := `
+models:
+  m:
+    cmd: echo m
+    proxy: http://localhost:8080
+    vram: -2
+`
+	_, err := LoadConfigFromReader(strings.NewReader(yaml))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vram must be >= 0")
+}
+
 func TestConfig_Routing_UnknownRouter(t *testing.T) {
 	yaml := twoModels + `
 routing:
@@ -1893,4 +1995,65 @@ routing:
 	cfg, err := LoadConfigFromReader(strings.NewReader(yaml))
 	require.NoError(t, err)
 	assert.Equal(t, 5, cfg.Routing.Scheduler.Settings.Fifo.Priority["gemma"])
+}
+
+func TestConfig_Routing_PoolSizes(t *testing.T) {
+	yaml := `
+models:
+  gemma:
+    cmd: echo gemma
+    proxy: http://localhost:8080
+    aliases: [g]
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        sizes:
+          g: 18.5
+`
+	cfg, err := LoadConfigFromReader(strings.NewReader(yaml))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]float64{"gemma": 18.5}, cfg.Routing.Router.Settings.Pool.Sizes, "aliases resolve to the real ID")
+
+	for name, sizes := range map[string]string{"unknown model": "nope: 4", "zero": "gemma: 0"} {
+		t.Run(name, func(t *testing.T) {
+			bad := strings.Replace(yaml, "g: 18.5", sizes, 1)
+			_, err := LoadConfigFromReader(strings.NewReader(bad))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "pool.sizes")
+		})
+	}
+}
+
+// A generated file can carry the whole routing block and the sizes while the
+// models stay in the main config, because sizes are not under models.
+func TestConfigSources_PoolFromSeparateFile(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(main, []byte(`
+models:
+  gemma:
+    cmd: echo gemma
+    proxy: http://localhost:8080
+`), 0o644))
+	confd := filepath.Join(dir, "config.d")
+	require.NoError(t, os.MkdirAll(confd, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(confd, "scheduler.generated.yaml"), []byte(`
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        cards: [32, 32]
+        persistent: [gemma]
+        sizes:
+          gemma: 20
+`), 0o644))
+
+	cfg, err := LoadConfigSources(main, confd)
+	require.NoError(t, err)
+	assert.Equal(t, "pool", cfg.Routing.Router.Use)
+	assert.Equal(t, map[string]float64{"gemma": 20}, cfg.Routing.Router.Settings.Pool.Sizes)
+	assert.Equal(t, []string{"gemma"}, cfg.Routing.Router.Settings.Pool.Persistent)
 }

@@ -21,6 +21,7 @@ type activeSwap struct {
 	modelID string
 	evict   []string
 	waiters []HandlerReq
+	started time.Time
 }
 
 // FIFO is the default scheduler. Requests are handled in a first-in, first-out order.
@@ -36,6 +37,7 @@ type FIFO struct {
 	name    string
 	logger  *logmon.Monitor
 	planner Swapper
+	usage   UsageObserver // planner's UsageObserver, or nil
 	cfg     config.FifoConfig
 	effects Effects
 
@@ -59,10 +61,13 @@ func NewFIFO(name string, logger *logmon.Monitor, planner Swapper, cfg config.Fi
 		limits[id] = limit
 	}
 
+	usage, _ := planner.(UsageObserver)
+
 	return &FIFO{
 		name:     name,
 		logger:   logger,
 		planner:  planner,
+		usage:    usage,
 		cfg:      cfg,
 		effects:  eff,
 		limits:   limits,
@@ -192,6 +197,9 @@ func (s *FIFO) OnSwapDone(ev SwapDone) {
 		return
 	}
 	delete(s.active, ev.ModelID)
+	if s.usage != nil {
+		s.usage.OnSwapDone(ev.ModelID, time.Since(sw.started), ev.Err)
+	}
 
 	for _, w := range sw.waiters {
 		if ev.Err != nil {
@@ -210,6 +218,9 @@ func (s *FIFO) OnSwapDone(ev SwapDone) {
 func (s *FIFO) OnServeDone(ev ServeDoneEvent) {
 	s.inFlight[ev.ModelID]--
 	s.release(ev.ModelID)
+	if s.usage != nil {
+		s.usage.OnServeDone(ev.ModelID)
+	}
 	if s.inFlight[ev.ModelID] <= 0 {
 		delete(s.inFlight, ev.ModelID)
 		s.drainQueue()
@@ -290,6 +301,9 @@ func (s *FIFO) grantHandler(req HandlerReq, modelID string) {
 
 	if s.effects.GrantServe(req, modelID) {
 		s.inFlight[modelID]++
+		if s.usage != nil {
+			s.usage.OnServeStart(modelID)
+		}
 	} else {
 		s.release(modelID)
 	}
@@ -373,6 +387,7 @@ func (s *FIFO) startSwap(initial HandlerReq, evict, running []string) {
 		modelID: initial.Model,
 		evict:   evict,
 		waiters: []HandlerReq{initial},
+		started: time.Now(),
 	}
 	s.planner.OnSwapStart(initial.Model, running)
 	s.effects.StartSwap(initial.Model, evict)
@@ -438,6 +453,26 @@ func (s *FIFO) drainQueue() {
 	}
 	s.queued = remaining
 	broadcastQueuePositions(s.queued)
+}
+
+// Status implements Reporter.
+func (s *FIFO) Status() Status {
+	now := time.Now()
+	st := Status{InFlight: make(map[string]int, len(s.inFlight))}
+	for i, q := range s.queued {
+		st.Queued = append(st.Queued, QueuedStatus{Model: q.Model, Position: i + 1, Waited: now.Sub(q.Arrived)})
+	}
+	for _, sw := range s.active {
+		st.Swaps = append(st.Swaps, SwapStatus{
+			Model: sw.modelID, Evict: append([]string(nil), sw.evict...),
+			Waiters: len(sw.waiters), Elapsed: now.Sub(sw.started),
+		})
+	}
+	sort.Slice(st.Swaps, func(i, j int) bool { return st.Swaps[i].Model < st.Swaps[j].Model })
+	for id, n := range s.inFlight {
+		st.InFlight[id] = n
+	}
+	return st
 }
 
 // runningSet is the live model set handed to the Swapper: every process the

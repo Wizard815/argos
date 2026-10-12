@@ -946,3 +946,93 @@ func TestFIFO_ConcurrencyLimit_CancelledQueuedWaiterReleasesReservation(t *testi
 		t.Fatalf("queue len=%d want 1 after cancel and retry", got)
 	}
 }
+
+// recordingPlanner is a Swapper that also implements UsageObserver.
+type recordingPlanner struct {
+	stubPlanner
+	events []string
+}
+
+func (r *recordingPlanner) OnServeStart(id string) { r.events = append(r.events, "start:"+id) }
+func (r *recordingPlanner) OnServeDone(id string)  { r.events = append(r.events, "done:"+id) }
+func (r *recordingPlanner) OnSwapDone(id string, took time.Duration, err error) {
+	ev := "swap:" + id
+	if err != nil {
+		ev += ":err"
+	}
+	if took < 0 {
+		ev += ":negative"
+	}
+	r.events = append(r.events, ev)
+}
+
+func TestFIFO_UsageObserverSeesServeAndSwap(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateStopped
+	planner := &recordingPlanner{}
+	s := newFIFO(planner, eff)
+
+	r := req("a")
+	s.OnRequest(r)
+	assertAdmitted(t, r)
+	s.OnSwapDone(SwapDone{ModelID: "a"})
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+
+	want := []string{"swap:a", "start:a", "done:a"}
+	if len(planner.events) != len(want) {
+		t.Fatalf("events=%v want %v", planner.events, want)
+	}
+	for i := range want {
+		if planner.events[i] != want[i] {
+			t.Fatalf("events=%v want %v", planner.events, want)
+		}
+	}
+}
+
+// A grant the caller never received must not count as a serve start.
+func TestFIFO_UsageObserverSkipsFailedGrant(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	eff.serveResult["a"] = false
+	planner := &recordingPlanner{}
+	s := newFIFO(planner, eff)
+
+	r := req("a")
+	s.OnRequest(r)
+	assertAdmitted(t, r)
+
+	if len(planner.events) != 0 {
+		t.Fatalf("events=%v want none", planner.events)
+	}
+}
+
+func TestFIFO_StatusReportsQueueSwapsAndInFlight(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateStopped
+	eff.states["b"] = process.StateStopped
+	// b can only run if a is evicted, so b queues behind a's swap.
+	s := newFIFO(&stubPlanner{evict: map[string][]string{"b": {"a"}}}, eff)
+
+	ra := req("a")
+	s.OnRequest(ra)
+	rb := req("b")
+	rb.Arrived = time.Now().Add(-3 * time.Second)
+	s.OnRequest(rb)
+
+	st := s.Status()
+	if len(st.Swaps) != 1 || st.Swaps[0].Model != "a" || st.Swaps[0].Waiters != 1 {
+		t.Fatalf("swaps=%+v want one swap of a with one waiter", st.Swaps)
+	}
+	if len(st.Queued) != 1 || st.Queued[0].Model != "b" || st.Queued[0].Position != 1 {
+		t.Fatalf("queued=%+v want b at position 1", st.Queued)
+	}
+	if st.Queued[0].Waited < 3*time.Second {
+		t.Fatalf("waited=%v want at least 3s", st.Queued[0].Waited)
+	}
+
+	s.OnSwapDone(SwapDone{ModelID: "a"})
+	st = s.Status()
+	if st.InFlight["a"] != 1 || len(st.Swaps) != 0 {
+		t.Fatalf("after swap: inFlight=%v swaps=%+v want a in flight and no swaps", st.InFlight, st.Swaps)
+	}
+}

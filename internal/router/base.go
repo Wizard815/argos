@@ -57,6 +57,7 @@ type baseRouter struct {
 	cancelCh    chan scheduler.HandlerReq
 	shutdownCh  chan shutdownReq
 	unloadCh    chan unloadReq
+	statusCh    chan chan scheduler.Status
 	swapDoneCh  chan scheduler.SwapDone
 	serveDoneCh chan scheduler.ServeDoneEvent
 
@@ -101,6 +102,7 @@ func newBaseRouter(
 		cancelCh:    make(chan scheduler.HandlerReq),
 		shutdownCh:  make(chan shutdownReq),
 		unloadCh:    make(chan unloadReq),
+		statusCh:    make(chan chan scheduler.Status),
 		swapDoneCh:  make(chan scheduler.SwapDone),
 		serveDoneCh: make(chan scheduler.ServeDoneEvent),
 		runDone:     make(chan struct{}),
@@ -142,6 +144,13 @@ func (b *baseRouter) run() {
 			close(req.respond)
 			b.notifyProcessed()
 
+		case reply := <-b.statusCh:
+			var st scheduler.Status
+			if r, ok := b.schedule.(scheduler.Reporter); ok {
+				st = r.Status()
+			}
+			reply <- st
+
 		case req := <-b.handoverCh:
 			detached := make(map[string]process.Process)
 			for _, id := range req.detach {
@@ -171,6 +180,27 @@ func (b *baseRouter) run() {
 		case ev := <-b.serveDoneCh:
 			b.schedule.OnServeDone(ev)
 		}
+	}
+}
+
+// SchedulerStatus returns what the scheduler is holding: the queue, the swaps
+// in flight and the requests being served. It asks the run loop, which owns that
+// state, and gives up after two seconds so a stuck loop cannot hang the API.
+func (b *baseRouter) SchedulerStatus() (scheduler.Status, bool) {
+	reply := make(chan scheduler.Status, 1)
+	timeout := time.After(2 * time.Second)
+	select {
+	case b.statusCh <- reply:
+	case <-b.runDone:
+		return scheduler.Status{}, false
+	case <-timeout:
+		return scheduler.Status{}, false
+	}
+	select {
+	case st := <-reply:
+		return st, true
+	case <-timeout:
+		return scheduler.Status{}, false
 	}
 }
 
@@ -523,8 +553,9 @@ func (b *baseRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	hr := scheduler.HandlerReq{
-		Model: data.ModelID,
-		Ctx:   req.Context(),
+		Model:   data.ModelID,
+		Arrived: time.Now(),
+		Ctx:     req.Context(),
 		// Unbuffered: a successful send on Respond proves the waiter is
 		// alive and consuming. grant() relies on this to avoid handing a
 		// handleFunc to a cancelled waiter and leaking the inFlight count.

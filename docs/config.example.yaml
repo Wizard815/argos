@@ -443,6 +443,13 @@ models:
     # - recommended to be omitted and the default used
     concurrencyLimit: 0
 
+    # vram: the model's GPU memory footprint in GiB
+    # - optional, default: 0 (estimate from the -m model file size)
+    # - used by the pool router to decide which models fit together
+    # - include the KV cache for your context size; the estimate does not
+    #   know your -c value
+    vram: 0
+
     # sendLoadingState: overrides the global sendLoadingState setting for this model
     # - optional, default: undefined (use global setting)
     sendLoadingState: false
@@ -559,12 +566,16 @@ hooks:
 #           model combinations are allowed to run concurrently, enabling
 #           setups that groups cannot express.
 #
+# - pool:   every model is in one shared pool. Models load side by side
+#           while their VRAM fits; a model is evicted only when a new one
+#           does not fit. No groups or sets to write.
+#
 # The routing section is optional.
 routing:
   router:
     # use: a string defining which engine to use
     # - optional, default: "group"
-    # - valid values: group, matrix
+    # - valid values: group, matrix, pool
     use: group
 
     # settings: a dictionary of settings for the specific engines
@@ -699,6 +710,60 @@ routing:
           # The 70B model uses every GPU, so it can only run alone.
           # Vars are not required when using real model IDs.
           full: "llama-70B"
+
+      # pool: settings for the pool engine (use: pool)
+      # - optional; groups and matrix are ignored when the pool is used
+      # - each model's size comes from models.*.vram, or is estimated from
+      #   its -m model file (weights + 20% + 1 GiB) when vram is not set
+      # - a model whose size is unknown runs alone, like the group default
+      # - when a model does not fit, models are evicted in this order:
+      #   idle before recently used before busy, and within each, the one
+      #   cheapest to reload and idle longest first
+      pool:
+        # cards: the VRAM of each GPU in GiB, numbered from 0 like
+        # HIP_VISIBLE_DEVICES
+        # - optional, default: empty (detect the cards at startup)
+        # - lets the pool place each model on one card, or on several when it
+        #   is bigger than a card, so the cards work independently
+        # - set cards or vramGiB, not both
+        cards: [32, 32]
+
+        # vramGiB: total VRAM budget across all GPUs, with no per-card sizes
+        # - optional, default: 0 (detect at startup)
+        # - the pool then plans by total only and does not place models
+        # vramGiB: 64
+
+        # sizes: model ID -> VRAM in GiB
+        # - optional, default: empty
+        # - lives here, not under models, so another file in -config-dir
+        #   (for example one a tool generates) can supply sizes without
+        #   defining the models again; a model defined in two files is an error
+        # - models.*.vram wins over this; either wins over the file estimate
+        sizes:
+          qwen3-30b: 22.5
+
+        # placement: whether the pool picks GPUs for models
+        # - optional, default: auto
+        # - auto: when a model starts, HIP_VISIBLE_DEVICES is set to the card
+        #   (or cards) chosen for it. A HIP_VISIBLE_DEVICES in the model's env
+        #   limits which cards it may use.
+        # - off: plan by total VRAM only and leave HIP_VISIBLE_DEVICES alone
+        placement: auto
+
+        # reserveGiB: GiB kept free for KV cache growth and buffers
+        # - optional, default: 2
+        reserveGiB: 2
+
+        # protectSeconds: a model used within this window is evicted only
+        # when nothing else can make room
+        # - optional, default: 600
+        protectSeconds: 600
+
+        # persistent: models never evicted to make room for another model
+        # - optional, default: empty list
+        # - they still stop on ttl, a manual unload or shutdown
+        persistent:
+          - "whisper"
 
   # scheduler: how queued requests are ordered.
   # The default and only valid scheduler is "fifo"

@@ -266,14 +266,62 @@ type FifoConfig struct {
 }
 
 type RouterConfig struct {
-	Use      string         `yaml:"use"` // "group" (default) | "matrix"
+	Use      string         `yaml:"use"` // "group" (default) | "matrix" | "pool"
 	Settings RouterSettings `yaml:"settings"`
 }
 
 type RouterSettings struct {
 	Groups map[string]GroupConfig `yaml:"groups"`
 	Matrix *MatrixConfig          `yaml:"matrix"`
+	Pool   PoolConfig             `yaml:"pool"`
 }
+
+// PoolConfig configures the pool router. Every model belongs to one shared
+// pool and models load side by side while their VRAM fits; eviction only
+// happens when a new model does not fit.
+type PoolConfig struct {
+	// VRAMGiB is the pool's total VRAM budget. 0 detects it from the GPUs at
+	// startup (the sum of every card's total VRAM).
+	VRAMGiB float64 `yaml:"vramGiB"`
+
+	// ReserveGiB is kept free for KV cache growth, compute buffers and other
+	// processes. Default 2.
+	ReserveGiB float64 `yaml:"reserveGiB"`
+
+	// ProtectSeconds shields recently used models: a model that served a
+	// request within this window is evicted only when nothing else can make
+	// room. Default 600.
+	ProtectSeconds int `yaml:"protectSeconds"`
+
+	// Persistent lists models that are never evicted to make room for another
+	// model. They still stop on TTL, unload or shutdown.
+	Persistent []string `yaml:"persistent"`
+
+	// Cards lists each GPU's VRAM in GiB, numbered from 0 the way
+	// HIP_VISIBLE_DEVICES numbers them. Empty detects the cards at startup
+	// when vramGiB is 0. It replaces vramGiB; set one or the other.
+	Cards []float64 `yaml:"cards"`
+
+	// Placement is "auto" (default) or "off". Auto puts each model on the
+	// card, or cards, with room and sets HIP_VISIBLE_DEVICES when the model
+	// starts. It needs per-card sizes, from cards or from detection. Off
+	// plans by total VRAM only and leaves HIP_VISIBLE_DEVICES alone.
+	Placement string `yaml:"placement"`
+
+	// Sizes maps a model ID to its VRAM in GiB. It lives here, not under
+	// models.*.vram, so a separate config file can supply sizes without
+	// redefining the models (a model defined in two sources is an error).
+	// models.*.vram wins over this when both are set; either wins over the
+	// estimate from the model file.
+	Sizes map[string]float64 `yaml:"sizes"`
+}
+
+// PoolDefaultReserveGiB and PoolDefaultProtectSeconds apply when the pool
+// config leaves those fields unset.
+const (
+	PoolDefaultReserveGiB     = 2
+	PoolDefaultProtectSeconds = 600
+)
 
 func (c *Config) RealModelName(search string) (string, bool) {
 	if _, found := c.Models[search]; found {

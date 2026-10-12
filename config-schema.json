@@ -572,6 +572,12 @@
                         "default": 0,
                         "description": "Overrides allowed number of active parallel requests to a model. 0 uses internal default of 10. >0 overrides default. Requests exceeding limit get HTTP 429."
                     },
+                    "vram": {
+                        "type": "number",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "Model GPU memory footprint in GiB (weights, KV cache, buffers). The pool router uses it to decide what fits. 0 estimates it from the model file size."
+                    },
                     "sendLoadingState": {
                         "type": "boolean",
                         "description": "Overrides the global sendLoadingState for this model. Ommitting this property will use the global setting."
@@ -892,16 +898,17 @@
                 },
                 "router": {
                     "type": "object",
-                    "description": "Router configuration. Selects between the group and matrix swapping strategies.",
+                    "description": "Router configuration. Selects between the group, matrix and pool swapping strategies.",
                     "properties": {
                         "use": {
                             "type": "string",
                             "enum": [
                                 "group",
-                                "matrix"
+                                "matrix",
+                                "pool"
                             ],
                             "default": "group",
-                            "description": "Router to use. 'group' uses static groups, 'matrix' uses the solver-based swap matrix."
+                            "description": "Router to use. 'group' uses static groups, 'matrix' uses the solver-based swap matrix, 'pool' puts every model in one VRAM-aware pool."
                         },
                         "settings": {
                             "type": "object",
@@ -911,6 +918,63 @@
                                 },
                                 "matrix": {
                                     "$ref": "#/definitions/matrixConfig"
+                                },
+                                "pool": {
+                                    "type": "object",
+                                    "description": "Pool router settings. Models load side by side while their VRAM fits; eviction happens only when a new model does not fit.",
+                                    "properties": {
+                                        "vramGiB": {
+                                            "type": "number",
+                                            "minimum": 0,
+                                            "default": 0,
+                                            "description": "Total VRAM budget in GiB. 0 detects it from the GPUs at startup."
+                                        },
+                                        "reserveGiB": {
+                                            "type": "number",
+                                            "minimum": 0,
+                                            "default": 2,
+                                            "description": "GiB kept free for KV cache growth and buffers. 0 uses the default of 2."
+                                        },
+                                        "protectSeconds": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "default": 600,
+                                            "description": "A model used within this many seconds is evicted only when nothing else can make room. 0 uses the default of 600."
+                                        },
+                                        "persistent": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Models never evicted to make room for another model."
+                                        },
+                                        "cards": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "number",
+                                                "exclusiveMinimum": 0
+                                            },
+                                            "description": "VRAM of each GPU in GiB, numbered from 0 like HIP_VISIBLE_DEVICES. Empty detects the cards at startup when vramGiB is 0. Set cards or vramGiB, not both."
+                                        },
+                                        "sizes": {
+                                            "type": "object",
+                                            "additionalProperties": {
+                                                "type": "number",
+                                                "exclusiveMinimum": 0
+                                            },
+                                            "description": "Model ID -> VRAM in GiB. Lives here, not under models, so a separate config file can supply sizes without redefining the models. models.*.vram wins over this; either wins over the estimate from the model file."
+                                        },
+                                        "placement": {
+                                            "type": "string",
+                                            "enum": [
+                                                "auto",
+                                                "off"
+                                            ],
+                                            "default": "auto",
+                                            "description": "'auto' puts each model on the card or cards with room and sets HIP_VISIBLE_DEVICES when it starts. It needs per-card sizes from cards or detection. 'off' plans by total VRAM only."
+                                        }
+                                    },
+                                    "additionalProperties": false
                                 }
                             },
                             "additionalProperties": false

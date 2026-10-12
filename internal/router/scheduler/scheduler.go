@@ -43,6 +43,53 @@ type Swapper interface {
 	OnSwapStart(target string, running []string)
 }
 
+// UsageObserver is an optional Swapper extension. A Swapper that implements it
+// hears when requests start and finish on a model and how long each swap took,
+// so it can weigh how busy, how recently used and how costly to reload a model
+// is when choosing what to evict. All calls come from the run-loop goroutine,
+// the same one that calls EvictionFor.
+type UsageObserver interface {
+	// OnServeStart runs when a request is handed to modelID's process.
+	OnServeStart(modelID string)
+	// OnServeDone runs when that request's handler returns.
+	OnServeDone(modelID string)
+	// OnSwapDone runs when a swap to modelID finishes; took is the time from
+	// the swap starting to the model being ready (or failing).
+	OnSwapDone(modelID string, took time.Duration, err error)
+}
+
+// Status is a point-in-time view of what a scheduler is holding.
+type Status struct {
+	// Queued lists requests waiting for a swap or for a busy model to drain,
+	// in service order.
+	Queued []QueuedStatus
+	// Swaps lists models currently loading.
+	Swaps []SwapStatus
+	// InFlight is the number of requests being served per model.
+	InFlight map[string]int
+}
+
+// QueuedStatus is one queued request.
+type QueuedStatus struct {
+	Model    string
+	Position int // 1-based
+	Waited   time.Duration
+}
+
+// SwapStatus is one swap in flight.
+type SwapStatus struct {
+	Model   string
+	Evict   []string
+	Waiters int
+	Elapsed time.Duration
+}
+
+// Reporter is an optional Scheduler extension. Status runs on the run-loop
+// goroutine, like every other Scheduler method.
+type Reporter interface {
+	Status() Status
+}
+
 // Scheduler decides what happens to each event the router's run loop receives.
 // All methods run on that single run-loop goroutine, so implementations need no
 // internal locking for their own state.
@@ -111,6 +158,7 @@ func New(conf config.Config, name string, logger *logmon.Monitor, planner Swappe
 // HandlerReq is one in-flight ServeHTTP request waiting for a routing decision.
 type HandlerReq struct {
 	Model      string
+	Arrived    time.Time
 	Ctx        context.Context
 	Admit      chan error
 	Respond    chan HandlerResp

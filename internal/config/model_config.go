@@ -94,6 +94,11 @@ type ModelConfig struct {
 	// Limit concurrency of HTTP requests to process
 	ConcurrencyLimit int `yaml:"concurrencyLimit"`
 
+	// VRAM is the model's GPU memory footprint in GiB (weights + KV cache +
+	// buffers). The pool router uses it to decide what fits. 0 estimates it
+	// from the model file size.
+	VRAM float64 `yaml:"vram"`
+
 	// Model filters see issue #174
 	Filters ModelFilters `yaml:"filters"`
 

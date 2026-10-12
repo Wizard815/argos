@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/router"
 )
 
 // The single_gpu half of the GPU toggle mode is applied here, at launch time:
@@ -265,7 +267,7 @@ func chooseSingleGPU(env, argv []string, root string) (string, bool) {
 // a model's GPU mode to its environment just before the upstream starts.
 func (s *Server) launchEnv(modelID string, argv, env []string) []string {
 	if s.ModelMode(modelID) != ModeSingleGPU {
-		return env
+		return s.placedEnv(modelID, env)
 	}
 	device, fits := chooseSingleGPU(env, argv, drmRoot)
 	if device == "" {
@@ -278,4 +280,19 @@ func (s *Server) launchEnv(modelID string, argv, env []string) []string {
 			modelID, gpuLaunchMarginGiB, device)
 	}
 	return setEnvValue(env, "HIP_VISIBLE_DEVICES", device)
+}
+
+// placedEnv applies the cards a placing router (the pool) chose for a model. A
+// router with no opinion, or no recorded placement, leaves env untouched.
+func (s *Server) placedEnv(modelID string, env []string) []string {
+	placer, ok := s.local.(router.Placer)
+	if !ok {
+		return env
+	}
+	cards := placer.Placement(modelID)
+	if len(cards) == 0 {
+		return env
+	}
+	s.proxylog.Infof("gpu placement: binding %s to GPU %s (pool)", modelID, strings.Join(cards, ","))
+	return setEnvValue(env, "HIP_VISIBLE_DEVICES", strings.Join(cards, ","))
 }

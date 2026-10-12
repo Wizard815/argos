@@ -252,6 +252,11 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		if err != nil {
 			return nil, fmt.Errorf("creating matrix router: %w", err)
 		}
+	case "pool":
+		local, err = router.NewPool(cfg, proxylog, upstreamlog)
+		if err != nil {
+			return nil, fmt.Errorf("creating pool router: %w", err)
+		}
 	default: // "group"
 		local, err = router.NewGroup(cfg, proxylog, upstreamlog)
 		if err != nil {
@@ -440,6 +445,7 @@ func (s *Server) routes() {
 	mux.Handle("/comfyui/{comfyPath...}", apiChain.ThenFunc(s.handleComfyUI))
 
 	// API group (API-key protected) consumed by the UI.
+	mux.Handle("GET /api/pool", apiChain.ThenFunc(s.handleAPIPool))
 	mux.Handle("POST /api/models/unload", apiChain.ThenFunc(s.handleAPIUnloadAll))
 	mux.Handle("POST /api/models/unload/{model...}", apiChain.ThenFunc(s.handleAPIUnloadModel))
 	mux.Handle("POST /api/models/rescan", apiChain.ThenFunc(s.handleAPIRescanModels))

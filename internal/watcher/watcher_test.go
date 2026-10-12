@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -189,17 +190,36 @@ func blockingParentPath(t *testing.T, dir string) (blocker, path string) {
 	return blocker, filepath.Join(blocker, "config.yaml")
 }
 
-func captureLog(t *testing.T) *bytes.Buffer {
+// syncBuffer is a concurrent-safe bytes.Buffer for capturing log output
+// while the watcher goroutine is still writing to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureLog(t *testing.T) *syncBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &syncBuffer{}
 	prevOutput, prevFlags := log.Writer(), log.Flags()
-	log.SetOutput(&buf)
+	log.SetOutput(buf)
 	log.SetFlags(0)
 	t.Cleanup(func() {
 		log.SetOutput(prevOutput)
 		log.SetFlags(prevFlags)
 	})
-	return &buf
+	return buf
 }
 
 func TestWatcher_DedupesRepeatedPersistentStatErrors(t *testing.T) {

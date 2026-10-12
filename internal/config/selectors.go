@@ -122,6 +122,12 @@ func validateSpilloverCoexistence(config Config, selectorID string, targets []st
 		return nil
 	}
 
+	// Every pool model may be resident with any other; whether they fit
+	// together is a VRAM question answered at run time.
+	if config.Routing.Router.Use == "pool" {
+		return nil
+	}
+
 	if config.Routing.Router.Use == "matrix" {
 		matrix := config.Routing.Router.Settings.Matrix
 		if matrix != nil && matrix.program != nil && matrix.program.CanContainAll(targets) {

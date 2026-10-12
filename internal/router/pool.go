@@ -1,0 +1,597 @@
+package router
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/mostlygeek/llama-swap/internal/gpumem"
+	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/mostlygeek/llama-swap/internal/process"
+)
+
+// Placer is implemented by routers that choose which GPUs a model runs on.
+// Placement returns the HIP_VISIBLE_DEVICES ids picked for a model about to
+// start, or nil when the router has no opinion.
+type Placer interface {
+	Placement(modelID string) []string
+}
+
+// Pool is a router where every model belongs to one shared pool. Models load
+// side by side while their VRAM fits; a model is evicted only when a new one
+// does not fit, and then the cheapest, least recently used, idle model goes
+// first. When per-card sizes are known each model is also placed on the card
+// (or cards) with room, so the cards work independently.
+type Pool struct {
+	*baseRouter
+	swapper *poolSwapper
+}
+
+func NewPool(conf config.Config, proxylog, upstreamlog *logmon.Monitor) (*Pool, error) {
+	swapper := newPoolSwapper(conf, proxylog, gpumem.Detect)
+
+	processes := make(map[string]process.Process, len(conf.Models))
+	base, err := newBaseRouter("pool", conf, processes, proxylog, swapper)
+	if err != nil {
+		return nil, fmt.Errorf("creating base router: %w", err)
+	}
+
+	for mid, modelCfg := range conf.Models {
+		procLog := logmon.NewWriter(upstreamlog)
+		p, err := process.New(base.procCtx, mid, modelCfg, procLog, proxylog)
+		if err != nil {
+			base.shutdownFn()
+			base.procCancel()
+			return nil, fmt.Errorf("creating process for %q: %w", mid, err)
+		}
+		processes[mid] = p
+	}
+
+	r := &Pool{baseRouter: base, swapper: swapper}
+	go base.run()
+	return r, nil
+}
+
+// Placement implements Placer.
+func (r *Pool) Placement(modelID string) []string {
+	return r.swapper.placement(modelID)
+}
+
+// poolCard is one GPU in the pool.
+type poolCard struct {
+	id  string
+	cap float64 // GiB a model may use: the card's VRAM minus its share of the reserve
+}
+
+// poolSwapper is the pool's eviction and placement policy. It implements
+// scheduler.UsageObserver so it knows which models are busy, when each was
+// last used and how long each took to load.
+//
+// The scheduler drives it from the run-loop goroutine, but process launch and
+// the status API read it from other goroutines, so mu guards busy, lastUsed,
+// loadTime and placed. Methods named ...Locked, and the helpers they call,
+// expect mu to be held; none of them take it again, because a nested RLock
+// can deadlock behind a waiting writer.
+type poolSwapper struct {
+	logger     *logmon.Monitor
+	budget     float64 // usable GiB across the pool: VRAM minus the reserve
+	protect    time.Duration
+	persistent map[string]bool
+	sizes      map[string]float64 // GiB; 0 means unknown
+	pins       map[string][]string
+
+	// cards is empty when per-card sizes are unknown; the pool then plans by
+	// budget alone and never places.
+	cards []poolCard
+
+	mu     sync.RWMutex
+	placed map[string][]string // model -> card ids chosen at its last swap
+
+	busy     map[string]int
+	lastUsed map[string]time.Time
+	loadTime map[string]time.Duration
+
+	now func() time.Time
+}
+
+// newPoolSwapper builds the swapper from the pool config. detect lists the
+// installed cards; it is consulted only when placement is on and the config
+// gives no card sizes.
+func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([]gpumem.Card, string)) *poolSwapper {
+	pc := conf.Routing.Router.Settings.Pool
+
+	var cards []gpumem.Card
+	switch {
+	case len(pc.Cards) > 0:
+		for i, g := range pc.Cards {
+			cards = append(cards, gpumem.Card{ID: strconv.Itoa(i), TotalGiB: g})
+		}
+	case pc.Placement != "off" && pc.VRAMGiB == 0:
+		var source string
+		cards, source = detect()
+		if source == "sysfs" {
+			logger.Warnf("pool: rocm-smi is unavailable, so card ids come from /sys/class/drm and may not match HIP_VISIBLE_DEVICES. Set routing.router.settings.pool.cards to be sure")
+		}
+	}
+
+	total := pc.VRAMGiB
+	if len(cards) > 0 {
+		total = 0
+		for _, c := range cards {
+			total += c.TotalGiB
+		}
+	}
+	if total == 0 {
+		total = detectVRAMGiB(drmSysfsRoot)
+	}
+	if total > 0 {
+		logger.Infof("pool: %.1f GiB of VRAM across %d card(s), %.1f GiB reserved", total, len(cards), pc.ReserveGiB)
+	} else {
+		logger.Warnf("pool: could not detect VRAM; set routing.router.settings.pool.vramGiB. Until then every model runs alone")
+	}
+
+	p := &poolSwapper{
+		logger:     logger,
+		budget:     total - pc.ReserveGiB,
+		protect:    time.Duration(pc.ProtectSeconds) * time.Second,
+		persistent: make(map[string]bool, len(pc.Persistent)),
+		sizes:      make(map[string]float64, len(conf.Models)),
+		pins:       make(map[string][]string),
+		placed:     make(map[string][]string),
+		busy:       make(map[string]int),
+		lastUsed:   make(map[string]time.Time),
+		loadTime:   make(map[string]time.Duration),
+		now:        time.Now,
+	}
+	if pc.Placement != "off" {
+		for _, c := range cards {
+			p.cards = append(p.cards, poolCard{id: c.ID, cap: max(c.TotalGiB-pc.ReserveGiB/float64(len(cards)), 0)})
+		}
+	}
+	for _, id := range pc.Persistent {
+		p.persistent[id] = true
+	}
+	for id, mc := range conf.Models {
+		p.sizes[id] = modelVRAMGiB(mc)
+		if mc.VRAM <= 0 && pc.Sizes[id] > 0 {
+			p.sizes[id] = pc.Sizes[id]
+		}
+		if p.sizes[id] == 0 {
+			logger.Warnf("pool: unknown VRAM size for %s; set its vram to let it share the GPUs", id)
+		}
+		if pin := hipPin(mc.Env); len(pin) > 0 {
+			p.pins[id] = pin
+		}
+	}
+	return p
+}
+
+// hipPin returns the card ids a model's env pins with HIP_VISIBLE_DEVICES.
+func hipPin(env []string) []string {
+	for _, e := range env {
+		if v, ok := strings.CutPrefix(e, "HIP_VISIBLE_DEVICES="); ok {
+			var ids []string
+			for _, id := range strings.Split(v, ",") {
+				if id = strings.TrimSpace(id); id != "" {
+					ids = append(ids, id)
+				}
+			}
+			return ids
+		}
+	}
+	return nil
+}
+
+// EvictionFor returns the running models to stop so target fits.
+//
+//  1. If target fits next to everything running, nothing is evicted.
+//  2. Otherwise candidates (running, not persistent) are ranked: idle and
+//     unprotected first, then protected (used within protectSeconds), busy
+//     last. Within a tier the model that is cheapest to bring back and idle
+//     longest goes first.
+//  3. Candidates are taken in that order until target fits, then any taken
+//     model that is no longer needed to make room is put back.
+//
+// "Fits" means the pool budget has room and, when per-card sizes are known,
+// some card (or set of cards) has room too. A model of unknown size is treated
+// as needing the whole pool, which keeps the old "one model at a time"
+// behaviour for models the pool cannot measure.
+func (p *poolSwapper) EvictionFor(target string, running []string) []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.evictionForLocked(target, running)
+}
+
+func (p *poolSwapper) evictionForLocked(target string, running []string) []string {
+	var others []string
+	for _, id := range running {
+		if id != target {
+			others = append(others, id)
+		}
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	if ok, _ := p.fits(target, others); ok {
+		return nil
+	}
+
+	var candidates []string
+	for _, id := range others {
+		if !p.persistent[id] {
+			candidates = append(candidates, id)
+		}
+	}
+	p.rank(candidates)
+
+	var evict []string
+	remaining := slices.Clone(others)
+	for _, id := range candidates {
+		if ok, _ := p.fits(target, remaining); ok {
+			break
+		}
+		evict = append(evict, id)
+		remaining = slices.DeleteFunc(remaining, func(r string) bool { return r == id })
+	}
+	if ok, _ := p.fits(target, remaining); !ok {
+		// Even evicting every candidate is not enough. Free all we can and
+		// let the load try.
+		return candidates
+	}
+
+	// Put back anything taken early that the later, larger picks made
+	// unnecessary. Walk from the most valuable pick down.
+	var kept []string
+	for i := len(evict) - 1; i >= 0; i-- {
+		trial := append(slices.Clone(remaining), evict[i])
+		if ok, _ := p.fits(target, trial); ok {
+			remaining = trial
+			continue
+		}
+		kept = append(kept, evict[i])
+	}
+	sort.Strings(kept)
+	return kept
+}
+
+// fits reports whether target can run next to the others, and on which cards.
+// The card list is nil when the pool has no per-card sizes.
+func (p *poolSwapper) fits(target string, others []string) (bool, []string) {
+	if len(p.cards) == 0 {
+		used := 0.0
+		for _, id := range others {
+			used += p.size(id)
+		}
+		return used+p.size(target) <= p.budget, nil
+	}
+
+	allowed := p.allowedCards(target)
+	if p.sizes[target] == 0 {
+		// Unknown size: it takes every card, so it needs the pool to itself.
+		return len(others) == 0, cardIDs(allowed)
+	}
+
+	used := make(map[string]float64, len(p.cards))
+	models := make(map[string]int, len(p.cards))
+	for _, id := range others {
+		for _, c := range p.cards {
+			if u := p.usage(id, c); u > 0 {
+				used[c.id] += u
+				models[c.id]++
+			}
+		}
+	}
+	free := func(c poolCard) float64 { return c.cap - used[c.id] }
+	need := p.sizes[target]
+
+	// One card: the one with the fewest models already on it, so the cards
+	// share the load, then the most free room.
+	var best *poolCard
+	for i := range allowed {
+		c := allowed[i]
+		if free(c) < need {
+			continue
+		}
+		if best == nil || models[c.id] < models[best.id] ||
+			(models[c.id] == models[best.id] && free(c) > free(*best)) {
+			best = &allowed[i]
+		}
+	}
+	if best != nil {
+		return true, []string{best.id}
+	}
+
+	// Too big for one card: spread over the k cards with the most room.
+	byFree := slices.Clone(allowed)
+	sort.SliceStable(byFree, func(i, j int) bool { return free(byFree[i]) > free(byFree[j]) })
+	for k := 2; k <= len(byFree); k++ {
+		share := need / float64(k)
+		if free(byFree[k-1]) >= share {
+			ids := make([]string, k)
+			for i := range ids {
+				ids[i] = byFree[i].id
+			}
+			sortIDs(ids)
+			return true, ids
+		}
+	}
+	return false, nil
+}
+
+// allowedCards is the cards target may use: the ones its HIP_VISIBLE_DEVICES
+// pin names, or every card.
+func (p *poolSwapper) allowedCards(target string) []poolCard {
+	pin := p.pins[target]
+	if len(pin) == 0 {
+		return p.cards
+	}
+	var out []poolCard
+	for _, c := range p.cards {
+		if slices.Contains(pin, c.id) {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return p.cards
+	}
+	return out
+}
+
+// usage is the GiB model id holds on card c. A model of unknown size is
+// assumed to fill every card; a model with no recorded placement (started
+// before the pool knew about it) is assumed spread over all cards.
+func (p *poolSwapper) usage(id string, c poolCard) float64 {
+	if p.sizes[id] == 0 {
+		return c.cap
+	}
+	cards := p.placed[id]
+	if len(cards) == 0 {
+		return p.sizes[id] / float64(len(p.cards))
+	}
+	if !slices.Contains(cards, c.id) {
+		return 0
+	}
+	return p.sizes[id] / float64(len(cards))
+}
+
+// placement returns the cards chosen for id at its last swap, or nil.
+func (p *poolSwapper) placement(id string) []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return slices.Clone(p.placed[id])
+}
+
+func cardIDs(cards []poolCard) []string {
+	ids := make([]string, len(cards))
+	for i, c := range cards {
+		ids[i] = c.id
+	}
+	return ids
+}
+
+func sortIDs(ids []string) {
+	sort.Slice(ids, func(i, j int) bool {
+		a, _ := strconv.Atoi(ids[i])
+		b, _ := strconv.Atoi(ids[j])
+		return a < b
+	})
+}
+
+// size returns a model's VRAM in GiB. Unknown sizes count as the whole pool.
+func (p *poolSwapper) size(id string) float64 {
+	if s := p.sizes[id]; s > 0 {
+		return s
+	}
+	return max(p.budget, 0) + 1
+}
+
+// rank sorts candidates so the first is the best one to evict.
+func (p *poolSwapper) rank(ids []string) {
+	now := p.now()
+	tier := func(id string) int {
+		switch {
+		case p.busy[id] > 0:
+			return 2
+		case now.Sub(p.lastUsed[id]) < p.protect:
+			return 1
+		default:
+			return 0
+		}
+	}
+	// keep is what we lose by evicting: reload time, discounted by how long
+	// the model has sat idle. Lower is cheaper to evict.
+	keep := func(id string) float64 {
+		idleMin := now.Sub(p.lastUsed[id]).Minutes()
+		return p.reloadCost(id).Seconds() / (1 + idleMin)
+	}
+	sort.SliceStable(ids, func(i, j int) bool {
+		ti, tj := tier(ids[i]), tier(ids[j])
+		if ti != tj {
+			return ti < tj
+		}
+		ki, kj := keep(ids[i]), keep(ids[j])
+		if ki != kj {
+			return ki < kj
+		}
+		return ids[i] < ids[j]
+	})
+}
+
+// reloadCost is the measured load time, or an estimate of one second per GiB
+// until the model has been loaded once.
+func (p *poolSwapper) reloadCost(id string) time.Duration {
+	if d, ok := p.loadTime[id]; ok {
+		return d
+	}
+	return time.Duration(p.size(id) * float64(time.Second))
+}
+
+// OnSwapStart commits the decision: it records which cards target will run on,
+// so process launch can read it, and logs the plan.
+func (p *poolSwapper) OnSwapStart(target string, running []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	evict := p.evictionForLocked(target, running)
+	var staying []string
+	for _, id := range running {
+		if id != target && !slices.Contains(evict, id) {
+			staying = append(staying, id)
+		}
+	}
+
+	used := 0.0
+	for _, id := range staying {
+		used += p.size(id)
+	}
+
+	var cardNote string
+	if len(p.cards) > 0 {
+		ok, cards := p.fits(target, staying)
+		if !ok {
+			cards = cardIDs(p.allowedCards(target))
+		}
+		p.placed[target] = cards
+		// Forget models that are gone or about to be stopped for this swap.
+		for id := range p.placed {
+			if id != target && (!slices.Contains(running, id) || slices.Contains(evict, id)) {
+				delete(p.placed, id)
+			}
+		}
+		cardNote = " on GPU " + strings.Join(cards, ",")
+	}
+
+	if len(evict) == 0 {
+		p.logger.Infof("pool: loading %s (%.1f GiB)%s next to %v, %.1f/%.1f GiB in use",
+			target, p.size(target), cardNote, running, used, p.budget)
+		return
+	}
+	p.logger.Infof("pool: loading %s (%.1f GiB)%s needs room, evicting %v, %.1f/%.1f GiB in use",
+		target, p.size(target), cardNote, evict, used, p.budget)
+}
+
+// OnServeStart implements scheduler.UsageObserver.
+func (p *poolSwapper) OnServeStart(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.busy[id]++
+	p.lastUsed[id] = p.now()
+}
+
+// OnServeDone implements scheduler.UsageObserver.
+func (p *poolSwapper) OnServeDone(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.busy[id]--; p.busy[id] <= 0 {
+		delete(p.busy, id)
+	}
+	p.lastUsed[id] = p.now()
+}
+
+// OnSwapDone implements scheduler.UsageObserver.
+func (p *poolSwapper) OnSwapDone(id string, took time.Duration, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err != nil {
+		return
+	}
+	p.loadTime[id] = took
+	p.lastUsed[id] = p.now()
+}
+
+// modelVRAMGiB is the configured vram, or an estimate from the model file:
+// weights plus 20% and 1 GiB for KV cache and buffers. 0 means unknown.
+func modelVRAMGiB(mc config.ModelConfig) float64 {
+	if mc.VRAM > 0 {
+		return mc.VRAM
+	}
+	argv, err := mc.SanitizedCommand()
+	if err != nil {
+		return 0
+	}
+	bytes := modelFileBytes(argv)
+	if bytes == 0 {
+		return 0
+	}
+	return float64(bytes)/(1<<30)*1.2 + 1
+}
+
+// shardPattern matches the first-shard naming of a split GGUF,
+// e.g. model-00001-of-00003.gguf.
+var shardPattern = regexp.MustCompile(`^(.*)-(\d{5})-of-(\d{5})\.gguf$`)
+
+// modelFileBytes returns the size of the -m / --model file in argv, summing
+// every shard of a split GGUF. 0 means no model file was found.
+func modelFileBytes(argv []string) int64 {
+	path := ""
+	for i, t := range argv {
+		if (t == "-m" || t == "--model") && i+1 < len(argv) {
+			path = argv[i+1]
+			break
+		}
+		if v, ok := strings.CutPrefix(t, "--model="); ok {
+			path = v
+			break
+		}
+	}
+	if path == "" {
+		return 0
+	}
+
+	m := shardPattern.FindStringSubmatch(filepath.Base(path))
+	if m == nil {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return 0
+		}
+		return fi.Size()
+	}
+	count, _ := strconv.Atoi(m[3])
+	var total int64
+	for i := 1; i <= count; i++ {
+		shard := filepath.Join(filepath.Dir(path), fmt.Sprintf("%s-%05d-of-%s.gguf", m[1], i, m[3]))
+		fi, err := os.Stat(shard)
+		if err != nil {
+			return 0
+		}
+		total += fi.Size()
+	}
+	return total
+}
+
+// drmSysfsRoot is where detectVRAMGiB looks for GPUs.
+const drmSysfsRoot = "/sys/class/drm"
+
+var drmCardPattern = regexp.MustCompile(`^card\d+$`)
+
+// detectVRAMGiB sums mem_info_vram_total over every DRM card that reports it
+// (AMD cards do, including MI50 / gfx906). 0 means nothing was found.
+func detectVRAMGiB(root string) float64 {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, e := range entries {
+		if !drmCardPattern.MatchString(e.Name()) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, e.Name(), "device", "mem_info_vram_total"))
+		if err != nil {
+			continue
+		}
+		v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if err != nil || v <= 0 {
+			continue
+		}
+		total += v
+	}
+	return float64(total) / (1 << 30)
+}
