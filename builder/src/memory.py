@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Any, Callable, Iterable, Optional
 
 from .db import Store
+from .compare import change_lines_from
 from .model_perf import model_perf
 
 try:  # optional: makes search over many records fast
@@ -146,12 +147,16 @@ class Memory:
                 if not (dec or pre):
                     continue
                 st = c.get("settings") or {}
+                flags = " ".join(f"--{k}" + ("" if v is True else f" {v}") for k, v in sorted(st.items()) if not k.isupper() and k != "model")
+                env = " ".join(f"{k}={v}" for k, v in sorted(st.items()) if k.isupper())
                 out.append(("config", f"{m['model_id']}|{c['id']}", c.get("last_used") or m["last_seen"],
-                            f"Config of {m['model_id']} ({m['quant'] or '?'}, {m['arch'] or '?'}): {c['label']}; "
-                            f"ctx {st.get('ctx') or '?'}, kv {st.get('cache_k') or 'f16'}/{st.get('cache_v') or 'f16'}, "
-                            f"split {st.get('split_mode') or 'default'}, spec {st.get('spec_type') or 'none'}, np {st.get('parallel') or 'default'}. "
+                            f"Config of {m['model_id']} ({m['quant'] or '?'}, {m['arch'] or '?'}): {c['label']}. "
+                            f"Flags: {flags or 'defaults'}. Env: {env or 'none'}. "
                             f"Decode {dec or 0:.1f} t/s, prefill {pre or 0:.0f} t/s over {c['requests'] + c['benchmarks']} samples, "
                             f"VRAM {c.get('vram_gib') or '?'} GiB, peak {c.get('concurrency_max') or 1} at once"))
+            # what each small change did, next to the config used most (e.g. "ctx-size 32768→65536; decode 62→58 t/s")
+            for i, line in enumerate(change_lines_from(m["model_id"], perf["configs"], limit=8)):
+                out.append(("change", f"{m['model_id']}|{i}", m["last_seen"], "Change: " + line))
         return out
 
     # ----- keeping it current ------------------------------------------------------------

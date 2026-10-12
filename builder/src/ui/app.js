@@ -793,7 +793,8 @@ function renderProfiles() {
       style: p.favorite ? "color:var(--warn)" : "color:var(--muted)", onclick: () => toggleFavorite(p) }, icon("star"))) },
     { key: "name", label: "Name", cell: (p) => h("span", { class: "strong" }, p.name) },
     { key: "model_id", label: "Model", cell: (p) => h("td", { class: "trunc", title: p.summary?.model || "" },
-      p.model_id || p.base_model || DASH, p.base_model && p.model_id && p.base_model !== p.model_id ? h("div", { class: "muted mono-sm" }, p.base_model) : null) },
+      // the file name once (its id is the same name in lower case); the id only shows when it really differs
+      p.base_model || p.model_id || DASH, p.base_model && p.model_id && p.base_model.toLowerCase() !== p.model_id.toLowerCase() ? h("div", { class: "muted mono-sm" }, p.model_id) : null) },
     { label: "Settings", cell: (p) => h("div", { class: "chips" }, settingChips(p.summary)) },
     { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
     { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
@@ -1089,6 +1090,7 @@ function renderPerf() {
     { label: "", cell: (r) => h("td", { class: "actions nowrap" },
       iconBtn("sliders", "Open in builder", () => openRunInBuilder(r)),
       iconBtn("database", "Open in Inventory", () => openRunInInventory(r)),
+      iconBtn("layers", "Compare with another run", () => addToCompare({ run_id: r.run_id, label: `${r.base_model} · ${r.profile_name || ago(r.created_at)}` })),
       iconBtn("file-text", "View log", () => showLog(r.launch_id || r.run_id)),
       iconBtn("trash", "Delete run", async () => {
         if (!(await confirmBox("Delete this run from the perf sheet?"))) return;
@@ -2617,6 +2619,7 @@ function renderInvPane() {
   if (p === "models") renderInvModels();
   else if (p === "host") renderInvHost();
   else if (p === "sessions") loadInvSessions();
+  else if (p === "compare") loadCompare();
   else loadInvReview();
 }
 async function refreshInventory() {
@@ -2707,7 +2710,9 @@ function renderInvModelPage() {
   const back = btn("All models", () => { IV.selected = null; IV.page = null; renderInvModels(); }, "sm ghost", "arrow-left");
   const range = h("div", { class: "seg", role: "group", "aria-label": "Range" }, [[7, "7d"], [30, "30d"], [90, "90d"], [365, "1y"]].map(([v, l]) =>
     h("button", { class: IV.pageDays === v ? "on" : "", onclick: () => { IV.pageDays = v; openModel(IV.selected); } }, l)));
-  const head = h("div", { class: "row", style: "margin-bottom:12px" }, back, h("h2", { style: "margin:0; font-size:14px", class: "strong" }, P?.model?.name || IV.selected), h("span", { class: "spacer" }), range);
+  const compareAll = P && P.configs.filter((c) => c.id !== "untracked").length > 1
+    ? btn("Compare its configs", () => { CMP.items = P.configs.filter((c) => c.id !== "untracked").slice(0, 6).map((c) => ({ model_id: IV.selected, config: c.id })); CMP.result = null; openCompare(); }, "sm", "layers") : null;
+  const head = h("div", { class: "row", style: "margin-bottom:12px" }, back, h("h2", { style: "margin:0; font-size:14px", class: "strong" }, P?.model?.name || IV.selected), h("span", { class: "spacer" }), compareAll, range);
   if (!P) return fill(el, head, h("div", { class: "empty" }, "Loading…"));
   const S = P.summary, cfgs = P.configs, byId = Object.fromEntries(cfgs.map((c) => [c.id, c]));
   const m = P.model || {};
@@ -2735,7 +2740,8 @@ function renderInvModelPage() {
     { label: "Decode t/s", num: true, cell: (c) => range3(c.decode) },
     { label: "At once", num: true, cell: (c) => c.concurrency_max ?? DASH },
     { label: "Last used", cell: (c) => ago(c.last_used) },
-    { label: "", cell: (c) => (c.command ? h("td", {}, iconBtn("copy", "Copy the launch command", () => copyText(c.command), "ghost")) : "") },
+    { label: "", cell: (c) => (c.command ? h("td", { class: "actions nowrap" }, iconBtn("layers", "Add to Compare", () => addToCompare({ model_id: IV.selected, config: c.id })),
+      iconBtn("copy", "Copy the launch command", () => copyText(c.command), "ghost")) : "") },
   ], cfgs, { key: null }, "");
   fill(el, head, tiles,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Speed by launch config"), h("span", { class: "spacer" }),
@@ -2880,6 +2886,109 @@ function concurrencyChart(box, cfgs) {
     });
   });
   fill(box, title, svg, note);
+}
+
+// ----- compare -----------------------------------------------------------------------------
+// Two to six launch configs side by side: only what differs (flags, env vars, the model file) and what it did.
+const CMP = { items: [], options: null, result: null, showSame: false, answer: "" };
+const cmpKey = (it) => (it.run_id ? `run:${it.run_id}` : `${it.model_id}|${it.config}`);
+
+/** Add a config (or a perf-sheet run) to Compare; with two or more picked, open the Compare tab. */
+function addToCompare(item, open = false) {
+  if (CMP.items.some((x) => cmpKey(x) === cmpKey(item))) return toast("Already in Compare.", "");
+  CMP.items = [...CMP.items, item].slice(-6);
+  CMP.result = null;
+  if (open || CMP.items.length >= 2) openCompare();
+  else toast("Added to Compare. Pick one more to compare with.", "ok");
+}
+function openCompare() {
+  if (S.view !== "inventory") show("inventory");
+  $(".tabs[data-tabs=inventory] button[data-pane=compare]").click();
+}
+async function loadCompare() {
+  const el = $("#ivCompare");
+  if (!CMP.options) {
+    fill(el, h("div", { class: "empty" }, "Loading the launch configs…"));
+    try { CMP.options = (await api("GET", "/api/compare/options")).options; } catch (e) { return fill(el, h("div", { class: "empty" }, e.message)); }
+  }
+  if (CMP.items.length >= 2 && !CMP.result) {
+    try {
+      CMP.result = await api("POST", "/api/compare", { items: CMP.items });
+      CMP.answer = "";
+    } catch (e) { CMP.result = { error: e.message }; }
+  }
+  renderCompare();
+}
+function renderCompare() {
+  const el = $("#ivCompare"), opts = CMP.options || [];
+  const byModel = {};
+  opts.forEach((o) => { (byModel[o.model_id] = byModel[o.model_id] || []).push(o); });
+  const picker = (it, i) => {
+    const sel = h("select", { "aria-label": `Config ${String.fromCharCode(65 + i)}` }, h("option", { value: "" }, "choose a launch config…"),
+      Object.entries(byModel).map(([mid, list]) => h("optgroup", { label: mid }, list.map((o) =>
+        h("option", { value: `${o.model_id}|${o.config}` }, `${o.model_id} › ${o.label}${o.decode ? ` · ${num(o.decode)} t/s` : ""}`)))));
+    if (it && it.run_id) sel.append(h("option", { value: cmpKey(it) }, `perf-sheet run ${it.label || it.run_id}`));
+    sel.value = it ? cmpKey(it) : "";
+    sel.addEventListener("change", () => {
+      const [model_id, config] = sel.value.split("|");
+      const items = [...CMP.items];
+      if (sel.value) items[i] = { model_id, config }; else items.splice(i, 1);
+      CMP.items = items.filter(Boolean); CMP.result = null; loadCompare();
+    });
+    return h("div", { class: "cmp-pick" }, h("span", { class: "cmp-letter" }, String.fromCharCode(65 + i)), sel,
+      it ? iconBtn("x", "Remove", () => { CMP.items = CMP.items.filter((_, j) => j !== i); CMP.result = null; loadCompare(); }, "ghost") : null);
+  };
+  const quick = h("select", { "aria-label": "Compare every config of a model" }, h("option", { value: "" }, "every config of one model…"),
+    Object.entries(byModel).filter(([, l]) => l.length > 1).map(([mid, l]) => h("option", { value: mid }, `${mid} (${l.length})`)));
+  quick.addEventListener("change", () => {
+    if (!quick.value) return;
+    CMP.items = byModel[quick.value].slice(0, 6).map((o) => ({ model_id: o.model_id, config: o.config })); CMP.result = null; loadCompare();
+  });
+  const pickers = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Compare launch configs"), h("span", { class: "spacer" }), quick),
+    h("p", { class: "hint" }, "A launch config is one way a model was started: its flags and env vars (port and host do not count). Pick two or more, of one model or of different ones. Perf-sheet runs and model pages have Compare buttons too."),
+    h("div", { class: "cmp-picks" }, [...CMP.items, null].slice(0, 6).map((it, i) => (it || i < 2 || CMP.items.length === i ? picker(it, i) : null)).filter(Boolean)));
+  if (!opts.length) return fill(el, pickers, h("div", { class: "card" }, h("div", { class: "empty" }, "Nothing to compare yet: models need loads or benchmarks first.")));
+  const R = CMP.result;
+  if (!R || CMP.items.length < 2) return fill(el, pickers);
+  if (R.error) return fill(el, pickers, h("div", { class: "card" }, h("div", { class: "empty" }, R.error)));
+
+  const letters = R.items.map((_, i) => String.fromCharCode(65 + i));
+  const head = h("tr", {}, h("th", {}, "Setting"), h("th", {}, ""), R.items.map((it, i) => h("th", { title: it.command }, `${letters[i]} · ${it.label}`)));
+  const shown = R.settings.filter((r) => r.differs || CMP.showSame);
+  const setRows = shown.map((r) => h("tr", { class: r.differs ? "cmp-diff" : "cmp-same" },
+    h("td", {}, h("code", { class: r.kind === "env" ? "tk-env" : "tk-flag" }, r.kind === "flag" ? `--${r.key}` : r.key)),
+    h("td", {}, h("span", { class: `pill${r.kind === "env" ? " accent" : ""}` }, r.kind)),
+    r.values.map((v, i) => h("td", { class: r.differs && v !== r.values[0] ? "cmp-changed" : v === "not set" ? "muted" : "" }, v))));
+  const same = h("input", { type: "checkbox", checked: CMP.showSame });
+  same.addEventListener("change", () => { CMP.showSame = same.checked; renderCompare(); });
+  const pctCell = (x, better) => {
+    if (x == null || Math.abs(x) < 1) return null;
+    const good = better === 0 ? null : (x > 0) === (better > 0);
+    return h("span", { class: `cmp-pct ${good == null ? "" : good ? "good" : "bad"}` }, `${x > 0 ? "+" : ""}${num(x, 0)}%`);
+  };
+  const resRows = R.results.map((r) => h("tr", {}, h("td", { class: "strong" }, r.label),
+    r.values.map((v, i) => h("td", { class: "num" }, v == null ? DASH : num(v, r.key === "prefill" ? 0 : 1), i ? [" ", pctCell(r.change_pct[i], r.better)] : null))));
+  const resHead = h("tr", {}, h("th", {}, "Result"), R.items.map((it, i) => h("th", { class: "num" }, `${letters[i]}${i ? ` vs A` : ""}`)));
+  const ask = btn("Ask the assistant why", async () => {
+    ask.disabled = true; CMP.answer = "Thinking…"; renderCompare();
+    try {
+      const lines = R.summary.concat(R.settings.filter((r) => r.differs).map((r) => `${r.key} (${r.kind}): ${r.values.map((v, i) => `${letters[i]}=${v}`).join(", ")}`));
+      CMP.answer = (await api("POST", "/api/assistant/ask", { question: "These launch configs differ only in the settings listed. What explains the change in speed and memory, and which should I keep?",
+        lines, title: "Compared launch configs" })).answer;
+    } catch (e) { CMP.answer = e.message; }
+    renderCompare();
+  }, "sm", "message");
+  fill(el, pickers,
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, R.differences ? `What is different (${R.differences})` : "Nothing is different"),
+      h("span", { class: "spacer" }), h("label", { class: "check" }, same, "show unchanged settings too")),
+      R.summary.map((s) => h("p", { class: "hint", style: "margin:0 0 6px" }, s)),
+      h("div", { class: "table-wrap" }, h("table", { class: "dense cmp-table" }, h("thead", {}, head), h("tbody", {}, setRows.length ? setRows : h("tr", {}, h("td", { colspan: 2 + R.items.length }, h("div", { class: "empty" }, "Same settings."))))))),
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Results"), h("span", { class: "spacer" }), ask),
+      h("p", { class: "hint" }, "Medians over every request and benchmark of each config. Green is better, red is worse, compared with A."),
+      h("div", { class: "table-wrap" }, h("table", { class: "dense cmp-table" }, h("thead", {}, resHead), h("tbody", {}, resRows))),
+      CMP.answer ? h("div", { class: "answer" }, markdown(CMP.answer)) : null),
+    h("details", { class: "card" }, h("summary", { class: "strong" }, "Full launch commands"),
+      R.items.map((it, i) => h("div", { style: "margin-top:8px" }, h("div", { class: "muted mono-sm" }, `${letters[i]} · ${it.model_id}`), h("pre", { class: "pre" }, it.command || "(not recorded)")))));
 }
 
 // ----- loads (sessions) --------------------------------------------------------------------
@@ -3113,7 +3222,9 @@ function renderLive() {
     { label: "In flight", num: true, cell: (m) => m.in_flight || DASH },
     { label: "Last used", cell: (m) => (m.last_used ? ago(Date.parse(m.last_used) / 1000) : DASH) },
     { label: "Load time", num: true, cell: (m) => (m.load_seconds ? `${num(m.load_seconds, 0)}s` : DASH) },
-    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "never evicted"), m.protected && h("span", { class: "chip" }, "protected")) },
+    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"), m.protected && h("span", { class: "chip" }, "protected")) },
+    { label: "", cell: (m) => { const b = h("button", { class: "icon-btn ghost", title: "Load, unload, keep loaded, logs, edit", "aria-label": `Actions for ${m.id}` }, "⋯");
+      b.addEventListener("click", () => liveMenu(b, m)); return h("td", { class: "actions" }, b); } },
   ], rows, { key: null }, "No models.");
   const swaps = P.swaps.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Loading")),
     h("div", { class: "table-wrap" }, simpleTable(["Model", "Evicting", "Waiting requests", "Elapsed"],
@@ -3318,6 +3429,41 @@ function renderSimResult() {
     cardBars(cards, usage),
     st.queue.length ? h("p", { class: "hint" }, `Waiting: ${st.queue.join(", ")}`) : null,
     h("div", { class: "table-wrap" }, table));
+}
+
+/** The ⋯ menu on a Live row. */
+function liveMenu(anchor, m) {
+  const loaded = m.state === "ready" || m.state === "starting";
+  const act = async (action, body, msg) => {
+    try { await api("POST", `/api/schedule/live/${encodeURIComponent(m.id)}/${action}`, body); toast(msg, "ok"); } catch (e) { fail(e); }
+    setTimeout(loadLive, action === "load" ? 1500 : 300);
+    if (action === "keep") loadSchedule();
+  };
+  popMenu(anchor, [
+    loaded ? { label: "Unload model", icon: "square", run: () => act("unload", undefined, `Unloaded ${m.id}.`) }
+      : { label: "Load now", icon: "play", run: () => act("load", undefined, `Loading ${m.id}…`) },
+    m.persistent ? { label: "Keep loaded: off (may be unloaded for others)", icon: "x", run: () => act("keep", { on: false }, `${m.id} can be unloaded again.`) }
+      : { label: "Keep loaded: on (never unload it for others)", icon: "check", run: () => act("keep", { on: true }, `${m.id} stays loaded.`) },
+    { label: "Check logs", icon: "file-text", run: () => liveLog(m.id) },
+    { label: "Edit launch command", icon: "pencil", run: () => liveEdit(m.id) },
+  ]);
+}
+async function liveLog(id) {
+  const pre = h("pre", { class: "log", style: "max-height:65dvh" }, "Reading…");
+  const read = async () => {
+    try { const r = await api("GET", `/api/schedule/live/${encodeURIComponent(id)}/log`); pre.textContent = r.log || "(nothing logged yet)"; pre.scrollTop = pre.scrollHeight; }
+    catch (e) { pre.textContent = e.message; }
+  };
+  modal(`Log · ${id}`, pre, [{ label: "Refresh", icon: "refresh", run: () => read() }, { label: "Close", run: (c) => c() }]);
+  read();
+}
+async function liveEdit(id) {
+  try {
+    const r = await api("GET", `/api/schedule/live/${encodeURIComponent(id)}/command`);
+    if (!(await leaveOk())) return;
+    openCommand(r.command, { name: r.name || "", base_model: r.base_model || "", source: r.source === "profile" ? "profile" : r.source, profileId: r.profile_id });
+    if (r.source !== "profile") toast(r.source === "prefab" ? "This is the library prefab. Save it as a profile to change how the engine starts it." : "Opened the running command. Save it as a profile to keep the change.", "");
+  } catch (e) { fail(e); }
 }
 
 // ── Sticky notes & movable panels ────────────────────────────

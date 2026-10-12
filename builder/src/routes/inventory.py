@@ -115,6 +115,27 @@ def model_page(model_id):
     return ok(model=row, **perf)
 
 
+@bp.get("/api/compare/options")
+def compare_options():
+    """Every launch config of every model in the inventory, for the Compare pickers."""
+    from ..compare import options
+    c = ctx()
+    days = max(1.0, min(request.args.get("days", 90, type=float), 3650.0))
+    return ok(options=options(c.store, [m["model_id"] for m in c.inventory.models_summary()], days=days))
+
+
+@bp.post("/api/compare")
+def compare_configs():
+    """Two to six configs side by side: the settings that differ (flags, env vars, model file) and the results.
+    Items are {model_id, config}, {run_id} (a perf-sheet run) or {session_id} (a load)."""
+    from ..compare import CompareError, compare
+    d = body()
+    try:
+        return ok(**compare(ctx().store, d.get("items"), days=max(1.0, min(float(d.get("days") or 90), 3650.0))))
+    except CompareError as exc:
+        return err(str(exc))
+
+
 @bp.get("/api/inventory/similar/<path:model_id>")
 def similar_models(model_id):
     """Other models that look like this one (arch, quant, size, speeds), nearest first."""

@@ -41,6 +41,7 @@ SYSTEM_PROMPT = """You are the Argos assistant, a concise helper for running lla
 Use the LIVE DATA block for anything about GPUs, speeds, models, profiles, launches or errors; quote its numbers.
 RELATED RECORDS are the stored records closest to the question; prefer them for anything about a specific model, setting, note or past event.
 INVENTORY lines list the models seen, how long each was loaded and on which GPUs, and settings (quants, cache types, flags) seen for the first time that are waiting for review.
+Lines with "vs the usual" (and RELATED RECORDS starting "Change:") say exactly which flags or env vars differ between two launch configs of a model and what that did to speed and VRAM; use them to explain small changes.
 If LIVE DATA does not cover the question, say so in one line instead of guessing.
 Know llama-server flags (-ngl, -c, --flash-attn, --cache-type-k/v, -lm, --split-mode, --n-cpu-moe, --spec-type) and suggest concrete changes.
 Answer in a few short sentences or a short list."""
@@ -184,6 +185,11 @@ class Assistant:
                 out.append(f"{name} benchmarks: " + "; ".join(
                     f"{_f(r['tokens_per_second'], 1)} t/s gen, {_f(r['prompt_per_second'])} prompt, "
                     f"ngl {r.get('gpu_layers') or '?'}, ctx {r.get('n_ctx') or '?'}" for r in runs))
+            try:
+                from .compare import change_lines
+                out += change_lines(self.store, name, limit=4)
+            except Exception:  # noqa: BLE001 - extra context only
+                pass
             reqs = self.store.list_requests(model=name, since=now - 7 * 86400, limit=500)
             if reqs:
                 tg = [r["tokens_per_second"] for r in reqs if r["tokens_per_second"]]

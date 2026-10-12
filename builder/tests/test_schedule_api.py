@@ -289,7 +289,7 @@ def pool_state(**models):
 
 def test_live_passes_the_pool_through_and_reports_problems(app, client):
     j = client.get("/api/schedule/live").get_json()
-    assert j["connected"] is False and "Integrations" in j["error"]
+    assert j["connected"] is False and "engine is not running" in j["error"]
 
     state = pool_state(a=("ready", ["0"]))
     with serve(make_engine([], [], pool=state)) as url:
@@ -327,3 +327,30 @@ def test_watcher_ignores_a_engine_without_the_pool(app, client):
         watch()
         watch()
     assert client.get("/api/events?kind=schedule").get_json()["events"] == []
+
+
+# ----- the Live view's row menu ------------------------------------------------------
+def test_live_row_actions(app, client, monkeypatch, tmp_path):
+    paths = make_models(app, big=1)
+    save_profile(client, "Fast", paths["big"], "-c 8192")
+    monkeypatch.setenv("ARGOS_SCHEDULE_FILE", str(tmp_path / "s.yaml"))
+    running, calls = [{"model": "big--fast", "state": "ready", "cmd": "llama-server -m big.gguf"}], []
+    with serve(make_engine([], [], model_ids=["big", "big--fast"], running=running, calls=calls)) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
+        assert client.post("/api/schedule/live/big--fast/keep", json={"on": True}).get_json()["persistent"] is True
+        assert "big--fast" in client.get("/api/schedule").get_json()["plan"]["persistent"]
+        client.post("/api/schedule/live/big--fast/keep", json={"on": False})
+        assert "big--fast" not in client.get("/api/schedule").get_json()["plan"]["persistent"]
+
+        assert client.post("/api/schedule/live/big--fast/unload").get_json()["ok"]
+        assert ("POST", "/api/models/unload/big--fast") in calls and running == []
+        assert client.post("/api/schedule/live/big/load").get_json()["started"] is True
+
+        log = client.get("/api/schedule/live/big--fast/log").get_json()["log"]
+        assert "log of big--fast" in log
+
+        cmd = client.get("/api/schedule/live/big--fast/command").get_json()
+        assert cmd["source"] == "profile" and cmd["name"] == "Fast" and "-c 8192" in cmd["command"]
+        assert client.get("/api/schedule/live/big/command").get_json()["source"] == "prefab"
+        assert client.get("/api/schedule/live/ghost/command").status_code == 404
+        assert client.post("/api/schedule/live/big/explode").status_code == 404

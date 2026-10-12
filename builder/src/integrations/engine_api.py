@@ -62,6 +62,29 @@ def unload_model(base_url: str, model_id: str, timeout: float = 60.0) -> None:
     _post(base_url.rstrip("/") + f"/api/models/unload/{urllib.parse.quote(model_id, safe='')}", timeout)
 
 
+def model_log(base_url: str, model_id: str, wait: float = 1.5, max_bytes: int = 200_000) -> str:
+    """The recent output of one model's process. The engine streams it (history first, then live), so this reads
+    for ``wait`` seconds and stops."""
+    import socket
+    import time as _time
+    url = base_url.rstrip("/") + f"/logs/stream/{urllib.parse.quote(model_id, safe='')}"
+    chunks, size, deadline = [], 0, _time.time() + wait
+    try:
+        with urllib.request.urlopen(url, timeout=wait) as resp:  # noqa: S310
+            while _time.time() < deadline and size < max_bytes:
+                try:
+                    part = resp.read1(8192) if hasattr(resp, "read1") else resp.read(8192)
+                except (socket.timeout, TimeoutError):
+                    break
+                if not part:
+                    break
+                chunks.append(part)
+                size += len(part)
+    except (socket.timeout, TimeoutError):
+        pass
+    return b"".join(chunks).decode("utf-8", errors="replace")[-max_bytes:]
+
+
 def model_state(base_url: str, model_id: str, timeout: float = 1.5) -> str:
     """"ready", "starting", "stopping" or "stopped" for one model in the engine. Raises when unreachable."""
     for m in running(base_url, timeout):
@@ -88,4 +111,4 @@ def model_ids(base_url: str, timeout: float = 3.0) -> set[str]:
 
 
 __all__ = ["pool_state", "model_ids", "running", "hardware", "version", "odysseus_refresh", "load_model", "unload_model",
-           "model_state"]
+           "model_state", "model_log"]

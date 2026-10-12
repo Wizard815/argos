@@ -103,6 +103,14 @@ def make_engine(gpu_stats: list[dict], activity: list[dict], pool: dict = None, 
                 if calls is not None:
                     calls.append(("GET", url.path))
                 self.send_json({"ok": True})
+            elif url.path.startswith("/logs/stream/"):
+                name = urllib.parse.unquote(url.path[len("/logs/stream/"):])
+                body = f"log of {name}\nsrv  load_model: loaded\n".encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif url.path == "/api/pool":
                 self.send_json(pool if pool is not None else {"router": "group", "enabled": False})
             elif url.path == "/v1/models":

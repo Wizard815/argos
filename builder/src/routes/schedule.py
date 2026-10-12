@@ -205,14 +205,94 @@ def measure_use(model_id):
 # ----- live --------------------------------------------------------------------------
 @bp.get("/api/schedule/live")
 def schedule_live():
-    """Argos's /api/pool, passed through so the browser needs no access to Argos."""
+    """The engine's /api/pool, passed through so the browser needs no access to the engine."""
     url = ctx().settings.get("integrations")["engine_url"]
     if not url:
-        return ok(connected=False, error="set the Argos URL under Integrations", pool=None)
+        return ok(connected=False, error="the engine is not running", pool=None)
     try:
         return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time())
     except Exception as exc:  # noqa: BLE001
         return ok(connected=False, error=str(exc), pool=None)
+
+
+# ----- one model in the Live view: load, unload, keep loaded, its log, its launch command --------
+def _engine_url():
+    url = ctx().settings.get("integrations")["engine_url"]
+    if not url:
+        raise ValueError("the engine is not running")
+    return url
+
+
+@bp.post("/api/schedule/live/<path:model_id>/<action>")
+def live_action(model_id, action):
+    """load (in the background; it can take minutes), unload, or keep (body {"on": bool}: never evict it)."""
+    import threading
+    c = ctx()
+    if action == "keep":
+        on = bool(body().get("on", True))
+        persistent = [m for m in c.plans.get()["persistent"] if m != model_id] + ([model_id] if on else [])
+        c.plans.update({"persistent": persistent})
+        c.event("schedule", f"{'keep ' + model_id + ' loaded' if on else model_id + ' may be unloaded again'} (never evict: {'on' if on else 'off'})")
+        apply_plan()
+        return ok(persistent=on)
+    try:
+        url = _engine_url()
+    except ValueError as exc:
+        return err(str(exc), 409)
+    if action == "unload":
+        try:
+            engine_api.unload_model(url, model_id)
+        except Exception as exc:  # noqa: BLE001
+            return err(f"the engine could not unload {model_id}: {exc}", 502)
+        c.event("schedule", f"unloaded {model_id} by hand", data={"model": model_id})
+        return ok()
+    if action == "load":
+        def run():
+            try:
+                engine_api.load_model(url, model_id)
+            except Exception as exc:  # noqa: BLE001 - reported as an event
+                c.event("schedule", f"could not load {model_id}: {exc}", level="error", data={"model": model_id})
+        threading.Thread(target=run, daemon=True).start()
+        c.event("schedule", f"loading {model_id} by hand", data={"model": model_id})
+        return ok(started=True)
+    return err("use load, unload or keep", 404)
+
+
+@bp.get("/api/schedule/live/<path:model_id>/log")
+def live_log(model_id):
+    try:
+        return ok(log=engine_api.model_log(_engine_url(), model_id))
+    except ValueError as exc:
+        return err(str(exc), 409)
+    except Exception as exc:  # noqa: BLE001
+        return err(f"could not read the log: {exc}", 502)
+
+
+@bp.get("/api/schedule/live/<path:model_id>/command")
+def live_command(model_id):
+    """What starts this model, for editing: the profile it comes from, else the library model's prefab, else the
+    command the engine is running."""
+    from ..cookbook import variant_id
+    from ..library import prefab_command
+    c = ctx()
+    for p in core.cookbook_state()["presets"]:
+        if variant_id(p) == model_id:
+            pid = (p.get("fields") or {}).get("profile_id")
+            prof = c.store.get_profile(pid) if pid else None
+            if prof:
+                return ok(source="profile", profile_id=prof["profile_id"], name=prof["name"], base_model=prof.get("base_model") or "",
+                          command=prof["launch_command"])
+            return ok(source="odysseus", name=p.get("label") or model_id, base_model="", command=p["cmd"])
+    lib = next((m for m in scan_models(c.settings.get("paths")["models_dir"]) if m["id"] == model_id), None)
+    if lib:
+        return ok(source="prefab", name="", base_model=lib["name"], command=core._render(prefab_command(lib, c.settings.get("prefab")), "odysseus")["command"])
+    try:
+        cmd = next((m.get("cmd") for m in engine_api.running(_engine_url()) if m.get("model") == model_id), "")
+    except Exception:  # noqa: BLE001
+        cmd = ""
+    if not cmd:
+        return err(f"no profile, library model or running command for {model_id}", 404)
+    return ok(source="engine", name="", base_model=model_id, command=cmd)
 
 
 __all__ = ["bp", "apply_plan", "compute"]
