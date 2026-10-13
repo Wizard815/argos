@@ -17,6 +17,10 @@ evals/config.yaml
 # to this path once and edit the copy; see README-DEPLOY.md. Keeping it out of
 # git means `git pull` never collides with or overwrites your real config.
 deploy/config.yaml
+# The live root config: your paths, model dirs and host names. Copy
+# config.example.yaml to it locally; it is never tracked.
+config.yaml
+config.yaml.bak
 
 # Python app
 builder/__pycache__/
