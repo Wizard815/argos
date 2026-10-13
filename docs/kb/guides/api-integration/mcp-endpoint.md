@@ -1,17 +1,18 @@
 ---
 title: Connecting an MCP client to Argos
-summary: Point any MCP client at /api/mcp to search and read Argos's documentation.
+summary: Point any MCP client at /api/mcp to read Argos's documentation, its running configuration, and its live models and profiles.
 category: guides
-tags: [mcp, tools, agent, api, integration]
+tags: [mcp, tools, agent, api, integration, models, profiles]
 config_keys: [apiKeys]
-updated: 2026-09-04
+updated: 2026-10-12
 ---
 
 # Connecting an MCP client to Argos
 
-Argos serves its own documentation as an MCP server at `/api/mcp`. Any
-MCP client can point at a running instance and ask about Argos
-configuration — the same tools the web UI's Help page uses.
+Argos serves itself as an MCP server at `/api/mcp`. Any MCP client can point at
+a running instance and ask about Argos configuration — the same tools the web
+UI's Help page uses — plus what this instance is running: the active profile,
+every configured model, and which models are loaded right now.
 
 ```
 http://localhost:8080/api/mcp
@@ -107,9 +108,32 @@ is stopped while it is still building it.
 | --- | --- |
 | `sys__now` | current date and time, in UTC, server local time, and an optional named timezone |
 
-Every tool is annotated `readOnlyHint`, so clients that ask before running tools can
-safely auto-approve them. Only `sys__now` is *not* `idempotentHint` — the answer is
-supposed to change between calls.
+**`models__*` — this instance's live state**
+
+| tool | what it does |
+| --- | --- |
+| `models__list_profiles` | every configured profile with its description, and which one is active |
+| `models__set_active_profile` | activate a profile by name, or clear the selection with an empty name |
+| `models__list_models` | every configured model with its display name, TTL, proxy and whether it is loaded |
+| `models__running_models` | only the models loaded right now, with the address each is reachable at |
+| `models__unload_models` | unload every loaded model immediately, freeing GPU memory |
+
+A profile pins model ids to preconfigured variants, so activating one changes which
+launch command serves each model without editing any configuration. The change applies
+to launches that start afterwards: a model already loaded keeps the command it was
+started with until it unloads or its TTL expires. `models__set_active_profile` reports
+an unknown name as a tool error and names the profile that is still active, so a caller
+is never left guessing whether the write landed.
+
+Reading is annotated `readOnlyHint`. The two that change the running server —
+`models__set_active_profile` and `models__unload_models` — are not, so a client that
+asks before running tools will prompt for exactly those two and no others.
+
+Every tool that only reads is annotated `readOnlyHint`, so clients that ask before
+running tools can safely auto-approve them. `models__set_active_profile` and
+`models__unload_models` change the running server and carry no such hint. Only
+`sys__now`, `models__list_models` and `models__running_models` are *not*
+`idempotentHint` — their answers are supposed to change between calls.
 
 A good first request is `docs__list_docs` — it is the map of everything available.
 
@@ -148,7 +172,36 @@ $ curl -s localhost:8080/api/mcp \
          "params":{"name":"docs__search_docs","arguments":{"query":"ttl unload"}}}'
 ```
 
+## Connecting from Odysseus
+
+Odysseus's MCP client is the `mcp` Python SDK. Add Argos as a server under
+**Integrations** with transport **streamable HTTP** and the URL:
+
+```
+http://<argos-host>:8080/api/mcp
+```
+
+If your config sets `apiKeys`, add a header on the same form:
+
+```json
+{"Authorization": "Bearer <your-key>"}
+```
+
+The client has to speak revision 2026-07-28. An SDK that does opens the
+connection with `server/discover` rather than the `initialize` handshake; one
+that only knows the older handshake gets the `-32022` error above and cannot
+connect. `mcp>=2` handles this, which is why this fork pins it.
+
+Once connected, the Argos tools appear alongside every other MCP server's, and
+`models__list_models` is a reasonable first call — it answers what this instance
+can serve without loading anything.
+
 ## What to expect back
+
+Every result carries `resultType: "complete"`. Revision 2026-07-28 made that
+field required, and a client validating against that schema rejects a result
+without it. Revisions before it treated an absent `resultType` as "complete",
+so the omission was invisible to an older client.
 
 A tool that ran but could not answer — an unknown document id, a search with no
 matches — returns a **normal result** with `isError: true` and text explaining

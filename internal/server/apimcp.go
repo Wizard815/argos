@@ -124,7 +124,11 @@ const mcpInstructions = "Tools are namespaced by provider. The docs__* tools ans
 	"configuration this server is running right now, with credentials redacted, for advice about " +
 	"the active setup: pass a \"query\" such as \".models | keys\" or \".models.qwen3\" to read " +
 	"exactly the part you need. " +
-	"The sys__* tools report facts about the machine Argos is running on."
+	"The sys__* tools report facts about the machine Argos is running on. " +
+	"The models__* tools report this instance's live state: models__list_profiles and " +
+	"models__set_active_profile read and change which profile is active, models__list_models " +
+	"lists every configured model with its TTL, models__running_models lists only what is " +
+	"loaded right now, and models__unload_models frees GPU memory immediately."
 
 func (s *Server) mcpDiscover() discoverResult {
 	// Computed rather than a literal so that unioning an upstream's
