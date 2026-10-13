@@ -415,6 +415,33 @@ func TestServer_APIMCP_Discover(t *testing.T) {
 	}
 }
 
+// A client validating against the 2026-07-28 schema rejects a result without
+// `resultType`, which is how a modern SDK client failed to read tools/list even
+// though every other field was right. Older revisions treated an absent tag as
+// "complete", so this cannot be caught by a client that predates the revision.
+func TestServer_APIMCP_ResultsCarryResultType(t *testing.T) {
+	s := newMCPServer()
+
+	for _, method := range []string{"server/discover", "tools/list"} {
+		_, env := rpc(t, s, method, "", "")
+		if env.Error != nil {
+			t.Fatalf("%s: error = %+v", method, env.Error)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(env.Result, &result); err != nil {
+			t.Fatalf("%s: decode: %v", method, err)
+		}
+		if result["resultType"] != resultTypeComplete {
+			t.Errorf("%s: resultType = %v, want %q", method, result["resultType"], resultTypeComplete)
+		}
+	}
+
+	// tools/call builds its result through mcpResult, so it needs its own check.
+	if got := mcpResult(mcptools.Result{Content: "hi"}); got.ResultType != resultTypeComplete {
+		t.Errorf("callToolResult.resultType = %q, want %q", got.ResultType, resultTypeComplete)
+	}
+}
+
 func TestServer_APIMCP_Ping(t *testing.T) {
 	w, env := rpc(t, newMCPServer(), "ping", "", "")
 

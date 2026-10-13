@@ -38,6 +38,14 @@ const (
 	codeUnsupportedProtocolVersion = -32022
 )
 
+// resultTypeComplete is the only result tag this endpoint produces.
+//
+// The 2026-07-28 schema requires `resultType` on every result, and a client
+// validating against that schema rejects a result without it. Older revisions
+// treated an absent `resultType` as "complete", which is why a server written
+// before the revision served fine until a modern client connected.
+const resultTypeComplete = "complete"
+
 // maxMCPBodyBytes bounds the request body. MCP tool arguments are a small JSON
 // object; anything larger is a mistake or an attack.
 const maxMCPBodyBytes = 64 * 1024
@@ -73,6 +81,7 @@ const metaKeyServerInfo = "io.modelcontextprotocol/serverInfo"
 // back to initialize if discover fails. Without this a modern client cannot
 // connect at all, so it is not optional for a 2026-07-28-only server.
 type discoverResult struct {
+	ResultType        string          `json:"resultType"`
 	SupportedVersions []string        `json:"supportedVersions"`
 	Capabilities      mcpCapabilities `json:"capabilities"`
 	Instructions      string          `json:"instructions,omitempty"`
@@ -87,6 +96,7 @@ type discoverResult struct {
 // clients have to re-poll. ttlMs is what tells them how often, which makes it
 // load-bearing here rather than decoration.
 type listToolsResult struct {
+	ResultType string          `json:"resultType"`
 	Tools      []mcptools.Tool `json:"tools"`
 	NextCursor string          `json:"nextCursor,omitempty"`
 	TTLMs      int             `json:"ttlMs"`
@@ -125,6 +135,7 @@ func (s *Server) mcpDiscover() discoverResult {
 	}
 
 	return discoverResult{
+		ResultType:        resultTypeComplete,
 		SupportedVersions: []string{mcpProtocolVersion},
 		Capabilities:      caps,
 		Instructions:      mcpInstructions,
@@ -152,14 +163,16 @@ type mcpContent struct {
 // answer sets IsError so the model can read the explanation and retry; only
 // protocol failures become JSON-RPC errors.
 type callToolResult struct {
-	Content []mcpContent `json:"content"`
-	IsError bool         `json:"isError,omitempty"`
+	ResultType string       `json:"resultType"`
+	Content    []mcpContent `json:"content"`
+	IsError    bool         `json:"isError,omitempty"`
 }
 
 func mcpResult(r mcptools.Result) callToolResult {
 	return callToolResult{
-		Content: []mcpContent{{Type: "text", Text: r.Content}},
-		IsError: r.IsError,
+		ResultType: resultTypeComplete,
+		Content:    []mcpContent{{Type: "text", Text: r.Content}},
+		IsError:    r.IsError,
 	}
 }
 
@@ -277,6 +290,7 @@ func (s *Server) mcpToolsList(w http.ResponseWriter, r *http.Request, req rpcReq
 	}
 
 	writeRPCResult(w, req.ID, listToolsResult{
+		ResultType: resultTypeComplete,
 		Tools:      tools,
 		NextCursor: nextCursor,
 		TTLMs:      toolListTTLMs,

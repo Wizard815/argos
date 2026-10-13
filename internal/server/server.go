@@ -17,6 +17,7 @@ import (
 	"github.com/Wizard815/Argos/internal/hw"
 	"github.com/Wizard815/Argos/internal/logmon"
 	"github.com/Wizard815/Argos/internal/mcptools"
+	"github.com/Wizard815/Argos/internal/modelctl"
 	"github.com/Wizard815/Argos/internal/odysseus"
 	"github.com/Wizard815/Argos/internal/perf"
 	"github.com/Wizard815/Argos/internal/process"
@@ -294,6 +295,9 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		docagent.NewDocsProvider(refs),
 		mcptools.NewSysProvider(nil),
 		config.NewConfigProvider(cfg),
+		// s, not a snapshot: the provider reports which models are loaded and
+		// which profile is active, and both change while the server runs.
+		modelctl.NewProvider(s),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("building the MCP tool registry: %w", err)
