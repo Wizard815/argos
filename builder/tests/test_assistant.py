@@ -188,3 +188,67 @@ def test_choices_offer_profiles_library_models_and_embeddings(client, app):
     assert len(profiles) == 1 and profiles[0]["label"] == "Assistant fast" and profiles[0]["id"].startswith("qwen3-0.6b-q8_0")
     assert "qwen3-0.6b-q8_0" in [c["id"] for c in r["chat"]]
     assert [c["id"] for c in r["embed"]] == ["nomic-embed-text-v1.5.q8_0"], "embedding models only, and no audio models"
+
+
+def test_model_focus_knows_a_model_that_has_never_been_run(client, app):
+    """A model Argos can see is a model the assistant can talk about.
+
+    Regression: _model_focus took its names only from runs and requests, and
+    the INVENTORY line in the digest carries counts, so a model that exists but
+    has never been launched appeared nowhere -- asking for a profile on one got
+    "no model found" about a model sitting in Argos's own catalog.
+    """
+    pb = app.extensions["pb"]
+    pb.store.upsert_model_seen({
+        "model_id": "qwen3-coder-next-q5_k_s-00001-of-00003",
+        "name": "Qwen3-Coder-Next-Q5_K_S-00001-of-00003",
+        "path": "/app/models/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q5_K_S-00001-of-00003.gguf",
+        "origin": "engine",
+        "kind": "chat",
+    })
+
+    out = pb.assistant._model_focus(
+        "I want a layer dual GPU with 256K context using Qwen3-Coder-Next-Q5_K_S-00001-of-00003",
+        time.time(),
+    )
+    text = "\n".join(out)
+
+    assert "qwen3-coder-next-q5_k_s-00001-of-00003" in text, text
+    assert "no launches or benchmarks recorded yet" in text, text
+    assert "engine" in text, "the catalog row's facts should come through"
+
+
+def test_model_focus_stays_quiet_about_unknown_names(client, app):
+    """A name Argos has never seen must not be invented into the context."""
+    pb = app.extensions["pb"]
+    out = pb.assistant._model_focus("tell me about totally-made-up-model-xyz", time.time())
+    assert "totally-made-up-model-xyz" not in "\n".join(out)
+
+
+def test_digest_names_the_saved_profiles(client, app):
+    """A count is not an answer: profile questions need the names.
+
+    Regression: the digest said only "Profiles: N saved across M models", so
+    every question about what is saved, which is fastest, or what to tweak got
+    a shrug -- the assistant knew profiles existed but not one of them.
+    """
+    pb = app.extensions["pb"]
+    pb.store.save_profile({"name": "dual-gpu-256k", "base_model": "Qwen3-Coder-Next",
+                           "model_id": "qwen3-coder-next-q5_k_s-00001-of-00003",
+                           "launch_command": "llama-server -c 262144"})
+
+    digest = pb.assistant.digest("what profiles do I have?")
+
+    assert "dual-gpu-256k" in digest, digest
+    assert "Qwen3-Coder-Next" in digest, digest
+    assert "Profiles: 1 saved" in digest, digest
+
+
+def test_the_prompt_says_where_things_live(client, app):
+    """'How do I make a profile?' must be answerable, not guessed at."""
+    pb = app.extensions["pb"]
+    system = pb.assistant._prompt("LIVE DATA")[0]["content"]
+
+    for view in ("Builder", "Profiles", "Playground", "Perf"):
+        assert view in system, f"{view} missing from the system prompt"
+    assert "WHERE THINGS LIVE" in system

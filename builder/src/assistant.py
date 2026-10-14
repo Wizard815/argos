@@ -17,6 +17,7 @@ unloaded after ``idle_unload_min`` minutes without use.
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import re
 import threading
@@ -28,6 +29,8 @@ from typing import Callable, Iterator, Optional
 
 from .db import Store
 from .integrations import engine_api
+
+logger = logging.getLogger(__name__)
 from .runner import LaunchError, Runner
 from .settings import Settings
 
@@ -42,6 +45,9 @@ Use the LIVE DATA block for anything about GPUs, speeds, models, profiles, launc
 RELATED RECORDS are the stored records closest to the question; prefer them for anything about a specific model, setting, note or past event.
 INVENTORY lines list the models seen, how long each was loaded and on which GPUs, and settings (quants, cache types, flags) seen for the first time that are waiting for review.
 Lines with "vs the usual" (and RELATED RECORDS starting "Change:") say exactly which flags or env vars differ between two launch configs of a model and what that did to speed and VRAM; use them to explain small changes.
+WHERE THINGS LIVE in this app (say these, do not invent screens):
+Builder tunes a llama-server command and saves it as a profile; Profiles lists the saved ones and can apply or diff them; Playground launches a model, runs a speed test and shows speed per request; Perf holds measured speeds per model and setup; Schedule decides how models share the GPUs; Inventory is every model and setting ever seen; Models is your files and downloads; Servers are other machines Argos launches on; Logs and Events are what happened; Settings holds integrations, telemetry and this assistant.
+If the user asks how to do something, name the view to open and the setting to change. A saved profile is the way to keep a launch command: build it in Builder, name it, then it appears in Profiles.
 If LIVE DATA does not cover the question, say so in one line instead of guessing.
 Know llama-server flags (-ngl, -c, --flash-attn, --cache-type-k/v, -lm, --split-mode, --n-cpu-moe, --spec-type) and suggest concrete changes.
 Answer in a few short sentences or a short list."""
@@ -147,8 +153,20 @@ class Assistant:
                 f"{r.profile_name or r.base_model or r.launch_id} on :{r.port}" for r in running))
         profiles = self.store.list_profiles()
         if profiles:
-            lines.append(f"Profiles: {len(profiles)} saved across "
-                         f"{len({p.get('model_id') or p.get('base_model') for p in profiles})} models.")
+            # Speeds are keyed by the model the engine actually served, which for
+            # a saved profile is its variant id; look up whichever of the two
+            # matches rather than assuming.
+            speeds = {r["model"]: r for r in self.store.request_stats(now - 90 * 86400)}
+            rows = []
+            for p in sorted(profiles, key=lambda p: (p.get("base_model") or "", p.get("name") or "")):
+                mid = p.get("model_id") or ""
+                stats = speeds.get(mid) or speeds.get(p.get("base_model") or "")
+                speed = ""
+                if stats and stats.get("tg_avg"):
+                    speed = f", {_f(stats['tg_avg'], 1)} t/s gen"
+                rows.append(f"{p.get('name') or '?'} [{(p.get('base_model') or mid or '?')}{speed}]")
+            more = f" (+{len(profiles) - len(rows)} more)" if len(profiles) > len(rows) else ""
+            lines.append(f"Profiles: {len(profiles)} saved -- " + "; ".join(rows) + more)
         problems = [e for e in self.store.list_events(since=now - 86400, limit=50) if e["level"] in ("warn", "error")]
         if problems:
             lines.append("Recent problems: " + " | ".join(
@@ -177,6 +195,25 @@ class Assistant:
             return []
         names = {r["base_model"] for r in self.store.list_runs(limit=2000)}
         names |= {r["model"] for r in self.store.list_requests(since=now - 30 * 86400, limit=2000) if r["model"]}
+        # Every model Argos can see, not only the ones with history. A model that
+        # exists but has never been launched or benchmarked is still a real model
+        # the user can ask about, and the way the digest is built it otherwise
+        # appears only as "+1" in a count -- so the assistant answered "no model
+        # found" about a model sitting in its own catalog. Real case: asking for
+        # a dual-GPU 256K profile on a coder model that had never been run.
+        catalog: dict[str, dict] = {}
+        if self.inventory is not None:
+            try:
+                for m in self.inventory.models_summary(now):
+                    mid = m.get("model_id")
+                    if not mid:
+                        continue
+                    catalog[mid] = m
+                    names.add(mid)
+                    if m.get("name"):
+                        names.add(m["name"])
+            except Exception:  # noqa: BLE001 - extra context only, never fatal
+                logger.debug("assistant: model catalog unavailable", exc_info=True)
         hits = sorted((n for n in names if n and (n.lower() in q or q.strip("?. ") in n.lower())), key=len)[:2]
         out = []
         for name in hits:
@@ -185,6 +222,8 @@ class Assistant:
                 out.append(f"{name} benchmarks: " + "; ".join(
                     f"{_f(r['tokens_per_second'], 1)} t/s gen, {_f(r['prompt_per_second'])} prompt, "
                     f"ngl {r.get('gpu_layers') or '?'}, ctx {r.get('n_ctx') or '?'}" for r in runs))
+            else:
+                out.append(self._model_exists_line(name, catalog))
             try:
                 from .compare import change_lines
                 out += change_lines(self.store, name, limit=4)
@@ -196,6 +235,29 @@ class Assistant:
                 out.append(f"{name} last 7d: {len(reqs)} requests" +
                            (f", gen {sum(tg) / len(tg):.1f} t/s avg, min {min(tg):.1f}, max {max(tg):.1f}" if tg else ""))
         return out
+
+    @staticmethod
+    def _model_exists_line(name: str, catalog: dict[str, dict]) -> str:
+        """One line saying a model exists even though nothing has run it yet.
+
+        Facts come from the catalog row when we have one, so the model has
+        something concrete to reason about (where it lives, what kind it is)
+        instead of only being told the name is real.
+        """
+        row = catalog.get(name) or next(
+            (v for v in catalog.values()
+             if name.lower() in ((v.get("model_id") or "").lower(), (v.get("name") or "").lower())),
+            {},
+        )
+        facts = [x for x in (
+            f"origin {row['origin']}" if row.get("origin") else "",
+            f"kind {row['kind']}" if row.get("kind") else "",
+            f"quant {row['quant']}" if row.get("quant") else "",
+            f"path {row['path']}" if row.get("path") else "",
+            "present" if row.get("present") else ("gone" if row else ""),
+        ) if x]
+        line = f"{name}: in Argos's model list, no launches or benchmarks recorded yet"
+        return line + (f" ({', '.join(facts)})" if facts else "")
 
     # ----- where the model runs ---------------------------------------------
     def endpoint(self, status: Callable[[str], None] = lambda s: None, wait_s: float = 300) -> tuple[str, str]:
