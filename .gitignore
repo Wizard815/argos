@@ -34,6 +34,12 @@ config.d/*.generated.yaml
 docker-compose.override.yaml
 docker-compose.override.yaml.bak
 
+# A deployment's runtime state: the embedded database, the per-launch logs, the
+# known-hosts file, and every key Argos uses to reach a remote host. A tracked
+# private key is unrecoverable once pushed, and a broad `git add` would take it.
+data/
+ssh/
+
 # Python app
 builder/__pycache__/
 builder/**/__pycache__/
