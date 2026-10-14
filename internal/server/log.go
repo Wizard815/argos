@@ -66,6 +66,28 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	w.Write(s.muxlog.GetHistory())
 }
 
+// handleModelLogs serves one monitor's history as plain text. The streaming
+// endpoint writes the history and then follows the process, so a client that
+// only wants what has been printed so far would have to hold the connection
+// open - and for a model that is no longer running that stream never ends.
+// A one-shot read is what a log page, a download, or an archiver wants.
+func (s *Server) handleModelLogs(w http.ResponseWriter, r *http.Request) {
+	logMonitorID := strings.TrimPrefix(r.PathValue("logMonitorID"), "/")
+	if idx := strings.Index(logMonitorID, "?"); idx != -1 {
+		logMonitorID = logMonitorID[:idx]
+	}
+
+	logger, err := s.logSourceFor(logMonitorID)
+	if err != nil {
+		swaputil.SendResponse(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(logger.GetHistory())
+}
+
 // getLogger resolves a log monitor by id. An empty id maps to the combined
 // muxlog; "proxy" and "upstream" select the respective monitors.
 func (s *Server) getLogger(logMonitorID string) (*logmon.Monitor, error) {

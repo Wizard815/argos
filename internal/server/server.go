@@ -405,6 +405,9 @@ func (s *Server) routes() {
 	mux.Handle("GET /logs", apiChain.ThenFunc(s.handleLogs))
 	mux.Handle("GET /logs/stream", apiChain.ThenFunc(s.handleLogStream))
 	mux.Handle("GET /logs/stream/{logMonitorID...}", apiChain.ThenFunc(s.handleLogStream))
+	// One-shot read of a single monitor's history. The literal "stream" segment
+	// above is more specific than this wildcard, so it keeps matching first.
+	mux.Handle("GET /logs/{logMonitorID...}", apiChain.ThenFunc(s.handleModelLogs))
 
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /wol-health", handleHealth)
