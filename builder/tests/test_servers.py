@@ -287,3 +287,32 @@ def test_odysseus_import_keeps_env_colour_and_skips_urls():
     ])
     assert len(items) == 1 and items[0]["env_kind"] == "conda" and items[0]["env_value"] == "llm"
     assert items[0]["color"] == "#ff79c6" and items[0]["download_dir"] == "/app/models" and any("URL" in n for n in notes)
+
+
+def test_check_sees_models_inside_a_huggingface_cache(tmp_path):
+    """An HF-cache model is a symlink into blobs/, and the probe must follow it.
+
+    Regression: the probe used `find -type f`, which skips symlinks, so every
+    HF-cache model was reported missing while Argos's own index (os.walk with
+    followlinks) listed it -- a Check said "missing N of the M Argos sees" about
+    models sitting in the very folder it had just scanned. Real layout: the
+    weights are in blobs/ and snapshots/<sha>/<file> is a relative symlink into
+    them.
+    """
+    repo = tmp_path / "HFCache" / "hub" / "models--org--repo"
+    (repo / "blobs").mkdir(parents=True)
+    (repo / "snapshots" / "sha1").mkdir(parents=True)
+    (repo / "blobs" / "deadbeef").write_bytes(b"x" * 4000)
+    (repo / "snapshots" / "sha1" / "model.gguf").symlink_to("../../blobs/deadbeef")
+    (tmp_path / "loose.gguf").write_bytes(b"y" * 4000)
+
+    script = servers_mod.detection_script({"model_dirs": [{"path": str(tmp_path)}]})
+    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=30)
+
+    remote = parse_facts(out.stdout)["model_files"]
+    assert sorted(f["name"] for f in remote) == ["loose.gguf", "model.gguf"], \
+        "the HF-cache symlink must be found by the Check probe"
+
+    local = servers_mod.gguf_index([str(tmp_path)])
+    cmp = servers_mod.compare_models(remote, local)
+    assert cmp["common"] == 2 and cmp["same"] is True, cmp

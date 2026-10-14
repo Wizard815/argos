@@ -152,7 +152,12 @@ command -v rocm-smi >/dev/null 2>&1 && echo "rocm_smi=1"
 [ -e /dev/kfd ] && echo "kfd=1"
 for d in {dirs}; do
   [ -d "$d" ] || {{ echo "dir_missing=$d"; continue; }}
-  find "$d" -type f -name '*.gguf' 2>/dev/null | head -3000 | while IFS= read -r f; do
+  # -L makes find follow symlinks, which is the whole difference for a
+  # HuggingFace cache: the weights live in blobs/ and snapshots/<sha>/<file> is
+  # a symlink into it, so a plain `find -type f` reported none of them and a
+  # Check called every HF-cache model missing. Argos's own index follows them
+  # (os.walk(followlinks=True)), so the two sides have to agree.
+  find -L "$d" -type f -name '*.gguf' 2>/dev/null | head -3000 | while IFS= read -r f; do
     echo "gguf=$(wc -c < "$f" 2>/dev/null | tr -d ' ')|$f"
   done
 done
