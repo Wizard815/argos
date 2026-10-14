@@ -1764,9 +1764,36 @@ function renderDownloads() {
           : d.status !== "done" ? btn("Resume", async () => { await api("POST", `/api/downloads/${d.id}/retry`).catch(fail); loadDownloads(); }, "sm") : null),
       h("div", { class: `progress${d.status === "done" ? " done" : ""}` }, h("i", { style: `width:${pct.toFixed(1)}%` })),
       h("div", { class: "muted mono-sm" }, `${size(d.bytes_done || 0)} of ${size(d.bytes_total || 0)}`,
-        running && d.speed ? ` · ${size(d.speed)}/s` : "", eta != null ? ` · ${uptime(Date.now() / 1000 - eta)} left` : "",
-        d.error ? ` · ${d.error}` : ""));
+        running && d.speed ? ` · ${size(d.speed)}/s` : "", eta != null ? ` · ${uptime(Date.now() / 1000 - eta)} left` : ""),
+      // Anything that did not finish says why, in its own block: the one-line
+      // summary above is too easy to miss, and "it stopped" without a reason is
+      // what makes a failed download look like nothing happened.
+      (d.status !== "done" || d.error) ? h("div", { class: "note " + (d.error ? "note-pink" : "note-yellow"),
+        style: "margin-top:6px;padding:7px 9px;font-size:11.5px;line-height:1.5;" },
+        h("div", {}, d.error ? `Error: ${d.error}` : `Did not finish (${d.status})`),
+        h("div", { class: "muted" }, `onto ${d.dest || "?"} · last update ${ago(d.updated_at)}`),
+        h("div", { class: "muted" }, `expected ${d.bytes_total ? size(d.bytes_total) : "unknown"}, got ${size(d.bytes_done || 0)}`)) : null);
   }) : h("div", { class: "empty" }, "No downloads yet."));
+}
+
+// ── Per-GPU VRAM in the top bar ──────────────────────────────
+// One bar per card, so the headroom the pool sees is visible from any page
+// without opening Logs. The query is small and pauses while the tab is hidden.
+async function loadGpuBars() {
+  const box = $("#gpuBars");
+  if (!box || document.hidden) return;
+  let d;
+  try { d = await api("GET", "/api/gpu/series?range=1h"); } catch (e) { return; }
+  const rows = (d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0);
+  const gb = (mb) => `${(mb / 1024).toFixed(1)}G`;
+  box.replaceChildren(...rows.map((g) => {
+    const used = g.mem_used_mb || 0, total = g.mem_total_mb || 1;
+    const pct = Math.max(0, Math.min(100, (used / total) * 100));
+    return h("span", { class: "gpu-bar", title: `${g.name || "GPU " + g.gpu} — ${gb(used)} / ${gb(total)} used (${pct.toFixed(0)}%)` },
+      h("span", { class: "gpu-bar-label" }, `GPU${g.gpu}`),
+      h("span", { class: "gpu-bar-track" }, h("i", { style: `width:${pct.toFixed(1)}%` })),
+      h("span", { class: "gpu-bar-num" }, gb(used)));
+  }));
 }
 
 // ── Logs: GPU charts ─────────────────────────────────────────
@@ -3609,7 +3636,27 @@ function noteCard(n, i = 0) {
     const size = `${card.offsetWidth}x${card.offsetHeight}`;
     if (size !== lastSize && card.isConnected) { lastSize = size; put({ w: card.offsetWidth, h: card.offsetHeight }); }
   }, 500)).observe(card);
-  fill(card, head, text, h("div", { class: "note-foot" }, meta));
+  // Resize by an explicit corner grip rather than relying on the browser's
+  // own (near-invisible) handle. Whatever it produces is persisted by the
+  // ResizeObserver below.
+  const gripEl = h("span", { class: "note-resize", title: "Drag to resize" });
+  gripEl.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    raiseNote(card);
+    const from = { x: e.clientX, y: e.clientY, w: card.offsetWidth, h: card.offsetHeight };
+    const move = (ev) => {
+      card.style.width = `${Math.max(200, from.w + (ev.clientX - from.x))}px`;
+      card.style.height = `${Math.max(120, from.h + (ev.clientY - from.y))}px`;
+    };
+    const up = () => {
+      gripEl.removeEventListener("pointermove", move);
+      gripEl.removeEventListener("pointerup", up);
+      put({ w: card.offsetWidth, h: card.offsetHeight });
+    };
+    gripEl.addEventListener("pointermove", move);
+    gripEl.addEventListener("pointerup", up);
+  });
+  fill(card, head, text, h("div", { class: "note-foot" }, meta), gripEl);
   showMeta();
   return card;
 }
@@ -3929,6 +3976,9 @@ function boot() {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && NOTES.menu) toggleNotesMenu(false); });
   loadNotes();
   loadSeen();
+  loadGpuBars();
+  setInterval(loadGpuBars, 8000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) loadGpuBars(); });
   initBuilder();
   initPlayground();
   initAssistant();

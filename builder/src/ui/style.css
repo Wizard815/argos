@@ -503,7 +503,13 @@ tr.diff-added .after, tr.diff-changed .after { color: var(--green); }
 .note-layer { position: absolute; inset: 44px 0 0 0; pointer-events: none; z-index: 30; overflow: hidden; }
 .note-layer .note { pointer-events: auto; position: absolute; display: flex; flex-direction: column; min-width: 200px; min-height: 120px;
   border: 1px solid color-mix(in srgb, var(--note) 60%, transparent); border-radius: var(--radius); box-shadow: var(--shadow);
-  background: color-mix(in srgb, var(--note) 12%, var(--panel)); resize: both; overflow: hidden; }
+  background: color-mix(in srgb, var(--note) 12%, var(--panel)); resize: none; overflow: hidden; }
+/* A drawn corner grip. The card is resizable either way, but the browser's own
+   handle is a grey corner that vanishes into a dark theme -- which is what made
+   the size adjustable and undiscoverable. */
+.note-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; opacity: 0.45;
+  background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--note) 85%, transparent) 3px 4px); }
+.note-resize:hover { opacity: 0.95; }
 .note.moving { opacity: 0.85; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45); }
 .note-head { display: flex; align-items: center; gap: 4px; padding: 5px 6px; cursor: grab; touch-action: none;
   background: color-mix(in srgb, var(--note) 22%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--note) 35%, transparent); }
@@ -512,6 +518,14 @@ tr.diff-added .after, tr.diff-changed .after { color: var(--green); }
 .note-layer .note-body { flex: 1; min-height: 0; border: 0; border-radius: 0; resize: none; background: transparent; padding: 8px 10px; }
 .note-foot { padding: 3px 10px 6px; }
 .icon-btn.on { color: var(--red); }
+
+/* ── Per-GPU VRAM in the top bar ─────────────────────────── */
+.gpu-bars { display: flex; align-items: center; gap: 12px; min-width: 0; overflow: hidden; }
+.gpu-bar { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.gpu-bar-label { font-weight: 600; }
+.gpu-bar-track { display: inline-block; width: 52px; height: 6px; border-radius: 3px; background: var(--hl-bg); border: 1px solid var(--line); overflow: hidden; }
+.gpu-bar-track i { display: block; height: 100%; background: var(--red); }
+.gpu-bar-num { font-family: var(--mono, monospace); }
 
 /* ── Odysseus hub ────────────────────────────────────────── */
 .ody-list { display: flex; flex-direction: column; }
