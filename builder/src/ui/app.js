@@ -2412,6 +2412,7 @@ const SETTINGS_FORM = [
   { group: "builder", title: "Builder", fields: [
     { k: "command_format", label: "Command format", type: "select", wide: true, options: [["odysseus", "Odysseus (Cookbook shape)"], ["plain", "As written"]] }] },
   { group: "prefab", title: "Prefab defaults", hint: "Every model's prefab starts from these; embedding, vision and MTP models get their extras on top.", fields: [
+    { k: "program", label: "Launch program", wide: true, ph: "/app/bin/remote-llama rocm" },
     { k: "host", label: "Host" }, { k: "port", label: "Port" }, { k: "ngl", label: "GPU layers (-ngl)" }, { k: "ctx", label: "Context (-c)" },
     { k: "flash_attn", label: "Flash attention", type: "select", options: [["", "default"], ["on", "on"], ["off", "off"], ["auto", "auto"]] },
     { k: "cache_type", label: "KV cache type", type: "select", options: KV_TYPES.map((t) => [t, t || "default"]) },

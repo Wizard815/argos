@@ -191,7 +191,13 @@ def prefab_command(model: dict, prefab: dict, port: Optional[str] = None) -> Lau
     """A launch command for ``model`` built from the Settings -> Prefab defaults."""
     kind = model.get("kind", "chat")
     env = _env_lines(prefab.get("env", ""))
-    args = ["llama-server", "--model", shlex.quote(model["path"]),
+    # A prefab is launched as a process, so the program is part of it. Empty
+    # keeps the usual llama-server; a build whose llama.cpp lives in another
+    # container sets this to its launcher instead, since there is no
+    # llama-server here to run (the wrapper script takes the backend word and
+    # passes the rest through).
+    program = (prefab.get("program") or "").strip() or "llama-server"
+    args = [program, "--model", shlex.quote(model["path"]),
             "--host", prefab.get("host") or "0.0.0.0", "--port", str(port or prefab.get("port") or 8080)]
     if prefab.get("ngl"):
         args += ["-ngl", str(prefab["ngl"])]

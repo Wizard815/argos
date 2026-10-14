@@ -89,6 +89,24 @@ def test_prefabs_per_kind():
     assert parse_command(vis.to_string(style="odysseus")).get("mmproj") == "/m/mm proj.gguf"
 
 
+def test_prefab_launch_program_can_point_at_a_remote_launcher():
+    """A build that holds no llama.cpp launches through whatever it does have.
+
+    The program belongs to the prefab because the prefab is what gets run: an
+    empty setting stays llama-server, and a wrapper keeps its backend word with
+    the llama-server flags after it, which is exactly what the wrapper passes on.
+    """
+    model = {"path": "/m/Qwen3-8B-Q4_K_M.gguf", "kind": "chat", "mmproj": []}
+    assert prefab_command(model, PREFAB).program == "llama-server", "empty program means the usual binary"
+
+    remote = prefab_command(model, {**PREFAB, "program": " /app/bin/remote-llama rocm "})
+    assert remote.program == "/app/bin/remote-llama"
+    text = remote.to_string(style="odysseus")
+    assert text.startswith("/app/bin/remote-llama rocm --model "), text
+    # the flags the wrapper forwards still have to be there, the port included
+    assert "--host 0.0.0.0" in text and "--port 8080" in text and "-ngl 99" in text
+
+
 def test_library_routes_and_profile_counts(client, app):
     models_dir = app.extensions["pb"].settings.get("paths")["models_dir"]
     touch(os.path.join(models_dir, "q", "Qwen3-0.6B-Q8_0.gguf"))

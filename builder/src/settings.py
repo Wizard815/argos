@@ -53,6 +53,12 @@ def env_defaults(cfg: dict) -> dict:
         },
         "prefab": {
             # what a freshly scanned model's prefab command starts from
+            # The program a prefab launches. Empty means llama-server on PATH.
+            # A build that keeps llama.cpp in another container has no
+            # llama-server to run at all, so point this at whatever launches it
+            # there - e.g. "/app/bin/remote-llama rocm", the wrapper the image
+            # ships. Everything after the backend word is passed through.
+            "program": "",
             "host": "0.0.0.0",
             "port": "8080",
             "ngl": "99",

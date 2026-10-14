@@ -8,6 +8,7 @@ while the request runs when it is available.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -106,6 +107,12 @@ class Runner:
                     env=env, start_new_session=(os.name == "posix"),
                 )
             except OSError as exc:
+                if exc.errno == errno.ENOENT:
+                    raise LaunchError(
+                        f"could not start {cmd.program!r}: not found in this container. "
+                        "If llama.cpp runs somewhere else, set Prefab -> Launch program to "
+                        "its launcher, e.g. /app/bin/remote-llama rocm."
+                    ) from exc
                 raise LaunchError(f"could not start {cmd.program!r}: {exc.strerror or exc}") from exc
         run = Run(launch_id=launch_id, command=cmd.to_string(), env=dict(cmd.env),
                   base_model=base_model, profile_name=profile_name,

@@ -34,6 +34,21 @@ def test_launch_missing_program(tmp_path):
         runner.launch("llama-server -m 'oops")
 
 
+def test_missing_program_says_which_setting_points_it_somewhere_else(tmp_path):
+    """'No such file or directory' on its own reads like a bad model path.
+
+    What is missing is the program, and when llama.cpp lives in another
+    container the fix is a setting, so the message has to name it and say what
+    to put there.
+    """
+    runner = Runner(str(tmp_path))
+    with pytest.raises(LaunchError) as exc:
+        runner.launch("definitely-not-a-real-binary-xyz --port 1")
+    message = str(exc.value)
+    assert "not found in this container" in message
+    assert "Launch program" in message
+
+
 def test_launch_bench_stop(tmp_path):
     runner = Runner(str(tmp_path))
     run = runner.launch(fake_command("-ngl", "99", "-c", "2048"), base_model="fake")
