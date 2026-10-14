@@ -38,6 +38,12 @@ RUN UV_PYTHON_INSTALL_DIR=/opt/python uv venv --python 3.14 /opt/venv \
     && uv pip install --python /opt/venv/bin/python -r /tmp/requirements.txt
 
 COPY --from=engine /src/build/argos-linux-amd64 /app/argos
+# The remote-llama wrapper ships in the image so /app/bin/remote-llama always
+# exists and is executable. A host mount can still shadow it -- that is how it
+# stays editable without a rebuild -- and the entrypoint re-asserts the mode on
+# whatever ends up there.
+COPY setup/remote-llama.sh /app/bin/remote-llama
+RUN chmod 755 /app/bin/remote-llama
 COPY builder/src /app/builder/src
 COPY docker/argos.config.yaml /app/config.yaml
 COPY docker/argos-entrypoint.sh /app/argos-entrypoint.sh

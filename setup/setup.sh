@@ -204,7 +204,11 @@ backup docker-compose.override.yaml
   for v in "${VOLS[@]+"${VOLS[@]}"}"; do echo "      - $v"; done
   [[ "$MODE" == 2 ]] && echo "      - /var/run/docker.sock:/var/run/docker.sock"
   if [[ "$MODE" == 3 ]]; then
-    echo "      - ./remote-llama.sh:/app/bin/remote-llama:ro"
+    # The remote-llama wrapper is deliberately NOT mounted. The image ships it
+    # at /app/bin/remote-llama with its execute bit; mounting a script from a
+    # host share loses that bit (shares hand files back as 0666) and every model
+    # launch then fails with "fork/exec ...: permission denied". To run your own
+    # copy instead, mount it yourself and keep the mode correct on the host.
     echo "      - \${REMOTE_SSH_KEY_FILE}:/run/secrets/argos_ssh_key:ro"
   fi
   [[ -n "$CUSTOM_BIN_HOST" && "$MODE" == 1 ]] && echo "      - $CUSTOM_BIN_HOST:/opt/my-llama:ro"
@@ -344,9 +348,11 @@ mv "$TMP/config.out" config.yaml
 echo "  wrote config.yaml"
 
 if [[ "$MODE" == 3 ]]; then
+  # Placed for reference, and for anyone who would rather mount their own copy.
+  # The image ships the copy that actually runs.
   [[ "$HERE" == "$PWD" ]] || cp "$HERE/remote-llama.sh" ./remote-llama.sh
-  chmod +x ./remote-llama.sh
-  echo "  placed remote-llama.sh"
+  chmod +x ./remote-llama.sh 2>/dev/null || true
+  echo "  placed remote-llama.sh (reference copy; the image ships the one that runs)"
   if [[ "$WRITE_BASE" == 1 ]]; then
     cat > Dockerfile.argos-base <<'DF'
 FROM ubuntu:24.04
