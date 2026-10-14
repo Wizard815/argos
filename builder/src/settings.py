@@ -60,7 +60,11 @@ def env_defaults(cfg: dict) -> dict:
             # ships. Everything after the backend word is passed through.
             "program": "",
             "host": "0.0.0.0",
-            "port": "8080",
+            # ${PORT}, not a number: the runner swaps it for a free port on
+            # every launch. A fixed port collides with whatever already holds
+            # it - in a single-port build that is the builder's own 8080, so
+            # the launch fails and the health check answers from Argos itself.
+            "port": "${PORT}",
             "ngl": "99",
             "ctx": "32768",
             "flash_attn": "on",

@@ -66,7 +66,7 @@ def test_audio_and_image_models_are_listed_but_not_launchable(tmp_path):
 def test_prefabs_per_kind():
     chat = prefab_command({"path": "/m/Qwen3-8B-Q4_K_M.gguf", "kind": "chat", "mmproj": []}, PREFAB)
     assert chat.to_string(style="odysseus") == (
-        'llama-server --model "/m/Qwen3-8B-Q4_K_M.gguf" --host 0.0.0.0 --port 8080 -ngl 99 -c 32768 '
+        'llama-server --model "/m/Qwen3-8B-Q4_K_M.gguf" --host 0.0.0.0 --port ${PORT} -ngl 99 -c 32768 '
         '--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --jinja')
 
     tuned = {**PREFAB, "load_mode": "dio", "split_mode": "layer", "env": "HIP_VISIBLE_DEVICES=0\n# note",
@@ -104,7 +104,7 @@ def test_prefab_launch_program_can_point_at_a_remote_launcher():
     text = remote.to_string(style="odysseus")
     assert text.startswith("/app/bin/remote-llama rocm --model "), text
     # the flags the wrapper forwards still have to be there, the port included
-    assert "--host 0.0.0.0" in text and "--port 8080" in text and "-ngl 99" in text
+    assert "--host 0.0.0.0" in text and "--port ${PORT}" in text and "-ngl 99" in text
 
 
 def test_library_routes_and_profile_counts(client, app):
@@ -114,7 +114,7 @@ def test_library_routes_and_profile_counts(client, app):
     assert lib["exists"] and [m["id"] for m in lib["models"]] == ["qwen3-0.6b-q8_0"]
     path = lib["models"][0]["path"]
     pre = client.post("/api/library/prefab", json={"path": path}).get_json()
-    assert pre["command"].startswith(f'llama-server --model "{path}" --host 0.0.0.0 --port 8080')
+    assert pre["command"].startswith(f'llama-server --model "{path}" --host 0.0.0.0 --port ${{PORT}}')
     assert client.post("/api/library/prefab", json={"path": "/etc/passwd"}).status_code == 404
     for i in range(3):
         client.post("/api/profiles", json={"name": f"p{i}", "launch_command": pre["command"]})
