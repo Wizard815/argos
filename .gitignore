@@ -22,6 +22,13 @@ deploy/config.yaml
 config.yaml
 config.yaml.bak
 
+# setup.sh writes these for one deployment and backs the old ones up as *.bak.
+# Your host paths and remote host names belong in your checkout, not in the
+# repository: untracked means `git pull` can never collide with them either.
+.env.bak
+docker-compose.override.yaml
+docker-compose.override.yaml.bak
+
 # Python app
 builder/__pycache__/
 builder/**/__pycache__/
