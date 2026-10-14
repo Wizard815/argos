@@ -252,3 +252,54 @@ def test_the_prompt_says_where_things_live(client, app):
     for view in ("Builder", "Profiles", "Playground", "Perf"):
         assert view in system, f"{view} missing from the system prompt"
     assert "WHERE THINGS LIVE" in system
+
+
+def test_actions_are_split_out_and_validated(client, app):
+    """An ACTION line becomes an action, not prose -- and only for a known id."""
+    pb = app.extensions["pb"]
+    pb.store.upsert_model_seen({"model_id": "qwen3-8b", "name": "Qwen3 8B",
+                                "origin": "engine", "kind": "chat"})
+
+    clean, actions = pb.assistant._actions(
+        "Loading it now.\n"
+        "ACTION load qwen3-8b\n"
+        "ACTION unload nope-not-a-model\n"
+        "ACTION keep qwen3-8b off"
+    )
+
+    assert clean == "Loading it now."
+    assert actions == [
+        {"verb": "load", "model": "qwen3-8b"},
+        {"verb": "keep", "model": "qwen3-8b", "on": False},
+    ], actions
+
+
+def test_an_invented_model_id_never_becomes_an_action(client, app):
+    """A small model guessing a name must not produce a working button."""
+    pb = app.extensions["pb"]
+
+    clean, actions = pb.assistant._actions("Sure.\nACTION load totally-made-up-xyz")
+
+    assert actions == []
+    assert clean == "Sure."
+
+
+def test_the_digest_offers_the_action_vocabulary(client, app):
+    pb = app.extensions["pb"]
+    assert "ACTIONS you may propose" in pb.assistant.digest()
+
+
+def test_model_focus_covers_more_than_two_models(client, app):
+    """A question comparing several setups must not silently lose the extras.
+
+    Names of different lengths keep the ordering deterministic (equal lengths
+    would tie and leave the slice up to set iteration order).
+    """
+    pb = app.extensions["pb"]
+    for mid in ("model-aaaa", "model-bbb", "model-cc", "model-d"):
+        pb.store.upsert_model_seen({"model_id": mid, "name": mid, "origin": "engine"})
+
+    out = pb.assistant._model_focus("compare model-aaaa model-bbb model-cc model-d", time.time())
+
+    named = [ln for ln in out if ln.split(":")[0] in {"model-aaaa", "model-bbb", "model-cc", "model-d"}]
+    assert len(named) == 4, out

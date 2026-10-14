@@ -2151,6 +2151,40 @@ async function setupAssistant() {
   } catch (e) { fail(e); }
 }
 
+// ACTION lines are how the assistant asks for a model action; they are a
+// contract with the backend, not something to show in the answer.
+function visibleAnswer(t) {
+  return (t || "").replace(/^ACTION\s+.*$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// One proposed action, with the confirmation it requires. The assistant never
+// performs these itself, so a wrong model id costs a click, not a launch.
+function actionEl(a) {
+  const what = a.verb === "keep"
+    ? `${a.on ? "Keep loaded" : "Allow unloading"}: ${a.model}`
+    : `${a.verb === "load" ? "Load" : "Unload"}: ${a.model}`;
+  const btn = h("button", { class: "btn sm" }, "Apply");
+  const row = h("div", { class: "assistant-action", style: "display:flex;gap:8px;align-items:center;"
+    + "margin-top:6px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;" },
+    h("span", { style: "flex:1;min-width:0;font-size:12px;" }, what), btn);
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = "…";
+    try {
+      await api("POST", `/api/schedule/live/${encodeURIComponent(a.model)}/${a.verb}`,
+                a.verb === "keep" ? { on: a.on } : {});
+      btn.textContent = "Done";
+      row.style.opacity = "0.6";
+      toast(`${what} — done`, "");
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Retry";
+      toast(e.message, "");
+    }
+  };
+  return row;
+}
+
 async function sendChat() {
   const input = $("#aInput");
   const text = input.value.trim();
@@ -2183,7 +2217,8 @@ async function sendChat() {
         const ev = JSON.parse(line.slice(5));
         if (ev.type === "status") fill(status, h("span", { class: "dot warn" }), ev.text);
         else if (ev.type === "compacted") toast("Older messages were compacted into a summary.", "");
-        else if (ev.type === "delta") { status.remove(); answer += ev.text; body.textContent = answer; bubble.scrollIntoView({ block: "end" }); }
+        else if (ev.type === "delta") { status.remove(); answer += ev.text; body.textContent = visibleAnswer(answer); bubble.scrollIntoView({ block: "end" }); }
+        else if (ev.type === "action") { status.remove(); body.append(actionEl(ev.action)); bubble.scrollIntoView({ block: "end" }); }
         else if (ev.type === "error") { status.remove(); body.append(h("p", { style: "color:var(--danger)" }, ev.error)); }
       }
     }

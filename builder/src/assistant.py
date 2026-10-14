@@ -45,12 +45,25 @@ Use the LIVE DATA block for anything about GPUs, speeds, models, profiles, launc
 RELATED RECORDS are the stored records closest to the question; prefer them for anything about a specific model, setting, note or past event.
 INVENTORY lines list the models seen, how long each was loaded and on which GPUs, and settings (quants, cache types, flags) seen for the first time that are waiting for review.
 Lines with "vs the usual" (and RELATED RECORDS starting "Change:") say exactly which flags or env vars differ between two launch configs of a model and what that did to speed and VRAM; use them to explain small changes.
+You can propose model actions. When the user asks you to load, unload or keep a model, answer in one short sentence and then end with one ACTION line per model, exactly:
+ACTION load <model id>
+ACTION unload <model id>
+ACTION keep <model id> on
+Use only model ids that appear in LIVE DATA, INVENTORY or the model lines above -- never invent one, and never claim an action is already done: the user confirms each one in the UI.
 WHERE THINGS LIVE in this app (say these, do not invent screens):
 Builder tunes a llama-server command and saves it as a profile; Profiles lists the saved ones and can apply or diff them; Playground launches a model, runs a speed test and shows speed per request; Perf holds measured speeds per model and setup; Schedule decides how models share the GPUs; Inventory is every model and setting ever seen; Models is your files and downloads; Servers are other machines Argos launches on; Logs and Events are what happened; Settings holds integrations, telemetry and this assistant.
 If the user asks how to do something, name the view to open and the setting to change. A saved profile is the way to keep a launch command: build it in Builder, name it, then it appears in Profiles.
 If LIVE DATA does not cover the question, say so in one line instead of guessing.
 Know llama-server flags (-ngl, -c, --flash-attn, --cache-type-k/v, -lm, --split-mode, --n-cpu-moe, --spec-type) and suggest concrete changes.
 Answer in a few short sentences or a short list."""
+
+# How many models one question may pull into focus. Two was tight: a question
+# that compares three setups silently lost the third.
+FOCUS_MODELS = 4
+
+# The one line shape an action may take. Deliberately strict -- the answer is
+# free text, so anything looser becomes guesswork about what was meant.
+ACTION_RE = re.compile(r"ACTION\s+(load|unload|keep)\s+(\S+)(?:\s+(on|off))?\s*$", re.IGNORECASE)
 
 SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}  # Qwen3 non-thinking defaults
 THINK = re.compile(r"<think>.*?(?:</think>\s*|$)", re.DOTALL)
@@ -151,6 +164,8 @@ class Assistant:
         if running:
             lines.append("Running here: " + ", ".join(
                 f"{r.profile_name or r.base_model or r.launch_id} on :{r.port}" for r in running))
+        lines.append("ACTIONS you may propose (the user confirms each in the UI): "
+                     "load <model id>, unload <model id>, keep <model id> on|off")
         profiles = self.store.list_profiles()
         if profiles:
             # Speeds are keyed by the model the engine actually served, which for
@@ -176,6 +191,49 @@ class Assistant:
         lines += self.related(question)
         lines += self._model_focus(question, now)
         return "\n".join(lines)
+
+    def _actionable_ids(self) -> set[str]:
+        """Every model id an action may name.
+
+        A proposal is only turned into a button when the id is one Argos already
+        knows, so a small model inventing a plausible name cannot produce a
+        button that launches nothing.
+        """
+        ids: set[str] = set()
+        try:
+            ids |= {m["model_id"] for m in self.store.list_models_seen() if m.get("model_id")}
+        except Exception:  # noqa: BLE001 - validation is best-effort
+            pass
+        if self.inventory is not None:
+            try:
+                ids |= {m["model_id"] for m in self.inventory.models_summary() if m.get("model_id")}
+            except Exception:  # noqa: BLE001
+                pass
+        return ids
+
+    def _actions(self, answer: str) -> tuple[str, list[dict]]:
+        """Split ACTION lines out of an answer: (text without them, the actions).
+
+        The assistant proposes; it never performs. The caller shows each action
+        for confirmation, so a wrong id costs a click rather than a launch.
+        """
+        known = self._actionable_ids()
+        actions: list[dict] = []
+        kept: list[str] = []
+        for line in (answer or "").splitlines():
+            m = ACTION_RE.match(line.strip())
+            if not m:
+                kept.append(line)
+                continue
+            verb, model, on = m.group(1).lower(), m.group(2), m.group(3)
+            if model not in known:
+                logger.warning("assistant proposed %s on an unknown model: %r", verb, model)
+                continue
+            action: dict = {"verb": verb, "model": model}
+            if verb == "keep":
+                action["on"] = (on or "on").lower() != "off"
+            actions.append(action)
+        return "\n".join(kept).strip(), actions
 
     def related(self, question: str) -> list[str]:
         """The records from memory closest to the question, by meaning and by words."""
@@ -214,7 +272,7 @@ class Assistant:
                         names.add(m["name"])
             except Exception:  # noqa: BLE001 - extra context only, never fatal
                 logger.debug("assistant: model catalog unavailable", exc_info=True)
-        hits = sorted((n for n in names if n and (n.lower() in q or q.strip("?. ") in n.lower())), key=len)[:2]
+        hits = sorted((n for n in names if n and (n.lower() in q or q.strip("?. ") in n.lower())), key=len)[:FOCUS_MODELS]
         out = []
         for name in hits:
             runs = self.store.list_runs(base_model=name, limit=5)
@@ -536,7 +594,10 @@ class Assistant:
                     self.store.add_message("assistant", answer.strip())
                 yield {"type": "error", "error": str(exc)}
                 return
-            self.store.add_message("assistant", answer.strip() or "(no answer)")
+            clean, actions = self._actions(answer)
+            self.store.add_message("assistant", clean or "(no answer)")
+            for action in actions:
+                yield {"type": "action", "action": action}
             self.last_used = time.time()
             yield {"type": "done", "tokens": self.context_tokens(digest)}
         finally:
