@@ -502,6 +502,35 @@ class Assistant:
         self.on_event("assistant", f"loaded the assistant's {'chat' if which == 'chat' else 'embedding'} model {info['model']}")
         return self.models()[which]
 
+    def warm_embed(self) -> bool:
+        """Start the embedding model the moment a model's stats are finalised.
+
+        Newly logged numbers are meant to be searchable, and searching memory needs
+        embeddings. Loading it here also stamps its clock, so the usual idle timer
+        covers it from the moment it was needed - the same setting as the chat model,
+        counted separately, not a special case for embedding models.
+        """
+        if self.memory is None:
+            return False
+        info = self.models()["embed"]
+        if not info["model"] or not info["controllable"]:
+            return False
+        self.memory.last_used = time.time()  # the clock starts now, loaded or not
+        if info["state"] in ("ready", "starting"):
+            return False
+        url, model_id = self._engine(), info["model"]
+
+        def load():
+            try:
+                engine_api.load_model(url, model_id)
+            except Exception as exc:  # noqa: BLE001 - reported as an event, never fatal
+                self.on_event("assistant", f"could not start the embedding model {model_id}: {exc}",
+                              level="warn")
+
+        threading.Thread(target=load, daemon=True).start()
+        self.on_event("assistant", f"started the embedding model {model_id}: the new numbers are searchable")
+        return True
+
     def unload(self, which: str, reason: str = "") -> dict:
         info = self.models()[which]
         if not info["controllable"]:
@@ -531,6 +560,19 @@ class Assistant:
         now = now or time.time()
         done = []
         last = {"chat": self.last_used, "embed": getattr(self.memory, "last_used", 0.0) if self.memory is not None else 0.0}
+        # One clock per model. A model of the assistant's own that is loaded but has no
+        # clock was started by something else - the schedule, another app - and used to
+        # be skipped forever. Give it a clock now, so this timer covers it too.
+        for which in ("chat", "embed"):
+            if last[which]:
+                continue
+            info = self.models()[which]
+            if not info["controllable"] or info["state"] not in ("ready", "starting"):
+                continue
+            if which == "chat":
+                self.last_used = last["chat"] = now
+            elif self.memory is not None:
+                self.memory.last_used = last["embed"] = now
         for which, ts in last.items():
             if not ts or now - ts < minutes * 60:
                 continue
