@@ -817,6 +817,13 @@ async function launch(command, base_model, profile_name) {
   if (!command || !command.trim()) { toast("Nothing to launch.", "err"); return; }
   try {
     const res = await api("POST", "/api/launches", { command, base_model, profile_name });
+    if (res.engine) {
+      // The engine already serves this model, so nothing runs here: it loads on
+      // whichever host the engine launches on, and Schedule → Live shows it.
+      toast(`Asked the engine to load ${res.model} — watch it under Schedule → Live.`, "ok");
+      show("schedule");
+      return;
+    }
     S.sel = res.launch.launch_id;
     $("#gCmd").value = command;
     $("#gBase").value = base_model || "";
@@ -3230,7 +3237,7 @@ async function loadSchedule() {
 function syncPlanForm() {
   const p = SC.data.plan;
   SC.plan = { enabled: p.enabled, cards: p.cards.join(", "), reserve_gib: p.reserve_gib, protect_seconds: p.protect_seconds,
-    placement: p.placement };
+    placement: p.placement, idle_unload_min: p.idle_unload_min ?? 30 };
   SC.sizes = { ...p.sizes };
   SC.persistent = new Set(p.persistent);
 }
@@ -3379,6 +3386,7 @@ function renderPlan() {
         cardsInput,
         field("Reserve (GiB)", "reserve_gib", { type: "number", step: "0.5", min: "0" }, "left free for KV growth and buffers"),
         field("Protect (seconds)", "protect_seconds", { type: "number", step: "30", min: "0" }, "a model used this recently is evicted last"),
+        field("Unload after (min)", "idle_unload_min", { type: "number", step: "5", min: "0" }, "a model unused this long is unloaded; 0 = never"),
         h("label", { class: "field wide" }, h("span", {}, "Placement"), placement)),
       useDetected && h("div", { class: "row", style: "margin-top:8px" }, useDetected)),
     h("div", { class: "card" },
@@ -3471,7 +3479,7 @@ async function runSim() {
   if (!clean.length) return toast("Add a model to a step first.", "err");
   try {
     SC.sim = await api("POST", "/api/schedule/simulate", { steps: clean.map((s) => ({ op: s.op, model: (s.model || "").trim(), minutes: s.minutes ?? 10 })),
-      plan: { cards: P.cards, reserve_gib: P.reserve_gib, protect_seconds: P.protect_seconds, placement: P.placement, persistent: [...SC.persistent] }, sizes: SC.sizes });
+      plan: { cards: P.cards, reserve_gib: P.reserve_gib, protect_seconds: P.protect_seconds, idle_unload_min: P.idle_unload_min, placement: P.placement, persistent: [...SC.persistent] }, sizes: SC.sizes });
     SC.simAt = SC.sim.results.length - 1;
     renderSim();
   } catch (e) { fail(e); }

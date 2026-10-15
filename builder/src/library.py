@@ -228,6 +228,20 @@ def prefab_command(model: dict, prefab: dict, port: Optional[str] = None) -> Lau
     return to_odysseus(cmd, port=port or prefab.get("port") or 8080, host=prefab.get("host") or "0.0.0.0")
 
 
+def prefab_with_launcher(prefab: dict, launcher: str) -> dict:
+    """The prefab a command is built from: an unset program takes the launcher the
+    default server implies.
+
+    The program is part of the prefab because the prefab is what gets run, so a build
+    whose llama.cpp lives in another container binds Launch to that host by naming
+    its server rather than by setting the program on every prefab by hand.
+    """
+    out = dict(prefab or {})
+    if not (out.get("program") or "").strip() and launcher:
+        out["program"] = launcher
+    return out
+
+
 def library_with_profiles(models: list[dict], profiles: list[dict]) -> list[dict]:
     """Attach the saved-profile count to each scanned model (joined on the Argos ID)."""
     counts: dict[str, int] = {}

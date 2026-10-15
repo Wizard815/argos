@@ -8,7 +8,7 @@ from flask import Blueprint, request
 
 from ..downloader import DownloadError, fit
 from ..integrations import engine_api
-from ..library import library_with_profiles, prefab_command, scan_media, scan_models
+from ..library import library_with_profiles, prefab_command, prefab_with_launcher, scan_media, scan_models
 from ..telemetry import read_amd_sysfs, read_engine, read_nvidia_smi
 from ..web import body, check_id, ctx, err, ok
 from .core import _render
@@ -159,7 +159,8 @@ def prefab():
     found = next((m for m in scan_models(models_dir()) if m["path"] == path), None)
     if not found:
         return err("that file is not in the models directory", 404)
-    cmd = prefab_command(found, ctx().settings.get("prefab"))
+    cmd = prefab_command(found, prefab_with_launcher(ctx().settings.get("prefab"),
+                                                    ctx().servers.default_launcher()))
     return ok(model=found, **_render(cmd, "odysseus"))
 
 

@@ -41,7 +41,7 @@ from .routes import assistant as assistant_routes  # noqa: E402
 from .routes import core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
 from .measure import Measurer  # noqa: E402
 from .runner import Runner  # noqa: E402
-from .scheduler import Plans  # noqa: E402
+from .scheduler import Plans, idle_unload  # noqa: E402
 from .servers import Servers, gguf_index, load_seed  # noqa: E402
 from .integrations import engine_api  # noqa: E402
 from .inventory import Inventory  # noqa: E402
@@ -162,8 +162,14 @@ def create_app(config: dict | None = None) -> Flask:
         """Unload the assistant's chat and embedding models once they sit unused for the set number of minutes."""
         app.extensions["pb"].assistant.unload_idle()
 
+    def watch_schedule():
+        """Unload the models the schedule loaded once they sit unused for its own idle timer."""
+        pb = app.extensions["pb"]
+        idle_unload(pb.plans, pb.store, pb.settings.get("integrations").get("engine_url") or "", pb.event)
+
     collector = Collector(store, settings.all, event,
-                          hooks=[watch_exits, refresh_plan, watch_pool, watch_inventory, watch_memory, watch_assistant])
+                          hooks=[watch_exits, refresh_plan, watch_pool, watch_inventory, watch_memory, watch_assistant,
+                                 watch_schedule])
     plans = Plans(store)
     servers = Servers(store, cfg["SSH_DIR"] or os.path.join(os.path.dirname(os.path.abspath(cfg["DB"])), "ssh"), run=cfg.get("SSH_RUN"),
                       local_models=lambda: gguf_index([settings.get("paths")["models_dir"]]))

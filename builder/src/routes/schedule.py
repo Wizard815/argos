@@ -273,7 +273,7 @@ def live_command(model_id):
     """What starts this model, for editing: the profile it comes from, else the library model's prefab, else the
     command the engine is running."""
     from ..cookbook import variant_id
-    from ..library import prefab_command
+    from ..library import prefab_command, prefab_with_launcher
     c = ctx()
     for p in core.cookbook_state()["presets"]:
         if variant_id(p) == model_id:
@@ -285,7 +285,7 @@ def live_command(model_id):
             return ok(source="odysseus", name=p.get("label") or model_id, base_model="", command=p["cmd"])
     lib = next((m for m in scan_models(c.settings.get("paths")["models_dir"]) if m["id"] == model_id), None)
     if lib:
-        return ok(source="prefab", name="", base_model=lib["name"], command=core._render(prefab_command(lib, c.settings.get("prefab")), "odysseus")["command"])
+        return ok(source="prefab", name="", base_model=lib["name"], command=core._render(prefab_command(lib, prefab_with_launcher(c.settings.get("prefab"), c.servers.default_launcher())), "odysseus")["command"])
     try:
         cmd = next((m.get("cmd") for m in engine_api.running(_engine_url()) if m.get("model") == model_id), "")
     except Exception:  # noqa: BLE001

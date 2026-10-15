@@ -11,6 +11,7 @@ from flask import Blueprint, abort, current_app, request
 from ..command import guess_base_model, parse_command, swap_model_id, to_odysseus
 from ..always import apply_always
 from ..cookbook import build_state, normalize_preset
+from ..integrations import engine_api
 from ..library import model_id_for_command
 from ..log_analyzer import insight as log_insight
 from ..model_perf import model_perf, signature
@@ -149,6 +150,44 @@ def launches():
     return ok(launches=[{**x.to_dict(), "ready": r.health(x, timeout=0.3)} for x in r.list()])
 
 
+def _engine_model(c, command: str) -> str:
+    """The engine's own id for the model a command starts, or "" when it is not its model.
+
+    A build whose llama.cpp lives in another container has no llama-server here to
+    run, so a model the engine already serves belongs to the engine: it loads it on
+    whichever host it is configured to launch on, with no launcher string to set.
+    """
+    url = c.settings.get("integrations").get("engine_url")
+    model_id = model_id_for_command(command)
+    if not url or not model_id:
+        return ""
+    try:
+        return model_id if model_id in engine_api.model_ids(url) else ""
+    except Exception:  # noqa: BLE001 - an unreachable engine is not this route's error
+        return ""
+
+
+def _start_in_engine(c, model_id: str, name: str, command: str):
+    """Hand the load to the engine. A large model takes minutes, and its progress and
+    log live on the Schedule page, so this only starts it and reports that it did."""
+    import threading
+    url = c.settings.get("integrations")["engine_url"]
+
+    def load():
+        try:
+            engine_api.load_model(url, model_id)
+        except Exception as exc:  # noqa: BLE001 - reported as an event
+            c.event("launch", f"the engine could not load {model_id}: {exc}", level="error",
+                    data={"model": model_id})
+            return
+        c.event("launch", f"the engine loaded {model_id}", data={"model": model_id})
+
+    threading.Thread(target=load, daemon=True).start()
+    c.event("launch", f"asked the engine to load {name or model_id}",
+            data={"model": model_id, "command": command[:500]})
+    return ok(engine=True, model=model_id, name=name or model_id)
+
+
 @bp.post("/api/launches")
 def launch():
     c, d = ctx(), body()
@@ -159,6 +198,9 @@ def launch():
     always = c.settings.get("always")
     if always["on_launch"]:
         command = apply_always(command, always)[0]
+    served = _engine_model(c, command)
+    if served:
+        return _start_in_engine(c, served, name, command)
     try:
         run = c.runner.launch(command, base_model=(d.get("base_model") or "").strip(), profile_name=name)
     except LaunchError as exc:
@@ -246,6 +288,7 @@ def launch_bench(launch_id):
         c.event("bench", f"benchmark failed for {run.base_model or run.launch_id}: {exc}", level="error")
         return err(str(exc), 502)
     rec = c.recorder.record(run.launch_id, timings=timings, note=d.get("note") or "")
+    c.assistant.warm_embed()  # the new numbers are worth searching: start the embedder
     c.event("bench", f"benchmark {rec['base_model']}: {rec['tokens_per_second'] or 0:.1f} t/s gen, "
                      f"{rec['prompt_per_second'] or 0:.0f} t/s prompt", data={"run_id": rec["run_id"]})
     return ok(run=rec)
@@ -254,7 +297,9 @@ def launch_bench(launch_id):
 @bp.post("/api/launches/<launch_id>/record")
 def launch_record(launch_id):
     run = _run_or_404(launch_id)
-    return ok(run=ctx().recorder.record(run.launch_id, note=body().get("note") or ""))
+    rec = ctx().recorder.record(run.launch_id, note=body().get("note") or "")
+    ctx().assistant.warm_embed()  # the new numbers are worth searching: start the embedder
+    return ok(run=rec)
 
 
 # ----- perf sheet -------------------------------------------------------------

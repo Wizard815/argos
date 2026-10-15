@@ -50,6 +50,21 @@ def _model_dirs(value: Any) -> list[dict]:
     return out
 
 
+def launcher_for(server: dict) -> str:
+    """The command prefix that starts a model on this server, or "" for this machine.
+
+    The image ships the wrapper that SSHes to the host and forwards the model's port,
+    so a server record only has to name its backend word. The local machine needs no
+    prefix: its llama-server is a program on PATH.
+    """
+    if not server or server.get("kind") == LOCAL or not server.get("host"):
+        return ""
+    gpu = str(server.get("gpu") or "auto").strip().lower()
+    if gpu not in ("rocm", "cuda", "vulkan"):
+        return ""
+    return f"/app/bin/remote-llama {gpu}"
+
+
 def env_prefix_for(kind: str, value: str) -> str:
     """The shell snippet that activates a venv / conda env before anything runs on a server."""
     value = (value or "").strip()
@@ -260,6 +275,13 @@ class Servers:
         return self.store.get_server(row["id"])  # type: ignore[return-value]
 
     # ----- keys -----------------------------------------------------------
+    def default_launcher(self) -> str:
+        """What a prefab with no program of its own starts: the default server's."""
+        for server in self.store.list_servers():
+            if server.get("is_default"):
+                return launcher_for(server)
+        return ""
+
     def key_path(self, server_id: int) -> str:
         return os.path.join(self.ssh_dir, f"server-{int(server_id)}")
 

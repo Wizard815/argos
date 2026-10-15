@@ -32,6 +32,10 @@ DEFAULT_PLAN: dict[str, Any] = {
     "protect_seconds": 600,  # a model used this recently is evicted last
     "placement": "auto",     # auto | off
     "persistent": [],        # model ids that are never evicted to make room
+    # Unload a model this schedule loaded once nothing has asked for it for this
+    # long. 0 = never. This is the schedule's counterpart to the assistant's
+    # idle_unload_min: the timing lives here, not as a per-model ttl in the config.
+    "idle_unload_min": 30,
     "sizes": {},             # model id -> GiB, set by hand
     "measured": {},          # model id -> {"gib", "per_card", "at", "load_seconds"}, set by Measure
 }
@@ -151,6 +155,52 @@ class Plans:
                                       "at": time.time(), "load_seconds": load_seconds}
         self.store.set_setting(PLAN_KEY, plan)
         return plan
+
+
+def idle_unload(plans, store, engine_url, event, now=None) -> list[str]:
+    """Unload the models this schedule loaded once nothing has asked for them for a while.
+
+    The engine unloads its own models when a new one needs the room, but a model
+    nothing else is waiting for lives forever. This is the schedule's timer, so the
+    timing is a setting here rather than a per-model ttl in the engine's config.
+
+    A model the plan keeps loaded is never touched, as is one the engine still counts
+    as protected (used inside its own protect window). A model with no request
+    history is left alone too: without evidence it was ever used, unloading it is a
+    guess, and a guess here costs a reload of minutes.
+    """
+    from .integrations import engine_api
+    plan = plans.get()
+    minutes = int(plan.get("idle_unload_min") or 0)
+    if minutes <= 0 or not engine_url:
+        return []
+    now = now or time.time()
+    keep = {str(m) for m in plan.get("persistent") or []}
+    try:
+        pool = engine_api.pool_state(engine_url)
+    except Exception:  # noqa: BLE001 - the pool page reports an unreachable engine
+        return []
+    done = []
+    for model in pool.get("models") or []:
+        model_id = str(model.get("id") or "")
+        if not model_id or model.get("persistent") or model.get("protected") or model_id in keep:
+            continue
+        if str(model.get("state") or "") not in ("ready", "starting"):
+            continue
+        history = store.list_requests(model=model_id, limit=1)
+        if not history:
+            continue
+        idle_s = now - float(history[0].get("ts") or 0)
+        if idle_s < minutes * 60:
+            continue
+        try:
+            engine_api.unload_model(engine_url, model_id)
+        except Exception:  # noqa: BLE001 - try again on the next tick
+            continue
+        done.append(model_id)
+        event("schedule", f"unloaded {model_id}: unused for {idle_s / 60:.0f} min",
+              data={"model": model_id, "idle_seconds": round(idle_s)})
+    return done
 
 
 def effective_size(plan: dict, model_id: str, estimate: float = 0.0) -> tuple[float, str]:
