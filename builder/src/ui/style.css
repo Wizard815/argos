@@ -369,10 +369,11 @@ td .strong { color: var(--strong); }
 .tip .r b { color: var(--strong); font-weight: 600; }
 
 /* ── Chat ────────────────────────────────────────────────── */
-.chat-wrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; min-height: calc(100dvh - 140px); }
+.chat-wrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; height: calc(100dvh - 140px); min-height: 360px; }
 .chat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .chat-head .spacer { flex: 1; }
-.messages { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 6px 0 16px; }
+/* the messages scroll inside their own box and the composer sits under it, so text never runs beneath the input */
+.messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 6px 4px 16px 0; }
 .msg { max-width: 92%; line-height: 1.6; overflow-wrap: anywhere; }
 .msg.user { align-self: flex-end; background: color-mix(in srgb, var(--fg) 8%, var(--panel)); border: 1px solid var(--line);
   border-radius: 12px 12px 4px 12px; padding: 8px 12px; color: var(--strong); white-space: pre-wrap; }
@@ -390,7 +391,7 @@ td .strong { color: var(--strong); }
 .suggest { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 12px; }
 .suggest button { border: 1px solid var(--line); background: none; border-radius: 999px; padding: 4px 10px; cursor: pointer; color: var(--fg); font-size: 11.5px; }
 .suggest button:hover { border-color: var(--border); }
-.composer.chat { margin: 0; position: sticky; bottom: 0; max-width: none; }
+.composer.chat { margin: 8px 0 0; flex: none; max-width: none; }
 .composer.chat textarea { min-height: 44px; max-height: 220px; }
 .send { width: 32px; height: 32px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--red) 65%, transparent);
   background: color-mix(in srgb, var(--red) 30%, var(--panel)); color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }

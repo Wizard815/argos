@@ -22,7 +22,7 @@
     <button class="nav-item" data-view="models"><i data-icon="package"></i>Models<span class="meta" id="navModels"></span></button>
     <button class="nav-item" data-view="profiles"><i data-icon="bookmark"></i>Profiles<span class="meta" id="navProfiles"></span></button>
     <button class="nav-item" data-view="playground"><i data-icon="play"></i>Playground<span class="meta" id="navPlayground">idle <span class="dot"></span></span></button>
-    <button class="nav-item" data-view="perf"><i data-icon="chart"></i>Perf sheet<span class="meta" id="navPerf"></span></button>
+    <button class="nav-item" data-view="perf"><i data-icon="chart"></i>Benchmarks<span class="meta" id="navPerf"></span></button>
     <button class="nav-item" data-view="inventory"><i data-icon="database"></i>Inventory<span class="meta" id="navInventory"></span></button>
     <button class="nav-item" data-view="schedule"><i data-icon="layers"></i>Schedule<span class="meta" id="navSchedule"></span></button>
     <button class="nav-item" data-view="serverlogs"><i data-icon="file-text"></i>Logs<span class="meta" id="navServerLogs"></span></button>
@@ -130,7 +130,7 @@
     <!-- PLAYGROUND -->
     <section class="view" id="view-playground">
       <div class="view-head">
-        <div><h1>Playground</h1><p class="sub">Launch, wait for the server, benchmark. Results land in the perf sheet.</p></div>
+        <div><h1>Playground</h1><p class="sub">Launch, wait for the server, benchmark. Results are saved under Benchmarks.</p></div>
       </div>
       <div class="grid2">
         <div>
@@ -139,7 +139,7 @@
               <select id="gProfile" style="width:auto; max-width:260px" aria-label="Load a profile"></select></div>
             <textarea id="gCmd" rows="5" spellcheck="false" placeholder="llama-server -m /models/model.gguf --port ${PORT} -ngl 99"></textarea>
             <div class="row" style="margin-top:10px">
-              <input type="text" id="gBase" list="modelList" placeholder="Base model (for the perf sheet)" style="flex:1; width:auto">
+              <input type="text" id="gBase" list="modelList" placeholder="Base model (for Benchmarks)" style="flex:1; width:auto">
               <button class="btn primary" id="gLaunch"><i data-icon="play"></i>Launch</button>
             </div>
             <p class="hint">${PORT} is swapped for a free port. Each launch logs to runs/&lt;id&gt;.log.</p>
@@ -195,7 +195,7 @@
     <!-- PERF -->
     <section class="view" id="view-perf">
       <div class="view-head">
-        <div><h1>Perf sheet</h1><p class="sub">Every benchmark and recorded log, so you never re-test what already worked.</p></div>
+        <div><h1>Benchmarks</h1><p class="sub">Every speed test you ran or recorded, so you never re-test what already worked. <b>Prefill</b> is how fast the model reads your prompt, <b>decode</b> is how fast it writes the answer (tokens per second). The bar compares each row with the fastest decode in that table.</p></div>
         <span class="spacer"></span>
         <select id="fModel" style="width:auto; max-width:240px" aria-label="Model"></select>
         <input type="search" id="fSearch" placeholder="Filter…" style="width:160px">
@@ -290,6 +290,13 @@
             <pre class="log logs-big" id="slLog"></pre>
           </div>
         </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="card-head"><h2>GPU processes</h2><span class="spacer"></span>
+          <span class="hint" id="gpuProcNote" style="margin:0"></span>
+          <button class="btn sm ghost" id="gpuProcRefresh"><i data-icon="refresh"></i>Refresh</button></div>
+        <p class="hint">Everything using GPU memory right now, whoever started it. When the card shows more than the models above, the difference is here: a server another container started, or one left over from a crash.</p>
+        <div class="table-wrap"><table id="gpuProcs"></table></div>
       </div>
     </section>
 

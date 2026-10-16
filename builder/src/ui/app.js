@@ -319,7 +319,7 @@ const S = {
   sel: null,            // selected launch id in the playground
   lastBench: {},        // launch id -> last recorded run
 };
-const VIEWS = { builder: "Builder", models: "Models", profiles: "Profiles", playground: "Playground", perf: "Perf sheet",
+const VIEWS = { builder: "Builder", models: "Models", profiles: "Profiles", playground: "Playground", perf: "Benchmarks",
   schedule: "Schedule", inventory: "Inventory", serverlogs: "Logs", logs: "Usage", assistant: "Assistant", env: "Flags", servers: "Servers", integrations: "Odysseus", settings: "Settings" };
 const onShow = {
   models: () => { loadLibrary(); loadCatalog(); loadDownloads(); },
@@ -328,7 +328,7 @@ const onShow = {
   schedule: () => { loadSchedule(); loadLive(); },
   inventory: () => loadInventory(),
   logs: () => loadLogs(),
-  serverlogs: () => loadServerLogs(true),
+  serverlogs: () => { loadServerLogs(true); loadGpuProcs(); },
   assistant: () => loadAssistant(),
   env: () => loadEnv(),
   servers: () => loadServers(),
@@ -817,6 +817,13 @@ function fillProfileSelect() {
     lib.length ? h("optgroup", { label: "Models (default launch)" }, lib.map((m) => h("option", { value: `model:${m.path}` }, m.name))) : null);
 }
 
+// Playground is for testing: it lists only what was started from it. Everything else the engine is running
+// (requests, the scheduler, the assistant) is on the Logs page.
+const mineKey = "argos.playground.engineLaunches";
+const pgMine = new Set((() => { try { return JSON.parse(sessionStorage.getItem(mineKey) || "[]"); } catch { return []; } })());
+const rememberMine = (id) => { pgMine.add(id); try { sessionStorage.setItem(mineKey, JSON.stringify([...pgMine])); } catch { /* private window */ } };
+const playgroundLaunches = () => S.launches.filter((l) => !l.engine || pgMine.has(l.base_model));
+
 async function launch(command, base_model, profile_name) {
   if (!command || !command.trim()) { toast("Nothing to launch.", "err"); return; }
   try {
@@ -825,6 +832,7 @@ async function launch(command, base_model, profile_name) {
       // The engine already serves this model, so nothing runs here: it loads on
       // whichever host the engine launches on, and Schedule → Live shows it.
       toast(`Asked the engine to load ${res.model}. It shows under Launches once it starts; benchmark it when it is ready.`, "ok");
+      rememberMine(res.model);
       S.sel = `engine:${res.model}`;
       show("playground");
       await refreshLaunches();
@@ -841,8 +849,9 @@ async function launch(command, base_model, profile_name) {
 
 async function refreshLaunches() {
   S.launches = (await api("GET", "/api/launches")).launches;
-  if (!S.sel && S.launches.length) S.sel = S.launches[0].launch_id;
-  const running = S.launches.filter((l) => l.running);
+  const shown = playgroundLaunches();
+  if ((!S.sel || !shown.some((l) => l.launch_id === S.sel)) && shown.length) S.sel = shown[0].launch_id;
+  const running = shown.filter((l) => l.running);
   fill($("#navPlayground"), running.length ? `${running.length} running` : "idle",
     h("span", { class: `dot ${running.some((l) => l.ready) ? "on" : running.length ? "warn" : ""}` }));
   if (S.view === "playground") renderLaunches();
@@ -867,12 +876,8 @@ function renderLaunches() {
   };
   // two kinds of thing run here: servers started from this page, and models the engine loaded itself
   // (a request, the scheduler or the assistant asked for them). Mixing them read as "I never launched that".
-  const mine = S.launches.filter((l) => !l.engine), loaded = S.launches.filter((l) => l.engine);
-  const list = [
-    ...(mine.length ? [h("div", { class: "grp" }, "Started from this page"), ...mine.map(row)] : []),
-    ...(loaded.length ? [h("div", { class: "grp", title: "Loaded by the engine because a request, the scheduler or the assistant needed it. Unload them from Schedule → Live." }, "Loaded in the engine"), ...loaded.map(row)] : []),
-  ];
-  fill($("#gLaunches"), list.length ? list : h("div", { class: "empty" }, "Nothing running. Pick a model above and Launch, or load one in Schedule → Live."));
+  const list = playgroundLaunches().map(row);
+  fill($("#gLaunches"), list.length ? list : h("div", { class: "empty" }, "Nothing started here yet. Pick a model above and Launch it to test it. Models already running in the engine are on the Logs page."));
   const cur = S.launches.find((l) => l.launch_id === S.sel);
   const [dot, label] = launchState(cur);
   fill($("#gState"), cur ? h("span", { class: `pill ${dot === "on" ? "ok" : dot === "bad" ? "bad" : ""}` }, h("span", { class: `dot ${dot}` }), label) : null);
@@ -1026,7 +1031,7 @@ function initPlayground() {
     try {
       const res = await api("POST", `/api/launches/${encodeURIComponent(id)}/bench`, { prompt_words: +$("#gWords").value, n_predict: +$("#gNPredict").value });
       S.lastBench[id] = res.run;
-      toast(`${num(res.run.tokens_per_second)} t/s generation · saved to perf sheet`, "ok");
+      toast(`${num(res.run.tokens_per_second)} t/s generation · saved to Benchmarks`, "ok");
     } catch (e) { fail(e); }
     b.lastChild.textContent = "Run benchmark";
     renderLaunches(); pollSelected(true);
@@ -1065,7 +1070,7 @@ function perfRows() {
   return S.runs.filter((r) => (!m || r.base_model === m) && (!q || `${r.base_model} ${r.profile_name} ${r.launch_command} ${r.note}`.toLowerCase().includes(q)));
 }
 function openRunInBuilder(r) {
-  openCommand(r.launch_command, { base_model: r.base_model, name: r.profile_name || "", source: "perf sheet" });
+  openCommand(r.launch_command, { base_model: r.base_model, name: r.profile_name || "", source: "benchmarks" });
 }
 async function showLog(launchId) {
   try {
@@ -1082,7 +1087,7 @@ try {
   PF.collapsed = new Set(JSON.parse(localStorage.getItem("argos.perf.closed") || "[]"));
 } catch (e) { /* defaults */ }
 const pfSave = () => { try { localStorage.setItem("argos.perf.grouped", PF.grouped ? "1" : "0"); localStorage.setItem("argos.perf.closed", JSON.stringify([...PF.collapsed])); } catch (e) { /* ignore */ } };
-const tpsBar = (v, max) => h("div", { class: "bar-cell" }, num(v), h("span", { class: "bar" }, h("i", { style: `width:${Math.round(((v || 0) / max) * 100)}%` })));
+const tpsBar = (v, max) => h("div", { class: "bar-cell", title: `${num(v, 1)} tokens per second. The bar compares this row with the fastest decode in the list below (${num(max, 1)} t/s = full bar).` }, num(v), h("span", { class: "bar" }, h("i", { style: `width:${Math.round(((v || 0) / max) * 100)}%` })));
 
 function renderPerf() {
   const m = $("#fModel").value;
@@ -1125,7 +1130,7 @@ function renderPerf() {
       iconBtn("layers", "Compare with another run", () => addToCompare({ run_id: r.run_id, label: `${r.base_model} · ${r.profile_name || ago(r.created_at)}` })),
       iconBtn("file-text", "View log", () => showLog(r.launch_id || r.run_id)),
       iconBtn("trash", "Delete run", async () => {
-        if (!(await confirmBox("Delete this run from the perf sheet?"))) return;
+        if (!(await confirmBox("Delete this benchmark run?"))) return;
         try { await api("DELETE", `/api/runs/${encodeURIComponent(r.run_id)}`); loadPerf(); } catch (e) { fail(e); }
       }, "danger")) },
   ], rows, perfSort, S.runs.length ? "No runs match." : "No runs recorded yet.", PF.grouped ? {
@@ -1160,7 +1165,7 @@ function exportCsv() {
     "mmap", "load_mode", "spec_type", "mmproj_file", "draft_model", "model_id", "draft_acc", "mem_used_gb", "gpu_util", "temp_c", "log_source", "success", "launch_command"];
   const esc = (v) => (v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
   const csv = [cols.join(",")].concat(rows.map((r) => cols.map((c) => esc(c === "created_at" ? new Date(r[c] * 1000).toISOString() : r[c])).join(","))).join("\n");
-  const a = h("a", { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: "perf-sheet.csv" });
+  const a = h("a", { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: "benchmarks.csv" });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
@@ -2083,6 +2088,31 @@ function loadLogs() {
   else loadEvents();
 }
 
+// ── Logs: what is really on the GPUs ─────────────────────────
+async function loadGpuProcs() {
+  const table = $("#gpuProcs");
+  let r;
+  try { r = await api("GET", "/api/gpu/processes"); } catch (e) { fill(table, h("tbody", {}, h("tr", {}, h("td", {}, e.message)))); return; }
+  const total = (r.processes || []).reduce((a, p) => a + (p.vram_gib || 0), 0);
+  $("#gpuProcNote").textContent = r.tool ? `read with ${r.tool}${total ? ` · ${num(total, 1)} GiB across ${r.processes.length} process(es)` : ""}` : "";
+  const kill = async (p, hard) => {
+    const what = `${p.name} (PID ${p.pid})${p.vram_gib ? `, ${num(p.vram_gib, 1)} GiB` : ""}`;
+    const owned = (p.owner || "").startsWith("model ");
+    if (!(await confirmBox(owned ? `${what} is ${p.owner}, loaded by the engine. Unload it from Schedule → Live instead. Kill it anyway?` : `Stop ${what}? ${p.owner || "Argos did not start it."}`, hard ? "Kill" : "Stop"))) return;
+    try { const res = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { force: owned, hard }); toast(`${p.name}: ${res.result}.`, "ok"); } catch (e) { fail(e); }
+    setTimeout(loadGpuProcs, 1200);
+  };
+  renderTable(table, [
+    { label: "PID", num: true, cell: (p) => p.pid },
+    { label: "Process", cell: (p) => p.name },
+    { label: "GPU", cell: (p) => p.gpu },
+    { label: "VRAM", num: true, cell: (p) => (p.vram_gib != null ? gib(p.vram_gib) : DASH) },
+    { label: "Started by", cell: (p) => (p.self ? "this app" : p.owner ? h("span", { class: "pill ok" }, p.owner) : h("span", { class: "pill warn", title: "Argos does not know this process: another container, a leftover, or something you started by hand." }, "unknown")) },
+    { label: "Command", cell: (p) => h("td", { class: "mono-sm", title: p.cmd, style: "max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, p.cmd || DASH) },
+    { label: "", cell: (p) => (p.self ? "" : h("td", { class: "actions nowrap" }, btn("Stop", () => kill(p, false), "sm ghost"), " ", btn("Kill", () => kill(p, true), "sm danger"))) },
+  ], r.processes || [], { key: null }, r.note || "Nothing is using the GPUs.");
+}
+
 // ── Logs: every llama-server's own output ───────────────────
 const SL = { sel: null, len: -1, auto: true };
 function slSources() {
@@ -2152,6 +2182,7 @@ function initServerLogs() {
   $("#slFilter").addEventListener("input", debounce(() => loadServerLogs(true), 150));
   $("#slErrors").addEventListener("change", () => loadServerLogs(true));
   $("#slCopy").onclick = () => { navigator.clipboard?.writeText($("#slLog").textContent || "").then(() => toast("Copied.", "ok"), () => toast("Could not copy.", "err")); };
+  $("#gpuProcRefresh").onclick = () => loadGpuProcs();
 }
 
 // ── Assistant ────────────────────────────────────────────────
@@ -3064,7 +3095,7 @@ function concurrencyChart(box, cfgs) {
 const CMP = { items: [], options: null, result: null, showSame: false, answer: "" };
 const cmpKey = (it) => (it.run_id ? `run:${it.run_id}` : `${it.model_id}|${it.config}`);
 
-/** Add a config (or a perf-sheet run) to Compare; with two or more picked, open the Compare tab. */
+/** Add a config (or a benchmark run) to Compare; with two or more picked, open the Compare tab. */
 function addToCompare(item, open = false) {
   if (CMP.items.some((x) => cmpKey(x) === cmpKey(item))) return toast("Already in Compare.", "");
   CMP.items = [...CMP.items, item].slice(-6);
@@ -3098,7 +3129,7 @@ function renderCompare() {
     const sel = h("select", { "aria-label": `Config ${String.fromCharCode(65 + i)}` }, h("option", { value: "" }, "choose a launch config…"),
       Object.entries(byModel).map(([mid, list]) => h("optgroup", { label: mid }, list.map((o) =>
         h("option", { value: `${o.model_id}|${o.config}` }, `${o.model_id} › ${o.label}${o.decode ? ` · ${num(o.decode)} t/s` : ""}`)))));
-    if (it && it.run_id) sel.append(h("option", { value: cmpKey(it) }, `perf-sheet run ${it.label || it.run_id}`));
+    if (it && it.run_id) sel.append(h("option", { value: cmpKey(it) }, `benchmark run ${it.label || it.run_id}`));
     sel.value = it ? cmpKey(it) : "";
     sel.addEventListener("change", () => {
       const [model_id, config] = sel.value.split("|");
@@ -3116,7 +3147,7 @@ function renderCompare() {
     CMP.items = byModel[quick.value].slice(0, 6).map((o) => ({ model_id: o.model_id, config: o.config })); CMP.result = null; loadCompare();
   });
   const pickers = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Compare launch configs"), h("span", { class: "spacer" }), quick),
-    h("p", { class: "hint" }, "A launch config is one way a model was started: its flags and env vars (port and host do not count). Pick two or more, of one model or of different ones. Perf-sheet runs and model pages have Compare buttons too."),
+    h("p", { class: "hint" }, "A launch config is one way a model was started: its flags and env vars (port and host do not count). Pick two or more, of one model or of different ones. Benchmark runs and model pages have Compare buttons too."),
     h("div", { class: "cmp-picks" }, [...CMP.items, null].slice(0, 6).map((it, i) => (it || i < 2 || CMP.items.length === i ? picker(it, i) : null)).filter(Boolean)));
   if (!opts.length) return fill(el, pickers, h("div", { class: "card" }, h("div", { class: "empty" }, "Nothing to compare yet: models need loads or benchmarks first.")));
   const R = CMP.result;

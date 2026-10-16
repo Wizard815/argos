@@ -198,18 +198,27 @@ class Assistant:
             lines = [l for l in lines if not l.startswith(("GPU last", "Model speeds last", "Requests last 24h", "MODELS ON DISK", "Most loaded"))]
         return "\n".join(lines)
 
-    def _tool_lines(self, question: str) -> list[str]:
-        """Answers worked out in code for this question (see assistant_tools), placed first so they win."""
-        if self.inventory is None:
-            return []
-        from . import assistant_tools
+    def _tool_ctx(self) -> dict:
         measured = {}
         try:
             measured = (self.plans.get() or {}).get("measured") or {} if self.plans is not None else {}
         except Exception:  # noqa: BLE001 - sizes are a bonus
             pass
-        ctx = {"inventory": self.inventory, "store": self.store, "analytics": self.analytics, "measured": measured,
-               "engine_url": self.settings.get("integrations").get("engine_url") or ""}
+        return {"inventory": self.inventory, "store": self.store, "analytics": self.analytics, "measured": measured,
+                "engine_url": self.settings.get("integrations").get("engine_url") or ""}
+
+    def _direct(self, question: str) -> Optional[str]:
+        if self.inventory is None:
+            return None
+        from . import assistant_tools
+        return assistant_tools.direct_answer(self._tool_ctx(), question)
+
+    def _tool_lines(self, question: str) -> list[str]:
+        """Answers worked out in code for this question (see assistant_tools), placed first so they win."""
+        if self.inventory is None:
+            return []
+        from . import assistant_tools
+        ctx = self._tool_ctx()
         return assistant_tools.answer_lines(ctx, question)
 
     def _actionable_ids(self) -> set[str]:
@@ -620,6 +629,14 @@ class Assistant:
             text = text.strip()
             if not text:
                 yield {"type": "error", "error": "Empty message."}
+                return
+            direct = self._direct(text)
+            if direct:
+                # "list all my models" needs a complete, correct list, not a model's attempt at copying one
+                self.store.add_message("user", text)
+                yield {"type": "delta", "text": direct}
+                self.store.add_message("assistant", direct)
+                yield {"type": "done", "tokens": 0}
                 return
             # Starting the model can take a while: run it aside and stream its progress.
             updates: queue.Queue = queue.Queue()

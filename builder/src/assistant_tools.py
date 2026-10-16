@@ -215,3 +215,48 @@ def answer_lines(ctx: dict, question: str) -> list[str]:
     if not out:
         return []
     return ["TOOL RESULTS (computed from the live system for this question; copy these numbers and names exactly, do not recalculate):"] + out
+
+
+# ----- answers that need no model ---------------------------------------------------------
+_LIST_ALL = re.compile(
+    r"(\b(list|show|name|enumerate|give me|print)\b.*\b(all|every|them|models)\b)|(\bhow many models\b)|(\bwhat models (do i|have i|are there)\b)|(\ball (my |the )?models\b)",
+    re.I)
+_FILTERED = re.compile(r"\b(close|closest|near|around|about|smallest|largest|biggest|fastest|loaded|running|\d+(\.\d+)?\s?b)\b|~", re.I)
+
+
+def list_everything(ctx: dict) -> str:
+    """Every model Argos knows, grouped, with the counts adding up to the total."""
+    rows = ctx["inventory"].models_summary()
+    if not rows:
+        return "Argos has no models recorded yet."
+    extra = {m["model_id"]: (m.get("extra") or {}) for m in ctx["inventory"].store.list_models_seen()}
+    files = [m for m in rows if m["present"] and m["origin"] != "engine" and m["kind"] not in ("mmproj", "mtp", "draft")]
+    helpers = [m for m in rows if m["present"] and m["origin"] != "engine" and m["kind"] in ("mmproj", "mtp", "draft")]
+    served = [m for m in rows if m["present"] and m["origin"] == "engine"]
+    gone = [m for m in rows if not m["present"]]
+
+    def line(i: int, m: dict) -> str:
+        p = extra.get(m["model_id"], {}).get("params") or params_from_name(m["name"])
+        bits = [b for b in (_gib(m["size_gib"]) if m["size_gib"] else "", p, "/".join(m["quants"])) if b]
+        return f"{i}. {m['name']}" + (f" ({', '.join(bits)})" if bits else "")
+
+    out = [f"Argos knows **{len(rows)} models**: {len(files)} model files, {len(helpers)} helper files (draft, mtp, mmproj), "
+           f"{len(served)} names the engine serves that are not files here, {len(gone)} no longer on disk."]
+    for title, group in ((f"Model files ({len(files)})", files), (f"Helper files ({len(helpers)})", helpers),
+                         (f"Served by the engine, no file found here ({len(served)})", served), (f"No longer on disk ({len(gone)})", gone)):
+        if group:
+            out += ["", f"**{title}**"] + [line(i, m) for i, m in enumerate(sorted(group, key=lambda m: m["name"].lower()), 1)]
+    return "\n".join(out)
+
+
+def direct_answer(ctx: dict, question: str) -> Optional[str]:
+    """A full answer built in code for plain 'list everything' questions, else None.
+
+    A 0.6B model asked to copy 31 lines drops some and miscounts; code does not."""
+    q = (question or "").strip()
+    if not q or _FILTERED.search(q) or not _LIST_ALL.search(q) or "model" not in q.lower() and "them" not in q.lower():
+        return None
+    try:
+        return list_everything(ctx)
+    except Exception:  # noqa: BLE001 - fall back to the model
+        return None

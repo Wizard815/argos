@@ -48,3 +48,49 @@ def requests_list():
     return ok(requests=ctx().store.list_requests(model=a.get("model") or None, since=since,
                                                  limit=max(1, min(a.get("limit", 300, type=int), 5000))),
               stats=ctx().store.request_stats(since))
+
+
+# ----- what is really on the GPUs ------------------------------------------------------
+def _gpu_listing() -> dict:
+    from .. import gpu_procs
+    from ..integrations import engine_api
+    c = ctx()
+    running = []
+    url = c.settings.get("integrations")["engine_url"]
+    if url:
+        try:
+            running = engine_api.running(url)
+        except Exception:  # noqa: BLE001 - the list is still useful without owners
+            pass
+    launches = [{"port": r.port, "running": r.running, "profile_name": r.profile_name, "base_model": r.base_model,
+                 "launch_id": r.launch_id} for r in c.runner.list()]
+    return gpu_procs.listing(running, launches)
+
+
+@bp.get("/api/gpu/processes")
+def gpu_processes():
+    return ok(**_gpu_listing())
+
+
+@bp.post("/api/gpu/processes/<int:pid>/kill")
+def gpu_process_kill(pid):
+    """Stop a process that is using a GPU. One the engine owns must be unloaded from Schedule instead,
+    unless ``force`` says otherwise: killing it behind the engine's back leaves the engine thinking it runs."""
+    from .. import gpu_procs
+    from ..web import body
+    data = _gpu_listing()
+    row = next((p for p in data["processes"] if p["pid"] == pid), None)
+    if row is None:
+        return err("that process is not using a GPU as far as this app can see", 404)
+    b = body()
+    if (row.get("owner") or "").startswith("model ") and not b.get("force"):
+        return err(f"{row['owner']} is loaded by the engine: unload it from Schedule → Live instead", 409)
+    try:
+        result = gpu_procs.kill(pid, {p["pid"] for p in data["processes"]}, bool(b.get("hard")))
+    except PermissionError as exc:
+        return err(str(exc), 403)
+    except OSError as exc:
+        return err(f"could not stop it: {exc}", 500)
+    ctx().event("launch", f"{result}: PID {pid} ({row['name']}), which held {row['vram_gib'] or '?'} GiB of GPU memory",
+                level="warn", data={"pid": pid})
+    return ok(result=result)
