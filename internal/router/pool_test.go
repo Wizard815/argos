@@ -480,3 +480,23 @@ func TestPool_PlacementOffKeepsCardTotals(t *testing.T) {
 	p.OnSwapStart("a", []string{"a"})
 	assert.Nil(t, p.placement("a"))
 }
+
+// A reload builds a new pool and carries the running models across. Their
+// cards must come with them: forgotten, the pool plans each as if spread over
+// every card and shows (and fills) the wrong ones.
+func TestPool_PlacementSurvivesReload(t *testing.T) {
+	old, _ := newTestPool(62, map[string]float64{"big": 24})
+	old.cards = []poolCard{{id: "0", cap: 31}, {id: "1", cap: 31}}
+	old.OnSwapStart("big", nil)
+	require.Equal(t, []string{"0"}, old.placement("big"))
+
+	next, _ := newTestPool(62, map[string]float64{"big": 24})
+	next.cards = []poolCard{{id: "0", cap: 31}, {id: "1", cap: 31}}
+	next.restore(map[string][]string{"big": old.placement("big"), "gone": {"7"}})
+
+	assert.Equal(t, []string{"0"}, next.placement("big"))
+	assert.Empty(t, next.placement("gone"), "a card the new pool does not have is dropped")
+	// the second card is still free for another 24 GiB model
+	ok, cards := next.fits("other", []string{"big"})
+	assert.False(t, ok && len(cards) == 0)
+}

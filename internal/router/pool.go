@@ -65,6 +65,55 @@ func (r *Pool) Placement(modelID string) []string {
 	return r.swapper.placement(modelID)
 }
 
+// PlacementCarrier is implemented by routers whose placement has to survive a
+// hot reload. A reload builds a new router and carries the running children
+// across; without this the new pool knows nothing about where they are and
+// plans as if each one were spread over every card.
+type PlacementCarrier interface {
+	Placements(ids []string) map[string][]string
+	RestorePlacements(placed map[string][]string)
+}
+
+// Placements implements PlacementCarrier.
+func (r *Pool) Placements(ids []string) map[string][]string {
+	out := make(map[string][]string, len(ids))
+	for _, id := range ids {
+		if cards := r.swapper.placement(id); len(cards) > 0 {
+			out[id] = cards
+		}
+	}
+	return out
+}
+
+// RestorePlacements implements PlacementCarrier. Cards this pool does not have
+// are dropped: the card list can change in the same reload.
+func (r *Pool) RestorePlacements(placed map[string][]string) {
+	r.swapper.restore(placed)
+}
+
+func (p *poolSwapper) restore(placed map[string][]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.cards) == 0 {
+		return
+	}
+	have := make(map[string]bool, len(p.cards))
+	for _, c := range p.cards {
+		have[c.id] = true
+	}
+	for id, cards := range placed {
+		var keep []string
+		for _, c := range cards {
+			if have[c] {
+				keep = append(keep, c)
+			}
+		}
+		if len(keep) > 0 {
+			p.placed[id] = keep
+		}
+	}
+}
+
 // poolCard is one GPU in the pool.
 type poolCard struct {
 	id  string

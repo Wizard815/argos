@@ -627,6 +627,23 @@ func (s *Server) RunningModels() map[string]process.ProcessState {
 	return s.local.RunningModels()
 }
 
+// Placements returns the GPUs the router chose for the named models, so a hot
+// reload can give them to the replacement server. Empty for routers that do
+// not place.
+func (s *Server) Placements(models []string) map[string][]string {
+	if c, ok := s.local.(router.PlacementCarrier); ok {
+		return c.Placements(models)
+	}
+	return nil
+}
+
+// RestorePlacements records where models carried over a hot reload are running.
+func (s *Server) RestorePlacements(placed map[string][]string) {
+	if c, ok := s.local.(router.PlacementCarrier); ok && len(placed) > 0 {
+		c.RestorePlacements(placed)
+	}
+}
+
 // DetachRunning hands back the processes for the named running models without
 // stopping them, so a replacement server can adopt them across a hot reload.
 func (s *Server) DetachRunning(models []string) map[string]process.Process {

@@ -383,8 +383,10 @@ func main() {
 			}
 		}
 		if len(carry) > 0 {
+			placed := old.Placements(carry)
 			carried := old.DetachRunning(carry)
 			newSrv.Adopt(carried)
+			newSrv.RestorePlacements(placed)
 			proxyLog.Infof("reload: carried over %d running model(s) whose config did not change", len(carried))
 		}
 
