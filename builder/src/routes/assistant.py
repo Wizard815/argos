@@ -5,7 +5,7 @@ import json
 import os
 import re
 
-from flask import Blueprint, Response, stream_with_context
+from flask import Blueprint, Response, request, stream_with_context
 
 from ..assistant import DEFAULT_QUANT, DEFAULT_REPOS, PROFILE_NAME, AssistantError, pick_quant
 from ..downloader import DownloadError
@@ -49,7 +49,7 @@ def model_action(which, action):
 
 @bp.get("/api/assistant/digest")
 def digest():
-    return ok(digest=ctx().assistant.digest())
+    return ok(digest=ctx().assistant.digest(request.args.get("q", "")))
 
 
 @bp.post("/api/assistant/chat")

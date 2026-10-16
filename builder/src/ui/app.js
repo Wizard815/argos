@@ -857,14 +857,21 @@ function launchState(l) {
 }
 
 function renderLaunches() {
-  const list = S.launches.map((l) => {
+  const row = (l) => {
     const [dot, label] = launchState(l);
     return h("div", { class: `launch${l.launch_id === S.sel ? " sel" : ""}`, onclick: () => { S.sel = l.launch_id; renderLaunches(); pollSelected(true); } },
       h("span", { class: `dot ${dot}` }),
       h("div", { class: "who" },
         h("div", { class: "t" }, l.profile_name || l.base_model || (l.command.split(" ").find((t) => !t.includes("=")) || l.launch_id).split("/").pop()),
         h("div", { class: "s" }, `${l.engine ? "engine" : `:${l.port}`} · ${label} · ${l.running ? uptime(l.started_at) : ago(l.started_at)}`)));
-  });
+  };
+  // two kinds of thing run here: servers started from this page, and models the engine loaded itself
+  // (a request, the scheduler or the assistant asked for them). Mixing them read as "I never launched that".
+  const mine = S.launches.filter((l) => !l.engine), loaded = S.launches.filter((l) => l.engine);
+  const list = [
+    ...(mine.length ? [h("div", { class: "grp" }, "Started from this page"), ...mine.map(row)] : []),
+    ...(loaded.length ? [h("div", { class: "grp", title: "Loaded by the engine because a request, the scheduler or the assistant needed it. Unload them from Schedule → Live." }, "Loaded in the engine"), ...loaded.map(row)] : []),
+  ];
   fill($("#gLaunches"), list.length ? list : h("div", { class: "empty" }, "Nothing running. Pick a model above and Launch, or load one in Schedule → Live."));
   const cur = S.launches.find((l) => l.launch_id === S.sel);
   const [dot, label] = launchState(cur);
@@ -884,7 +891,7 @@ function renderStats(r) {
   fill($("#gStats"),
     stat("Generation", num(r.tokens_per_second), "t/s", true, `${num(r.output_tokens, 0)} tokens`),
     stat("Prompt", num(r.prompt_per_second), "t/s", false, `${num(r.input_tokens, 0)} tokens`),
-    stat("VRAM", num(r.mem_used_gb, 2), "GB"),
+    stat("VRAM", num(r.mem_used_gb, 2), "GiB"),
     r.gpu_util != null && stat("GPU", num(r.gpu_util, 0), "%"),
     r.draft_acc != null && stat("Draft accept", num(r.draft_acc * 100, 0), "%"),
     r.layers_offloaded && stat("Offloaded", r.layers_offloaded, "layers"));
@@ -1109,7 +1116,7 @@ function renderPerf() {
     { key: "tokens_per_second", label: "Decode t/s", num: true, cell: (r) => tpsBar(r.tokens_per_second, maxTps) },
     { key: "n_ctx", label: "Ctx", num: true, cell: (r) => (r.n_ctx ? `${num(r.n_ctx / 1024, 0)}k` : DASH) },
     { label: "Settings", cell: (r) => h("td", { class: "settings-cell", title: r.layers_offloaded ? `layers on GPU: ${r.layers_offloaded}` : "" }, h("div", { class: "chips" }, settingChips({ ...r, n_ctx: null }))) },
-    { key: "mem_used_gb", label: "VRAM · GPU", num: true, cell: (r) => h("td", { class: "num nowrap" }, r.mem_used_gb ? `${num(r.mem_used_gb, 1)} GB` : DASH,
+    { key: "mem_used_gb", label: "VRAM · GPU", num: true, cell: (r) => h("td", { class: "num nowrap" }, r.mem_used_gb ? `${num(r.mem_used_gb, 1)} GiB` : DASH,
       r.gpu_util != null ? h("div", { class: "cell-sub" }, `${num(r.gpu_util, 0)}% busy`) : null) },
     { key: "log_source", label: "Src", cell: (r) => h("span", { class: `pill ${r.success ? "ok" : "bad"}`, title: r.note || "" }, r.success ? r.log_source || "run" : "no data") },
     { label: "", cell: (r) => h("td", { class: "actions nowrap" },
@@ -1504,8 +1511,9 @@ async function sendToOdysseus() {
 }
 
 // ── Models: library + prefabs ────────────────────────────────
-const GB = 1e9;
-const size = (b) => (b >= GB ? `${(b / GB).toFixed(b >= 10 * GB ? 0 : 1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+// binary units throughout: VRAM, the Schedule and the engine all count in GiB, so file sizes do too
+const GB = 2 ** 30;
+const size = (b) => (b >= GB ? `${(b / GB).toFixed(b >= 10 * GB ? 0 : 2)} GiB` : `${Math.max(1, Math.round(b / 2 ** 20))} MiB`);
 const librarySort = { key: null, asc: true };
 
 async function loadLibrary() {
@@ -1945,7 +1953,7 @@ function renderGpu() {
   const vramTop = Math.max(...d.rows.map((r) => (r.mem_total_mb || 0) / 1024));
   const charts = [
     { title: "Utilization", unit: "%", key: "util", yMax: 100 },
-    { title: "VRAM used", unit: "GB", key: "mem_used_mb", scale: 1 / 1024, yMax: vramTop, digits: 1 },
+    { title: "VRAM used", unit: "GiB", key: "mem_used_mb", scale: 1 / 1024, yMax: vramTop, digits: 1 },
     { title: "Temperature", unit: "°C", key: "temp_c" },
     { title: "Power", unit: "W", key: "power_w" },
   ];
@@ -1957,9 +1965,9 @@ function renderGpu() {
   const latest = new Map((d.latest || []).map((r) => [r.gpu, r]));
   renderTable($("#gTable"), [
     { label: "GPU", cell: (r) => h("span", {}, h("span", { class: "key", style: `background:${seriesColor(r.i)};margin-right:8px;vertical-align:middle` }), h("span", { class: "strong" }, r.label)) },
-    { label: "Now", num: true, cell: (r) => (r.now ? `${num(r.now.util, 0)}% · ${num((r.now.mem_used_mb || 0) / 1024, 1)} GB · ${num(r.now.temp_c, 0)}°C` : DASH) },
+    { label: "Now", num: true, cell: (r) => (r.now ? `${num(r.now.util, 0)}% · ${num((r.now.mem_used_mb || 0) / 1024, 1)} GiB · ${num(r.now.temp_c, 0)}°C` : DASH) },
     { label: "Util avg / max", num: true, cell: (r) => `${num(r.ua, 0)}% / ${num(r.um, 0)}%` },
-    { label: "VRAM peak", num: true, cell: (r) => (r.vm != null ? `${num(r.vm / 1024, 1)} / ${num(r.vt / 1024, 1)} GB` : DASH) },
+    { label: "VRAM peak", num: true, cell: (r) => (r.vm != null ? `${num(r.vm / 1024, 1)} / ${num(r.vt / 1024, 1)} GiB` : DASH) },
     { label: "Temp max", num: true, cell: (r) => (r.tm != null ? `${num(r.tm, 0)}°C` : DASH) },
     { label: "Power avg", num: true, cell: (r) => (r.pa != null ? `${num(r.pa, 0)} W` : DASH) },
   ], gpus.map(([g, name], i) => ({ i, label: `GPU${g} ${name}`, now: latest.get(g),
@@ -3298,6 +3306,8 @@ function segColor(id) {
   for (const ch of id) x = (x * 31 + ch.charCodeAt(0)) >>> 0;
   return `hsl(${x % 360} 55% 58%)`;
 }
+// "20 s" below two minutes, else "10 min": rounding 20 s to "0 min" read as no protection at all
+const span = (s) => (s < 120 ? `${num(s, 0)} s` : `${num(s / 60, 0)} min`);
 const gib = (v) => (v == null ? DASH : `${num(v, 1)} GiB`);
 const statePill = (s) => h("span", { class: `pill ${s === "ready" ? "ok" : s === "starting" || s === "stopping" ? "warn" : ""}` }, s);
 const resultPill = (r) => h("span", { class: `pill ${["loaded", "served", "finished", "unloaded"].includes(r) ? "ok" : r === "queued" ? "warn" : r === "error" ? "bad" : ""}` }, r);
@@ -3387,7 +3397,7 @@ function renderLive() {
     { label: "In flight", num: true, cell: (m) => m.in_flight || DASH },
     { label: "Last used", cell: (m) => (m.last_used ? ago(Date.parse(m.last_used) / 1000) : DASH) },
     { label: "Load time", num: true, cell: (m) => (m.load_seconds ? `${num(m.load_seconds, 0)}s` : DASH) },
-    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"), m.protected && h("span", { class: "chip", title: `Used in the last ${num(P.protect_seconds / 60, 0)} min, so it is evicted last when another model needs room. Not a setting: it ends on its own once the model sits idle.` }, "recently used")) },
+    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"), m.protected && h("span", { class: "chip", title: `Used in the last ${span(P.protect_seconds)}, so it is evicted last when another model needs room. Not a setting: it ends on its own once the model sits idle.` }, "recently used")) },
     { label: "", cell: (m) => { const b = h("button", { class: "icon-btn ghost", title: "Load, unload, keep loaded, logs, edit", "aria-label": `Actions for ${m.id}` }, "⋯");
       b.addEventListener("click", () => liveMenu(b, m)); return h("td", { class: "actions" }, b); } },
   ], rows, { key: null }, "No models.");
@@ -3397,14 +3407,21 @@ function renderLive() {
   const queue = P.queue.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Queue"),
     h("span", { class: "spacer" }), h("span", { class: "hint" }, "waiting for room, or for a busy model to finish")),
     h("div", { class: "table-wrap" }, simpleTable(["#", "Model", "Waited"], P.queue.map((q) => [q.position, q.model, `${num(q.waited_seconds, 0)}s`])))) : null;
+  // what the scheduler decided, newest first: each load says which models it pushed out and why
+  const feed = (L.activity || []).filter((a) => !/^applied the scheduling plan/.test(a.message)).slice(0, 12);
+  const activity = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "What the scheduler did"),
+    h("span", { class: "spacer" }), h("span", { class: "hint" }, "newest first · loads, evictions, measured sizes")),
+    feed.length ? h("div", { class: "table-wrap" }, simpleTable(["When", "What happened"],
+      feed.map((a) => [ago(a.ts), h("span", { class: a.level === "info" ? "" : `pill ${a.level === "error" ? "bad" : "warn"}` }, a.message)])))
+      : h("div", { class: "empty" }, "Nothing yet. Send a request to a model that is not loaded and the decision shows up here."));
   fill(el,
     h("div", { class: "status-line" }, h("span", { class: "pill ok" }, "pool router"),
       h("span", { class: `pill ${P.placement ? "ok" : "warn"}`, title: P.placement ? "each model is placed on a card" : "no per-card sizes: planning by total VRAM" }, P.placement ? "placement on" : "placement off"),
-      h("span", { class: "muted" }, `${num(P.budget_gib)} GiB usable · models used in the last ${num(P.protect_seconds / 60, 0)} min are evicted last`),
+      h("span", { class: "muted" }, `${num(P.budget_gib)} GiB usable · models used in the last ${span(P.protect_seconds)} are evicted last`),
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
-    swaps, queue,
+    swaps, queue, activity,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
 }
 function kvTable(rows) {
@@ -3446,7 +3463,7 @@ function renderPlan() {
   };
   renderTable(table, [
     { key: "name", label: "Model", sort: (r) => r.id, cell: (r) => h("td", { class: "cell-model", title: r.id }, h("span", { class: "swatch", style: `--c:${segColor(r.id)}` }), r.id,
-      r.known === false ? h("span", { class: "pill warn", style: "margin-left:6px", title: "the engine does not list this model yet, so it is left out of the plan" }, "not in the engine") : null) },
+      r.known === false ? h("span", { class: "pill warn", style: "margin-left:6px", title: "This model is in your files or profiles but the engine has not picked it up yet (it reads its model list from a config file and reloads about every 2 seconds), so the plan skips it until it appears." }, "engine has not loaded its config yet") : null) },
     { key: "kind", label: "Type", sort: (r) => r.kind, cell: (r) => h("span", { class: "chip" }, r.kind === "profile" ? "profile" : r.model_kind) },
     { key: "ctx", label: "Context", num: true, cell: (r) => (r.ctx ? num(r.ctx, 0) : DASH) },
     { key: "est", label: "Estimate", num: true, sort: (r) => r.estimate && r.estimate.gib, cell: (r) => r.estimate
@@ -3471,9 +3488,9 @@ function renderPlan() {
 
   fill(el,
     h("div", { class: "card" },
-      h("div", { class: "card-head" }, h("h2", {}, "Pool"), h("span", { class: "spacer" }),
+      h("div", { class: "card-head" }, h("h2", {}, "Rules the scheduler follows"), h("span", { class: "spacer" }),
         SC.dirty ? h("span", { class: "pill warn" }, "unsaved changes") : appliedPill(D), btn("Save plan", () => savePlan(), "sm primary", "save")),
-      h("p", { class: "hint" }, "All models share the GPUs. A model loads next to the others while its VRAM fits; only when it does not is the cheapest idle model unloaded. Saving applies the plan to the engine; loaded models whose own settings did not change stay loaded."),
+      h("p", { class: "hint" }, "What this page does: it sets the rules for how models share your GPUs. When a request needs a model that is not loaded, the scheduler loads it beside the others if the GPU has room. If not, it unloads the model that is cheapest to reload and has been idle longest, never one that is busy. The Live tab shows what it did; this tab is where you change the rules. Saving sends them to the engine."),
       h("div", { class: "fields" },
         h("label", { class: "check wide" }, enable, "Use the pool router (when off, the engine keeps its own router)"),
         cardsInput,
@@ -3483,9 +3500,9 @@ function renderPlan() {
         h("label", { class: "field wide" }, h("span", {}, "Placement"), placement)),
       useDetected && h("div", { class: "row", style: "margin-top:8px" }, useDetected)),
     h("div", { class: "card" },
-      h("div", { class: "card-head" }, h("h2", {}, "Models"), h("span", { class: "spacer" }), search,
+      h("div", { class: "card-head" }, h("h2", {}, "How much VRAM each model needs"), h("span", { class: "spacer" }), search,
         h("label", { class: "check" }, only, "profiles only")),
-      h("p", { class: "hint" }, "Size sets how much VRAM a model needs. Blank uses the measurement, or an estimate from the file, context and cache type. Measure launches the model here and records what it really takes."),
+      h("p", { class: "hint" }, "The scheduler decides what fits using these sizes. Estimate is worked out from the file, context length and cache type. Measured is what the GPU really used the last time the model loaded (it is recorded automatically, or with Measure) and replaces the estimate. Type a size in the box only to override both."),
       D.skipped.length ? h("p", { class: "hint" }, "Waiting for the engine to list ", D.skipped.join(", "), ". They join the plan once it does (a new profile appears within a minute).") : null,
       h("div", { class: "table-wrap" }, table)),
     h("details", { class: "card" }, h("summary", { class: "strong" }, "What the engine reads"),
@@ -3599,10 +3616,28 @@ function renderSimResult() {
 }
 
 /** The ⋯ menu on a Live row. */
+/** After "Load now": say when the model is ready, or that it never started (the request itself only starts the load). */
+async function watchLoad(id) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 300000) {
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const L = await api("GET", "/api/schedule/live");
+      const m = L.pool && L.pool.models.find((x) => x.id === id);
+      if (!m) return;
+      if (m.state === "ready") { toast(`${id} is ready (${num((Date.now() - t0) / 1000, 0)}s).`, "ok"); loadLive(); return; }
+      if (m.state === "stopped" && Date.now() - t0 > 8000) { toast(`${id} did not start. Check its log: ⋯ → Check logs.`, "err"); loadLive(); return; }
+    } catch { return; }
+  }
+}
 function liveMenu(anchor, m) {
   const loaded = m.state === "ready" || m.state === "starting";
   const act = async (action, body, msg) => {
-    try { await api("POST", `/api/schedule/live/${encodeURIComponent(m.id)}/${action}`, body); toast(msg, "ok"); } catch (e) { fail(e); }
+    try {
+      const r = await api("POST", `/api/schedule/live/${encodeURIComponent(m.id)}/${action}`, body);
+      toast(r.already ? r.message : msg, r.already ? "" : "ok");
+      if (action === "load" && !r.already) watchLoad(m.id);
+    } catch (e) { fail(e); }
     setTimeout(loadLive, action === "load" ? 1500 : 300);
     if (action === "keep") loadSchedule();
   };

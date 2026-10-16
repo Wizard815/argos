@@ -63,7 +63,7 @@ def tokens(text: str) -> list[str]:
 
 
 # records embedded on the way into a search: the ones changed since the last search, bounded
-SEARCH_EMBED_BUDGET = 256
+SEARCH_EMBED_BUDGET = 32
 
 
 class Memory:

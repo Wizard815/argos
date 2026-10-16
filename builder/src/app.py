@@ -158,6 +158,8 @@ def create_app(config: dict | None = None) -> Flask:
                 continue
             info = next((x for x in pool.get("models") or [] if x.get("id") == mid), {})
             app.extensions["pb"].plans.set_measured(mid, gib, per_card, info.get("load_seconds") or None)
+            with app.app_context():
+                schedule.apply_plan(force=True)  # the engine sizes by this from now on, not in five minutes
             event("schedule", f"{mid} measured at {gib:.1f} GiB while loaded" + (f" on GPU {','.join(ids)}" if cards else ""),
                   data={"model": mid, "gib": round(gib, 2), "per_card": [round(x, 2) for x in per_card]})
 
@@ -184,13 +186,23 @@ def create_app(config: dict | None = None) -> Flask:
             measure_loads(now, before, gpu_before, gpu_now, pool)
         except Exception as exc:  # noqa: BLE001 - a failed measurement must not stop the pool log
             event("schedule", f"could not measure a load: {exc}", level="warn")
+        size_of = {m["id"]: m.get("size_gib") for m in pool.get("models") or []}
+        up = {m for m, (s, _) in now.items() if s in ("ready", "starting") and before.get(m, ("stopped",))[0] not in ("ready", "starting")}
+        down = {m for m, (s, _) in now.items() if s == "stopped" and before.get(m, ("stopped",))[0] in ("ready", "starting")}
         for mid, (state, cards) in now.items():
             was = before.get(mid, ("stopped", ()))
             on = f" on GPU {','.join(cards)}" if cards else ""
-            if state in ("ready", "starting") and was[0] not in ("ready", "starting"):
-                event("schedule", f"{mid} loaded{on}", data={"model": mid, "cards": list(cards)})
-            elif state == "stopped" and was[0] in ("ready", "starting"):
-                event("schedule", f"{mid} unloaded", data={"model": mid})
+            if mid in up:
+                need = f"{size_of[mid]:.1f} GiB" if size_of.get(mid) else "its size"
+                if down:
+                    freed = ", ".join(f"{d} ({size_of[d]:.1f} GiB)" if size_of.get(d) else d for d in sorted(down))
+                    why = f"; unloaded {freed} to make room, it needs {need}"
+                else:
+                    why = f"; it needs {need} and fit beside the others"
+                event("schedule", f"{mid} loaded{on}{why}", data={"model": mid, "cards": list(cards), "evicted": sorted(down)})
+            elif mid in down:
+                if not up:
+                    event("schedule", f"{mid} unloaded (no longer running: idle timeout, someone unloaded it, or it stopped)", data={"model": mid})
             elif state == "ready" and was[0] == "ready" and cards != was[1]:
                 event("schedule", f"{mid} moved{on}", data={"model": mid, "cards": list(cards)})
         for q in pool.get("queue") or []:
@@ -224,7 +236,7 @@ def create_app(config: dict | None = None) -> Flask:
     app.extensions["pb"] = Ctx(
         store=store, settings=settings, runner=runner, recorder=Recorder(store, runner), analytics=analytics,
         downloads=Downloads(store, download_settings, event), collector=collector,
-        assistant=Assistant(store, settings, runner, analytics, event, inventory, memory),
+        assistant=Assistant(store, settings, runner, analytics, event, inventory, memory, plans=plans),
         plans=plans, measurer=Measurer(runner, plans, lambda: collector.sample(), event), inventory=inventory,
         memory=memory, servers=servers)
     app.extensions["runner"] = runner

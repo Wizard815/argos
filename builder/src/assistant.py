@@ -41,6 +41,7 @@ ANSWER_TOKENS = 768
 SUMMARY_KEY = "_chat_summary"
 
 SYSTEM_PROMPT = """You are the Argos assistant, a concise helper for running llama.cpp models on this machine.
+TOOL RESULTS, when present, are exact answers worked out in code for this question: answer from them first, copy names and numbers as written, keep their units (GiB, t/s), and never do your own sums, rankings or unit changes. A model's VRAM is its own line; the GPU's used VRAM is the whole card and is not any one model's.
 Use the LIVE DATA block for anything about GPUs, speeds, models, profiles, launches or errors; quote its numbers.
 RELATED RECORDS are the stored records closest to the question; prefer them for anything about a specific model, setting, note or past event.
 INVENTORY lines list the models seen, how long each was loaded and on which GPUs, and settings (quants, cache types, flags) seen for the first time that are waiting for review.
@@ -104,7 +105,8 @@ class AssistantError(Exception):
 
 class Assistant:
     def __init__(self, store: Store, settings: Settings, runner: Runner, analytics,
-                 on_event: Callable[..., None], inventory=None, memory=None):
+                 on_event: Callable[..., None], inventory=None, memory=None, plans=None):
+        self.plans = plans
         self.inventory = inventory
         self.memory = memory
         self.store = store
@@ -121,18 +123,19 @@ class Assistant:
     def digest(self, question: str = "", now: Optional[float] = None) -> str:
         now = now or time.time()
         lines = [f"LIVE DATA ({datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M')})"]
+        lines += self._tool_lines(question)
         latest = self.store.gpu_latest()
         if latest and now - latest[0]["ts"] < 600:
             lines.append("GPU now: " + " | ".join(
                 f"GPU{g['gpu']} {g['name']}: {_f(g['util'])}% busy, VRAM {_f((g['mem_used_mb'] or 0) / 1024, 1)}"
-                f"/{_f((g['mem_total_mb'] or 0) / 1024, 1)} GB, {_f(g['temp_c'])}°C, {_f(g['power_w'])} W"
+                f"/{_f((g['mem_total_mb'] or 0) / 1024, 1)} GiB, {_f(g['temp_c'])}°C, {_f(g['power_w'])} W"
                 for g in latest))
         for label, span in (("last 1h", 3600), ("last 24h", 86400)):
             rows = self.store.gpu_summary(now - span)
             if rows:
                 lines.append(f"GPU {label}: " + " | ".join(
                     f"GPU{g['gpu']} avg {_f(g['util_avg'])}% (max {_f(g['util_max'])}%), VRAM peak "
-                    f"{_f((g['mem_max_mb'] or 0) / 1024, 1)}/{_f((g['mem_total_mb'] or 0) / 1024, 1)} GB, "
+                    f"{_f((g['mem_max_mb'] or 0) / 1024, 1)}/{_f((g['mem_total_mb'] or 0) / 1024, 1)} GiB, "
                     f"temp max {_f(g['temp_max'])}°C, avg {_f(g['power_avg'])} W" for g in rows))
         if not latest:
             lines.append("GPU: no samples recorded yet (Settings -> Telemetry).")
@@ -190,7 +193,24 @@ class Assistant:
             lines += self.inventory.digest_lines(now)
         lines += self.related(question)
         lines += self._model_focus(question, now)
+        if len(lines) > 1 and lines[1].startswith("TOOL RESULTS"):
+            # a 0.6B model reads less when it has been handed the answer: leave out the broad summaries
+            lines = [l for l in lines if not l.startswith(("GPU last", "Model speeds last", "Requests last 24h", "MODELS ON DISK", "Most loaded"))]
         return "\n".join(lines)
+
+    def _tool_lines(self, question: str) -> list[str]:
+        """Answers worked out in code for this question (see assistant_tools), placed first so they win."""
+        if self.inventory is None:
+            return []
+        from . import assistant_tools
+        measured = {}
+        try:
+            measured = (self.plans.get() or {}).get("measured") or {} if self.plans is not None else {}
+        except Exception:  # noqa: BLE001 - sizes are a bonus
+            pass
+        ctx = {"inventory": self.inventory, "store": self.store, "analytics": self.analytics, "measured": measured,
+               "engine_url": self.settings.get("integrations").get("engine_url") or ""}
+        return assistant_tools.answer_lines(ctx, question)
 
     def _actionable_ids(self) -> set[str]:
         """Every model id an action may name.

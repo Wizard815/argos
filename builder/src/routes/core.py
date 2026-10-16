@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import time
 from urllib.parse import quote
 
@@ -195,9 +196,14 @@ def _engine_launch(launch_id: str):
     return c.settings.get("integrations")["engine_url"], found
 
 
+# llama-server colours its own log; shown as text the codes are noise ("[34m0.26.458[0m").
+# The ESC byte is optional: some paths drop it and leave the rest behind.
+ANSI = re.compile(r"\x1b?\[\d{1,3}(?:;\d{1,3})*m")
+
+
 def _engine_log(url: str, model_id: str) -> str:
     try:
-        return engine_api.model_log(url, model_id)
+        return ANSI.sub("", engine_api.model_log(url, model_id))
     except Exception as exc:  # noqa: BLE001 - shown in place of the log
         return f"(could not read the engine's log of {model_id}: {exc})"
 
@@ -326,7 +332,7 @@ def launch_log(launch_id):
     text = ctx().runner.read_log(check_id(launch_id), tail_bytes=request.args.get("tail", 0, type=int))
     if text is None:
         abort(404)
-    return current_app.response_class(text, mimetype="text/plain")
+    return current_app.response_class(ANSI.sub("", text), mimetype="text/plain")
 
 
 @bp.get("/api/launches/<launch_id>/insight")

@@ -240,6 +240,13 @@ REQUEST_FIELDS = ("source_id", "ts", "model", "src", "path", "status", "input_to
                   "cache_tokens", "draft_tokens", "draft_acc_tokens", "prompt_per_second",
                   "tokens_per_second", "duration_ms", "error")
 
+SPEED_FIELDS = ("prompt_per_second", "tokens_per_second")
+
+
+def _speed(v):
+    """The engine reports -1 when a request had no such phase (an embedding has no decode): no speed, not a negative one."""
+    return v if isinstance(v, (int, float)) and v > 0 else None
+
 
 def new_id(prefix: str) -> str:
     return f"{prefix}-{int(time.time() * 1000)}-{os.urandom(2).hex()}"
@@ -780,7 +787,7 @@ class Store:
             self._conn.executemany(
                 f"INSERT OR IGNORE INTO requests ({', '.join(REQUEST_FIELDS)}) "
                 f"VALUES ({', '.join('?' * len(REQUEST_FIELDS))})",
-                [tuple(r.get(k) for k in REQUEST_FIELDS) for r in rows])
+                [tuple(_speed(r.get(k)) if k in SPEED_FIELDS else r.get(k) for k in REQUEST_FIELDS) for r in rows])
             self._conn.commit()
             return self._conn.total_changes - before
 
@@ -798,8 +805,8 @@ class Store:
 
     def request_stats(self, since: float) -> list[dict]:
         return self._q(
-            "SELECT model, COUNT(*) AS requests, AVG(NULLIF(tokens_per_second, 0)) AS tg_avg, "
-            "MAX(tokens_per_second) AS tg_max, AVG(NULLIF(prompt_per_second, 0)) AS pp_avg, "
+            "SELECT model, COUNT(*) AS requests, AVG(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS tg_avg, "
+            "MAX(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS tg_max, AVG(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS pp_avg, "
             "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
             "SUM(CASE WHEN status >= 400 OR (error IS NOT NULL AND error != '') THEN 1 ELSE 0 END) AS errors, "
             "MAX(ts) AS last_ts FROM requests WHERE ts>=? GROUP BY model ORDER BY requests DESC", (since,))
@@ -807,8 +814,8 @@ class Store:
     def request_window(self, model: str, t0: float, t1: float) -> dict:
         """What one model's requests did between two times."""
         rows = self._q(
-            "SELECT COUNT(*) AS requests, AVG(NULLIF(tokens_per_second, 0)) AS tg_avg, "
-            "AVG(NULLIF(prompt_per_second, 0)) AS pp_avg, SUM(output_tokens) AS output_tokens "
+            "SELECT COUNT(*) AS requests, AVG(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS tg_avg, "
+            "AVG(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS pp_avg, SUM(output_tokens) AS output_tokens "
             "FROM requests WHERE model=? AND ts>=? AND ts<=?", (model, t0, t1))
         return rows[0] if rows else {"requests": 0, "tg_avg": None, "pp_avg": None, "output_tokens": None}
 

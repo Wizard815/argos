@@ -53,6 +53,11 @@ def compute(plan: Optional[dict] = None) -> dict:
     presets = core.cookbook_state()["presets"]
     rows, commands = build_rows(library, presets, plan, c.settings.get("prefab"), known)
     sizes = plan_sizes(rows)
+    # a model the engine serves that has no row here (not in the library, no profile) still gets its
+    # measured size, otherwise the engine keeps its own rougher guess for it
+    for mid, m in plan["measured"].items():
+        if mid not in sizes and m.get("gib"):
+            sizes[mid] = m["gib"]
     text, skipped = render_fragment(plan, sizes, known)
     return {"plan": plan, "rows": rows, "commands": commands, "sizes": sizes, "fragment": text,
             "skipped": skipped, "known_from": known_from}
@@ -211,7 +216,9 @@ def schedule_live():
         return ok(connected=False, error="the engine is not running", pool=None)
     try:
         real = {str(g["gpu"]): round((g.get("mem_used_mb") or 0) / 1024, 2) for g in ctx().store.gpu_latest()}
-        return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time(), real_gib=real)
+        activity = [{"ts": e["ts"], "level": e["level"], "message": e["message"]}
+                    for e in ctx().store.list_events(kind="schedule", limit=40)]
+        return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time(), real_gib=real, activity=activity)
     except Exception as exc:  # noqa: BLE001
         return ok(connected=False, error=str(exc), pool=None)
 
@@ -240,6 +247,20 @@ def live_action(model_id, action):
         url = _engine_url()
     except ValueError as exc:
         return err(str(exc), 409)
+    # say what is true: unloading a model that is not loaded, or loading one the engine has never heard of,
+    # used to answer "ok" and leave a misleading event behind
+    try:
+        states = {r["model"]: r.get("state") for r in engine_api.running(url)}
+        known = set(engine_api.model_ids(url))
+    except Exception as exc:  # noqa: BLE001
+        return err(f"could not reach the engine: {exc}", 502)
+    if action == "unload" and model_id not in states:
+        return ok(already=True, message=f"{model_id} is not loaded")
+    if action == "load":
+        if model_id not in known:
+            return err(f"the engine has no model called {model_id}", 404)
+        if states.get(model_id) in ("ready", "starting"):
+            return ok(already=True, message=f"{model_id} is already {states[model_id]}")
     if action == "unload":
         try:
             engine_api.unload_model(url, model_id)

@@ -439,3 +439,20 @@ def test_the_assistant_can_run_on_a_model_the_engine_lists(app, client):
     client.put("/api/settings/integrations", json={"engine_url": ""})
     off = client.get("/api/models/available").get_json()
     assert off["engine"] == [] and off["engine_connected"] is False
+
+
+def test_params_from_name_reads_the_size_out_of_a_file_name():
+    from src.inventory import params_from_name
+    assert params_from_name("Qwythos-9B-Claude-Mythos-5-1M-Q6_K") == "9B"
+    assert params_from_name("Qwen3-0.6B-Q8_0") == "0.6B"
+    assert params_from_name("foo-Q4_K_M") == ""
+
+
+def test_request_speeds_of_minus_one_are_not_speeds(tmp_path):
+    from src.db import Store
+    store = Store(str(tmp_path / "t.db"))
+    base = {"ts": 1000.0, "model": "embed", "status": 200}
+    store.add_requests([{**base, "source_id": "a", "prompt_per_second": -1, "tokens_per_second": -1},
+                        {**base, "source_id": "b", "prompt_per_second": 500.0, "tokens_per_second": 80.0}])
+    (row,) = store.request_stats(0)
+    assert row["requests"] == 2 and row["tg_avg"] == 80.0 and row["pp_avg"] == 500.0 and row["tg_max"] == 80.0

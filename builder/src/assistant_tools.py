@@ -1,0 +1,217 @@
+"""Read-only lookups the assistant answers from, chosen by the question.
+
+The assistant is a 0.6B model. Handed a wall of numbers it mixed them up: it gave a GPU's total VRAM to
+each model, ranked by the wrong column, and listed two models out of thirty. So the arithmetic, filtering
+and ranking happen here, in code, and the model is told to copy the result. Each tool returns a few plain
+lines with the unit on every number. Nothing here changes anything.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Callable, Optional
+
+from .integrations import engine_api
+from .inventory import params_from_name
+
+LIST_LIMIT = 40
+
+_PARAM = re.compile(r"(?<![\w.])(\d*\.?\d+)\s?b(?![a-z])", re.I)
+_NEAR = re.compile(r"\b(close|closest|near|nearest|around|about|roughly|approximately)\b|~", re.I)
+
+
+def _gib(v: Optional[float]) -> str:
+    return "?" if v is None else f"{v:.2f} GiB"
+
+
+def _params_b(text: str) -> Optional[float]:
+    """'9B' -> 9.0, '0.6B' -> 0.6, '.6B' -> 0.6."""
+    m = _PARAM.search(text or "")
+    return float(m.group(1)) if m else None
+
+
+def _rows(inv) -> list[dict]:
+    """Models with a file on disk, one row each, with parameters and size worked out."""
+    extra = {m["model_id"]: (m.get("extra") or {}) for m in inv.store.list_models_seen()}
+    out = []
+    for m in inv.models_summary():
+        if not m["present"] or m["origin"] == "engine" or m["kind"] in ("mmproj", "mtp", "draft"):
+            continue
+        p = extra.get(m["model_id"], {}).get("params") or params_from_name(m["name"])
+        out.append({**m, "params": p, "params_b": _params_b(p) if p else None})
+    return out
+
+
+def _line(m: dict) -> str:
+    bits = [f"{m['name']}", _gib(m["size_gib"]), m["params"] or "params unknown", "/".join(m["quants"]) or m.get("arch") or ""]
+    return "- " + ", ".join(b for b in bits if b)
+
+
+# ----- the tools ---------------------------------------------------------------------
+def models_on_disk(ctx: dict, q: str) -> list[str]:
+    rows = _rows(ctx["inventory"])
+    if not rows:
+        return ["MODELS ON DISK: none found."]
+    want = _params_b(q)
+    low = q.lower()
+    title = f"MODELS ON DISK ({len(rows)} in total, sizes are file sizes in GiB)"
+    if want is not None and _NEAR.search(q):
+        known = [m for m in rows if m["params_b"] is not None]
+        rows = sorted(known, key=lambda m: (abs(m["params_b"] - want), m["size_gib"] or 0))
+        title += f", closest to {want:g}B first"
+        near = [m for m in rows if abs(m["params_b"] - want) <= max(1.0, want * 0.25)]
+        rows = near or rows
+        title += " (the 'about' list below is every model within 25%)" if near else ""
+    elif want is not None:
+        same = [m for m in rows if m["params_b"] == want]
+        if same:
+            rows, title = same, title + f", only {want:g}B models"
+    if any(w in low for w in ("smallest", "lightest", "least", "tiniest")):
+        rows = sorted(rows, key=lambda m: m["size_gib"] or 0)
+        title += ", smallest file first"
+    elif any(w in low for w in ("largest", "biggest", "heaviest")):
+        rows = sorted(rows, key=lambda m: -(m["size_gib"] or 0))
+        title += ", largest file first"
+    elif want is None:
+        rows = sorted(rows, key=lambda m: m["name"].lower())
+    more = len(rows) - LIST_LIMIT
+    return [title + ":"] + [_line(m) for m in rows[:LIST_LIMIT]] + ([f"(+{more} more)"] if more > 0 else [])
+
+
+def loaded_now(ctx: dict, q: str) -> list[str]:
+    url = ctx["engine_url"]
+    if not url:
+        return ["LOADED NOW: the engine address is not set, so loaded models are unknown."]
+    try:
+        running = engine_api.running(url)
+    except Exception as exc:  # noqa: BLE001 - said in the answer
+        return [f"LOADED NOW: could not reach the engine ({exc})."]
+    if not running:
+        return ["LOADED NOW: no model is loaded."]
+    try:
+        pool = {m["id"]: m for m in engine_api.pool_state(url).get("models") or []}
+    except Exception:  # noqa: BLE001 - group router: no sizes
+        pool = {}
+    plan = ctx["measured"]
+    lines = [f"LOADED NOW ({len(running)} model(s); each size is that model's own VRAM, not the GPU total):"]
+    total = 0.0
+    for r in running:
+        mid = r["model"]
+        gib = (plan.get(mid) or {}).get("gib") or (pool.get(mid) or {}).get("size_gib")
+        kind = "measured" if (plan.get(mid) or {}).get("gib") else "estimated"
+        cards = (pool.get(mid) or {}).get("cards") or []
+        total += gib or 0
+        lines.append(f"- {mid} ({r.get('state')}): {_gib(gib)} {kind if gib else ''}" + (f" on GPU {','.join(cards)}" if cards else ""))
+    lines.append(f"Models together: about {_gib(total)}.")
+    return lines
+
+
+def gpu_status(ctx: dict, q: str) -> list[str]:
+    gpus = ctx["store"].gpu_latest()
+    if not gpus:
+        return ["GPU: no readings recorded yet."]
+    return ["GPU NOW (the whole card, including anything else using it):"] + [
+        f"- GPU{g['gpu']} {g['name']}: {(g['mem_used_mb'] or 0) / 1024:.1f} of {(g['mem_total_mb'] or 0) / 1024:.1f} GiB VRAM used, "
+        f"{g['util'] or 0:.0f}% busy, {g['temp_c'] or 0:.0f} °C, {g['power_w'] or 0:.0f} W" for g in gpus]
+
+
+def _match(ctx: dict, q: str, limit: int = 3) -> list[dict]:
+    """Models the question names: by name, or by '.6B' style size."""
+    low = re.sub(r"[^a-z0-9.]+", " ", q.lower())
+    rows = ctx["inventory"].models_summary()
+    hits = []
+    for m in rows:
+        name = re.sub(r"[^a-z0-9.]+", " ", (m["name"] or "").lower()).strip()
+        if name and name in low:
+            hits.append(m)
+    if not hits:
+        want = _params_b(q)
+        if want is not None:
+            hits = [m for m in rows if _params_b(params_from_name(m["name"]) or "") == want and m["origin"] != "engine"]
+    return sorted(hits, key=lambda m: -(m["loaded_seconds"] or 0))[:limit]
+
+
+def _speed(span: Optional[dict]) -> str:
+    if not span:
+        return "none recorded"
+    return f"{span['min']:g}" if span["min"] == span["max"] else f"{span['min']:g} to {span['max']:g}"
+
+
+def model_details(ctx: dict, q: str) -> list[str]:
+    hits = _match(ctx, q)
+    if not hits:
+        return []
+    extra = {m["model_id"]: (m.get("extra") or {}) for m in ctx["store"].list_models_seen()}
+    best = {b["base_model"]: b for b in ctx["analytics"].best_by_base_model()}
+    out = []
+    for m in hits:
+        e = extra.get(m["model_id"], {})
+        b = best.get(m["name"]) or best.get(m["model_id"]) or {}
+        out.append(f"MODEL {m['name']}:")
+        out.append(f"- file {_gib(m['size_gib'])}, {e.get('params') or params_from_name(m['name']) or 'params unknown'}, "
+                   f"{'/'.join(m['quants']) or '?'}, arch {m['arch'] or '?'}, kind {m['kind'] or 'llm'}")
+        out.append(f"- VRAM when loaded: {_gib(m['vram_gib_avg'])}; loaded {m['sessions']} time(s), {m['loaded_seconds'] / 3600:.1f} h in total")
+        out.append(f"- decode speed {_speed(m['decode'])} t/s, prefill speed {_speed(m['prefill'])} t/s (from real requests and benchmarks)")
+        if b:
+            out.append(f"- best benchmark: {b.get('tokens_per_second') or 0:.1f} t/s decode, {b.get('prompt_per_second') or 0:.0f} t/s prefill, "
+                       f"ngl {b.get('gpu_layers') or '?'}, ctx {b.get('n_ctx') or '?'}")
+    return out
+
+
+def performance(ctx: dict, q: str) -> list[str]:
+    hits = _match(ctx, q, limit=4)
+    low = q.lower()
+    if len(hits) >= 2 or (hits and any(w in low for w in ("perform", "speed", "fast", "slow", "t/s", "compare", "vs"))):
+        out = ["SPEED (decode = generating, prefill = reading the prompt; t/s = tokens per second):"]
+        for m in hits:
+            out.append(f"- {m['name']}: decode {_speed(m['decode'])} t/s, prefill {_speed(m['prefill'])} t/s, VRAM {_gib(m['vram_gib_avg'])}")
+        return out
+    ranked = [m for m in ctx["inventory"].models_summary() if m["decode"]]
+    ranked.sort(key=lambda m: -m["decode"]["max"])
+    if not ranked:
+        return ["SPEED: no model has recorded speeds yet."]
+    return ["FASTEST BY DECODE (best recorded, t/s):"] + [
+        f"- {m['name']}: {m['decode']['max']:g} t/s decode, VRAM {_gib(m['vram_gib_avg'])}" for m in ranked[:6]]
+
+
+def problems(ctx: dict, q: str) -> list[str]:
+    import time
+    ev = [e for e in ctx["store"].list_events(since=time.time() - 86400, limit=80) if e["level"] in ("warn", "error")]
+    if not ev:
+        return ["PROBLEMS in the last 24 h: none recorded."]
+    return ["PROBLEMS in the last 24 h:"] + [f"- {e['message'][:160]}" for e in ev[:8]]
+
+
+# ----- choosing -----------------------------------------------------------------------
+_RULES: list[tuple[re.Pattern, Callable[[dict, str], list[str]]]] = [
+    (re.compile(r"\b(loaded|running|in use|memory|vram|loaded now|on the gpu|resident)\b", re.I), loaded_now),
+    (re.compile(r"\b(gpu|temp|temperature|power|watts|busy|utili[sz]ation)\b|\bvram\b", re.I), gpu_status),
+    (re.compile(r"\b(have|list|which|what models|models do|installed|on disk|close to|around|about|smallest|largest|biggest|params?|size|gb|gib)\b|\d\s?b\b|~", re.I), models_on_disk),
+    (re.compile(r"\b(spec|specs|details?|tell me about|info)\b", re.I), model_details),
+    (re.compile(r"\b(perform|performed|fast|fastest|slow|speed|t/s|tok|benchmark|compare|vs|decode|prefill)\b", re.I), performance),
+    (re.compile(r"\b(error|errors|problem|problems|crash|crashed|fail|failed|wrong|broken)\b", re.I), problems),
+]
+
+
+def answer_lines(ctx: dict, question: str) -> list[str]:
+    """The tool results this question calls for. A named model always gets its details."""
+    q = (question or "").strip()
+    if len(q) < 3:
+        return []
+    out: list[str] = []
+    done: set[Callable] = set()
+    for pat, fn in _RULES:
+        if fn in done or not pat.search(q):
+            continue
+        done.add(fn)
+        try:
+            out += fn(ctx, q)
+        except Exception as exc:  # noqa: BLE001 - one broken tool must not hide the rest
+            out.append(f"({fn.__name__} failed: {exc})")
+    if model_details not in done:
+        try:
+            out += model_details(ctx, q)
+        except Exception:  # noqa: BLE001
+            pass
+    if not out:
+        return []
+    return ["TOOL RESULTS (computed from the live system for this question; copy these numbers and names exactly, do not recalculate):"] + out

@@ -316,8 +316,11 @@ def test_watcher_logs_loads_moves_unloads_and_long_waits(app, client):
         watch()  # nothing changed: nothing logged
 
     msgs = [e["message"] for e in client.get("/api/events?kind=schedule").get_json()["events"]]
-    assert sorted(msgs) == sorted(["b loaded on GPU 0", "a moved on GPU 1", "a unloaded",
-                                   "a request for c has waited 45s"])
+    # a load says why it happened ("fit beside the others", or what it pushed out); an unload alone says it stopped
+    loaded = [m for m in msgs if m.startswith("b loaded on GPU 0; ")]
+    unloaded = [m for m in msgs if m.startswith("a unloaded")]
+    assert len(loaded) == 1 and len(unloaded) == 1
+    assert sorted(m for m in msgs if m not in loaded + unloaded) == ["a moved on GPU 1", "a request for c has waited 45s"]
 
 
 def test_watcher_ignores_a_engine_without_the_pool(app, client):

@@ -662,3 +662,4 @@ td.nowrap, .nowrap { white-space: nowrap; }
 .logs-sources .src .s { font-size: 12px; color: var(--muted); }
 .logs-sources .grp { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 4px; }
 pre.log.logs-big { max-height: 70dvh; min-height: 320px; }
+#gLaunches .grp { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 4px; }

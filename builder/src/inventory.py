@@ -335,9 +335,9 @@ class Inventory:
         ranges: dict[str, dict[str, list[float]]] = {}
         for r in self.store.list_requests(since=now - 90 * 86400, limit=200000):
             d = ranges.setdefault(r["model"], {"prefill": [], "decode": []})
-            if r.get("prompt_per_second") and (r.get("input_tokens") or 0) >= MIN_PROMPT_TOKENS:
+            if (r.get("prompt_per_second") or 0) > 0 and (r.get("input_tokens") or 0) >= MIN_PROMPT_TOKENS:
                 d["prefill"].append(r["prompt_per_second"])
-            if r.get("tokens_per_second") and (r.get("output_tokens") or 0) >= MIN_OUTPUT_TOKENS:
+            if (r.get("tokens_per_second") or 0) > 0 and (r.get("output_tokens") or 0) >= MIN_OUTPUT_TOKENS:
                 d["decode"].append(r["tokens_per_second"])
         for r in self.store.list_runs(limit=100000):
             if r.get("success") and r.get("model_id") and r["created_at"] >= now - 90 * 86400:
@@ -364,7 +364,7 @@ class Inventory:
                 "spec_types": _uniq(alias.get(("spec_type", s["spec_type"]), s["spec_type"]) for s in ss),
                 "sessions": len(ss), "loaded_seconds": round(sum((s["ended_at"] or now) - s["started_at"] for s in ss)),
                 "last_loaded": max((s["started_at"] for s in ss), default=None), "gpus": gpus,
-                "vram_gib_avg": _avg(s["measured_gib"] or s["size_gib"] for s in ss),
+                "vram_gib_avg": _avg(s["measured_gib"] for s in ss) or _avg(s["size_gib"] for s in ss),  # measured beats any estimate
                 "open": any(s["open"] for s in ss),
                 "tps_avg": (speeds.get(mid) or {}).get("tg_avg"), "requests": (speeds.get(mid) or {}).get("requests"),
                 "prefill": span((ranges.get(mid) or {}).get("prefill") or []), "decode": span((ranges.get(mid) or {}).get("decode") or []),
@@ -446,6 +446,7 @@ class Inventory:
                 f"{m['name']} {m['loaded_seconds'] / 3600:.1f} h on GPU {','.join(m['gpus']) or '?'}"
                 f" ({'/'.join(m['quants']) or '?'}, kv {'/'.join(m['cache']) or '?'}"
                 f"{', ' + '/'.join(x for x in m['split_modes'] if x) if any(m['split_modes']) else ''})" for m in top))
+        lines += self.disk_lines(models)
         new = [t for t in self.store.list_traits(status="new")][:8]
         if new:
             lines.append("New to review: " + ", ".join(f"{t['kind']} {t['value']} (x{t['count']})" for t in new))
@@ -456,6 +457,35 @@ class Inventory:
                 lines.append("Host GPUs: " + ", ".join(
                     f"{a.get('model') or a.get('kind')} ({(a.get('architecture') or '')})" for a in accel[:4]))
         return lines
+
+    def disk_lines(self, models: list[dict], limit: int = 60) -> list[str]:
+        """Every model file on disk with its size and parameter count, smallest first.
+
+        "Which ~9B model is smallest" cannot be answered from the most-loaded few.
+        """
+        extra = {m["model_id"]: (m.get("extra") or {}) for m in self.store.list_models_seen()}
+        rows = []
+        for m in models:
+            if not m["present"] or m["origin"] == "engine" or not m["size_gib"] or m["kind"] in ("mmproj", "mtp", "draft"):
+                continue
+            params = extra.get(m["model_id"], {}).get("params") or params_from_name(m["name"])
+            rows.append((m["size_gib"], f"{m['name']} {m['size_gib']:.1f} GiB" + (f" {params}" if params else "")
+                         + (f" {'/'.join(m['quants'])}" if m["quants"] else "")))
+        if not rows:
+            return []
+        rows.sort()
+        more = f" (+{len(rows) - limit} more)" if len(rows) > limit else ""
+        return [f"MODELS ON DISK ({len(rows)}, smallest first; name, size in GiB, parameters, quant): "
+                + " | ".join(r[1] for r in rows[:limit]) + more]
+
+
+_PARAMS = re.compile(r"(?<![\w.])(?:[A-Za-z])?(\d+(?:\.\d+)?)\s?([BbMm])(?![A-Za-z])")
+
+
+def params_from_name(name: str) -> str:
+    """'Qwythos-9B-...' -> '9B'. Empty when the name carries no size."""
+    m = _PARAMS.search(name.replace("_", "-"))
+    return f"{m.group(1)}{m.group(2).upper()}" if m else ""
 
 
 def _uniq(values) -> list[str]:

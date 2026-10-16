@@ -203,7 +203,9 @@ def prefab_command(model: dict, prefab: dict, port: Optional[str] = None) -> Lau
         args += ["-ngl", str(prefab["ngl"])]
     ctx = str(prefab.get("ctx") or "")
     if kind in ("embedding", "reranker"):
-        args += ["-c", str(min(int(ctx or 8192), 8192))]
+        # one slot: the builder sends batches one at a time, and parallel slots on
+        # gfx906 hit "MUL_MAT ... unspecified launch failure" under a burst
+        args += ["-c", str(min(int(ctx or 8192), 8192)), "--parallel", "1"]
         args += ["--embedding", "--pooling", "mean"] if kind == "embedding" else ["--reranking"]
     else:
         if ctx:

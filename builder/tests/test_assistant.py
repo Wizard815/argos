@@ -41,7 +41,7 @@ def test_managed_chat_digest_reset(client, app):
     use_fake_model(client, app)
 
     digest = client.get("/api/assistant/digest").get_json()["digest"]
-    assert "GPU0 MI50: 91% busy, VRAM 29.3/32.0 GB, 77°C, 240 W" in digest
+    assert "GPU0 MI50: 91% busy, VRAM 29.3/32.0 GiB, 77°C, 240 W" in digest
     assert "qwen3.6-35b: 1 req, gen 42.0 t/s avg" in digest
 
     events = sse(client.post("/api/assistant/chat", json={"message": "how is qwen3.6-35b doing?"}))
