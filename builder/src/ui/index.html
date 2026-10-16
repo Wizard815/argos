@@ -25,7 +25,8 @@
     <button class="nav-item" data-view="perf"><i data-icon="chart"></i>Perf sheet<span class="meta" id="navPerf"></span></button>
     <button class="nav-item" data-view="inventory"><i data-icon="database"></i>Inventory<span class="meta" id="navInventory"></span></button>
     <button class="nav-item" data-view="schedule"><i data-icon="layers"></i>Schedule<span class="meta" id="navSchedule"></span></button>
-    <button class="nav-item" data-view="logs"><i data-icon="activity"></i>Logs<span class="meta" id="navLogs"></span></button>
+    <button class="nav-item" data-view="serverlogs"><i data-icon="file-text"></i>Logs<span class="meta" id="navServerLogs"></span></button>
+    <button class="nav-item" data-view="logs"><i data-icon="activity"></i>Usage<span class="meta" id="navLogs"></span></button>
     <button class="nav-item" data-view="assistant"><i data-icon="message"></i>Assistant<span class="meta" id="navAssistant"></span></button>
     <div class="nav-sep"></div>
     <button class="nav-item" data-view="servers"><i data-icon="server"></i>Servers<span class="meta" id="navServers"></span></button>
@@ -209,7 +210,7 @@
       <div class="view-head">
         <div><h1>Models</h1><p class="sub" id="mSub">Every GGUF in your models folder, each with a ready-made prefab command.</p></div>
         <span class="spacer"></span>
-        <button class="btn" id="mRescan"><i data-icon="refresh"></i>Rescan</button>
+        <button class="btn" id="mRescan" title="Look for new and removed model files: the engine rescans its models folder too"><i data-icon="refresh"></i>Rescan</button>
       </div>
       <div class="tabs" data-tabs="models">
         <button data-pane="library" class="on">Library</button><button data-pane="download">Download</button><button data-pane="extra">Extra files</button>
@@ -269,9 +270,32 @@
     </section>
 
     <!-- LOGS -->
+    <section class="view" id="view-serverlogs">
+      <div class="view-head">
+        <div><h1>Logs</h1><p class="sub">The output of every llama-server: loading, errors, and the speed of each request.</p></div>
+      </div>
+      <div class="logs-layout">
+        <div class="card logs-sources">
+          <div class="card-head"><h2>Servers</h2></div>
+          <div id="slSources"></div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="card-head"><h2 id="slTitle">Log</h2><span class="spacer"></span>
+              <input type="search" id="slFilter" placeholder="Filter lines…" style="width:180px">
+              <label class="row muted mono-sm"><input type="checkbox" id="slErrors"> errors only</label>
+              <label class="row muted mono-sm"><input type="checkbox" id="slFollow" checked> follow</label>
+              <button class="btn sm ghost" id="slCopy"><i data-icon="copy"></i>Copy</button></div>
+            <div class="stats" id="slStats"></div>
+            <pre class="log logs-big" id="slLog"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="view" id="view-logs">
       <div class="view-head">
-        <div><h1>Logs</h1><p class="sub">Long-term history in the embedded database: GPU readings, request speeds, and everything this app did.</p></div>
+        <div><h1>Usage</h1><p class="sub">Long-term history in the embedded database: GPU readings, request speeds, and everything this app did.</p></div>
       </div>
       <div class="tabs" data-tabs="logs">
         <button data-pane="gpu" class="on">GPU</button><button data-pane="requests">Requests</button><button data-pane="events">Events</button>

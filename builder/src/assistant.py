@@ -523,6 +523,7 @@ class Assistant:
         def load():
             try:
                 engine_api.load_model(url, model_id)
+                self.memory.sync(budget=512)  # embed the new numbers now; the idle timer unloads it later
             except Exception as exc:  # noqa: BLE001 - reported as an event, never fatal
                 self.on_event("assistant", f"could not start the embedding model {model_id}: {exc}",
                               level="warn")

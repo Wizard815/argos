@@ -62,6 +62,10 @@ def tokens(text: str) -> list[str]:
     return TOKEN.findall(text.lower())
 
 
+# records embedded on the way into a search: the ones changed since the last search, bounded
+SEARCH_EMBED_BUDGET = 256
+
+
 class Memory:
     def __init__(self, store: Store, settings: Callable[[], dict], on_event: Callable[..., None]):
         self.store = store
@@ -160,8 +164,13 @@ class Memory:
         return out
 
     # ----- keeping it current ------------------------------------------------------------
-    def sync(self, budget: int = 64) -> dict:
-        """Add new and changed records, drop ones that are gone, and embed up to ``budget`` texts."""
+    def sync(self, budget: int = 64, embed: bool = True) -> dict:
+        """Add new and changed records, drop ones that are gone, and embed up to ``budget`` texts.
+
+        The background tick passes ``embed=False``: records change all the time (every request moves a speed
+        record), so embedding them on every tick kept the embedding model busy forever - its own requests
+        changed the records it then had to embed again, and it was never idle long enough to unload. Pending
+        records are embedded when memory is searched instead, which needs the model anyway."""
         with self._lock:
             current = self.collect()
             seen = {(s, k) for s, k, _, _ in current}
@@ -179,7 +188,7 @@ class Memory:
             gone = [r["id"] for key, r in have.items() if key not in seen]
             for rid in gone:
                 self.store._x("DELETE FROM memory_records WHERE id=?", (rid,))
-            embedded = self._embed_pending(budget) if self.vectors_on() else 0
+            embedded = self._embed_pending(budget) if embed and self.vectors_on() else 0
             if added or changed or gone or embedded:
                 self._matrix = None
             return {"added": added, "changed": changed, "removed": len(gone), "embedded": embedded}
@@ -246,6 +255,9 @@ class Memory:
         ranked_vec: list[tuple[int, float]] = []
         if self.vectors_on():
             try:
+                with self._lock:
+                    if self._embed_pending(SEARCH_EMBED_BUDGET):
+                        self._matrix = None
                 ranked_vec = self._vector(query, set(by_id))
             except MemoryError_ as exc:
                 self.last_error = str(exc)

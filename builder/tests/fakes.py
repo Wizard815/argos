@@ -138,6 +138,11 @@ def make_engine(gpu_stats: list[dict], activity: list[dict], pool: dict = None, 
                 if running is not None:
                     running[:] = [m for m in running if m.get("model") != name]
                 self.send_json({"ok": True})
+            elif self.path.endswith("/completion") and self.path.startswith("/upstream/"):
+                self.send_json({"content": "x", "timings": {"prompt_n": 520, "prompt_per_second": 800.0, "predicted_n": 128,
+                                                            "predicted_per_second": 42.5, "prompt_ms": 650, "predicted_ms": 3000}})
+            elif self.path == "/api/models/rescan":
+                self.send_json({"ok": True, "models": len(model_ids or []), "changed": False})
             elif self.path == "/v1/chat/completions" and not body.get("stream"):
                 self.send_json({"choices": [{"message": {"role": "assistant", "content": chat_reply}}]})
             else:

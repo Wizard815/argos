@@ -86,7 +86,8 @@ def test_gguf_reads_arch_and_stops_before_the_tokenizer(tmp_path):
         kv_str_array("tokenizer.ggml.tokens", ["a", "b", "c"]),
     ])
     assert read_arch(path) == {"arch": "llama", "layers": 32, "heads": 32, "kv_heads": 8, "key_len": 128,
-                               "value_len": 128, "attn_layers": 32, "train_ctx": 131072, "ftype": None}
+                               "value_len": 128, "attn_layers": 32, "train_ctx": 131072, "ftype": None,
+                               "swa_window": 0, "swa_layers": 0}
 
 
 def test_gguf_reads_the_file_type(tmp_path):

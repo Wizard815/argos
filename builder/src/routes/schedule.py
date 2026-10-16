@@ -210,7 +210,8 @@ def schedule_live():
     if not url:
         return ok(connected=False, error="the engine is not running", pool=None)
     try:
-        return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time())
+        real = {str(g["gpu"]): round((g.get("mem_used_mb") or 0) / 1024, 2) for g in ctx().store.gpu_latest()}
+        return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time(), real_gib=real)
     except Exception as exc:  # noqa: BLE001
         return ok(connected=False, error=str(exc), pool=None)
 

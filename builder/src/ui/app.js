@@ -320,7 +320,7 @@ const S = {
   lastBench: {},        // launch id -> last recorded run
 };
 const VIEWS = { builder: "Builder", models: "Models", profiles: "Profiles", playground: "Playground", perf: "Perf sheet",
-  schedule: "Schedule", inventory: "Inventory", logs: "Logs", assistant: "Assistant", env: "Flags", servers: "Servers", integrations: "Odysseus", settings: "Settings" };
+  schedule: "Schedule", inventory: "Inventory", serverlogs: "Logs", logs: "Usage", assistant: "Assistant", env: "Flags", servers: "Servers", integrations: "Odysseus", settings: "Settings" };
 const onShow = {
   models: () => { loadLibrary(); loadCatalog(); loadDownloads(); },
   profiles: () => renderProfiles(),
@@ -328,12 +328,13 @@ const onShow = {
   schedule: () => { loadSchedule(); loadLive(); },
   inventory: () => loadInventory(),
   logs: () => loadLogs(),
+  serverlogs: () => loadServerLogs(true),
   assistant: () => loadAssistant(),
   env: () => loadEnv(),
   servers: () => loadServers(),
   integrations: () => loadIntegrations(),
   settings: () => loadSettings().then(renderSettings).then(loadIntegrations),
-  playground: () => { renderLaunches(); pollSelected(true); },
+  playground: () => { if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect(); renderLaunches(); pollSelected(true); },
 };
 
 function show(view) {
@@ -810,7 +811,10 @@ function renderProfiles() {
 
 // ── Playground ───────────────────────────────────────────────
 function fillProfileSelect() {
-  fill($("#gProfile"), h("option", { value: "" }, "Load a profile…"), S.profiles.map((p) => h("option", { value: p.profile_id }, p.name)));
+  const lib = (S.library && S.library.models) || [];
+  fill($("#gProfile"), h("option", { value: "" }, "Load a profile or a model…"),
+    S.profiles.length ? h("optgroup", { label: "Profiles" }, S.profiles.map((p) => h("option", { value: p.profile_id }, p.name))) : null,
+    lib.length ? h("optgroup", { label: "Models (default launch)" }, lib.map((m) => h("option", { value: `model:${m.path}` }, m.name))) : null);
 }
 
 async function launch(command, base_model, profile_name) {
@@ -820,8 +824,10 @@ async function launch(command, base_model, profile_name) {
     if (res.engine) {
       // The engine already serves this model, so nothing runs here: it loads on
       // whichever host the engine launches on, and Schedule → Live shows it.
-      toast(`Asked the engine to load ${res.model} — watch it under Schedule → Live.`, "ok");
-      show("schedule");
+      toast(`Asked the engine to load ${res.model}. It shows under Launches once it starts; benchmark it when it is ready.`, "ok");
+      S.sel = `engine:${res.model}`;
+      show("playground");
+      await refreshLaunches();
       return;
     }
     S.sel = res.launch.launch_id;
@@ -844,6 +850,7 @@ async function refreshLaunches() {
 
 function launchState(l) {
   if (!l) return ["", "no launch selected"];
+  if (l.engine) return l.ready ? ["on", "ready"] : ["warn", `${l.state || "starting"}…`];
   if (l.running) return l.ready ? ["on", "ready"] : ["warn", "starting…"];
   if (l.stopped) return ["", "stopped"];
   return [l.exit_code ? "bad" : "", `exited ${l.exit_code ?? ""}`.trim()];
@@ -856,15 +863,16 @@ function renderLaunches() {
       h("span", { class: `dot ${dot}` }),
       h("div", { class: "who" },
         h("div", { class: "t" }, l.profile_name || l.base_model || (l.command.split(" ").find((t) => !t.includes("=")) || l.launch_id).split("/").pop()),
-        h("div", { class: "s" }, `:${l.port} · ${label} · ${l.running ? uptime(l.started_at) : ago(l.started_at)}`)));
+        h("div", { class: "s" }, `${l.engine ? "engine" : `:${l.port}`} · ${label} · ${l.running ? uptime(l.started_at) : ago(l.started_at)}`)));
   });
-  fill($("#gLaunches"), list.length ? list : h("div", { class: "empty" }, "Nothing launched yet."));
+  fill($("#gLaunches"), list.length ? list : h("div", { class: "empty" }, "Nothing running. Pick a model above and Launch, or load one in Schedule → Live."));
   const cur = S.launches.find((l) => l.launch_id === S.sel);
   const [dot, label] = launchState(cur);
   fill($("#gState"), cur ? h("span", { class: `pill ${dot === "on" ? "ok" : dot === "bad" ? "bad" : ""}` }, h("span", { class: `dot ${dot}` }), label) : null);
   $("#gBench").disabled = !(cur && cur.running && cur.ready);
   $("#gRecord").disabled = !cur;
   $("#gStop").disabled = !(cur && cur.running);
+  $("#gStop").lastChild.textContent = cur && cur.engine ? "Unload" : "Stop";
   $("#gLogTitle").textContent = cur ? `Output · ${cur.launch_id}` : "Output";
   renderStats(S.lastBench[S.sel]);
 }
@@ -990,9 +998,18 @@ function drawRefs() {
 function initPlayground() {
   $("#gSimilar").onclick = compareSimilar;
   $("#gProfile").onchange = (e) => {
-    const p = S.profiles.find((x) => x.profile_id === e.target.value);
-    if (p) { $("#gCmd").value = p.launch_command; $("#gBase").value = p.base_model || ""; $("#gCmd").dataset.profile = p.name; }
+    const v = e.target.value;
     e.target.value = "";
+    if (v.startsWith("model:")) {
+      const m = ((S.library && S.library.models) || []).find((x) => x.path === v.slice(6));
+      if (!m) return;
+      api("POST", "/api/library/prefab", { path: m.path }).then((res) => {
+        $("#gCmd").value = res.command; $("#gBase").value = m.name; delete $("#gCmd").dataset.profile;
+      }).catch(fail);
+      return;
+    }
+    const p = S.profiles.find((x) => x.profile_id === v);
+    if (p) { $("#gCmd").value = p.launch_command; $("#gBase").value = p.base_model || ""; $("#gCmd").dataset.profile = p.name; }
   };
   $("#gCmd").addEventListener("input", () => delete $("#gCmd").dataset.profile);
   $("#gLaunch").onclick = () => launch($("#gCmd").value, $("#gBase").value.trim(), $("#gCmd").dataset.profile || "");
@@ -1016,7 +1033,8 @@ function initPlayground() {
     } catch (e) { fail(e); }
   };
   $("#gStop").onclick = async () => {
-    try { await api("POST", `/api/launches/${encodeURIComponent(S.sel)}/stop`); toast("Stopped.", "ok"); } catch (e) { fail(e); }
+    const eng = (S.sel || "").startsWith("engine:");
+    try { await api("POST", `/api/launches/${encodeURIComponent(S.sel)}/stop`); toast(eng ? "Unloaded." : "Stopped.", "ok"); } catch (e) { fail(e); }
     await refreshLaunches(); pollSelected(true);
   };
 }
@@ -1494,6 +1512,7 @@ async function loadLibrary() {
   try { S.library = await api("GET", "/api/library"); } catch (e) { fail(e); return; }
   try { ML.groups = (await api("GET", "/api/library/groups")).groups; } catch (e) { /* groups are optional */ }
   $("#navModels").textContent = S.library.models.length || "";
+  fillProfileSelect();
   if (S.view === "models") renderLibrary();
 }
 async function editModel(m) {
@@ -2054,6 +2073,77 @@ function loadLogs() {
   if (pane === "gpu") loadGpu();
   else if (pane === "requests") loadRequests();
   else loadEvents();
+}
+
+// ── Logs: every llama-server's own output ───────────────────
+const SL = { sel: null, len: -1, auto: true };
+function slSources() {
+  const engine = S.launches.filter((l) => l.engine), local = S.launches.filter((l) => !l.engine);
+  return { engine, local, all: [...engine, ...local, { launch_id: "proxy", base_model: "Engine: routing and loads", special: true },
+    { launch_id: "upstream", base_model: "Engine: all model output", special: true }] };
+}
+function renderServerLogSources() {
+  const { engine, local, all } = slSources();
+  // until you pick one, show the first running model (the launches may arrive after the first render)
+  if (!SL.sel || SL.auto || !all.some((x) => x.launch_id === SL.sel)) {
+    const pick = (engine[0] || local.find((l) => l.running) || all[0]).launch_id;
+    if (pick !== SL.sel) SL.len = -1;
+    SL.sel = pick; SL.auto = true;
+  }
+  const item = (l, sub) => {
+    const [dot] = l.special ? ["", ""] : launchState(l);
+    return h("div", { class: `src${l.launch_id === SL.sel ? " sel" : ""}`, onclick: () => { SL.sel = l.launch_id; SL.auto = false; SL.len = -1; renderServerLogSources(); loadServerLogs(true); } },
+      h("span", { class: `dot ${dot}` }), h("div", { style: "min-width:0" }, h("div", { class: "t", title: l.base_model }, l.profile_name || l.base_model || l.launch_id), h("div", { class: "s" }, sub)));
+  };
+  fill($("#slSources"),
+    h("div", { class: "grp" }, "Running in the engine"),
+    engine.length ? engine.map((l) => item(l, `${launchState(l)[1]} · ${uptime(l.started_at)}`)) : h("div", { class: "hint", style: "margin:0 8px" }, "No model loaded."),
+    local.length ? [h("div", { class: "grp" }, "Launched here"), local.map((l) => item(l, `:${l.port} · ${launchState(l)[1]}`))] : null,
+    h("div", { class: "grp" }, "Engine"), all.filter((x) => x.special).map((l) => item(l, l.launch_id)));
+  fill($("#navServerLogs"), engine.length ? String(engine.length) : null);
+}
+const SL_ERR = /error|failed|out of memory|exception|invalid argument|abort|fatal|cannot|unable/i;
+const SL_PERF = /eval time|tokens per second|t\/s|prompt eval/i;
+async function loadServerLogs(force) {
+  renderServerLogSources();
+  const id = SL.sel;
+  if (!id) return;
+  const special = id === "proxy" || id === "upstream";
+  const url = special ? `/api/engine/log/${id}?tail=400000` : `/api/launches/${encodeURIComponent(id)}/log?tail=400000`;
+  try {
+    const res = await fetch(url);
+    const text = res.ok ? await res.text() : `(no log: HTTP ${res.status})`;
+    if (id !== SL.sel || (!force && text.length === SL.len)) return;
+    SL.len = text.length;
+    const src = slSources().all.find((x) => x.launch_id === id);
+    $("#slTitle").textContent = src ? (src.profile_name || src.base_model || id) : id;
+    const q = $("#slFilter").value.trim().toLowerCase(), errOnly = $("#slErrors").checked;
+    const lines = text.split("\n").filter((l) => (!q || l.toLowerCase().includes(q)) && (!errOnly || SL_ERR.test(l)));
+    const pre = $("#slLog");
+    const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+    fill(pre, lines.length ? lines.map((line) => {
+      const cls = SL_ERR.test(line) ? "ln-err" : SL_PERF.test(line) ? "ln-perf" : /listening|all slots are idle|model loaded/i.test(line) ? "ln-ok" : "";
+      return [cls ? h("span", { class: cls }, line) : line, "\n"];
+    }) : h("span", { class: "muted" }, text ? "No line matches." : "Nothing logged yet."));
+    if ($("#slFollow").checked && (atBottom || force)) pre.scrollTop = pre.scrollHeight;
+    // per-request speeds, as llama-server printed them
+    const dec = [...text.matchAll(/^\s*eval time.*?([\d.]+) tokens per second/gim)].map((m) => +m[1]);
+    const pre_ = [...text.matchAll(/prompt eval time.*?([\d.]+) tokens per second/gi)].map((m) => +m[1]);
+    const errs = text.split("\n").filter((l) => SL_ERR.test(l)).length;
+    const stat = (k, v, unit) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v, unit && h("small", {}, unit)));
+    fill($("#slStats"), special ? null : [
+      stat("Requests", dec.length || DASH),
+      stat("Decode last", dec.length ? num(dec[dec.length - 1]) : DASH, dec.length ? "t/s" : ""),
+      stat("Decode low–high", dec.length ? `${num(Math.min(...dec))}–${num(Math.max(...dec))}` : DASH, dec.length ? "t/s" : ""),
+      stat("Prefill last", pre_.length ? num(pre_[pre_.length - 1], 0) : DASH, pre_.length ? "t/s" : ""),
+      stat("Error lines", errs ? h("span", { style: "color:var(--danger)" }, String(errs)) : "0"),
+    ]);
+  } catch (e) { /* the engine may be restarting */ }
+}
+function initServerLogs() {
+  $("#slFilter").addEventListener("input", debounce(() => loadServerLogs(true), 150));
+  $("#slErrors").addEventListener("change", () => loadServerLogs(true));
+  $("#slCopy").onclick = () => { navigator.clipboard?.writeText($("#slLog").textContent || "").then(() => toast("Copied.", "ok"), () => toast("Could not copy.", "err")); };
 }
 
 // ── Assistant ────────────────────────────────────────────────
@@ -3213,12 +3303,13 @@ const statePill = (s) => h("span", { class: `pill ${s === "ready" ? "ok" : s ===
 const resultPill = (r) => h("span", { class: `pill ${["loaded", "served", "finished", "unloaded"].includes(r) ? "ok" : r === "queued" ? "warn" : r === "error" ? "bad" : ""}` }, r);
 
 /** One bar per GPU: a segment per model, sized by the VRAM it holds there. cards: [{id, cap_gib, used_gib, models}] */
-function cardBars(cards, usage) {
+function cardBars(cards, usage, real = {}) {
   return h("div", { class: "gpu-cards" }, cards.map((c) => {
     const parts = c.models.map((m) => ({ id: m, gib: usage(m, c) })).filter((p) => p.gib > 0);
     return h("div", { class: "gpu-card" },
       h("div", { class: "head" }, h("b", {}, c.id === "pool" ? "Pool" : `GPU ${c.id}`),
-        h("span", {}, `${num(c.used_gib)} / ${num(c.cap_gib)} GiB`)),
+        h("span", { title: "planned / capacity" }, `${num(c.used_gib)} / ${num(c.cap_gib)} GiB`,
+          real && real[c.id] != null ? h("small", { class: "muted", title: "VRAM the GPU reports in use now" }, ` · in use ${num(real[c.id])}`) : null)),
       h("div", { class: "vbar", title: `${num(c.free_gib ?? Math.max(c.cap_gib - c.used_gib, 0))} GiB free` },
         parts.map((p) => h("i", { style: `width:${Math.min(100, (p.gib / c.cap_gib) * 100)}%; background:${segColor(p.id)}`, title: `${p.id}: ${num(p.gib)} GiB` }))),
       parts.length ? h("div", { class: "vbar-legend" }, parts.map((p) => h("span", { style: `--c:${segColor(p.id)}` }, `${p.id} ${num(p.gib)}`)))
@@ -3283,7 +3374,8 @@ function renderLive() {
   }
   const byId = Object.fromEntries(P.models.map((m) => [m.id, m]));
   const running = P.models.filter((m) => m.state !== "stopped");
-  const usage = (id, c) => { const m = byId[id]; return m && m.size_gib ? m.size_gib / Math.max(m.cards.length, 1) : c.cap_gib; };
+  // a model with no card of its own spreads over every card (llama.cpp's default split), as the engine counts it
+  const usage = (id, c) => { const m = byId[id]; return m && m.size_gib ? m.size_gib / Math.max(m.cards.length || P.cards.length, 1) : c.cap_gib; };
   const cards = P.cards.length ? P.cards : [{ id: "pool", cap_gib: P.budget_gib, used_gib: running.reduce((a, m) => a + m.size_gib, 0), models: running.map((m) => m.id) }];
   const rows = P.models.slice().sort((a, b) => (a.state === "stopped") - (b.state === "stopped") || a.id.localeCompare(b.id));
   const table = h("table");
@@ -3295,7 +3387,7 @@ function renderLive() {
     { label: "In flight", num: true, cell: (m) => m.in_flight || DASH },
     { label: "Last used", cell: (m) => (m.last_used ? ago(Date.parse(m.last_used) / 1000) : DASH) },
     { label: "Load time", num: true, cell: (m) => (m.load_seconds ? `${num(m.load_seconds, 0)}s` : DASH) },
-    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"), m.protected && h("span", { class: "chip" }, "protected")) },
+    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"), m.protected && h("span", { class: "chip", title: `Used in the last ${num(P.protect_seconds / 60, 0)} min, so it is evicted last when another model needs room. Not a setting: it ends on its own once the model sits idle.` }, "recently used")) },
     { label: "", cell: (m) => { const b = h("button", { class: "icon-btn ghost", title: "Load, unload, keep loaded, logs, edit", "aria-label": `Actions for ${m.id}` }, "⋯");
       b.addEventListener("click", () => liveMenu(b, m)); return h("td", { class: "actions" }, b); } },
   ], rows, { key: null }, "No models.");
@@ -3310,7 +3402,8 @@ function renderLive() {
       h("span", { class: `pill ${P.placement ? "ok" : "warn"}`, title: P.placement ? "each model is placed on a card" : "no per-card sizes: planning by total VRAM" }, P.placement ? "placement on" : "placement off"),
       h("span", { class: "muted" }, `${num(P.budget_gib)} GiB usable · models used in the last ${num(P.protect_seconds / 60, 0)} min are evicted last`),
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
-    cardBars(cards, usage),
+    cardBars(cards, usage, L.real_gib),
+    h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
     swaps, queue,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
 }
@@ -3901,7 +3994,8 @@ async function tick() {
   tickCount++;
   try {
     await refreshLaunches();
-    busy = S.launches.some((l) => l.running);
+    busy = S.launches.some((l) => l.running && !l.engine);
+    if (S.view === "serverlogs") loadServerLogs(false);
     if (S.view === "playground") await pollSelected(false);
     const downloading = S.downloads.some((d) => d.status === "running" || d.status === "queued");
     if (downloading || (S.view === "models" && tickCount % 4 === 0)) { await loadDownloads(); busy = busy || downloading; }
@@ -3915,7 +4009,7 @@ async function tick() {
     if (S.view === "assistant" && !A.busy && tickCount % 3 === 0) loadAssistant();
   } catch (e) { /* server restarting; try again */ }
   const liveLogs = S.view === "logs" && (SHORT_RANGES.has(G.range) || SHORT_RANGES.has($("#rRange").value));
-  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") ? 1500 : liveLogs ? 3000 : 8000);
+  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") ? 1500 : liveLogs ? 3000 : 8000);
 }
 
 function initTabs() {
@@ -3965,7 +4059,18 @@ function boot() {
   fill($("#ivRefresh"), icon("refresh"), "Scan");
   $("#ivRefresh").onclick = refreshInventory;
   $("#mSearch").addEventListener("input", debounce(renderLibrary, 120));
-  $("#mRescan").onclick = () => { loadLibrary(); loadDownloads(); };
+  $("#mRescan").onclick = async () => {
+    const b = $("#mRescan");
+    b.disabled = true;
+    try {
+      const r = await api("POST", "/api/library/rescan");
+      const e = r.engine;
+      toast(e && e.ok ? `${r.models} model files here · the engine lists ${e.models}${e.changed ? " (updated)" : ""}`
+        : e ? `${r.models} model files here · engine: ${e.error || "no answer"}` : `${r.models} model files here`, e && !e.ok ? "err" : "ok");
+    } catch (err) { fail(err); }
+    b.disabled = false;
+    loadLibrary(); loadDownloads();
+  };
   $("#dSearch").onclick = hfSearch;
   $("#dQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") hfSearch(); });
   $("#rRange").addEventListener("change", loadRequests);
@@ -3990,6 +4095,7 @@ function boot() {
   document.addEventListener("visibilitychange", () => { if (!document.hidden) loadGpuBars(); });
   initBuilder();
   initPlayground();
+  initServerLogs();
   initAssistant();
   fillImportSelect();
   loadSettings().then((st) => { B.format = st.builder.command_format; }).catch(() => {})

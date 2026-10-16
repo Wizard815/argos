@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import time
+from urllib.parse import quote
 
 from flask import Blueprint, abort, current_app, request
 
@@ -144,10 +145,81 @@ def models():
 
 
 # ----- launches -------------------------------------------------------------
+ENGINE_PREFIX = "engine:"
+
+
+def _engine_running(c) -> list[dict]:
+    """Models the engine runs, as launches: the Playground benchmarks and reads them like its own."""
+    url = c.settings.get("integrations").get("engine_url")
+    if not url:
+        return []
+    try:
+        running = engine_api.running(url, timeout=1.5)
+    except Exception:  # noqa: BLE001 - an unreachable engine just adds nothing
+        return []
+    seen = {s["model_id"]: s for s in c.store.list_sessions(limit=200) if s.get("open")}
+    out = []
+    for m in running:
+        mid, state = str(m["model"]), str(m.get("state") or "ready")
+        out.append({"launch_id": ENGINE_PREFIX + mid, "command": m.get("cmd") or "", "base_model": mid,
+                    "profile_name": "", "host": "engine", "port": None,
+                    "started_at": (seen.get(mid) or {}).get("started_at") or time.time(),
+                    "running": state in ("ready", "starting"), "ready": state == "ready", "exit_code": None,
+                    "stopped": False, "engine": True, "state": state})
+    return out
+
+
+class _EngineRun:
+    """What the Recorder needs of a launch, for a model the engine runs."""
+
+    def __init__(self, launch: dict):
+        self.launch_id = launch["launch_id"]
+        self.command = launch["command"]
+        self.base_model = launch["base_model"]
+        self.profile_name = ""
+        self.port = None
+        try:
+            self.env = dict(parse_command(self.command).env) if self.command else {}
+        except ValueError:
+            self.env = {}
+
+
+def _engine_launch(launch_id: str):
+    """(engine url, the launch) for an ``engine:<model>`` id, or None when it is not one; 404 when not running."""
+    if not launch_id.startswith(ENGINE_PREFIX):
+        return None
+    c = ctx()
+    found = next((x for x in _engine_running(c) if x["launch_id"] == launch_id), None)
+    if found is None:
+        abort(404)
+    return c.settings.get("integrations")["engine_url"], found
+
+
+def _engine_log(url: str, model_id: str) -> str:
+    try:
+        return engine_api.model_log(url, model_id)
+    except Exception as exc:  # noqa: BLE001 - shown in place of the log
+        return f"(could not read the engine's log of {model_id}: {exc})"
+
+
+@bp.get("/api/engine/log/<which>")
+def engine_log(which):
+    """The engine's own log: "proxy" (routing, loads, the scheduler) or "upstream" (every model's output)."""
+    if which not in ("proxy", "upstream"):
+        abort(404)
+    url = ctx().settings.get("integrations").get("engine_url")
+    if not url:
+        return err("the engine is not running", 503)
+    tail = request.args.get("tail", 0, type=int)
+    text = _engine_log(url, which)
+    return current_app.response_class(text[-tail:] if tail else text, mimetype="text/plain")
+
+
 @bp.get("/api/launches")
 def launches():
-    r = ctx().runner
-    return ok(launches=[{**x.to_dict(), "ready": r.health(x, timeout=0.3)} for x in r.list()])
+    c = ctx()
+    r = c.runner
+    return ok(launches=[{**x.to_dict(), "ready": r.health(x, timeout=0.3)} for x in r.list()] + _engine_running(c))
 
 
 def _engine_model(c, command: str) -> str:
@@ -226,6 +298,15 @@ def launch_status(launch_id):
 
 @bp.post("/api/launches/<launch_id>/stop")
 def launch_stop(launch_id):
+    eng = _engine_launch(launch_id)
+    if eng:
+        url, launch = eng
+        try:
+            engine_api.unload_model(url, launch["base_model"])
+        except Exception as exc:  # noqa: BLE001
+            return err(f"the engine could not unload {launch['base_model']}: {exc}", 502)
+        ctx().event("launch", f"unloaded {launch['base_model']} from the playground", data={"model": launch["base_model"]})
+        return ok(launch={**launch, "running": False, "stopped": True})
     c, run = ctx(), _run_or_404(launch_id)
     was_running = run.running
     c.runner.stop(run.launch_id)
@@ -237,6 +318,11 @@ def launch_stop(launch_id):
 
 @bp.get("/api/launches/<launch_id>/log")
 def launch_log(launch_id):
+    eng = _engine_launch(launch_id)
+    if eng:
+        tail = request.args.get("tail", 0, type=int)
+        text = _engine_log(eng[0], eng[1]["base_model"])
+        return current_app.response_class(text[-tail:] if tail else text, mimetype="text/plain")
     text = ctx().runner.read_log(check_id(launch_id), tail_bytes=request.args.get("tail", 0, type=int))
     if text is None:
         abort(404)
@@ -245,7 +331,9 @@ def launch_log(launch_id):
 
 @bp.get("/api/launches/<launch_id>/insight")
 def launch_insight(launch_id):
-    text = ctx().runner.read_log(check_id(launch_id), tail_bytes=1_000_000)
+    eng = _engine_launch(launch_id)
+    text = (_engine_log(eng[0], eng[1]["base_model"]) if eng
+            else ctx().runner.read_log(check_id(launch_id), tail_bytes=1_000_000))
     if text is None:
         abort(404)
     return ok(**log_insight(text))
@@ -274,12 +362,29 @@ def similar_configs():
 
 @bp.post("/api/launches/<launch_id>/bench")
 def launch_bench(launch_id):
-    c, run, d = ctx(), _run_or_404(launch_id), body()
+    c, d = ctx(), body()
     try:
         words = max(1, min(int(d.get("prompt_words", 400)), 50_000))
         n_predict = max(1, min(int(d.get("n_predict", 128)), 8192))
     except (TypeError, ValueError):
         return err("prompt_words and n_predict must be integers")
+    eng = _engine_launch(launch_id)
+    if eng:
+        url, launch = eng
+        mid = launch["base_model"]
+        try:
+            timings = c.runner.bench_url(f"{url.rstrip('/')}/upstream/{quote(mid, safe='')}/completion",
+                                         prompt_words=words, n_predict=n_predict, where=f"through the engine ({mid})")
+        except LaunchError as exc:
+            c.event("bench", f"benchmark failed for {mid}: {exc}", level="error")
+            return err(str(exc), 502)
+        rec = c.recorder.record(launch_id, timings=timings, note=d.get("note") or "", run=_EngineRun(launch),
+                                log_text=_engine_log(url, mid))
+        c.assistant.warm_embed()  # the new numbers are worth searching: start the embedder
+        c.event("bench", f"benchmark {rec['base_model']}: {rec['tokens_per_second'] or 0:.1f} t/s gen, "
+                         f"{rec['prompt_per_second'] or 0:.0f} t/s prompt", data={"run_id": rec["run_id"]})
+        return ok(run=rec)
+    run = _run_or_404(launch_id)
     if not run.running:
         return err("process is not running")
     try:
@@ -296,6 +401,11 @@ def launch_bench(launch_id):
 
 @bp.post("/api/launches/<launch_id>/record")
 def launch_record(launch_id):
+    eng = _engine_launch(launch_id)
+    if eng:
+        rec = ctx().recorder.record(launch_id, note=body().get("note") or "", run=_EngineRun(eng[1]),
+                                    log_text=_engine_log(eng[0], eng[1]["base_model"]))
+        return ok(run=rec)
     run = _run_or_404(launch_id)
     rec = ctx().recorder.record(run.launch_id, note=body().get("note") or "")
     ctx().assistant.warm_embed()  # the new numbers are worth searching: start the embedder

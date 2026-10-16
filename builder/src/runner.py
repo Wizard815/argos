@@ -187,11 +187,19 @@ class Runner:
     def bench(self, run: Run, prompt_words: int = 400, n_predict: int = 128,
               timeout: float = 900) -> dict:
         """One completion request; returns perf fields named like the runs table."""
+        return self.bench_url(self._url(run, "/completion"), prompt_words, n_predict, timeout,
+                              where=f"on port {run.port}")
+
+    @staticmethod
+    def bench_url(url: str, prompt_words: int = 400, n_predict: int = 128, timeout: float = 900,
+                  where: str = "") -> dict:
+        """The benchmark request against any llama-server ``/completion`` URL (a launch here, or a model the
+        engine runs, through its ``/upstream/<model>/completion``)."""
         body = json.dumps({
             "prompt": bench_prompt(prompt_words), "n_predict": n_predict,
             "cache_prompt": False, "ignore_eos": True, "temperature": 0,
         }).encode()
-        req = urllib.request.Request(self._url(run, "/completion"), data=body,
+        req = urllib.request.Request(url, data=body,
                                      headers={"Content-Type": "application/json"})
         with GpuSampler() as gpu:
             try:
@@ -201,7 +209,7 @@ class Runner:
                 detail = exc.read().decode("utf-8", errors="replace")[:300]
                 raise LaunchError(f"server returned HTTP {exc.code}: {detail}") from exc
             except (urllib.error.URLError, OSError) as exc:
-                raise LaunchError(f"server not reachable on port {run.port}: {exc}") from exc
+                raise LaunchError(f"server not reachable {where or url}: {exc}") from exc
         t = resp.get("timings") or {}
         draft_n = t.get("draft_n") or 0
         return {

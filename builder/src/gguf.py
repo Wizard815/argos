@@ -20,7 +20,8 @@ _STRING, _ARRAY = 8, 9
 
 # arch-specific keys we care about, as suffixes after "<arch>."
 _WANT = ("block_count", "attention.head_count", "attention.head_count_kv", "attention.key_length",
-         "attention.value_length", "embedding_length", "full_attention_interval", "context_length")
+         "attention.value_length", "embedding_length", "full_attention_interval", "context_length",
+         "attention.sliding_window", "attention.sliding_window_pattern")
 
 
 _NEEDED = ("block_count", "attention.head_count", "embedding_length")
@@ -149,9 +150,21 @@ def _summarize(arch: str, found: dict) -> Optional[dict]:
         attn_layers = layers // interval
     else:
         attn_layers = layers
+    # Sliding-window attention (gemma 2/3/4, cohere2): most layers keep only the last
+    # ``window`` tokens, so the KV cache of those layers does not grow with the context.
+    window = int(_scalar_or_max(found.get("attention.sliding_window")) or 0)
+    pattern = found.get("attention.sliding_window_pattern")
+    swa_layers = 0
+    if window:
+        if isinstance(pattern, list) and pattern:
+            swa_layers = sum(1 for x in pattern if x)  # true = a sliding-window layer
+        else:
+            n = int(pattern) if isinstance(pattern, int) and pattern > 1 else 6  # llama.cpp's default for gemma
+            swa_layers = int(layers) - int(layers) // n
+        swa_layers = min(swa_layers, int(attn_layers))
     return {"arch": arch, "layers": int(layers), "heads": int(heads), "kv_heads": int(kv_heads),
             "key_len": int(key_len), "value_len": int(value_len), "attn_layers": int(attn_layers),
-            "train_ctx": int(found.get("context_length") or 0)}
+            "train_ctx": int(found.get("context_length") or 0), "swa_window": window, "swa_layers": swa_layers}
 
 
 __all__ = ["read_arch"]

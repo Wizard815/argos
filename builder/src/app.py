@@ -114,9 +114,9 @@ def create_app(config: dict | None = None) -> Flask:
     memory.extra_sources.append(odysseus_hub.brain_source(settings.all))
 
     def watch_memory():
-        """Keep the assistant's memory current: new records every tick, a bounded number embedded each time."""
+        """Keep the assistant's memory current: new records every tick. Embedding waits for a search (see sync)."""
         if settings.get("memory")["enabled"]:
-            memory.sync(budget=64)
+            memory.sync(budget=64, embed=False)
 
     def watch_inventory():
         """Keep the load history current, and look for new models and settings every ten minutes."""
@@ -124,7 +124,42 @@ def create_app(config: dict | None = None) -> Flask:
             inventory_routes.sync_running()
             inventory_routes.refresh_if_due()
 
-    pool_seen: dict = {"models": None, "queue_reported": {}}
+    pool_seen: dict = {"models": None, "queue_reported": {}, "gpu": {}, "measuring": {}}
+
+    def gpu_used() -> dict[str, float]:
+        return {str(g["gpu"]): float(g.get("mem_used_mb") or 0) for g in store.gpu_latest()}
+
+    def measure_loads(now: dict, before: dict, gpu_before: dict, gpu_now: dict, pool: dict) -> None:
+        """Measure what a model really takes: the VRAM the cards gained while it loaded and nothing else changed.
+
+        The baseline is the look before the model started; the reading is the first look after it has been
+        ready for a whole tick, so its buffers are allocated. Saved as the plan's measured size, which replaces
+        the estimate on the Schedule page and in the engine's sizes."""
+        measuring = pool_seen["measuring"]
+        for mid, (state, _) in now.items():
+            was = before.get(mid, ("stopped", ()))[0]
+            if state in ("ready", "starting") and was not in ("ready", "starting") and gpu_before:
+                measuring[mid] = {"gpu": gpu_before, "others": {k: v[0] for k, v in before.items() if k != mid}}
+        for mid in list(measuring):
+            state, cards = now.get(mid, ("stopped", ()))
+            if state not in ("ready", "starting"):
+                measuring.pop(mid)
+                continue
+            if state != "ready" or before.get(mid, ("",))[0] != "ready":
+                continue
+            m = measuring.pop(mid)
+            others_now = {k: v[0] for k, v in now.items() if k != mid}
+            if any(others_now.get(k, "stopped") != v for k, v in m["others"].items()):
+                continue  # something else loaded or unloaded meanwhile: the difference is not this model's
+            ids = [str(c) for c in cards] or sorted(gpu_now)
+            per_card = [max(0.0, gpu_now.get(i, 0.0) - m["gpu"].get(i, 0.0)) / 1024 for i in ids]
+            gib = sum(per_card)
+            if gib < 0.2:
+                continue
+            info = next((x for x in pool.get("models") or [] if x.get("id") == mid), {})
+            app.extensions["pb"].plans.set_measured(mid, gib, per_card, info.get("load_seconds") or None)
+            event("schedule", f"{mid} measured at {gib:.1f} GiB while loaded" + (f" on GPU {','.join(ids)}" if cards else ""),
+                  data={"model": mid, "gib": round(gib, 2), "per_card": [round(x, 2) for x in per_card]})
 
     def watch_pool():
         """Log what the pool router did between two looks: models loaded, moved or unloaded, and long waits."""
@@ -141,8 +176,14 @@ def create_app(config: dict | None = None) -> Flask:
         now = {m["id"]: (m["state"], tuple(m.get("cards") or [])) for m in pool.get("models") or []}
         before = pool_seen["models"]
         pool_seen["models"] = now
+        gpu_before, gpu_now = pool_seen["gpu"], gpu_used()
+        pool_seen["gpu"] = gpu_now
         if before is None:
             return
+        try:
+            measure_loads(now, before, gpu_before, gpu_now, pool)
+        except Exception as exc:  # noqa: BLE001 - a failed measurement must not stop the pool log
+            event("schedule", f"could not measure a load: {exc}", level="warn")
         for mid, (state, cards) in now.items():
             was = before.get(mid, ("stopped", ()))
             on = f" on GPU {','.join(cards)}" if cards else ""

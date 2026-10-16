@@ -70,11 +70,13 @@ class Recorder:
         self.store = store
         self.runner = runner
 
-    def record(self, launch_id: str, timings: Optional[dict] = None, note: str = "") -> dict:
-        run = self.runner.get(launch_id)
+    def record(self, launch_id: str, timings: Optional[dict] = None, note: str = "", run=None,
+               log_text: Optional[str] = None) -> dict:
+        """``run`` and ``log_text`` stand in for a launch of this session: a model the engine runs has no Run here."""
+        run = run or self.runner.get(launch_id)
         if run is None:
             raise KeyError(f"no launch {launch_id} in this session")
-        parsed = parse_log_text(self.runner.read_log(launch_id) or "")
+        parsed = parse_log_text(log_text if log_text is not None else self.runner.read_log(launch_id) or "")
         cmd = parse_command(run.command)
         s = cmd.summary()
         perf = {

@@ -28,6 +28,23 @@ def library():
     return ok(models_dir=d, exists=os.path.isdir(d), models=models, media=scan_media(d))
 
 
+@bp.post("/api/library/rescan")
+def library_rescan():
+    """Rescan the models folder: the engine regenerates its model list, and the library is read again."""
+    c = ctx()
+    url = c.settings.get("integrations")["engine_url"]
+    engine = None
+    if url:
+        try:
+            engine = engine_api.rescan(url)
+        except Exception as exc:  # noqa: BLE001 - the library still rescans
+            engine = {"ok": False, "error": f"engine not reachable: {exc}"}
+        if engine.get("ok"):
+            c.event("library", f"rescanned the models folder: the engine lists {engine.get('models')} models"
+                    + (" (its model list changed)" if engine.get("changed") else ""))
+    return ok(engine=engine, models=len(scan_models(models_dir())))
+
+
 EMBED = re.compile(r"(?i)embed|(?<![a-z])(bge|e5|gte)-|rerank")
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -62,9 +63,31 @@ def unload_model(base_url: str, model_id: str, timeout: float = 60.0) -> None:
     _post(base_url.rstrip("/") + f"/api/models/unload/{urllib.parse.quote(model_id, safe='')}", timeout)
 
 
+def rescan(base_url: str, timeout: float = 60.0) -> dict:
+    """Make the engine scan its models folder now. ``{"ok", "models", "changed"}``; raises when unreachable."""
+    req = urllib.request.Request(base_url.rstrip("/") + "/api/models/rescan", data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+    except urllib.error.HTTPError as exc:  # 503 when modelScan is off, 500 on a scan error: both say why
+        try:
+            return json.loads(exc.read().decode("utf-8", errors="replace"))
+        except ValueError:
+            return {"ok": False, "error": f"HTTP {exc.code}"}
+
+
 def model_log(base_url: str, model_id: str, wait: float = 1.5, max_bytes: int = 200_000) -> str:
-    """The recent output of one model's process. The engine streams it (history first, then live), so this reads
-    for ``wait`` seconds and stops."""
+    """The recent output of one model's process (``model_id`` may also be "proxy" or "upstream").
+
+    Uses the engine's one-shot ``/logs/<id>``; an older engine only streams (history first, then live), so then
+    this reads the stream for ``wait`` seconds and stops."""
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + f"/logs/{urllib.parse.quote(model_id, safe='')}",  # noqa: S310
+                                    timeout=max(wait, 3.0)) as resp:
+            return resp.read().decode("utf-8", errors="replace")[-max_bytes:]
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
     import socket
     import time as _time
     url = base_url.rstrip("/") + f"/logs/stream/{urllib.parse.quote(model_id, safe='')}"
@@ -83,6 +106,14 @@ def model_log(base_url: str, model_id: str, wait: float = 1.5, max_bytes: int = 
     except (socket.timeout, TimeoutError):
         pass
     return b"".join(chunks).decode("utf-8", errors="replace")[-max_bytes:]
+
+
+def completion(base_url: str, model_id: str, body: dict, timeout: float = 900.0) -> dict:
+    """POST llama-server's native ``/completion`` to one model through the engine (it loads the model if needed)."""
+    req = urllib.request.Request(base_url.rstrip("/") + f"/upstream/{urllib.parse.quote(model_id, safe='')}/completion",
+                                 data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
 def model_state(base_url: str, model_id: str, timeout: float = 1.5) -> str:

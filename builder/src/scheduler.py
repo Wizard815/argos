@@ -231,7 +231,12 @@ def estimate_gib(weights_bytes: int, arch: Optional[dict], ctx: int, cache_k: st
         if bk is None or bv is None:
             bk, bv = bk or CACHE_BYTES["q8_0"], bv or CACHE_BYTES["q8_0"]
             notes.append(f"unknown cache type {cache_k or cache_v!r}, counted as q8_0")
-        kv = arch["attn_layers"] * arch["kv_heads"] * (arch["key_len"] * bk + arch["value_len"] * bv) * ctx / GIB
+        per_token = arch["kv_heads"] * (arch["key_len"] * bk + arch["value_len"] * bv)
+        swa, window = int(arch.get("swa_layers") or 0), int(arch.get("swa_window") or 0)
+        full = arch["attn_layers"] - swa
+        kv = (full * ctx + swa * min(ctx, window)) * per_token / GIB
+        if swa:
+            notes.append(f"{swa} sliding-window layers keep {window} tokens")
     else:
         notes.append("no model header, KV cache not counted")
     overhead = 1.0 + 0.10 * weights
