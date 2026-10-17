@@ -524,6 +524,33 @@ func TestFIFO_NoSwapWhileServing(t *testing.T) {
 	}
 }
 
+// TestFIFO_NoSwapWhileQueued verifies the queued half of the same rule. A model
+// with nothing in flight is still not idle if requests are waiting for it: evicting
+// it makes those waiters sit through a reload as well, which is the sawtooth - one
+// decode, evict, reload, one decode, evict - this scheduler exists to avoid.
+func TestFIFO_NoSwapWhileQueued(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	eff.states["b"] = process.StateStopped
+	s := newFIFO(&stubPlanner{evict: map[string][]string{"b": {"a"}}}, eff)
+
+	s.OnRequest(req("a")) // fast path: a serves, inFlight[a]=1
+	s.OnRequest(req("b")) // would evict busy a -> queued (b is ahead of a's second request)
+	s.OnRequest(req("a")) // a second request for a -> queued behind b
+
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"}) // inFlight[a]=0, but a's own request is still waiting
+
+	if got := eff.startsFor("b"); got != 0 {
+		t.Fatalf("StartSwap(b)=%d want 0: a has a request waiting for it", got)
+	}
+
+	// With a served and nothing left waiting for it, b is free to take the slot.
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+	if got := eff.startsFor("b"); got != 1 {
+		t.Fatalf("StartSwap(b)=%d want 1 once nothing is waiting for a", got)
+	}
+}
+
 // TestFIFO_GrantServeFalseDoesNotLeakInFlight verifies that when a caller has
 // walked away (GrantServe returns false) the in-flight count is not bumped, so a
 // later evicting request is not blocked forever.

@@ -133,9 +133,10 @@ func (s *FIFO) OnRequest(req HandlerReq) {
 		return
 	}
 
-	// (5) Would evict a busy process — queue until it drains.
-	if conflictsWithInFlight(evict, s.inFlight) {
-		s.logger.Debugf("%s: queuing request for model %s (would evict in-flight process)", s.name, req.Model)
+	// (5) Would evict a busy process — queue until it drains. Busy covers serving a
+	// request and having requests wait for it: a reload undoes both.
+	if s.conflictsWithWork(evict, req.Model) {
+		s.logger.Debugf("%s: queuing request for model %s (would evict a process with work)", s.name, req.Model)
 		s.enqueue(req)
 		return
 	}
@@ -444,7 +445,7 @@ func (s *FIFO) drainQueue() {
 			remaining = append(remaining, req)
 			continue
 		}
-		if conflictsWithInFlight(evict, s.inFlight) {
+		if s.conflictsWithWork(evict, req.Model) {
 			remaining = append(remaining, req)
 			continue
 		}
@@ -556,6 +557,31 @@ func conflictsWithInFlight(evict []string, inFlight map[string]int) bool {
 		if inFlight[m] > 0 {
 			return true
 		}
+	}
+	return false
+}
+
+// conflictsWithWork reports whether any model about to be stopped is busy. Busy
+// means serving a request, and busy also means having requests waiting for it:
+// evicting a model somebody is waiting for makes those waiters sit through a
+// reload as well, which is the sawtooth this scheduler exists to avoid - one
+// decode, evict, reload, one decode, evict.
+//
+// serving is the model whose request is being admitted right now: its own wait is
+// ending, so its queue entry must not count against it. A model that is already
+// stopped is never busy either: leaving it stopped costs nothing.
+func (s *FIFO) conflictsWithWork(evict []string, serving string) bool {
+	if conflictsWithInFlight(evict, s.inFlight) {
+		return true
+	}
+	for _, q := range s.queued {
+		if q.Model == serving || !containsString(evict, q.Model) {
+			continue
+		}
+		if st, ok := s.effects.ModelState(q.Model); ok && st == process.StateStopped {
+			continue
+		}
+		return true
 	}
 	return false
 }
