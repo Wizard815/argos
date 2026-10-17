@@ -1840,7 +1840,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 const sv = (tag, attrs = {}) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
 const RANGES = [["30s", "30s"], ["5m", "5m"], ["10m", "10m"], ["30m", "30m"], ["1h", "1h"], ["6h", "6h"], ["24h", "24h"], ["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["1y", "1y"]];
 const SHORT_RANGES = new Set(["30s", "5m", "10m", "30m"]);
-const G = { range: "24h", data: null };
+const G = { range: "30m", data: null };
 const seriesColor = (i) => `var(--series-${(i % 8) + 1})`;
 
 /** Round tick step for roughly four intervals up to ``max``. */
@@ -2790,7 +2790,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // Long-term history. New quants, cache types, flags and models are recorded as "new" and shown under New & unknown.
 const IV = { pane: "models", data: null, sessions: [], traits: [], showAll: false, suggestions: null, assistNote: "", busy: false,
   filter: "", days: 30, model: "", sortM: { key: null, asc: false }, sortS: { key: null, asc: false },
-  selected: null, page: null, pageDays: 90, byFamily: false, closed: new Set() };
+  selected: null, page: null, pageDays: 7, byFamily: false, closed: new Set() };
 
 function dur(sec) {
   if (sec == null) return DASH;
@@ -2913,7 +2913,7 @@ async function openModel(id) {
 function renderInvModelPage() {
   const el = $("#ivModels"), P = IV.page;
   const back = btn("All models", () => { IV.selected = null; IV.page = null; renderInvModels(); }, "sm ghost", "arrow-left");
-  const range = h("div", { class: "seg", role: "group", "aria-label": "Range" }, [[7, "7d"], [30, "30d"], [90, "90d"], [365, "1y"]].map(([v, l]) =>
+  const range = h("div", { class: "seg", role: "group", "aria-label": "Range" }, [[1 / 24, "1h"], [0.25, "6h"], [0.5, "12h"], [1, "1d"], [7, "7d"], [30, "30d"], [90, "90d"], [365, "1y"]].map(([v, l]) =>
     h("button", { class: IV.pageDays === v ? "on" : "", onclick: () => { IV.pageDays = v; openModel(IV.selected); } }, l)));
   const compareAll = P && P.configs.filter((c) => c.id !== "untracked").length > 1
     ? btn("Compare its configs", () => { CMP.items = P.configs.filter((c) => c.id !== "untracked").slice(0, 6).map((c) => ({ model_id: IV.selected, config: c.id })); CMP.result = null; openCompare(); }, "sm", "layers") : null;

@@ -107,7 +107,9 @@ def _sessions():
 def model_page(model_id):
     """One model: its launch configs side by side, request speeds over time, and speed by concurrency."""
     c = ctx()
-    days = max(1.0, min(request.args.get("days", 90, type=float), 3650.0))
+    # Floor of an hour, not a day: after a tuning change an hour of runs is the
+    # useful window, so days may be fractional (1/24 = one hour).
+    days = max(1 / 24.0, min(request.args.get("days", 7, type=float), 3650.0))
     perf = model_perf(c.store, model_id, days=days)
     row = next((m for m in c.inventory.models_summary() if m["model_id"] == model_id), None)
     if row is None and not perf["configs"]:
@@ -120,7 +122,9 @@ def compare_options():
     """Every launch config of every model in the inventory, for the Compare pickers."""
     from ..compare import options
     c = ctx()
-    days = max(1.0, min(request.args.get("days", 90, type=float), 3650.0))
+    # Floor of an hour, not a day: after a tuning change an hour of runs is the
+    # useful window, so days may be fractional (1/24 = one hour).
+    days = max(1 / 24.0, min(request.args.get("days", 7, type=float), 3650.0))
     return ok(options=options(c.store, [m["model_id"] for m in c.inventory.models_summary()], days=days))
 
 
@@ -131,7 +135,7 @@ def compare_configs():
     from ..compare import CompareError, compare
     d = body()
     try:
-        return ok(**compare(ctx().store, d.get("items"), days=max(1.0, min(float(d.get("days") or 90), 3650.0))))
+        return ok(**compare(ctx().store, d.get("items"), days=max(1 / 24.0, min(float(d.get("days") or 7), 3650.0))))
     except CompareError as exc:
         return err(str(exc))
 
