@@ -56,6 +56,7 @@ Builder tunes a llama-server command and saves it as a profile; Profiles lists t
 If the user asks how to do something, name the view to open and the setting to change. A saved profile is the way to keep a launch command: build it in Builder, name it, then it appears in Profiles.
 If LIVE DATA does not cover the question, say so in one line instead of guessing.
 Know llama-server flags (-ngl, -c, --flash-attn, --cache-type-k/v, -lm, --split-mode, --n-cpu-moe, --spec-type) and suggest concrete changes.
+When BUILDER appears in LIVE DATA, the user is in the Builder view and that is the command on their screen: answer about it directly. To propose a change to it, end with one line per flag, "ACTION set <flag> <value>" or "ACTION unset <flag>" (for example: ACTION set --flash-attn off). Propose only flags you know; the user applies each one. Never rewrite the whole command unless asked to.
 Answer in a few short sentences or a short list."""
 
 # How many models one question may pull into focus. Two was tight: a question
@@ -66,8 +67,41 @@ FOCUS_MODELS = 4
 # free text, so anything looser becomes guesswork about what was meant.
 ACTION_RE = re.compile(r"ACTION\s+(load|unload|keep)\s+(\S+)(?:\s+(on|off))?\s*$", re.IGNORECASE)
 
+# The Builder panel lets the assistant propose an edit to the command on screen.
+# The flag name is checked against a flag's shape before it is offered, because the
+# answer is free text and this one ends up in a command line: a model that writes
+# "ACTION set $(curl ...) x" must not produce a button.
+ACTION_EDIT_RE = re.compile(r"ACTION\s+(set|unset)\s+(\S+)(?:\s+(.*))?\s*$", re.IGNORECASE)
+FLAG_NAME_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$")
+
 SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}  # Qwen3 non-thinking defaults
 THINK = re.compile(r"<think>.*?(?:</think>\s*|$)", re.DOTALL)
+
+
+def _builder_line(builder: dict) -> str:
+    """What the Builder has open, as one line the model can answer about.
+
+    The command is the important part; the flags are what a suggestion has to name,
+    and the models are what a comparison is against.
+    """
+    parts: list[str] = []
+    command = str(builder.get("command") or "").strip()
+    if command:
+        parts.append("command: " + command[:400])
+    flags = builder.get("flags")
+    if isinstance(flags, dict) and flags:
+        named = [f"{k}={v}" for k, v in flags.items() if not str(k).isupper() and v not in ("", None, True)]
+        if named:
+            parts.append("flags: " + ", ".join(named[:40]))
+    env = builder.get("env")
+    if env:
+        text = env if isinstance(env, str) else ", ".join(str(x) for x in env)
+        if text.strip():
+            parts.append("env: " + text[:200])
+    models = builder.get("models")
+    if models:
+        parts.append("comparing against: " + ", ".join(str(m) for m in list(models)[:8]))
+    return " | ".join(parts) or "(nothing set yet)"
 
 
 def pick_quant(quants: list[dict], want: str = DEFAULT_QUANT) -> Optional[dict]:
@@ -124,6 +158,8 @@ class Assistant:
         now = now or time.time()
         lines = [f"LIVE DATA ({datetime.fromtimestamp(now).strftime('%Y-%m-%d %H:%M')})"]
         lines += self._tool_lines(question)
+        if getattr(self, "_builder", None):
+            lines.append("BUILDER (open in the Builder view right now): " + _builder_line(self._builder))
         latest = self.store.gpu_latest()
         if latest and now - latest[0]["ts"] < 600:
             lines.append("GPU now: " + " | ".join(
@@ -252,6 +288,11 @@ class Assistant:
         for line in (answer or "").splitlines():
             m = ACTION_RE.match(line.strip())
             if not m:
+                edit = ACTION_EDIT_RE.match(line.strip())
+                if edit and FLAG_NAME_RE.match(edit.group(2)):
+                    actions.append({"verb": edit.group(1).lower(), "flag": edit.group(2),
+                                    "value": (edit.group(3) or "").strip(), "model": ""})
+                    continue
                 kept.append(line)
                 continue
             verb, model, on = m.group(1).lower(), m.group(2), m.group(3)
@@ -620,7 +661,7 @@ class Assistant:
                 pass
         return done
 
-    def chat(self, text: str) -> Iterator[dict]:
+    def chat(self, text: str, builder: Optional[dict] = None) -> Iterator[dict]:
         """Run one turn; yields {"type": status|delta|compacted|done|error, ...}."""
         if not self._turn.acquire(blocking=False):
             yield {"type": "error", "error": "The assistant is still answering the previous message."}
@@ -638,6 +679,8 @@ class Assistant:
                 self.store.add_message("assistant", direct)
                 yield {"type": "done", "tokens": 0}
                 return
+            # What is on screen for this turn only: digest() reads it while answering.
+            self._builder = builder or None
             # Starting the model can take a while: run it aside and stream its progress.
             updates: queue.Queue = queue.Queue()
             result: dict = {}
