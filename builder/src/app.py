@@ -24,6 +24,7 @@ import atexit
 import os
 import signal
 import sys
+import threading
 import time
 
 from flask import Flask, request, send_from_directory
@@ -52,6 +53,7 @@ from .telemetry import Collector  # noqa: E402
 from .web import Ctx, err  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SLOW_REQUEST_S = 2.0  # a request slower than this is logged, so a stall shows up in the container log
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 
 
@@ -244,6 +246,8 @@ def create_app(config: dict | None = None) -> Flask:
     atexit.register(inventory.close_all)
     if cfg["BACKGROUND"]:
         collector.start()
+        # build the model list now, so the first visit to Inventory finds it ready
+        threading.Thread(target=inventory.models_summary, name="inventory-prewarm", daemon=True).start()
 
     for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp):
         app.register_blueprint(bp)
@@ -276,6 +280,18 @@ def create_app(config: dict | None = None) -> Flask:
         resp = send_from_directory(UI_DIR, filename)
         # the page asks for ?v=<version>, so a versioned file can be kept; an unversioned one is always re-checked
         resp.headers["Cache-Control"] = "public, max-age=31536000, immutable" if request.args.get("v") else "no-cache"
+        return resp
+
+    @app.before_request
+    def _start_clock():
+        request.environ["argos.t0"] = time.monotonic()
+
+    @app.after_request
+    def _log_slow(resp):
+        took = time.monotonic() - request.environ.get("argos.t0", time.monotonic())
+        if took > SLOW_REQUEST_S:
+            app.logger.warning("slow request: %s %s answered %s after %.1fs", request.method, request.full_path.rstrip("?"),
+                               resp.status_code, took)
         return resp
 
     @app.errorhandler(404)
