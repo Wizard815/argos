@@ -423,6 +423,12 @@ class Store:
     def delete_run(self, run_id: str) -> bool:
         return self._x("DELETE FROM runs WHERE run_id=?", (run_id,)).rowcount > 0
 
+    def count_runs(self) -> int:
+        """How many runs there are, without reading them: the sidebar wants the number
+        and nothing else."""
+        rows = self._q("SELECT COUNT(*) AS n FROM runs")
+        return int(rows[0]["n"]) if rows else 0
+
     def base_models(self) -> list[str]:
         q = ("SELECT base_model FROM runs UNION SELECT base_model FROM profiles "
              "UNION SELECT base_model FROM catalog_files")

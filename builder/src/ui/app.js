@@ -4429,7 +4429,9 @@ function boot() {
   Promise.all([loadProfiles(), loadModels(), loadCatalog(), loadIntegrations(), loadLibrary(), loadDownloads()])
     .then(migrateBrowserProfiles).catch(fail);
   api("GET", "/api/assistant").then((st) => { A.state = st; assistantNav(); }).catch(() => {});
-  api("GET", "/api/runs?limit=100000").then((r) => { $("#navPerf").textContent = r.runs.length || ""; }).catch(() => {});
+  // Just the number. Asking for every run made the first page load carry the whole
+  // history to put a count in a badge.
+  api("GET", "/api/runs?limit=1").then((r) => { $("#navPerf").textContent = (r.total ?? r.runs.length) || ""; }).catch(() => {});
   tick();
 }
 
