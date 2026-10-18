@@ -137,10 +137,28 @@ function keepFocus(fn) {
 }
 
 // ── API / feedback ───────────────────────────────────────────
-async function api(method, path, body) {
+// Every call gets a deadline. Without one, a request that never answers leaves a
+// button looking dead - which is exactly how a stuck app reads from the outside.
+// A call that is legitimately slow (a benchmark, a load measurement) passes 0.
+const API_TIMEOUT_MS = 180000;
+
+async function api(method, path, body, timeoutMs = API_TIMEOUT_MS) {
   const opts = { method, headers: {} };
   if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
-  const res = await fetch(path, opts);
+  const ctl = new AbortController();
+  const timer = timeoutMs > 0 ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+  if (timer) opts.signal = ctl.signal;
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw new Error(`${method} ${path} did not answer within ${Math.round(timeoutMs / 1000)}s. The app is busy or stuck — a restart usually clears it.`);
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   const isJson = (res.headers.get("content-type") || "").includes("json");
   const data = isJson ? await res.json() : await res.text();
   if (!res.ok || (isJson && data.ok === false)) throw new Error((isJson && data.error) || `${res.status} ${res.statusText}`);
@@ -1208,7 +1226,7 @@ function initPlayground() {
     const id = S.sel, b = $("#gBench");
     b.disabled = true; b.lastChild.textContent = "Benchmarking…";
     try {
-      const res = await api("POST", `/api/launches/${encodeURIComponent(id)}/bench`, { prompt_words: +$("#gWords").value, n_predict: +$("#gNPredict").value });
+      const res = await api("POST", `/api/launches/${encodeURIComponent(id)}/bench`, { prompt_words: +$("#gWords").value, n_predict: +$("#gNPredict").value }, 0);
       S.lastBench[id] = res.run;
       toast(`${num(res.run.tokens_per_second)} t/s generation · saved to Benchmarks`, "ok");
     } catch (e) { fail(e); }
@@ -1604,7 +1622,7 @@ function renderIntegrations() {
   const pullBtn = btn("Pull presets into profiles", async () => {
     pullBtn.disabled = true; pullBtn.textContent = "Pulling…";
     try {
-      const r = await api("POST", "/api/ody/pull");
+      const r = await api("POST", "/api/ody/pull", undefined, 0);
       const rows = [];
       const add = (title, items, cls, sub) => {
         if (!items || !items.length) return;
@@ -1714,7 +1732,7 @@ async function sendToOdysseus() {
   if (!st.configured || !st.connected) return toast(st.error || "Connect Odysseus first (the Odysseus page).", "err");
   const when = h("input", { type: "datetime-local" });
   const go = (what, extra = {}) => async (close) => {
-    try { await api("POST", "/api/ody/send", { profile_id: B.profileId, what, ...extra }); toast(`Sent to Odysseus as a ${what}.`, "ok"); close(); } catch (e) { fail(e); }
+    try { await api("POST", "/api/ody/send", { profile_id: B.profileId, what, ...extra }, 0); toast(`Sent to Odysseus as a ${what}.`, "ok"); close(); } catch (e) { fail(e); }
   };
   const w = st.writable || {};
   modal("Send this preset to Odysseus", h("div", { class: "stack" },
@@ -2518,7 +2536,7 @@ function renderAssistant() {
 
 async function setupAssistant() {
   try {
-    const res = await api("POST", "/api/assistant/setup", {});
+    const res = await api("POST", "/api/assistant/setup", {}, 0);
     toast(res.download ? "Downloading Qwen3-0.6B — the assistant starts once it lands." : `Assistant set to ${res.profile.name}.`, "ok");
     loadDownloads();
     loadProfiles();
@@ -2657,7 +2675,7 @@ function renderAssistantSettings() {
   escalateFetch.onclick = async () => {
     escalateFetch.disabled = true; escalateFetch.textContent = "…";
     try {
-      const r = await api("POST", "/api/assistant/setup", { which: "escalate" });
+      const r = await api("POST", "/api/assistant/setup", { which: "escalate" }, 0);
       if (r && r.model) escalate.value = r.model;
       toast("Fetching the bigger model. It shows up as an engine model once the models folder is scanned.", "ok");
     } catch (e) { fail(e); } finally { escalateFetch.disabled = false; escalateFetch.textContent = "Fetch it"; }
@@ -3784,7 +3802,7 @@ function appliedPill(D) {
 // ----- measuring -------------------------------------------------------------------------
 async function startMeasure(row) {
   let job;
-  try { job = (await api("POST", "/api/schedule/measure", { id: row.id })).job; } catch (e) { return fail(e); }
+  try { job = (await api("POST", "/api/schedule/measure", { id: row.id }, 0)).job; } catch (e) { return fail(e); }
   const msg = h("p", { style: "margin:0 0 10px" }, "Starting…");
   const bar = h("div", { class: "progress" }, h("i", { style: "width:5%" }));
   const note = h("p", { class: "hint", style: "margin:10px 0 0" },

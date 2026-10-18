@@ -261,6 +261,10 @@ class Store:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # Two writers happen: the telemetry tick and whatever a request is doing.
+        # Without a busy timeout SQLite gives up the moment it is locked, which
+        # surfaces as a route that fails or hangs for no visible reason.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         with self._lock:
             self._migrate_legacy()
             self._conn.executescript(SCHEMA)
