@@ -260,7 +260,13 @@ class Store:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL is the better journal for a busy database, but it coordinates through the
+        # -shm file and mmap. On a FUSE filesystem - Unraid's /mnt/user is shfs - that
+        # coordination is what fails: the -wal stops checkpointing and grows, and reads
+        # block forever. TRUNCATE needs only ordinary file locking, which those
+        # filesystems do honour. A database on a local disk could keep WAL; this is the
+        # safer default for where these containers actually run.
+        self._conn.execute("PRAGMA journal_mode=TRUNCATE")
         # Two writers happen: the telemetry tick and whatever a request is doing.
         # Without a busy timeout SQLite gives up the moment it is locked, which
         # surfaces as a route that fails or hangs for no visible reason.
