@@ -82,6 +82,7 @@
             <button class="btn ghost" id="bDelete" title="Delete this preset"><i data-icon="trash"></i></button>
             <button class="btn" id="bLaunch"><i data-icon="play"></i>Launch</button>
             <button class="btn" id="bOdysseus" title="Send this preset to Odysseus"><i data-icon="plug"></i>Odysseus</button>
+            <button class="btn" id="bAssistBtn" title="Work on this command with the assistant"><i data-icon="message"></i>Assistant</button>
           </div>
         </div>
         <div class="grid2">
@@ -90,6 +91,15 @@
             <div class="fields" id="bFields"></div>
           </div>
           <div>
+            <div class="card" id="bAssist" hidden>
+              <div class="card-head"><h2>Assistant</h2><span class="spacer"></span>
+                <button class="btn sm ghost" id="bAssistClose" title="Hide the assistant"><i data-icon="x"></i></button></div>
+              <div class="messages" id="bAssistMessages" style="max-height:320px;overflow:auto"></div>
+              <div class="row" style="margin-top:8px">
+                <textarea id="bAssistInput" rows="2" spellcheck="true" placeholder="Ask about this command, or ask for a flag change…" style="flex:1"></textarea>
+                <button class="send" id="bAssistSend" aria-label="Send"><i data-icon="arrow-up"></i></button>
+              </div>
+            </div>
             <div class="card"><div class="card-head"><h2>Model files</h2></div><div class="fields" id="bFiles"></div></div>
             <div class="card"><div class="card-head"><h2>Environment</h2><span class="spacer"></span><span class="hint">set before the program</span></div><div class="stack" id="bEnv"></div></div>
             <div class="card"><div class="card-head"><h2>Other flags</h2></div><div class="stack" id="bOther"></div></div>

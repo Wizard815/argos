@@ -556,6 +556,12 @@ function initBuilder() {
     else { const p = S.profiles.find((x) => x.profile_id === v); if (p) openProfile(p); }
   };
   $("#bName").addEventListener("input", renderDirty);
+  $("#bAssistBtn").addEventListener("click", builderAssistToggle);
+  $("#bAssistClose").addEventListener("click", builderAssistToggle);
+  $("#bAssistSend").addEventListener("click", sendBuilderChat);
+  $("#bAssistInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendBuilderChat(); }
+  });
   $("#bDelete").onclick = async () => {
     const p = S.profiles.find((x) => x.profile_id === B.profileId);
     if (!p || !(await confirmBox(`Delete the preset “${p.name}”? The engine drops its variant on the next refresh.`))) return;
@@ -636,6 +642,97 @@ function edit(edits, env, argEdits) {
     renderBuilder();
   });
   return B.queue;
+}
+
+// ── the assistant, docked in the Builder ──────────────────────────────────────
+// It answers about the command on the left, and can propose a flag change. Applying
+// one goes through edit(), the same path the fields use, so the command is rebuilt
+// and re-parsed exactly as if you had typed the flag yourself.
+const BA = { on: false, messages: [], busy: false };
+
+function builderContext() {
+  try {
+    const p = B.parsed || {}, flags = {};
+    for (const a of p.args || []) if (a.name && !String(a.name).startsWith("-")) flags[a.name] = a.value ?? "";
+    return { command: B.cmd || "", flags, env: p.env || {}, models: [$("#bBase").value].filter(Boolean) };
+  } catch (e) { return { command: B.cmd || "" }; }
+}
+
+function builderAssistToggle() {
+  BA.on = !BA.on;
+  $("#bAssist").hidden = !BA.on;
+  $("#bAssistBtn").classList.toggle("primary", BA.on);
+  if (BA.on) { renderBuilderChat(); setTimeout(() => $("#bAssistInput").focus(), 0); }
+}
+
+function builderActionEl(a) {
+  const label = a.verb === "unset" ? `Remove ${a.flag}` : `Set ${a.flag}${a.value ? " " + a.value : ""}`;
+  const btn = h("button", { class: "btn sm" }, "Apply");
+  const row = h("div", { class: "assistant-action", style: "display:flex;gap:8px;align-items:center;margin-top:6px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;" },
+    h("span", { style: "flex:1;min-width:0;font-size:12px" }, label), btn);
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = "…";
+    try {
+      await edit({ [String(a.flag).replace(/^-+/, "")]: a.verb === "unset" ? null : (a.value || true) });
+      btn.textContent = "Done"; row.style.opacity = "0.6";
+      toast(`${label} — applied to the command`, "ok");
+    } catch (e) { btn.disabled = false; btn.textContent = "Apply"; fail(e); }
+  };
+  return row;
+}
+
+function renderBuilderChat() {
+  const box = $("#bAssistMessages");
+  if (!box) return;
+  fill(box);
+  if (!BA.messages.length) {
+    box.append(h("div", { class: "muted", style: "font-size:12px" },
+      "Ask about the command on the left. It can read its flags, the environment and the model, and propose changes you apply with one click."));
+  }
+  for (const m of BA.messages) {
+    box.append(msgEl(m));
+    for (const a of m.actions || []) box.append(builderActionEl(a));
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendBuilderChat() {
+  const input = $("#bAssistInput");
+  const text = (input.value || "").trim();
+  if (!text || BA.busy) return;
+  BA.busy = true;
+  input.value = "";
+  const answer = { role: "assistant", content: "", actions: [] };
+  BA.messages.push({ role: "user", content: text }, answer);
+  renderBuilderChat();
+  try {
+    const res = await fetch("/api/assistant/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, builder: builderContext() }) });
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        let ev = {};
+        try { ev = JSON.parse(line.slice(6)); } catch (e) { continue; }
+        if (ev.actions?.length) answer.actions = ev.actions;
+        if (ev.type === "delta") { answer.content += ev.text || ""; renderBuilderChat(); }
+        else if (ev.type === "done" && ev.text) answer.content = ev.text;
+        else if (ev.type === "error") answer.content = ev.error || "The assistant failed.";
+      }
+      renderBuilderChat();
+    }
+  } catch (e) {
+    answer.content = answer.content || `The assistant is unreachable: ${e.message}`;
+  }
+  BA.busy = false;
+  renderBuilderChat();
 }
 
 function renderBuilder() {
