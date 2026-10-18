@@ -665,16 +665,80 @@ function builderContext() {
   } catch (e) { return { command: B.cmd || "" }; }
 }
 
+// The panel is a window: drag it by its head, resize it by the corner grip, and it
+// comes back where you left it. The sticky notes already work this way, so the handle
+// looks and behaves like the one you know.
+const BA_WIN_KEY = "argos.builder.assist.window";
+
+function assistWindow() {
+  try {
+    const g = JSON.parse(localStorage.getItem(BA_WIN_KEY) || "null");
+    if (g && Number.isFinite(g.x) && Number.isFinite(g.y)) return g;
+  } catch (e) { /* private window: use the defaults */ }
+  return { x: Math.max(12, window.innerWidth - 400), y: 84, w: 380, h: 440 };
+}
+
+function assistRemember(panel) {
+  try {
+    localStorage.setItem(BA_WIN_KEY, JSON.stringify({
+      x: parseInt(panel.style.left, 10) || 0, y: parseInt(panel.style.top, 10) || 0,
+      w: panel.offsetWidth, h: panel.offsetHeight }));
+  } catch (e) { /* ignore */ }
+}
+
+function assistFloat(panel) {
+  if (panel.dataset.floating) return;
+  document.body.append(panel); // above the page: the same window in either Builder state
+  const g = assistWindow();
+  Object.assign(panel.style, { position: "fixed", left: `${g.x}px`, top: `${g.y}px`,
+    width: `${g.w}px`, height: `${g.h}px`, zIndex: "70", display: "none",
+    boxShadow: "0 14px 48px rgba(0,0,0,0.45)" });
+  panel.dataset.floating = "1";
+
+  const head = $("#bAssistHead");
+  head.style.cursor = "move";
+  head.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button, input, textarea, select")) return; // let the controls be controls
+    const r = panel.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+    head.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 120, ev.clientX - dx))}px`;
+      panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - dy))}px`;
+    };
+    const up = () => {
+      head.removeEventListener("pointermove", move);
+      head.removeEventListener("pointerup", up);
+      assistRemember(panel);
+    };
+    head.addEventListener("pointermove", move);
+    head.addEventListener("pointerup", up);
+  });
+
+  const grip = $("#bAssistGrip");
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const r = panel.getBoundingClientRect(), sx = e.clientX, sy = e.clientY;
+    grip.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      panel.style.width = `${Math.max(280, r.width + (ev.clientX - sx))}px`;
+      panel.style.height = `${Math.max(220, r.height + (ev.clientY - sy))}px`;
+    };
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      assistRemember(panel);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+  });
+}
+
 function builderAssistToggle() {
   BA.on = !BA.on;
   const panel = $("#bAssist");
-  // One panel, two states: beside the settings once a command is open, and under the
-  // composer before that, so it is there while you are still choosing a model.
-  const grid = $("#bFields").closest(".grid2");
-  const host = !$("#builderMain").hidden && grid ? grid.lastElementChild
-    : $("#builderEmpty").querySelector(".composer")?.parentElement;
-  if (host && panel.parentElement !== host) host.append(panel);
-  panel.hidden = !BA.on;
+  assistFloat(panel);
+  panel.hidden = false;
+  panel.style.display = BA.on ? "flex" : "none";
   $$(".b-assist-toggle").forEach((b) => b.classList.toggle("primary", BA.on));
   if (BA.on) { renderBuilderChat(); setTimeout(() => $("#bAssistInput").focus(), 0); }
 }
