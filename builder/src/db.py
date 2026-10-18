@@ -260,13 +260,11 @@ class Store:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        # WAL is the better journal for a busy database, but it coordinates through the
-        # -shm file and mmap. On a FUSE filesystem - Unraid's /mnt/user is shfs - that
-        # coordination is what fails: the -wal stops checkpointing and grows, and reads
-        # block forever. TRUNCATE needs only ordinary file locking, which those
-        # filesystems do honour. A database on a local disk could keep WAL; this is the
-        # safer default for where these containers actually run.
-        self._conn.execute("PRAGMA journal_mode=TRUNCATE")
+        # ARGOS_SQLITE_JOURNAL forces it when the guess is wrong (a bind mount can hide
+        # what the filesystem underneath really is). Whitelisted, never interpolated raw.
+        forced = (os.environ.get("ARGOS_SQLITE_JOURNAL") or "").strip().upper()
+        mode = forced if forced in ("WAL", "TRUNCATE", "DELETE", "PERSIST") else self._journal_for(os.path.abspath(path))
+        self._conn.execute(f"PRAGMA journal_mode={mode}")
         # Two writers happen: the telemetry tick and whatever a request is doing.
         # Without a busy timeout SQLite gives up the moment it is locked, which
         # surfaces as a route that fails or hangs for no visible reason.
@@ -290,6 +288,36 @@ class Store:
             self._conn.execute("UPDATE notes SET is_open = CASE WHEN collapsed=1 THEN 0 ELSE 1 END")
         self._conn.execute("DELETE FROM notes WHERE deleted=1")
         self._conn.execute("DROP TABLE IF EXISTS note_versions")
+
+    @staticmethod
+    def _journal_for(path: str) -> str:
+        """The journal this database can actually rely on, given where it lives.
+
+        WAL is faster and lets readers run while a writer works, but it coordinates
+        through a -shm file and mmap. On a FUSE filesystem - Unraid's /mnt/user is shfs
+        - that is what fails: the -wal stops checkpointing and grows, and reads block.
+        TRUNCATE needs only ordinary file locking, which those filesystems do honour,
+        at the cost of a writer excluding readers.
+
+        So: WAL on a real filesystem, TRUNCATE on one that is not. Best effort - if the
+        mounts cannot be read, WAL is the better guess for a normal disk.
+        """
+        best, kind = "", ""
+        try:
+            with open("/proc/mounts", "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) < 3:
+                        continue
+                    mount, fstype = parts[1], parts[2]
+                    if mount == path or path.startswith(mount.rstrip("/") + "/"):
+                        if len(mount) > len(best):
+                            best, kind = mount, fstype.lower()
+        except OSError:
+            return "WAL"
+        if any(word in kind for word in ("fuse", "nfs", "cifs", "smb")):
+            return "TRUNCATE"
+        return "WAL"
 
     def _q(self, sql: str, args: Iterable = ()) -> list[dict]:
         with self._lock:
