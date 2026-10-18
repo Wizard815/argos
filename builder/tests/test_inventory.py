@@ -505,3 +505,45 @@ def test_Inventory_models_summary_stays_fast_on_a_big_history(tmp_path):
     assert time.time() - t < 3
     assert rows == [] or all("decode" in r for r in rows)
     assert store.speed_ranges(now - 90 * 86400, 128, 16)["m3"]["decode"]["n"] == 2500
+
+
+def test_Inventory_models_summary_serves_a_stale_list_while_it_rebuilds(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    inv = Inventory(store, lambda *a, **k: None)
+    store.upsert_model_seen({"model_id": "m1", "name": "m1", "origin": "library"})
+    inv.models_summary()
+    store.upsert_model_seen({"model_id": "m2", "name": "m2", "origin": "library"})
+    inv._summary = (time.time() - 3600, inv._summary[1])  # long past its TTL
+    assert [r["model_id"] for r in inv.models_summary()] == ["m1"]  # answered at once, from the old list
+    for _ in range(100):
+        if not inv._rebuilding:
+            break
+        time.sleep(0.05)
+    assert [r["model_id"] for r in inv.models_summary()] == ["m1", "m2"]  # and the rebuild landed
+
+
+def test_Inventory_a_rebuild_that_races_an_invalidate_is_dropped(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    inv = Inventory(store, lambda *a, **k: None)
+    inv.models_summary()
+    inv.invalidate()
+    inv._rebuilding = True
+    inv._rebuild_summary()
+    assert inv._summary[0] == 0.0 and not inv._rebuilding
+
+
+def test_Store_logs_a_slow_query_with_where_the_time_went(tmp_path, caplog, monkeypatch):
+    import src.db as dbmod
+    monkeypatch.setattr(dbmod, "SLOW_DB_S", 0.0)
+    store = Store(str(tmp_path / "d.db"))
+    with caplog.at_level("WARNING", logger="argos.db"):
+        store.list_runs()
+    assert any("slow query" in r.message and "waited" in r.message and "runs" in r.message for r in caplog.records)
+
+
+def test_a_slow_request_is_logged(app, client, caplog, monkeypatch):
+    import src.app as appmod
+    monkeypatch.setattr(appmod, "SLOW_REQUEST_S", 0.0)
+    with caplog.at_level("WARNING"):
+        assert client.get("/api/inventory").status_code == 200
+    assert any("slow request" in r.message and "/api/inventory" in r.message for r in caplog.records)

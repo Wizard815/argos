@@ -26,11 +26,15 @@ Databases written by earlier versions are migrated in place on open.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
 import time
 from typing import Any, Iterable, Optional
+
+log = logging.getLogger("argos.db")
+SLOW_DB_S = 1.0  # a query that waits for the lock, or runs, longer than this is logged with where the time went
 
 RUN_COLUMNS: dict[str, str] = {
     "run_id": "TEXT NOT NULL UNIQUE",
@@ -320,8 +324,15 @@ class Store:
         return "WAL"
 
     def _q(self, sql: str, args: Iterable = ()) -> list[dict]:
+        asked = time.monotonic()
         with self._lock:
-            return [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
+            got = time.monotonic()
+            rows = [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
+        done = time.monotonic()
+        if done - asked > SLOW_DB_S:
+            log.warning("slow query: waited %.1fs for the database lock, ran %.1fs, %d rows: %s",
+                        got - asked, done - got, len(rows), " ".join(sql.split())[:90])
+        return rows
 
     def _x(self, sql: str, args: Iterable = (), commit: bool = True) -> sqlite3.Cursor:
         with self._lock:

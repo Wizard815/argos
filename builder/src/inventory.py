@@ -125,7 +125,7 @@ def extract(command: str, model_path: str = "", arch: Optional[dict] = None, siz
     return facts
 
 
-SUMMARY_TTL_S = 10.0  # how stale the model list may be; changes to sessions drop it at once
+SUMMARY_TTL_S = 30.0  # how old the model list may get before a background rebuild; a session change drops it at once
 
 
 class Inventory:
@@ -135,6 +135,7 @@ class Inventory:
         self._synced = False  # the first sync after start sees models that were already running
         self._arch_cache: dict[tuple, Optional[dict]] = {}
         self._summary: tuple[float, list[dict]] = (0.0, [])
+        self._rebuilding = False
 
     # ----- traits ---------------------------------------------------------------------
     def note(self, kind: str, value: Any, example: str = "") -> Optional[dict]:
@@ -329,24 +330,39 @@ class Inventory:
 
     # ----- reading it back ------------------------------------------------------------
     def invalidate(self) -> None:
-        """Drop the cached model list; the next ask rebuilds it."""
+        """Drop the cached model list; the next ask rebuilds it before answering."""
         self._summary = (0.0, [])
 
     def models_summary(self, now: Optional[float] = None) -> list[dict]:
         """One row per model: how often and how long it was loaded, on which GPUs, with which quants and settings.
 
-        Built from the whole history, so it is cached for a few seconds: the page, the model pages and the
-        assistant all ask for it, and every UI poll used to recompute it while holding the database lock.
+        Built from the whole history, which on a slow disk takes seconds, and the build holds the database
+        lock. So a page must never wait on it: once a list exists, a stale one is returned at once and
+        rebuilt in the background. Only the very first ask, or one after ``invalidate()``, builds inline.
         An explicit ``now`` always recomputes.
         """
         if now is not None:
             return self._build_summary(now)
         with self._lock:
             at, rows = self._summary
-            if time.time() - at > SUMMARY_TTL_S:
+            if not at:
                 at, rows = time.time(), self._build_summary(time.time())
                 self._summary = (at, rows)
+            elif time.time() - at > SUMMARY_TTL_S and not self._rebuilding:
+                self._rebuilding = True
+                threading.Thread(target=self._rebuild_summary, name="inventory-summary", daemon=True).start()
             return copy.deepcopy(rows)
+
+    def _rebuild_summary(self) -> None:
+        try:
+            rows = self._build_summary(time.time())
+            with self._lock:
+                if self._summary[0]:  # an invalidate() while we ran means this answer is already old
+                    self._summary = (time.time(), rows)
+        except Exception:  # noqa: BLE001 - keep serving the last good list
+            pass
+        finally:
+            self._rebuilding = False
 
     def _build_summary(self, now: float) -> list[dict]:
         alias = self.aliases()
