@@ -3059,7 +3059,10 @@ function dur(sec) {
 }
 const chips = (xs) => (xs && xs.length ? h("div", { class: "chips" }, xs.map((x) => h("span", { class: "chip" }, x))) : DASH);
 
+let inventoryLoading = false;  // a slow server must not get another request piled on the last one
 async function loadInventory() {
+  if (inventoryLoading) return;
+  inventoryLoading = true;
   try {
     IV.data = await api("GET", "/api/inventory");
     fill($("#navInventory"), IV.data.pending ? h("span", { class: "pill warn", title: "new settings waiting for review" }, String(IV.data.pending)) : null);
@@ -3067,7 +3070,7 @@ async function loadInventory() {
     const last = IV.data.last_refresh && IV.data.last_refresh.at;
     $("#ivRefreshed").textContent = last ? `scanned ${ago(last)}` : "not scanned yet";
     renderInvPane();
-  } catch (e) { fail(e); }
+  } catch (e) { fail(e); } finally { inventoryLoading = false; }
 }
 function invPane() { return $(".tabs[data-tabs=inventory] button.on")?.dataset.pane || "models"; }
 function renderInvPane() {

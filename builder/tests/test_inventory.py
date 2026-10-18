@@ -456,3 +456,52 @@ def test_request_speeds_of_minus_one_are_not_speeds(tmp_path):
                         {**base, "source_id": "b", "prompt_per_second": 500.0, "tokens_per_second": 80.0}])
     (row,) = store.request_stats(0)
     assert row["requests"] == 2 and row["tg_avg"] == 80.0 and row["pp_avg"] == 500.0 and row["tg_max"] == 80.0
+
+
+# ----- the inventory page on a big history -------------------------------------------------
+def _seed_speeds(store, now):
+    rows = [  # model, input, output, prefill/s, decode/s
+        ("a", 500, 100, 900.0, 40.0), ("a", 600, 100, 1100.0, 55.0), ("a", 10, 100, 5000.0, 10.0),
+        ("a", 500, 4, 100.0, 999.0), ("a", 500, 100, 0.0, 0.0), ("b", 200, 50, 300.0, 20.0)]
+    for i, (m, tin, tout, pp, tg) in enumerate(rows):
+        store._conn.execute("INSERT INTO requests (source_id, ts, model, input_tokens, output_tokens, prompt_per_second, "
+                            "tokens_per_second) VALUES (?,?,?,?,?,?,?)", (i, now - 60 - i, m, tin, tout, pp, tg))
+    store._conn.execute("INSERT INTO requests (source_id, ts, model, input_tokens, output_tokens, prompt_per_second, "
+                        "tokens_per_second) VALUES (99, ?, 'a', 500, 100, 1.0, 1.0)", (now - 200 * 86400,))
+    store._conn.commit()
+
+
+def test_Inventory_speed_ranges_ignore_short_requests_and_old_history(tmp_path):
+    store, now = Store(str(tmp_path / "d.db")), time.time()
+    _seed_speeds(store, now)
+    r = store.speed_ranges(now - 90 * 86400, 128, 16)
+    assert r["a"]["prefill"] == {"min": 100.0, "max": 1100.0, "n": 3}  # the 10-token prompt and the zero are out
+    assert r["a"]["decode"] == {"min": 10.0, "max": 55.0, "n": 3}  # the 4-token reply and the zero are out
+    assert r["b"]["prefill"] == {"min": 300.0, "max": 300.0, "n": 1}
+
+
+def test_Inventory_models_summary_is_cached_until_sessions_change(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    inv = Inventory(store, lambda *a, **k: None)
+    store.upsert_model_seen({"model_id": "m1", "name": "m1", "origin": "library"})
+    assert [r["model_id"] for r in inv.models_summary()] == ["m1"]
+    store.upsert_model_seen({"model_id": "m2", "name": "m2", "origin": "library"})
+    assert [r["model_id"] for r in inv.models_summary()] == ["m1"]  # still inside the TTL
+    inv.invalidate()
+    assert [r["model_id"] for r in inv.models_summary()] == ["m1", "m2"]
+    inv.models_summary()[0]["name"] = "mutated"  # callers get copies, not the cache
+    assert inv.models_summary()[0]["name"] == "m1"
+
+
+def test_Inventory_models_summary_stays_fast_on_a_big_history(tmp_path):
+    store, now = Store(str(tmp_path / "d.db")), time.time()
+    store._conn.executemany(
+        "INSERT INTO requests (source_id, ts, model, input_tokens, output_tokens, prompt_per_second, tokens_per_second) "
+        "VALUES (?,?,?,?,?,?,?)", ((i, now - i, f"m{i % 40}", 500, 100, 800.0, 30.0) for i in range(100000)))
+    store._conn.commit()
+    inv = Inventory(store, lambda *a, **k: None)
+    t = time.time()
+    rows = inv.models_summary(now)
+    assert time.time() - t < 3
+    assert rows == [] or all("decode" in r for r in rows)
+    assert store.speed_ranges(now - 90 * 86400, 128, 16)["m3"]["decode"]["n"] == 2500
