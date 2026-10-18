@@ -50,6 +50,9 @@ COPY docker/argos-entrypoint.sh /app/argos-entrypoint.sh
 
 ENV ARGOS_ENGINE_URL=http://127.0.0.1:8081 \
     MODELS_DIR=/app/models \
+    # The engine's database. The builder is given its own file by the entrypoint
+    # (ARGOS_BUILDER_DB, default /data/builder.db): two processes on one SQLite file
+    # contend for its lock, and when one wins the other's reads block forever.
     ARGOS_DB=/data/argos.db \
     ARGOS_RUNS_DIR=/data/runs \
     ARGOS_SCHEDULE_FILE=/app/config.d/scheduler.generated.yaml \
