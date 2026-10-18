@@ -22,6 +22,45 @@ backup() { [[ -f "$1" ]] && cp "$1" "$1.bak" && echo "  backed up $1 -> $1.bak" 
 [[ -f "$TEMPLATE" ]] || { echo "Missing $TEMPLATE"; exit 1; }
 grep -q '^  argos:' docker-compose.yml || warn "docker-compose.yml has no 'argos' service; the override may not merge."
 
+# ----------------------------------------------------------- previous answers
+# .env holds the last run's choices, so a second run can offer them back instead of
+# asking the same six stages. Reusing them writes NOTHING: the files are already
+# right, and rewriting them is how a working deployment gets changed by accident.
+# Answer no and every question is asked again, seeded from these values.
+env_get() { [[ -f .env ]] && sed -n "s/^$1=//p" .env | head -1 || true; }
+
+REUSE=0
+PREV_IMAGE="$(env_get BASE_IMAGE)"; PREV_TAG="$(env_get BASE_TAG)"
+PREV_MODELS="$(env_get MODELS_DIR)"; PREV_PORT="$(env_get ARGOS_PORT)"
+PREV_KEY="$(env_get REMOTE_SSH_KEY_FILE)"; PREV_GID="$(env_get VIDEO_GID)"
+PREV_ROCM_HOST="$(env_get ROCM_SSH_HOST)"; PREV_ROCM_PORT="$(env_get ROCM_SSH_PORT)"
+PREV_ROCM_USER="$(env_get ROCM_SSH_USER)"; PREV_ROCM_BIN="$(env_get ROCM_SSH_BIN)"
+PREV_CUDA_HOST="$(env_get CUDA_SSH_HOST)"; PREV_POOL="$(env_get ARGOS_SCHEDULE_POOL)"
+PREV_CARDS="$(env_get ARGOS_SCHEDULE_CARDS)"
+
+if [[ -f .env ]]; then
+  # what the last run chose, as far as .env records it
+  PREV_BACKEND=""
+  [[ -n "$PREV_ROCM_HOST" || -n "$(env_get ROCM_IMAGE)" ]] && PREV_BACKEND=rocm
+  [[ -n "$PREV_CUDA_HOST" || -n "$(env_get CUDA_IMAGE)" ]] && PREV_BACKEND="${PREV_BACKEND:+$PREV_BACKEND/}cuda"
+  PREV_MODE=1
+  [[ -n "$(env_get HOST_MODELS_DIR)" ]] && PREV_MODE=2
+  [[ -n "$PREV_KEY" ]] && PREV_MODE=3
+  PREV_SCHED=groups; [[ -n "$PREV_POOL" ]] && PREV_SCHED=pool
+  say "Found your last setup (.env)"
+  printf '  backend   %s\n  mode      %s\n  models    %s\n  port      %s\n  scheduler %s\n' \
+    "${PREV_BACKEND:-?}" "$PREV_MODE" "${PREV_MODELS:-?}" "${PREV_PORT:-?}" "$PREV_SCHED"
+  if yes "Use these again? (y = keep the files and skip the questions)" y; then REUSE=1; fi
+fi
+
+# With REUSE=1 every question is answered from the last run, so the stages still run
+# (the closing notes stay accurate) but nothing is asked and nothing is written.
+ask() {
+  local d="${2:-}"
+  if [[ "${REUSE:-0}" == 1 ]]; then REPLY="$d"; printf '  %s [%s]\n' "$1" "$REPLY"; return; fi
+  read -r -p "$1${d:+ [$d]}: " REPLY || REPLY=""; REPLY="${REPLY:-$d}"
+}
+
 # ---------------------------------------------------------------- preflight
 say "1/6  Checking Docker"
 if command -v docker >/dev/null 2>&1; then
@@ -41,14 +80,14 @@ fi
 
 say "2/6  Backends"
 DEF_BK="rocm"
-ask "GPU backend(s): rocm / cuda / both" "$DEF_BK"; BACKEND="$REPLY"
+ask "GPU backend(s): rocm / cuda / both" "${PREV_BACKEND:-$DEF_BK}"; BACKEND="$REPLY"
 case "$BACKEND" in rocm|cuda|both) ;; *) echo "Invalid: $BACKEND"; exit 1;; esac
 
 echo "  Mode 3 = Argos is only the router. It SSHes into your existing llama.cpp container(s)"
 echo "           (one per GPU type) and starts llama-server there. Argos holds no llama-server."
 echo "  Mode 1 = the Argos image itself contains the llama.cpp build (Argos on a llama.cpp image)."
 echo "  Mode 2 = Argos runs 'docker run' per model (needs docker CLI in the image + docker.sock)."
-ask "Mode (1, 2 or 3)" "3"; MODE="$REPLY"
+ask "Mode (1, 2 or 3)" "${PREV_MODE:-3}"; MODE="$REPLY"
 [[ "$MODE" == 1 || "$MODE" == 2 || "$MODE" == 3 ]] || { echo "Invalid mode"; exit 1; }
 [[ "$BACKEND" == both && "$MODE" == 1 ]] && warn "Both stacks in one image is uncommon; Mode 2 is the usual way."
 
@@ -106,7 +145,7 @@ say "3/6  Scheduler"
 echo "  pool   = planned on Argos's Schedule page. Models share the GPUs while they fit, each is placed on a"
 echo "           card, requests wait in a FIFO queue, and a model that is answering is never unloaded. Recommended."
 echo "  groups = you write routing groups by hand in config.yaml (the Schedule page then stays off)."
-ask "Scheduler: pool / groups" "pool"; SCHED="$REPLY"
+ask "Scheduler: pool / groups" "${PREV_SCHED:-pool}"; SCHED="$REPLY"
 case "$SCHED" in pool|groups) ;; *) echo "Invalid: $SCHED"; exit 1;; esac
 CARDS=""
 if [[ "$SCHED" == pool ]]; then
@@ -122,7 +161,7 @@ fi
 
 # ---------------------------------------------------------------- paths / volumes
 say "4/6  Models and volumes"
-ask "HOST path to your models folder" "./models"; MODELS_DIR="$REPLY"
+ask "HOST path to your models folder" "${PREV_MODELS:-./models}"; MODELS_DIR="$REPLY"
 [[ "$MODELS_DIR" == ./* || -d "$MODELS_DIR" ]] || warn "$MODELS_DIR does not exist on this machine (ok if it exists on the target)."
 echo "  (mounted at /app/models inside the container)"
 ask "HOST folder for Argos state (default ./data; blank keeps default)" ""; DATA_DIR="$REPLY"
@@ -158,10 +197,15 @@ pick_port() {  # $1 label, $2 default
   ask "$1" "$d"; REPLY="${REPLY//[[:space:]]/}"
   if port_busy "$REPLY"; then echo "  warning: host port $REPLY is in use now; 'docker compose up' will fail until it is free"; fi
 }
-pick_port "HOST port for Argos (web page and OpenAI API, one port)" 8080; API_PORT="$REPLY"; UI_PORT="$API_PORT"
+pick_port "HOST port for Argos (web page and OpenAI API, one port)" "${PREV_PORT:-8080}"; API_PORT="$REPLY"; UI_PORT="$API_PORT"
 [[ "$MODE" == 2 ]] && echo "  Mode 2 note: --network container:argos requires container_name 'argos' and no host networking."
 
 # ---------------------------------------------------------------- write files
+if [[ "$REUSE" == 1 ]]; then
+  say "6/6  Keeping your files"
+  echo "  .env, docker-compose.override.yaml and config.yaml are already set up."
+  echo "  Nothing was rewritten. Answer n to the question above to change something."
+else
 say "6/6  Writing files"
 
 # .env
@@ -385,6 +429,8 @@ Mode 3 checklist (each llama.cpp container)
   * from the argos container: docker exec argos ssh -i /run/secrets/argos_ssh_key ${SSH_USER}@<host> llama-server --version
 EOF
 fi
+fi
+
 HOSTNAME_HINT="${BINDIP:-<host>}"
 cat <<EOF
 
