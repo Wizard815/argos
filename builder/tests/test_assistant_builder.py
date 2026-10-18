@@ -15,6 +15,17 @@ def test_the_builder_line_says_what_is_on_screen():
     assert "comparing against: qwen3-0.6b-q8_0" in line
 
 
+def test_the_line_carries_everything_the_page_holds():
+    """The panel is meant to help build, so it sees the program, the loose flags and
+    what is applied at launch, not only the ones with a field of their own."""
+    line = _builder_line({"program": "/app/bin/remote-llama",
+                          "other": ["--n-cpu-moe 4", "--no-warmup"],
+                          "always": ["LLAMA_CACHE=/data/cache"]})
+    assert "program: /app/bin/remote-llama" in line
+    assert "other flags: --n-cpu-moe 4, --no-warmup" in line
+    assert "always applied: LLAMA_CACHE=/data/cache" in line
+
+
 def test_an_env_var_is_not_offered_as_a_flag():
     line = _builder_line({"flags": {"HIP_VISIBLE_DEVICES": "0", "n-gpu-layers": "99"}})
     assert "n-gpu-layers=99" in line and "HIP_VISIBLE_DEVICES=0" not in line

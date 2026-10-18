@@ -556,7 +556,7 @@ function initBuilder() {
     else { const p = S.profiles.find((x) => x.profile_id === v); if (p) openProfile(p); }
   };
   $("#bName").addEventListener("input", renderDirty);
-  $("#bAssistBtn").addEventListener("click", builderAssistToggle);
+  $$(".b-assist-toggle").forEach((b) => b.addEventListener("click", builderAssistToggle));
   $("#bAssistClose").addEventListener("click", builderAssistToggle);
   $("#bAssistSend").addEventListener("click", sendBuilderChat);
   $("#bAssistInput").addEventListener("keydown", (e) => {
@@ -652,16 +652,30 @@ const BA = { on: false, messages: [], busy: false };
 
 function builderContext() {
   try {
-    const p = B.parsed || {}, flags = {};
-    for (const a of p.args || []) if (a.name && !String(a.name).startsWith("-")) flags[a.name] = a.value ?? "";
-    return { command: B.cmd || "", flags, env: p.env || {}, models: [$("#bBase").value].filter(Boolean) };
+    const p = B.parsed || {}, flags = {}, other = [];
+    for (const a of p.args || []) {
+      const name = String(a.name || "");
+      if (!name) continue;
+      if (name.startsWith("-")) other.push(`${name}${a.value ? " " + a.value : ""}`);
+      else flags[name] = a.value ?? "";
+    }
+    return { command: B.cmd || "", flags, other, env: p.env || {}, program: p.program || "",
+      base_model: p.base_model || $("#bBase").value || "", model_id: p.model_id || "",
+      always: p.always_added || [], models: [$("#bBase").value].filter(Boolean) };
   } catch (e) { return { command: B.cmd || "" }; }
 }
 
 function builderAssistToggle() {
   BA.on = !BA.on;
-  $("#bAssist").hidden = !BA.on;
-  $("#bAssistBtn").classList.toggle("primary", BA.on);
+  const panel = $("#bAssist");
+  // One panel, two states: beside the settings once a command is open, and under the
+  // composer before that, so it is there while you are still choosing a model.
+  const grid = $("#bFields").closest(".grid2");
+  const host = !$("#builderMain").hidden && grid ? grid.lastElementChild
+    : $("#builderEmpty").querySelector(".composer")?.parentElement;
+  if (host && panel.parentElement !== host) host.append(panel);
+  panel.hidden = !BA.on;
+  $$(".b-assist-toggle").forEach((b) => b.classList.toggle("primary", BA.on));
   if (BA.on) { renderBuilderChat(); setTimeout(() => $("#bAssistInput").focus(), 0); }
 }
 
