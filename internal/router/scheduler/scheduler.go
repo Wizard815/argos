@@ -163,6 +163,10 @@ type HandlerReq struct {
 	Admit      chan error
 	Respond    chan HandlerResp
 	PositionCh chan int
+	// Intent is what the caller declared this request is for, or "" when it
+	// declared nothing. A declared interactive request is held while a prefill is
+	// in flight for the same model.
+	Intent string
 }
 
 // HandlerResp is the routing decision returned to a HandlerReq's caller: either
@@ -181,4 +185,7 @@ type SwapDone struct {
 // ServeDoneEvent is reported when a tracked ServeHTTP handler returns.
 type ServeDoneEvent struct {
 	ModelID string
+	// Intent is the finished request's declared intent, so a prefill that has
+	// drained stops counting as one in flight.
+	Intent string
 }

@@ -41,11 +41,12 @@ type FIFO struct {
 	cfg     config.FifoConfig
 	effects Effects
 
-	limits   map[string]int
-	active   map[string]*activeSwap
-	reserved map[string]int
-	inFlight map[string]int
-	queued   []HandlerReq
+	limits     map[string]int
+	active     map[string]*activeSwap
+	reserved   map[string]int
+	inFlight   map[string]int
+	prefilling map[string]int // prefills in flight per model, from declared intent
+	queued     []HandlerReq
 }
 
 // NewFIFO builds a FIFO scheduler. Per-model concurrency limits are derived
@@ -64,16 +65,17 @@ func NewFIFO(name string, logger *logmon.Monitor, planner Swapper, cfg config.Fi
 	usage, _ := planner.(UsageObserver)
 
 	return &FIFO{
-		name:     name,
-		logger:   logger,
-		planner:  planner,
-		usage:    usage,
-		cfg:      cfg,
-		effects:  eff,
-		limits:   limits,
-		active:   make(map[string]*activeSwap),
-		reserved: make(map[string]int),
-		inFlight: make(map[string]int),
+		name:       name,
+		logger:     logger,
+		planner:    planner,
+		usage:      usage,
+		cfg:        cfg,
+		effects:    eff,
+		limits:     limits,
+		active:     make(map[string]*activeSwap),
+		reserved:   make(map[string]int),
+		inFlight:   make(map[string]int),
+		prefilling: make(map[string]int),
 	}
 }
 
@@ -113,6 +115,16 @@ func (s *FIFO) OnRequest(req HandlerReq) {
 	if sw, ok := s.active[req.Model]; ok {
 		s.logger.Debugf("%s: joining in-flight swap for model %s (%d waiters)", s.name, req.Model, len(sw.waiters)+1)
 		sw.waiters = append(sw.waiters, req)
+		return
+	}
+
+	// (2b) A decode does not start beside a prefill. They share the same slots, and
+	// the two together finish slower than either would alone, so a declared
+	// interactive request waits for the prefill to drain. A request that declares
+	// nothing is never held: this only applies to what a caller states.
+	if req.Intent == swaputil.IntentInteractive && s.prefilling[req.Model] > 0 {
+		s.logger.Debugf("%s: holding request for model %s (prefill in flight)", s.name, req.Model)
+		s.enqueue(req)
 		return
 	}
 
@@ -218,6 +230,15 @@ func (s *FIFO) OnSwapDone(ev SwapDone) {
 // have evicted this (now-idle) process can now proceed.
 func (s *FIFO) OnServeDone(ev ServeDoneEvent) {
 	s.inFlight[ev.ModelID]--
+	if ev.Intent == swaputil.IntentPrefill {
+		s.prefilling[ev.ModelID]--
+		if s.prefilling[ev.ModelID] <= 0 {
+			delete(s.prefilling, ev.ModelID)
+			// A decode held behind this prefill can go now, even if other requests
+			// are still in flight: the prefill it was waiting for is done.
+			s.drainQueue()
+		}
+	}
 	s.release(ev.ModelID)
 	if s.usage != nil {
 		s.usage.OnServeDone(ev.ModelID)
@@ -302,6 +323,9 @@ func (s *FIFO) grantHandler(req HandlerReq, modelID string) {
 
 	if s.effects.GrantServe(req, modelID) {
 		s.inFlight[modelID]++
+		if req.Intent == swaputil.IntentPrefill {
+			s.prefilling[modelID]++
+		}
 		if s.usage != nil {
 			s.usage.OnServeStart(modelID)
 		}
