@@ -1597,6 +1597,37 @@ function renderIntegrations() {
       `${label}${okA ? "" : needsUpdate ? " · update" : " · no access"}`);
   }) : null;
   const cb = S.integrations && S.integrations.odysseus;
+  // Pulling makes Argos profiles out of Odysseus' Cookbook presets. It is idempotent,
+  // and it says what it could not use and why: a silent zero is what made this look
+  // like it had done nothing.
+  const pullOut = h("div", { style: "margin-top:10px" });
+  const pullBtn = btn("Pull presets into profiles", async () => {
+    pullBtn.disabled = true; pullBtn.textContent = "Pulling…";
+    try {
+      const r = await api("POST", "/api/ody/pull");
+      const rows = [];
+      const add = (title, items, cls, sub) => {
+        if (!items || !items.length) return;
+        rows.push(h("div", { class: "grp" }, `${title} (${items.length})`));
+        for (const x of items) rows.push(h("div", { class: `ody-row ${cls}` },
+          h("div", { style: "min-width:0" }, h("div", { class: "t" }, x.label || ""),
+            h("div", { class: "s" }, sub ? sub(x) : (x.reason || "")))));
+      };
+      add("New profiles", r.imported, "ok", (x) => x.model_id || "");
+      add("Updated from Odysseus", r.updated, "warn", (x) => x.model_id || "");
+      add("Already here, unchanged", r.skipped, "", (x) => x.reason);
+      add("Could not be used", r.failed, "bad", (x) => x.reason);
+      fill(pullOut, r.note ? h("p", { class: "hint", style: "margin:0 0 6px" }, r.note) : null, ...rows);
+      if ((r.imported || []).length || (r.updated || []).length) {
+        toast(`Pulled ${(r.imported || []).length} new and ${(r.updated || []).length} updated profile(s).`, "ok");
+      } else if ((r.failed || []).length) {
+        toast("Nothing could be pulled — the reasons are listed below.", "err");
+      } else {
+        toast("Already up to date.", "");
+      }
+    } catch (e) { fail(e); } finally { pullBtn.disabled = false; pullBtn.textContent = "Pull presets into profiles"; }
+  }, "sm", "download");
+
   fill($("#oConn"),
     h("div", { class: "card-head" }, h("h2", {}, "Connection"), h("span", { class: "spacer" }),
       st && st.configured ? h("span", { class: `pill ${st.connected ? "ok" : "bad"}` }, st.connected ? "connected" : "not connected") : null),
@@ -1606,7 +1637,9 @@ function renderIntegrations() {
       h("label", { class: "check wide" }, brain, "Let the assistant's memory include Odysseus' Brain"),
       h("label", { class: "check wide" }, presets, "Use Odysseus' saved Cookbook presets as models")),
     h("div", { class: "row", style: "margin-top:10px" }, btn("Save & connect", save, "primary sm", "save"),
+      pullBtn,
       st && st.error ? h("span", { class: "hint", style: "margin:0" }, st.error) : null),
+    pullOut,
     chips ? h("div", { class: "chips", style: "margin-top:10px" }, chips) : null,
     h("p", { class: "hint" }, "Make the token in Odysseus → Settings → API tokens with the scopes for what you want here: ",
       Object.values(ODY_SCOPES).join(", "), ". Gallery, tasks and tools need the Odysseus update that adds them to its API."),

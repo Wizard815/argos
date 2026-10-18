@@ -170,6 +170,67 @@ def preset_summary(profile: dict) -> tuple[str, str]:
     return f"{profile['name']} ({mid})", "\n".join(lines)
 
 
+@bp.post("/api/ody/pull")
+def pull():
+    """Turn Odysseus's Cookbook presets into Argos profiles.
+
+    Each preset becomes a profile named after its label and carrying its command, so
+    it can be applied, launched, benchmarked and diffed like any other. A preset
+    Argos cannot run is reported with its reason rather than dropped: a silent zero
+    is what made this look like it had done nothing at all.
+
+    Pulling is idempotent. A preset already here with the same command is skipped, and
+    one that changed in Odysseus replaces the profile it made before, because the edit
+    you made over there is the newer intent.
+    """
+    from ..command import guess_base_model, parse_command, swap_model_id
+    from ..cookbook import normalize_preset
+
+    c = ctx()
+    data = cookbook_presets()
+    if data.get("error"):
+        return err(f"Odysseus: {data['error']}", 502)
+    presets = [p for p in (data.get("presets") or []) if isinstance(p, dict)]
+    if not presets:
+        return ok(imported=[], updated=[], skipped=[], failed=[],
+                  note="Odysseus has no Cookbook presets to pull, or presets are switched off under Settings → Odysseus.")
+
+    here = {p.get("name"): p for p in c.store.list_profiles() if p.get("source") == "odysseus"}
+    imported, updated, skipped, failed = [], [], [], []
+    for raw in presets:
+        p = normalize_preset(raw)
+        label = (p.get("label") or p.get("name") or "").strip()
+        cmd = (p.get("cmd") or "").strip()
+        if not cmd:
+            failed.append({"label": label or "(unnamed)", "reason": "the preset has no command"})
+            continue
+        try:
+            parsed = parse_command(cmd)
+        except ValueError as exc:
+            failed.append({"label": label or "(unnamed)", "reason": str(exc)})
+            continue
+        model = parsed.summary()["model"]
+        if not model.lower().endswith(".gguf"):
+            failed.append({"label": label or "(unnamed)",
+                           "reason": f"no .gguf model path in the command (found {model or 'nothing'})"})
+            continue
+        name = label or swap_model_id(model)
+        was = here.get(name)
+        if was and (was.get("launch_command") or "").strip() == cmd:
+            skipped.append({"label": name, "reason": "already here, unchanged"})
+            continue
+        profile = c.store.save_profile({
+            "profile_id": was["profile_id"] if was else None,
+            "name": name, "base_model": guess_base_model(model), "model_id": swap_model_id(model),
+            "source": "odysseus", "launch_command": cmd, "notes": "Pulled from Odysseus",
+        })
+        row = {"label": name, "profile_id": profile["profile_id"], "model_id": profile.get("model_id") or ""}
+        (updated if was else imported).append(row)
+    c.event("odysseus", f"pulled {len(imported)} new and {len(updated)} changed preset(s) from Odysseus"
+                        + (f"; {len(failed)} could not be used" if failed else ""))
+    return ok(imported=imported, updated=updated, skipped=skipped, failed=failed)
+
+
 @bp.post("/api/ody/send")
 def send():
     """Send a preset to Odysseus as a note, a Brain memory, a Library document, or a calendar reminder."""
