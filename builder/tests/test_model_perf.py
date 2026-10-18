@@ -110,6 +110,7 @@ def test_model_page_route(app, client):
     store = app.extensions["pb"].store
     assert client.get("/api/inventory/model/nope").status_code == 404
     store.open_session({"model_id": "org/model--x", "started_at": time.time() - 60, "last_seen": time.time(), "command": A})
+    app.extensions["pb"].inventory.invalidate()  # the session was written behind the inventory's back
     j = client.get("/api/inventory/model/org/model--x?days=7").get_json()
     assert j["ok"] and j["model_id"] == "org/model--x" and j["days"] == 7 and len(j["configs"]) == 1
     assert j["model"]["model_id"] == "org/model--x"

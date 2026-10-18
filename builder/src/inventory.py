@@ -18,6 +18,7 @@ Sources:
 """
 from __future__ import annotations
 
+import copy
 import difflib
 import hashlib
 import json
@@ -124,12 +125,16 @@ def extract(command: str, model_path: str = "", arch: Optional[dict] = None, siz
     return facts
 
 
+SUMMARY_TTL_S = 10.0  # how stale the model list may be; changes to sessions drop it at once
+
+
 class Inventory:
     def __init__(self, store: Store, event: Callable[..., None]):
         self.store, self.event = store, event
         self._lock = threading.RLock()
         self._synced = False  # the first sync after start sees models that were already running
         self._arch_cache: dict[tuple, Optional[dict]] = {}
+        self._summary: tuple[float, list[dict]] = (0.0, [])
 
     # ----- traits ---------------------------------------------------------------------
     def note(self, kind: str, value: Any, example: str = "") -> Optional[dict]:
@@ -184,6 +189,7 @@ class Inventory:
         ``running``: model id -> {"cmd", "state", "cards", "size_gib", "load_seconds", "measured_gib"}. Call it only
         after a successful look at Argos: an unreachable Argos must not look like "everything stopped".
         """
+        self.invalidate()
         now = now or time.time()
         opened, closed, moved = [], [], []
         with self._lock:
@@ -241,6 +247,7 @@ class Inventory:
 
     def close_all(self, now: Optional[float] = None) -> None:
         """Used at shutdown or when Argos goes away for good."""
+        self.invalidate()
         for s in self.store.list_sessions(open_only=True, limit=5000):
             self._close(s, now or time.time())
 
@@ -248,6 +255,7 @@ class Inventory:
     def refresh(self, library: list[dict], commands: dict[str, str], live_ids: Optional[set[str]] = None,
                 hardware: Optional[dict] = None, version: Optional[dict] = None) -> dict:
         """Scan what exists and record anything new. Each stage is independent: one failing does not stop the rest."""
+        self.invalidate()
         out: dict[str, Any] = {"models_new": [], "models_gone": [], "traits_new": [], "host_changed": False, "problems": []}
         before = {t["id"] for t in self.store.list_traits()}
 
@@ -320,9 +328,27 @@ class Inventory:
         return sum(1 for s in self.store.list_host_snapshots(200) if s["source"] == source) > 1
 
     # ----- reading it back ------------------------------------------------------------
+    def invalidate(self) -> None:
+        """Drop the cached model list; the next ask rebuilds it."""
+        self._summary = (0.0, [])
+
     def models_summary(self, now: Optional[float] = None) -> list[dict]:
-        """One row per model: how often and how long it was loaded, on which GPUs, with which quants and settings."""
-        now = now or time.time()
+        """One row per model: how often and how long it was loaded, on which GPUs, with which quants and settings.
+
+        Built from the whole history, so it is cached for a few seconds: the page, the model pages and the
+        assistant all ask for it, and every UI poll used to recompute it while holding the database lock.
+        An explicit ``now`` always recomputes.
+        """
+        if now is not None:
+            return self._build_summary(now)
+        with self._lock:
+            at, rows = self._summary
+            if time.time() - at > SUMMARY_TTL_S:
+                at, rows = time.time(), self._build_summary(time.time())
+                self._summary = (at, rows)
+            return copy.deepcopy(rows)
+
+    def _build_summary(self, now: float) -> list[dict]:
         alias = self.aliases()
         seen = {m["model_id"]: m for m in self.store.list_models_seen()}
         sessions: dict[str, list[dict]] = {}
@@ -332,21 +358,8 @@ class Inventory:
         # lowest and highest prefill / decode speed per model over 90 days: requests (long enough to be meaningful)
         # and benchmarks
         from .model_perf import MIN_OUTPUT_TOKENS, MIN_PROMPT_TOKENS
-        ranges: dict[str, dict[str, list[float]]] = {}
-        for r in self.store.list_requests(since=now - 90 * 86400, limit=200000):
-            d = ranges.setdefault(r["model"], {"prefill": [], "decode": []})
-            if (r.get("prompt_per_second") or 0) > 0 and (r.get("input_tokens") or 0) >= MIN_PROMPT_TOKENS:
-                d["prefill"].append(r["prompt_per_second"])
-            if (r.get("tokens_per_second") or 0) > 0 and (r.get("output_tokens") or 0) >= MIN_OUTPUT_TOKENS:
-                d["decode"].append(r["tokens_per_second"])
-        for r in self.store.list_runs(limit=100000):
-            if r.get("success") and r.get("model_id") and r["created_at"] >= now - 90 * 86400:
-                d = ranges.setdefault(r["model_id"], {"prefill": [], "decode": []})
-                if r.get("prompt_per_second"):
-                    d["prefill"].append(r["prompt_per_second"])
-                if r.get("tokens_per_second"):
-                    d["decode"].append(r["tokens_per_second"])
-        span = lambda xs: {"min": round(min(xs), 1), "max": round(max(xs), 1), "n": len(xs)} if xs else None  # noqa: E731
+        ranges = self.store.speed_ranges(now - 90 * 86400, MIN_PROMPT_TOKENS, MIN_OUTPUT_TOKENS)
+        span = lambda d: {"min": round(d["min"], 1), "max": round(d["max"], 1), "n": d["n"]} if d else None  # noqa: E731
         rows = []
         for mid in sorted(set(seen) | set(sessions)):
             ss, m = sessions.get(mid, []), seen.get(mid, {})
@@ -367,7 +380,7 @@ class Inventory:
                 "vram_gib_avg": _avg(s["measured_gib"] for s in ss) or _avg(s["size_gib"] for s in ss),  # measured beats any estimate
                 "open": any(s["open"] for s in ss),
                 "tps_avg": (speeds.get(mid) or {}).get("tg_avg"), "requests": (speeds.get(mid) or {}).get("requests"),
-                "prefill": span((ranges.get(mid) or {}).get("prefill") or []), "decode": span((ranges.get(mid) or {}).get("decode") or []),
+                "prefill": span((ranges.get(mid) or {}).get("prefill")), "decode": span((ranges.get(mid) or {}).get("decode")),
             })
         return sorted(rows, key=lambda r: (-r["loaded_seconds"], r["name"].lower()))
 

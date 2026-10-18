@@ -92,7 +92,7 @@ def inventory_get():
     return ok(models=c.inventory.models_summary(), pending=len(c.store.list_traits(status="new")),
               host={k: {"ts": v["ts"], "data": v["data"]} for k, v in latest.items()},
               host_changes={k: sum(1 for s in snaps if s["source"] == k) for k in latest},
-              last_refresh=last, open_sessions=len(c.store.list_sessions(open_only=True, limit=5000)))
+              last_refresh=last, open_sessions=c.store.count_sessions(open_only=True))
 
 
 def _sessions():
@@ -199,6 +199,7 @@ def traits_put(trait_id):
     else:
         canonical = ""
     saved = c.store.update_trait(trait_id, status=status, canonical=canonical, note=str(d.get("note", t["note"]))[:500])
+    c.inventory.invalidate()
     c.event("inventory", f"{t['kind']} {t['value']} marked {status}" + (f" → {canonical}" if canonical else ""),
             data={"trait_id": trait_id})
     return ok(trait=saved, pending=len(c.store.list_traits(status="new")))

@@ -603,6 +603,9 @@ class Store:
             r["gpus"], r["flags"], r["env"] = _json(r["gpus"], []), _json(r["flags"], {}), _json(r["env"], {})
         return rows
 
+    def count_sessions(self, open_only: bool = False) -> int:
+        return self._q("SELECT COUNT(*) AS n FROM model_sessions" + (" WHERE open=1" if open_only else ""))[0]["n"]
+
     def add_host_snapshot(self, source: str, data: dict, digest: str, ts: Optional[float] = None) -> bool:
         """Keep a snapshot only when it differs from the last one from this source."""
         last = self._q("SELECT digest FROM host_snapshots WHERE source=? ORDER BY ts DESC LIMIT 1", (source,))
@@ -859,6 +862,46 @@ class Store:
             "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
             "SUM(CASE WHEN status >= 400 OR (error IS NOT NULL AND error != '') THEN 1 ELSE 0 END) AS errors, "
             "MAX(ts) AS last_ts FROM requests WHERE ts>=? GROUP BY model ORDER BY requests DESC", (since,))
+
+    def speed_ranges(self, since: float, min_prompt: int, min_output: int) -> dict[str, dict[str, Optional[dict]]]:
+        """Lowest, highest and count of prefill / decode speed per model, from requests long enough to be
+        meaningful and from successful benchmark runs. Aggregated in SQL: this used to pull every row into Python."""
+        out: dict[str, dict[str, Optional[dict]]] = {}
+
+        def fold(rows: list[dict]) -> None:
+            for r in rows:
+                if not r["model"]:
+                    continue
+                d = out.setdefault(r["model"], {"prefill": None, "decode": None})
+                for kind in ("prefill", "decode"):
+                    n = r[f"{kind}_n"]
+                    if not n:
+                        continue
+                    cur = d[kind]
+                    d[kind] = ({"min": r[f"{kind}_min"], "max": r[f"{kind}_max"], "n": n} if cur is None else
+                               {"min": min(cur["min"], r[f"{kind}_min"]), "max": max(cur["max"], r[f"{kind}_max"]), "n": cur["n"] + n})
+
+        fold(self._q(
+            "SELECT model, "
+            "MIN(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_min, "
+            "MAX(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_max, "
+            "SUM(prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ?) AS prefill_n, "
+            "MIN(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_min, "
+            "MAX(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_max, "
+            "SUM(tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ?) AS decode_n "
+            "FROM requests WHERE ts>=? GROUP BY model",
+            (min_prompt, min_prompt, min_prompt, min_output, min_output, min_output, since)))
+        fold(self._q(
+            "SELECT model_id AS model, "
+            "MIN(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_min, "
+            "MAX(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_max, "
+            "SUM(prompt_per_second > 0) AS prefill_n, "
+            "MIN(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_min, "
+            "MAX(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_max, "
+            "SUM(tokens_per_second > 0) AS decode_n "
+            "FROM runs WHERE success=1 AND model_id IS NOT NULL AND model_id != '' AND created_at>=? GROUP BY model_id",
+            (since,)))
+        return out
 
     def request_window(self, model: str, t0: float, t1: float) -> dict:
         """What one model's requests did between two times."""
