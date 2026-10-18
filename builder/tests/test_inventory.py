@@ -471,10 +471,10 @@ def _seed_speeds(store, now):
     store._conn.commit()
 
 
-def test_Inventory_speed_ranges_ignore_short_requests_and_old_history(tmp_path):
+def test_Store_speed_summary_ignores_short_requests_and_old_history(tmp_path):
     store, now = Store(str(tmp_path / "d.db")), time.time()
     _seed_speeds(store, now)
-    r = store.speed_ranges(now - 90 * 86400, 128, 16)
+    r = store.model_speed_summary(now - 90 * 86400, 128, 16)
     assert r["a"]["prefill"] == {"min": 100.0, "max": 1100.0, "n": 3}  # the 10-token prompt and the zero are out
     assert r["a"]["decode"] == {"min": 10.0, "max": 55.0, "n": 3}  # the 4-token reply and the zero are out
     assert r["b"]["prefill"] == {"min": 300.0, "max": 300.0, "n": 1}
@@ -504,7 +504,7 @@ def test_Inventory_models_summary_stays_fast_on_a_big_history(tmp_path):
     rows = inv.models_summary(now)
     assert time.time() - t < 3
     assert rows == [] or all("decode" in r for r in rows)
-    assert store.speed_ranges(now - 90 * 86400, 128, 16)["m3"]["decode"]["n"] == 2500
+    assert store.model_speed_summary(now - 90 * 86400, 128, 16)["m3"]["decode"]["n"] == 2500
 
 
 def test_Inventory_models_summary_serves_a_stale_list_while_it_rebuilds(tmp_path):

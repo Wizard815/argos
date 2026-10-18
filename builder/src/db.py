@@ -874,44 +874,69 @@ class Store:
             "SUM(CASE WHEN status >= 400 OR (error IS NOT NULL AND error != '') THEN 1 ELSE 0 END) AS errors, "
             "MAX(ts) AS last_ts FROM requests WHERE ts>=? GROUP BY model ORDER BY requests DESC", (since,))
 
-    def speed_ranges(self, since: float, min_prompt: int, min_output: int) -> dict[str, dict[str, Optional[dict]]]:
-        """Lowest, highest and count of prefill / decode speed per model, from requests long enough to be
-        meaningful and from successful benchmark runs. Aggregated in SQL: this used to pull every row into Python."""
-        out: dict[str, dict[str, Optional[dict]]] = {}
+    def model_speed_summary(self, since: float, min_prompt: int, min_output: int,
+                            until: Optional[float] = None) -> dict[str, dict[str, Any]]:
+        """Per model since ``since``: request count, average decode speed, and the lowest / highest / count of
+        prefill and decode speed (requests long enough to be meaningful, plus successful benchmark runs).
 
-        def fold(rows: list[dict]) -> None:
+        The request history is the big table, and one scan over it holds the database lock for the whole scan,
+        which stalls every other call on a slow disk. So it is read a day at a time, taking the lock per slice.
+        """
+        until = until or time.time()
+        out: dict[str, dict[str, Any]] = {}
+
+        def entry(model: str) -> dict[str, Any]:
+            return out.setdefault(model, {"requests": 0, "tg_sum": 0.0, "tg_n": 0, "prefill": None, "decode": None})
+
+        def widen(d: dict[str, Any], kind: str, lo: Any, hi: Any, n: int) -> None:
+            if not n:
+                return
+            cur = d[kind]
+            d[kind] = {"min": lo, "max": hi, "n": n} if cur is None else {
+                "min": min(cur["min"], lo), "max": max(cur["max"], hi), "n": cur["n"] + n}
+
+        sql = ("SELECT model, COUNT(*) AS requests, "
+               "SUM(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS tg_sum, "
+               "SUM(tokens_per_second > 0) AS tg_n, "
+               "MIN(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_min, "
+               "MAX(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_max, "
+               "SUM(prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ?) AS prefill_n, "
+               "MIN(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_min, "
+               "MAX(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_max, "
+               "SUM(tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ?) AS decode_n "
+               "FROM requests WHERE ts>=? AND ts<? GROUP BY model")
+        t0 = since
+        while t0 <= until:
+            t1 = t0 + 86400
+            last = t1 > until
+            rows = self._q(sql, (min_prompt, min_prompt, min_prompt, min_output, min_output, min_output,
+                                 t0, float("inf") if last else t1))
             for r in rows:
-                if not r["model"]:
+                if r["model"] is None:
                     continue
-                d = out.setdefault(r["model"], {"prefill": None, "decode": None})
-                for kind in ("prefill", "decode"):
-                    n = r[f"{kind}_n"]
-                    if not n:
-                        continue
-                    cur = d[kind]
-                    d[kind] = ({"min": r[f"{kind}_min"], "max": r[f"{kind}_max"], "n": n} if cur is None else
-                               {"min": min(cur["min"], r[f"{kind}_min"]), "max": max(cur["max"], r[f"{kind}_max"]), "n": cur["n"] + n})
-
-        fold(self._q(
-            "SELECT model, "
-            "MIN(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_min, "
-            "MAX(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_max, "
-            "SUM(prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ?) AS prefill_n, "
-            "MIN(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_min, "
-            "MAX(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_max, "
-            "SUM(tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ?) AS decode_n "
-            "FROM requests WHERE ts>=? GROUP BY model",
-            (min_prompt, min_prompt, min_prompt, min_output, min_output, min_output, since)))
-        fold(self._q(
-            "SELECT model_id AS model, "
-            "MIN(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_min, "
-            "MAX(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_max, "
-            "SUM(prompt_per_second > 0) AS prefill_n, "
-            "MIN(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_min, "
-            "MAX(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_max, "
-            "SUM(tokens_per_second > 0) AS decode_n "
-            "FROM runs WHERE success=1 AND model_id IS NOT NULL AND model_id != '' AND created_at>=? GROUP BY model_id",
-            (since,)))
+                d = entry(r["model"])
+                d["requests"] += r["requests"]
+                d["tg_sum"] += r["tg_sum"] or 0.0
+                d["tg_n"] += r["tg_n"] or 0
+                widen(d, "prefill", r["prefill_min"], r["prefill_max"], r["prefill_n"])
+                widen(d, "decode", r["decode_min"], r["decode_max"], r["decode_n"])
+            t0 = t1
+        for r in self._q(
+                "SELECT model_id AS model, "
+                "MIN(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_min, "
+                "MAX(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_max, "
+                "SUM(prompt_per_second > 0) AS prefill_n, "
+                "MIN(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_min, "
+                "MAX(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_max, "
+                "SUM(tokens_per_second > 0) AS decode_n "
+                "FROM runs WHERE success=1 AND model_id IS NOT NULL AND model_id != '' AND created_at>=? GROUP BY model_id",
+                (since,)):
+            d = entry(r["model"])
+            widen(d, "prefill", r["prefill_min"], r["prefill_max"], r["prefill_n"])
+            widen(d, "decode", r["decode_min"], r["decode_max"], r["decode_n"])
+        for d in out.values():
+            d["tg_avg"] = d.pop("tg_sum") / d["tg_n"] if d["tg_n"] else None
+            d.pop("tg_n")
         return out
 
     def request_window(self, model: str, t0: float, t1: float) -> dict:

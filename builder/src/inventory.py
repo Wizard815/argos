@@ -370,11 +370,10 @@ class Inventory:
         sessions: dict[str, list[dict]] = {}
         for s in self.store.list_sessions(limit=20000):
             sessions.setdefault(s["model_id"], []).append(s)
-        speeds = {r["model"]: r for r in self.store.request_stats(now - 90 * 86400)}
-        # lowest and highest prefill / decode speed per model over 90 days: requests (long enough to be meaningful)
-        # and benchmarks
+        # speed per model over 90 days: requests (long enough to be meaningful) and benchmarks. One pass, read in
+        # slices so the database lock is never held for the whole history.
         from .model_perf import MIN_OUTPUT_TOKENS, MIN_PROMPT_TOKENS
-        ranges = self.store.speed_ranges(now - 90 * 86400, MIN_PROMPT_TOKENS, MIN_OUTPUT_TOKENS)
+        speeds = self.store.model_speed_summary(now - 90 * 86400, MIN_PROMPT_TOKENS, MIN_OUTPUT_TOKENS, until=now)
         span = lambda d: {"min": round(d["min"], 1), "max": round(d["max"], 1), "n": d["n"]} if d else None  # noqa: E731
         rows = []
         for mid in sorted(set(seen) | set(sessions)):
@@ -395,8 +394,8 @@ class Inventory:
                 "last_loaded": max((s["started_at"] for s in ss), default=None), "gpus": gpus,
                 "vram_gib_avg": _avg(s["measured_gib"] for s in ss) or _avg(s["size_gib"] for s in ss),  # measured beats any estimate
                 "open": any(s["open"] for s in ss),
-                "tps_avg": (speeds.get(mid) or {}).get("tg_avg"), "requests": (speeds.get(mid) or {}).get("requests"),
-                "prefill": span((ranges.get(mid) or {}).get("prefill")), "decode": span((ranges.get(mid) or {}).get("decode")),
+                "tps_avg": (speeds.get(mid) or {}).get("tg_avg"), "requests": (speeds.get(mid) or {}).get("requests") or None,
+                "prefill": span((speeds.get(mid) or {}).get("prefill")), "decode": span((speeds.get(mid) or {}).get("decode")),
             })
         return sorted(rows, key=lambda r: (-r["loaded_seconds"], r["name"].lower()))
 
