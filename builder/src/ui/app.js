@@ -675,7 +675,7 @@ function assistWindow() {
     const g = JSON.parse(localStorage.getItem(BA_WIN_KEY) || "null");
     if (g && Number.isFinite(g.x) && Number.isFinite(g.y)) return g;
   } catch (e) { /* private window: use the defaults */ }
-  return { x: Math.max(12, window.innerWidth - 400), y: 84, w: 380, h: 440 };
+  return { x: Math.max(12, window.innerWidth - 400), y: 84, w: 380, h: 360 };
 }
 
 function assistRemember(panel) {
@@ -690,9 +690,11 @@ function assistFloat(panel) {
   if (panel.dataset.floating) return;
   document.body.append(panel); // above the page: the same window in either Builder state
   const g = assistWindow();
+  // A column: .messages is written for one, and without this the message area takes
+  // the whole width and the head and the input collapse into nothing.
   Object.assign(panel.style, { position: "fixed", left: `${g.x}px`, top: `${g.y}px`,
     width: `${g.w}px`, height: `${g.h}px`, zIndex: "70", display: "none",
-    boxShadow: "0 14px 48px rgba(0,0,0,0.45)" });
+    flexDirection: "column", boxShadow: "0 14px 48px rgba(0,0,0,0.45)" });
   panel.dataset.floating = "1";
 
   const head = $("#bAssistHead");
@@ -2614,6 +2616,20 @@ function renderAssistantSettings() {
   useOther.addEventListener("change", syncOther);
   syncOther();
 
+  // escalation: what a hard question is handed to
+  const escalate = modelSelect(ch.chat, cfg.escalate_model || "", { none: "none: the small model answers everything", connected: ch.engine_connected });
+  const escalateQuant = h("select", {}, ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"].map((q) => h("option", { value: q }, q)));
+  escalateQuant.value = cfg.escalate_quant || "Q4_K_M";
+  const escalateFetch = h("button", { class: "btn sm", type: "button" }, "Fetch it");
+  escalateFetch.onclick = async () => {
+    escalateFetch.disabled = true; escalateFetch.textContent = "…";
+    try {
+      const r = await api("POST", "/api/assistant/setup", { which: "escalate" });
+      if (r && r.model) escalate.value = r.model;
+      toast("Fetching the bigger model. It shows up as an engine model once the models folder is scanned.", "ok");
+    } catch (e) { fail(e); } finally { escalateFetch.disabled = false; escalateFetch.textContent = "Fetch it"; }
+  };
+
   // the conversation
   const ctx = h("input", { type: "number", value: cfg.context_tokens });
   const keep = h("input", { type: "number", value: cfg.keep_recent });
@@ -2631,7 +2647,8 @@ function renderAssistantSettings() {
 
   const save = async () => {
     try {
-      const body = { context_tokens: ctx.value, keep_recent: keep.value, temperature: temp.value, idle_unload_min: idle.value };
+      const body = { context_tokens: ctx.value, keep_recent: keep.value, temperature: temp.value, idle_unload_min: idle.value,
+        escalate_model: escalate.value, escalate_quant: escalateQuant.value };
       if (useOther.checked) {
         if (!endpoint.value.trim()) throw new Error("Type the other server's URL, or untick “Use another server”.");
         Object.assign(body, { mode: "endpoint", endpoint: endpoint.value.trim(), model: endpointModel.value.trim() });
@@ -2662,6 +2679,11 @@ function renderAssistantSettings() {
         h("div", { class: "fields", style: "margin-top:8px" },
           h("label", { class: "check wide" }, useOther, "Use another OpenAI-compatible server instead of Argos"),
           field("URL", endpoint, "Its /v1 address.", true), field("Model id", endpointModel)))),
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Hard questions")),
+      h("p", { class: "hint" }, "A bigger model to hand a question to when the small one says it is out of its depth: the flag reference, comparing many models, a long log. It is only asked when a turn hands over, so it can be cheap to keep — the download default is the smaller quant, because it may run on CPU, where that is the faster choice."),
+      h("div", { class: "fields" },
+        field("Escalation model", escalate, "empty: the small model answers everything, including what it cannot do", true),
+        field("Download it at", h("div", { class: "row", style: "gap:8px" }, escalateQuant, escalateFetch), "used only when fetching it"))),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Conversation")),
       h("div", { class: "fields" },
         field("Context window (tokens)", ctx, "Must match the -c of the model above. At about 70% full, or when you press Compact, older turns are summarised."),
