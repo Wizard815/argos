@@ -36,7 +36,7 @@ if __package__ in (None, ""):  # `python src/app.py`
 from .assistant import Assistant  # noqa: E402
 from .db import Store  # noqa: E402
 from .downloader import Downloads  # noqa: E402
-from . import engine_proxy  # noqa: E402
+from . import engine_proxy, readcache  # noqa: E402
 from .log_analyzer import parse_log_text  # noqa: E402
 from .routes import assistant as assistant_routes  # noqa: E402
 from .routes import core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
@@ -253,6 +253,9 @@ def create_app(config: dict | None = None) -> Flask:
         app.register_blueprint(bp)
     # last: anything the builder does not own goes to the engine (one port for both)
     app.register_blueprint(engine_proxy.bp)
+    # In front of everything, including the proxy: a repeated read is answered from
+    # memory so the polling cannot queue up behind the database's single lock.
+    readcache.install(app)
 
     def ui_version() -> str:
         """Changes whenever a UI file changes, so a browser never runs an old app.js against a new server."""

@@ -3,6 +3,11 @@ import sys
 
 import pytest
 
+# A few seconds of read cache deliberately means a read can be one poll old, which a
+# test asserting state right after a write cannot have. The suite turns it off; the
+# cache's own tests build one directly.
+os.environ.setdefault("ARGOS_READ_CACHE_S", "0")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
