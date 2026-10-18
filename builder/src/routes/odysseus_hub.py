@@ -223,9 +223,13 @@ def pull():
             "profile_id": was["profile_id"] if was else None,
             "name": name, "base_model": guess_base_model(model), "model_id": swap_model_id(model),
             "source": "odysseus", "launch_command": cmd, "notes": "Pulled from Odysseus",
-        })
+        }, commit=False)
         row = {"label": name, "profile_id": profile["profile_id"], "model_id": profile.get("model_id") or ""}
         (updated if was else imported).append(row)
+    # One commit for the lot: a pull writes dozens of rows, and each commit is a
+    # journal write, which on a FUSE share is the difference between a moment and a
+    # minute.
+    c.store.commit()
     c.event("odysseus", f"pulled {len(imported)} new and {len(updated)} changed preset(s) from Odysseus"
                         + (f"; {len(failed)} could not be used" if failed else ""))
     return ok(imported=imported, updated=updated, skipped=skipped, failed=failed)

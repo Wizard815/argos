@@ -1635,7 +1635,14 @@ function renderIntegrations() {
       add("Updated from Odysseus", r.updated, "warn", (x) => x.model_id || "");
       add("Already here, unchanged", r.skipped, "", (x) => x.reason);
       add("Could not be used", r.failed, "bad", (x) => x.reason);
-      fill(pullOut, r.note ? h("p", { class: "hint", style: "margin:0 0 6px" }, r.note) : null, ...rows);
+      fill(pullOut, r.note ? h("p", { class: "hint", style: "margin:0 0 6px" }, r.note) : null, ...rows,
+        ((r.imported || []).length || (r.updated || []).length)
+          ? h("p", { class: "hint", style: "margin:6px 0 0" },
+              "They are under Profiles now. If that page lists fewer, clear its model filter.")
+          : null);
+      // The Profiles page renders a cached list, so a pull has to refresh it: without
+      // this the profiles exist and the page still says zero.
+      await loadProfiles();
       if ((r.imported || []).length || (r.updated || []).length) {
         toast(`Pulled ${(r.imported || []).length} new and ${(r.updated || []).length} updated profile(s).`, "ok");
       } else if ((r.failed || []).length) {
