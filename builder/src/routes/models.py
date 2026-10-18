@@ -8,7 +8,7 @@ from flask import Blueprint, request
 
 from ..downloader import DownloadError, fit
 from ..integrations import engine_api
-from ..library import library_with_profiles, prefab_command, prefab_with_launcher, scan_media, scan_models
+from ..library import forget_scans, library_with_profiles, prefab_command, prefab_with_launcher, scan_media, scan_models
 from ..telemetry import read_amd_sysfs, read_engine, read_nvidia_smi
 from ..web import body, check_id, ctx, err, ok
 from .core import _render
@@ -32,6 +32,7 @@ def library():
 def library_rescan():
     """Rescan the models folder: the engine regenerates its model list, and the library is read again."""
     c = ctx()
+    forget_scans()  # a rescan is a request to look at the disk again
     url = c.settings.get("integrations")["engine_url"]
     engine = None
     if url:
@@ -130,6 +131,7 @@ def library_delete():
             removed.append(f)
         except OSError as exc:
             problems.append(f"{os.path.basename(f)}: {exc.strerror or exc}")
+    forget_scans()
     c.event("library", f"deleted {entry['name']} ({len(removed)} file{'s' if len(removed) != 1 else ''})",
             level="warn" if problems else "info", data={"files": removed, "problems": problems})
     if problems and not removed:

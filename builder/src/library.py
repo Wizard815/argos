@@ -17,10 +17,13 @@ file: the user's defaults from Settings, adjusted for the kind of model.
 """
 from __future__ import annotations
 
+import copy
 import os
 import re
 import shlex
-from typing import Optional
+import threading
+import time
+from typing import Callable, Optional
 
 from .command import LaunchCommand, parse_command, swap_model_id, to_odysseus
 
@@ -88,7 +91,43 @@ def media_kind(rel_path: str) -> Optional[tuple[str, str]]:
     return None
 
 
+# Walking the models folder is cheap on a local disk and slow on a network or FUSE share (Unraid's
+# /mnt/user), where every listing and stat is a round trip. A page load asks for the library from a dozen
+# places, so the walk is shared: one at a time, kept for SCAN_TTL_S, and dropped as soon as this app changes
+# the folder (a download finishing, a delete, a rescan).
+SCAN_TTL_S = 60.0
+_scan_lock = threading.RLock()
+_scans: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+
+
+def forget_scans() -> None:
+    """The models folder changed: the next scan reads it again."""
+    with _scan_lock:
+        _scans.clear()
+
+
+def _cached(kind: str, fn: Callable[[str], list[dict]], models_dir: str) -> list[dict]:
+    key = (kind, models_dir)
+    with _scan_lock:
+        hit = _scans.get(key)
+        if hit is None or time.time() - hit[0] > SCAN_TTL_S:
+            hit = (time.time(), fn(models_dir))
+            _scans[key] = hit
+        return copy.deepcopy(hit[1])
+
+
 def scan_models(models_dir: str) -> list[dict]:
+    """GGUF models llama-server can run (cached; see ``forget_scans``). Audio and image models are in ``scan_media``."""
+    return _cached("models", _scan_models, models_dir)
+
+
+def scan_media(models_dir: str) -> list[dict]:
+    """Audio and image models, listed only (cached; see ``forget_scans``)."""
+    return _cached("media", _scan_media, models_dir)
+
+
+
+def _scan_models(models_dir: str) -> list[dict]:
     """GGUF models llama-server can run. Audio and image models are in ``scan_media``."""
     if not models_dir or not os.path.isdir(models_dir):
         return []
@@ -124,7 +163,7 @@ def scan_models(models_dir: str) -> list[dict]:
     return sorted(out, key=lambda m: m["name"].lower())
 
 
-def scan_media(models_dir: str) -> list[dict]:
+def _scan_media(models_dir: str) -> list[dict]:
     """Audio and image models, listed only. A diffusers folder (one with model_index.json) is one model."""
     if not models_dir or not os.path.isdir(models_dir):
         return []
@@ -260,5 +299,5 @@ def model_id_for_command(command: str) -> str:
     return swap_model_id(model) if model.lower().endswith(".gguf") else ""
 
 
-__all__ = ["scan_models", "scan_media", "media_kind", "prefab_command", "quant_of", "kind_of",
+__all__ = ["scan_models", "scan_media", "forget_scans", "media_kind", "prefab_command", "quant_of", "kind_of",
            "library_with_profiles", "model_id_for_command"]

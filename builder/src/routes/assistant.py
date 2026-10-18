@@ -10,7 +10,7 @@ from flask import Blueprint, Response, request, stream_with_context
 from ..assistant import (DEFAULT_QUANT, DEFAULT_REPOS, ESCALATE_PROFILE_NAME, ESCALATE_REPOS, PROFILE_NAME,
                          AssistantError, pick_quant)
 from ..downloader import DownloadError
-from ..library import model_id_for_command, prefab_command, scan_models
+from ..library import forget_scans, model_id_for_command, prefab_command, scan_models
 from ..web import body, ctx, err, ok
 
 bp = Blueprint("assistant", __name__)
@@ -162,6 +162,7 @@ def choices():
 
 def _local_model(models_dir: str, pattern: str, want: str):
     """A local file for this model already, preferring the quant that was asked for."""
+    forget_scans()  # deciding whether to download: look at the disk, not at a minute-old answer
     found = [m for m in scan_models(models_dir) if re.search(pattern, m["name"], re.IGNORECASE) and m["kind"] == "chat"]
     found.sort(key=lambda m: (m["quant"] != want, m["size"]))
     return found[0] if found else None

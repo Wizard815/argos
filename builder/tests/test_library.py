@@ -154,3 +154,25 @@ def test_model_groups_round_trip(client):
     assert r["groups"] == [{"name": "Qwen", "models": ["a", "b"]}, {"name": "Gemma", "models": ["d"]}],         "names are unique, a model sits in one group, blank names are dropped"
     assert client.get("/api/library/groups").get_json()["groups"] == r["groups"]
     assert client.put("/api/library/groups", json={"groups": "x"}).status_code == 400
+
+
+def test_scan_models_walks_the_folder_once_and_forgets_on_request(tmp_path, monkeypatch):
+    import src.library as lib
+    lib.forget_scans()
+    (tmp_path / "A-Q4_K_M.gguf").write_bytes(b"x")
+    walks = []
+    real = os.walk
+    monkeypatch.setattr(lib.os, "walk", lambda *a, **k: (walks.append(1), real(*a, **k))[1])
+    assert [m["name"] for m in lib.scan_models(str(tmp_path))] == ["A-Q4_K_M"]
+    (tmp_path / "B-Q4_K_M.gguf").write_bytes(b"x")
+    assert len(lib.scan_models(str(tmp_path))) == 1 and len(walks) == 1  # served from the cache
+    lib.forget_scans()
+    assert len(lib.scan_models(str(tmp_path))) == 2 and len(walks) == 2
+
+
+def test_scan_models_hands_out_copies(tmp_path):
+    import src.library as lib
+    lib.forget_scans()
+    (tmp_path / "A-Q4_K_M.gguf").write_bytes(b"x")
+    lib.scan_models(str(tmp_path))[0]["name"] = "mutated"
+    assert lib.scan_models(str(tmp_path))[0]["name"] == "A-Q4_K_M"
