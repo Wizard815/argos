@@ -7,7 +7,8 @@ import re
 
 from flask import Blueprint, Response, request, stream_with_context
 
-from ..assistant import DEFAULT_QUANT, DEFAULT_REPOS, PROFILE_NAME, AssistantError, pick_quant
+from ..assistant import (DEFAULT_QUANT, DEFAULT_REPOS, ESCALATE_PROFILE_NAME, ESCALATE_REPOS, PROFILE_NAME,
+                         AssistantError, pick_quant)
 from ..downloader import DownloadError
 from ..library import model_id_for_command, prefab_command, scan_models
 from ..web import body, ctx, err, ok
@@ -159,32 +160,44 @@ def choices():
     return ok(chat=chat, embed=embed, engine_connected=connected)
 
 
-def _local_qwen06(models_dir: str):
-    found = [m for m in scan_models(models_dir) if re.search(r"qwen3-0\.6b", m["name"], re.IGNORECASE)
-             and m["kind"] == "chat"]
-    found.sort(key=lambda m: (m["quant"] != DEFAULT_QUANT, m["size"]))
+def _local_model(models_dir: str, pattern: str, want: str):
+    """A local file for this model already, preferring the quant that was asked for."""
+    found = [m for m in scan_models(models_dir) if re.search(pattern, m["name"], re.IGNORECASE) and m["kind"] == "chat"]
+    found.sort(key=lambda m: (m["quant"] != want, m["size"]))
     return found[0] if found else None
 
 
 @bp.post("/api/assistant/setup")
 def setup():
-    """Point the assistant at Qwen3-0.6B: reuse a local file, or download the Q8_0."""
+    """Point the assistant at a model: reuse a local file, or download it.
+
+    ``which`` picks the model: the assistant's own ("chat", the default) or the one a
+    hard question is handed to ("escalate"). They keep separate quants, because the
+    escalation model may run on CPU, where the smaller quant is the faster one.
+    """
     c, d = ctx(), body()
+    which = "escalate" if str(d.get("which") or "").strip().lower() == "escalate" else "chat"
+    cfg = c.settings.get("assistant")
+    repos = ESCALATE_REPOS if which == "escalate" else DEFAULT_REPOS
+    want = str(cfg.get("escalate_quant" if which == "escalate" else "quant") or DEFAULT_QUANT)
+    pattern = r"qwen3\.5-2b" if which == "escalate" else r"qwen3-0\.6b"
+    profile_name = ESCALATE_PROFILE_NAME if which == "escalate" else PROFILE_NAME
+    label = "Qwen3.5-2B" if which == "escalate" else "Qwen3-0.6B"
     models_dir = c.settings.get("paths")["models_dir"]
-    model, job = _local_qwen06(models_dir), None
+    model, job = _local_model(models_dir, pattern, want), None
     if not model:
         info, quant, problems = None, None, []
-        for repo in ([d["repo"]] if d.get("repo") else DEFAULT_REPOS):
+        for repo in ([d["repo"]] if d.get("repo") else repos):
             try:
                 info = c.downloads.client().repo(repo)
             except DownloadError as exc:
                 problems.append(f"{repo}: {exc}")
                 continue
-            quant = pick_quant(info["quants"])
+            quant = pick_quant(info["quants"], want=want)
             if quant:
                 break
         if not quant:
-            return err("Could not find Qwen3-0.6B on Hugging Face. " + "; ".join(problems), 502)
+            return err(f"Could not find {label} on Hugging Face at {want}. " + "; ".join(problems), 502)
         sizes = {f["name"]: f["size"] for f in info["files"]}
         try:
             job = c.downloads.start(info["id"], [{"name": n, "size": sizes.get(n, 0)} for n in quant["files"]])
@@ -198,12 +211,18 @@ def setup():
     cmd = prefab_command(model, prefab, port="${PORT}").to_string(style="odysseus")
     existing = c.store.get_profile(cfg["profile_id"]) if cfg["profile_id"] else None
     profile = c.store.save_profile({
-        "profile_id": existing["profile_id"] if existing and existing["name"] == PROFILE_NAME else None,
-        "name": PROFILE_NAME, "base_model": "Qwen3-0.6B", "model_id": model_id_for_command(cmd),
-        "source": "assistant", "launch_command": cmd, "notes": "Built-in assistant model",
+        "profile_id": existing["profile_id"] if existing and existing["name"] == profile_name else None,
+        "name": profile_name, "base_model": label, "model_id": model_id_for_command(cmd),
+        "source": "assistant", "launch_command": cmd,
+        "notes": "Built-in assistant model" if which == "chat" else "Assistant escalation model",
     })
     from .workspace import _variant_for_profile
     variant = _variant_for_profile(profile["profile_id"]) or model_id_for_command(cmd)
-    c.settings.update("assistant", {"mode": "engine", "model": variant, "profile_id": profile["profile_id"]})
+    # The escalation model is named rather than switched on: the assistant's own model
+    # keeps answering, and this one is only asked when a turn hands over.
+    if which == "escalate":
+        c.settings.update("assistant", {"escalate_model": variant})
+    else:
+        c.settings.update("assistant", {"mode": "engine", "model": variant, "profile_id": profile["profile_id"]})
     c.event("assistant", f"assistant set to {profile['name']}" + (" (downloading model)" if job else ""))
-    return ok(profile=profile, download=job, model=variant)
+    return ok(profile=profile, download=job, model=variant, which=which)
