@@ -422,7 +422,10 @@ def launch_record(launch_id):
 @bp.get("/api/runs")
 def runs_list():
     limit = max(1, min(request.args.get("limit", 1000, type=int), 100_000))
-    return ok(runs=ctx().store.list_runs(request.args.get("base_model") or None, limit))
+    runs = ctx().store.list_runs(request.args.get("base_model") or None, limit)
+    # The count comes back either way, so a caller never has to ask for a hundred
+    # thousand rows to find out how many there are.
+    return ok(runs=runs, total=ctx().store.count_runs())
 
 
 @bp.delete("/api/runs/<run_id>")
