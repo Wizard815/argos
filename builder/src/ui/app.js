@@ -680,6 +680,8 @@ function builderAssistToggle() {
 }
 
 function builderActionEl(a) {
+  // A model action (load, unload, keep) is the same button wherever it appears.
+  if (a.verb === "load" || a.verb === "unload" || a.verb === "keep") return actionEl(a);
   const label = a.verb === "unset" ? `Remove ${a.flag}` : `Set ${a.flag}${a.value ? " " + a.value : ""}`;
   const btn = h("button", { class: "btn sm" }, "Apply");
   const row = h("div", { class: "assistant-action", style: "display:flex;gap:8px;align-items:center;margin-top:6px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;" },
