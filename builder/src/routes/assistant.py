@@ -57,10 +57,11 @@ def chat():
     d = body()
     text = str(d.get("message") or "")
     builder = d.get("builder") if isinstance(d.get("builder"), dict) else None
+    escalate = bool(d.get("escalate"))
     assistant = ctx().assistant
 
     def events():
-        for ev in assistant.chat(text, builder=builder):
+        for ev in assistant.chat(text, builder=builder, escalate=escalate):
             yield f"data: {json.dumps(ev)}\n\n"
 
     return Response(stream_with_context(events()), mimetype="text/event-stream",

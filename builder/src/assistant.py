@@ -56,6 +56,7 @@ Builder tunes a llama-server command and saves it as a profile; Profiles lists t
 If the user asks how to do something, name the view to open and the setting to change. A saved profile is the way to keep a launch command: build it in Builder, name it, then it appears in Profiles.
 If LIVE DATA does not cover the question, say so in one line instead of guessing.
 Know llama-server flags (-ngl, -c, --flash-attn, --cache-type-k/v, -lm, --split-mode, --n-cpu-moe, --spec-type) and suggest concrete changes.
+If the question needs something you cannot do - the full flag reference, comparing many models, reading a long log - reply with the single word ESCALATE on its own line and nothing else, and a larger model answers it instead. Do not guess when you could hand over.
 When BUILDER appears in LIVE DATA, the user is in the Builder view and that is the command on their screen: answer about it directly. To propose a change to it, end with one line per flag, "ACTION set <flag> <value>" or "ACTION unset <flag>" (for example: ACTION set --flash-attn off). Propose only flags you know; the user applies each one. Never rewrite the whole command unless asked to.
 Answer in a few short sentences or a short list."""
 
@@ -66,6 +67,11 @@ FOCUS_MODELS = 4
 # The one line shape an action may take. Deliberately strict -- the answer is
 # free text, so anything looser becomes guesswork about what was meant.
 ACTION_RE = re.compile(r"ACTION\s+(load|unload|keep)\s+(\S+)(?:\s+(on|off))?\s*$", re.IGNORECASE)
+
+# The small model says this, alone on a line, when the question is beyond it. A
+# declared hand-off beats a guess: the alternative is inferring "too hard" from the
+# question, which is wrong in both directions and silently so.
+ESCALATE_RE = re.compile(r"^\s*ESCALATE\s*[.!]?\s*$", re.MULTILINE | re.IGNORECASE)
 
 # The Builder panel lets the assistant propose an edit to the command on screen.
 # The flag name is checked against a flag's shape before it is offered, because the
@@ -161,6 +167,8 @@ class Assistant:
         self._launched_stamp: tuple = ()
         self._turn = threading.Lock()
         self.last_used = 0.0  # when the chat model last answered, for unloading it when idle
+        self._escalated = False  # this turn is being answered by the escalation model
+        self._builder: Optional[dict] = None  # what is on screen this turn, for digest()
 
     # ----- the facts the model sees ----------------------------------------
     def digest(self, question: str = "", now: Optional[float] = None) -> str:
@@ -405,6 +413,9 @@ class Assistant:
                 raise AssistantError("Pick a model for the assistant under Assistant → Settings, or click “Set up Qwen3-0.6B”.")
             if not url:
                 raise AssistantError("The engine is not running, so the assistant's model cannot be loaded.")
+            # A turn the small model handed over, or one the user sent straight up.
+            if self._escalated and self.escalate_model():
+                return url.rstrip("/") + "/v1", self.escalate_model()
             return url.rstrip("/") + "/v1", cfg["model"]
         if cfg["mode"] == "endpoint":
             if not cfg["endpoint"]:
@@ -611,6 +622,16 @@ class Assistant:
         self.on_event("assistant", f"started the embedding model {model_id}: the new numbers are searchable")
         return True
 
+    def escalate_model(self) -> str:
+        """The bigger model a hard question goes to, or "" when there is none."""
+        return str(self.settings.get("assistant").get("escalate_model") or "").strip()
+
+    def _ask_bigger(self, digest: str, question: str) -> str:
+        """Put the same question to the escalation model, with the same context."""
+        base, model = self.endpoint()
+        return self._complete(base, model, [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + digest},
+                                            {"role": "user", "content": question}], ANSWER_TOKENS)
+
     def unload(self, which: str, reason: str = "") -> dict:
         info = self.models()[which]
         if not info["controllable"]:
@@ -670,7 +691,7 @@ class Assistant:
                 pass
         return done
 
-    def chat(self, text: str, builder: Optional[dict] = None) -> Iterator[dict]:
+    def chat(self, text: str, builder: Optional[dict] = None, escalate: bool = False) -> Iterator[dict]:
         """Run one turn; yields {"type": status|delta|compacted|done|error, ...}."""
         if not self._turn.acquire(blocking=False):
             yield {"type": "error", "error": "The assistant is still answering the previous message."}
@@ -690,6 +711,8 @@ class Assistant:
                 return
             # What is on screen for this turn only: digest() reads it while answering.
             self._builder = builder or None
+            # The user can send a question straight to the bigger model.
+            self._escalated = bool(escalate) and bool(self.escalate_model())
             # Starting the model can take a while: run it aside and stream its progress.
             updates: queue.Queue = queue.Queue()
             result: dict = {}
@@ -727,6 +750,18 @@ class Assistant:
                 yield {"type": "error", "error": str(exc)}
                 return
             clean, actions = self._actions(answer)
+            clean = ESCALATE_RE.sub("", clean).strip()
+            # The small model handed the question over: ask the bigger one, once.
+            if ESCALATE_RE.search(answer or "") and not self._escalated and self.escalate_model():
+                self._escalated = True
+                yield {"type": "status", "text": f"This is beyond the small model — asking {self.escalate_model()}…"}
+                try:
+                    answer = self._ask_bigger(digest, text)
+                except AssistantError as exc:  # noqa: BLE001 - the small answer stands
+                    yield {"type": "status", "text": f"The bigger model could not answer: {exc}"}
+                else:
+                    clean, actions = self._actions(answer)
+                    clean = ESCALATE_RE.sub("", clean).strip()
             self.store.add_message("assistant", clean or "(no answer)")
             for action in actions:
                 yield {"type": "action", "action": action}
