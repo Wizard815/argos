@@ -41,6 +41,25 @@ def test_a_handed_over_turn_is_answered_by_the_bigger_model(client, app):
     assert a.endpoint()[1] == BIG, "after the hand-off the bigger model answers"
 
 
-def test_the_escalation_model_defaults_to_a_cpu_friendly_quant(client, app):
-    """It may run on CPU, so the download default is the smaller one."""
-    assert app.extensions["pb"].settings.get("assistant")["escalate_quant"] == "Q4_K_M"
+def test_each_model_keeps_its_own_quant_default(client, app):
+    """The assistant's model lives on the GPU; the escalation model may not."""
+    cfg = app.extensions["pb"].settings.get("assistant")
+    assert cfg["quant"] == "Q8_0"
+    assert cfg["escalate_quant"] == "Q4_K_M"
+
+
+def test_a_local_file_is_picked_by_the_quant_that_was_asked_for(tmp_path):
+    from src.routes.assistant import _local_model
+
+    d = tmp_path / "models"
+    d.mkdir()
+    for name in ("Qwen3-0.6B-Q8_0.gguf", "Qwen3-0.6B-Q4_K_M.gguf"):
+        (d / name).write_bytes(b"x" * 10)
+    assert _local_model(str(d), r"qwen3-0\.6b", "Q8_0")["quant"] == "Q8_0"
+    assert _local_model(str(d), r"qwen3-0\.6b", "Q4_K_M")["quant"] == "Q4_K_M"
+
+
+def test_the_escalation_model_has_its_own_repo():
+    from src.assistant import ESCALATE_REPOS
+
+    assert ESCALATE_REPOS and all("2B" in r or "2b" in r for r in ESCALATE_REPOS), ESCALATE_REPOS

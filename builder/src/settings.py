@@ -95,8 +95,9 @@ def env_defaults(cfg: dict) -> dict:
             "keep_recent": 8,        # messages always kept verbatim
             "temperature": 0.7,
             "idle_unload_min": 15,   # unload the assistant's chat and embedding models after this long unused; 0 = never
+            "quant": "Q8_0",         # what to download the assistant's own model at
             "escalate_model": "",    # a bigger model for questions beyond the small one; empty = it answers everything
-            "escalate_quant": "Q4_K_M",  # what to download it at: it may run on CPU, where smaller is faster
+            "escalate_quant": "Q4_K_M",  # what to download that one at: it may run on CPU, where smaller is faster
         },
     }
 

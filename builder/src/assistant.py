@@ -37,6 +37,11 @@ from .settings import Settings
 DEFAULT_REPOS = ("Qwen/Qwen3-0.6B-GGUF", "ggml-org/Qwen3-0.6B-GGUF", "unsloth/Qwen3-0.6B-GGUF")
 DEFAULT_QUANT = "Q8_0"
 PROFILE_NAME = "Assistant · Qwen3-0.6B"
+# The model a hard question is handed to. Deliberately small: it may run on CPU, so
+# it costs RAM instead of VRAM, and its default quant is the smaller one because on
+# CPU that is the faster one and the job does not need more.
+ESCALATE_REPOS = ("bartowski/Qwen_Qwen3.5-2B-GGUF",)
+ESCALATE_PROFILE_NAME = "Assistant · Qwen3.5-2B"
 ANSWER_TOKENS = 768
 SUMMARY_KEY = "_chat_summary"
 
