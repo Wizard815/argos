@@ -88,6 +88,9 @@ def _builder_line(builder: dict) -> str:
     command = str(builder.get("command") or "").strip()
     if command:
         parts.append("command: " + command[:400])
+    program = str(builder.get("program") or "").strip()
+    if program:
+        parts.append("program: " + program)
     flags = builder.get("flags")
     if isinstance(flags, dict) and flags:
         named = [f"{k}={v}" for k, v in flags.items() if not str(k).isupper() and v not in ("", None, True)]
@@ -98,6 +101,12 @@ def _builder_line(builder: dict) -> str:
         text = env if isinstance(env, str) else ", ".join(str(x) for x in env)
         if text.strip():
             parts.append("env: " + text[:200])
+    other = builder.get("other")
+    if other:
+        parts.append("other flags: " + ", ".join(str(x) for x in list(other)[:20]))
+    always = builder.get("always")
+    if always:
+        parts.append("always applied: " + ", ".join(str(x) for x in list(always)[:10]))
     models = builder.get("models")
     if models:
         parts.append("comparing against: " + ", ".join(str(m) for m in list(models)[:8]))
