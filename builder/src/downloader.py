@@ -20,7 +20,7 @@ import urllib.request
 from typing import Callable, Optional
 
 from .db import Store, new_id
-from .library import SHARD, is_mmproj, quant_of
+from .library import SHARD, forget_scans, is_mmproj, quant_of
 
 REPO_ID = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
 CHUNK = 1 << 20
@@ -179,6 +179,7 @@ class Downloads:
                 target = os.path.join(job["dest"], rel)
                 done_before += self._fetch(client, job, f, target, done_before, cancel)
             job["status"] = "done"
+            forget_scans()
             self.on_event("download", f"finished {job['repo']} -> {job['dest']}", data={"id": job["id"]})
         except _Cancelled:
             job["status"] = "cancelled"
@@ -207,6 +208,7 @@ class Downloads:
         except urllib.error.HTTPError as exc:
             if exc.code == 416 and expected and have >= expected:  # .part already complete
                 os.replace(part, target)
+                forget_scans()
                 return expected
             if exc.code in (401, 403):
                 raise DownloadError(f"HTTP {exc.code}: gated or private, set an HF token") from exc
@@ -236,6 +238,7 @@ class Downloads:
         if total and written != total:
             raise DownloadError(f"{f['name']}: got {written} of {total} bytes; retry to resume")
         os.replace(part, target)
+        forget_scans()
         return written
 
 

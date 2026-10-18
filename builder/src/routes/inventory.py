@@ -11,7 +11,7 @@ from flask import Blueprint, Response, request
 from ..cookbook import variant_id
 from ..integrations import engine_api
 from ..inventory import STATUSES
-from ..library import scan_models
+from ..library import forget_scans, scan_models
 from ..model_perf import model_perf
 from ..web import body, ctx, err, ok
 from . import core
@@ -50,6 +50,7 @@ def run_refresh() -> dict:
     """Scan the library, profiles and Argos, and record anything new."""
     c = ctx()
     i = c.settings.get("integrations")
+    forget_scans()  # a scan is a request to look at the disk
     library = scan_models(c.settings.get("paths")["models_dir"])
     commands = {variant_id(p): p["cmd"] for p in core.cookbook_state()["presets"] if variant_id(p)}
     live_ids = hardware = version = None
