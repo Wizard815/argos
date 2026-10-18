@@ -294,7 +294,7 @@ func (b *baseRouter) trackedServe(modelID string, p process.Process) http.Handle
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			select {
-			case b.serveDoneCh <- scheduler.ServeDoneEvent{ModelID: modelID}:
+			case b.serveDoneCh <- scheduler.ServeDoneEvent{ModelID: modelID, Intent: swaputil.IntentOf(r)}:
 			case <-b.shutdownCtx.Done():
 			}
 		}()
@@ -556,6 +556,7 @@ func (b *baseRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Model:   data.ModelID,
 		Arrived: time.Now(),
 		Ctx:     req.Context(),
+		Intent:  swaputil.IntentOf(req),
 		// Unbuffered: a successful send on Respond proves the waiter is
 		// alive and consuming. grant() relies on this to avoid handing a
 		// handleFunc to a cancelled waiter and leaking the inFlight count.

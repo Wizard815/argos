@@ -551,6 +551,89 @@ func TestFIFO_NoSwapWhileQueued(t *testing.T) {
 	}
 }
 
+// TestFIFO_HoldsADecodeWhileAPrefillRuns covers the declared-intent rule: a prefill
+// and a decode sharing the same slots finish slower together than one after the
+// other, so an interactive request waits for the prefill to drain.
+func TestFIFO_HoldsADecodeWhileAPrefillRuns(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	s := newFIFO(&stubPlanner{}, eff)
+
+	prefill := req("a")
+	prefill.Intent = swaputil.IntentPrefill
+	s.OnRequest(prefill)
+	if got := eff.served("a"); got != 1 {
+		t.Fatalf("served(a)=%d want 1: the prefill starts at once", got)
+	}
+
+	decode := req("a")
+	decode.Intent = swaputil.IntentInteractive
+	s.OnRequest(decode)
+	if got := eff.served("a"); got != 1 {
+		t.Fatalf("served(a)=%d want 1: the decode must wait for the prefill", got)
+	}
+
+	s.OnServeDone(ServeDoneEvent{ModelID: "a", Intent: swaputil.IntentPrefill})
+	if got := eff.served("a"); got != 2 {
+		t.Fatalf("served(a)=%d want 2: the decode starts once the prefill drained", got)
+	}
+}
+
+// TestFIFO_APrefillIsNotHeldBehindADecode: only the decode waits. Holding both
+// would deadlock the pair.
+func TestFIFO_APrefillIsNotHeldBehindADecode(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	s := newFIFO(&stubPlanner{}, eff)
+
+	decode := req("a")
+	decode.Intent = swaputil.IntentInteractive
+	s.OnRequest(decode)
+
+	prefill := req("a")
+	prefill.Intent = swaputil.IntentPrefill
+	s.OnRequest(prefill)
+	if got := eff.served("a"); got != 2 {
+		t.Fatalf("served(a)=%d want 2: a prefill does not wait for a decode", got)
+	}
+}
+
+// TestFIFO_AnUndeclaredRequestIsNeverHeld keeps the feature opt-in: a client that
+// sends no intent header behaves exactly as it did before this existed.
+func TestFIFO_AnUndeclaredRequestIsNeverHeld(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	s := newFIFO(&stubPlanner{}, eff)
+
+	prefill := req("a")
+	prefill.Intent = swaputil.IntentPrefill
+	s.OnRequest(prefill)
+
+	s.OnRequest(req("a")) // declares nothing
+	if got := eff.served("a"); got != 2 {
+		t.Fatalf("served(a)=%d want 2: a request that declares nothing is never held", got)
+	}
+}
+
+// TestFIFO_BatchIsNotHeld: batch work is not a turn anybody is waiting on, so it
+// takes the same route as an undeclared request.
+func TestFIFO_BatchIsNotHeld(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	s := newFIFO(&stubPlanner{}, eff)
+
+	prefill := req("a")
+	prefill.Intent = swaputil.IntentPrefill
+	s.OnRequest(prefill)
+
+	batch := req("a")
+	batch.Intent = swaputil.IntentBatch
+	s.OnRequest(batch)
+	if got := eff.served("a"); got != 2 {
+		t.Fatalf("served(a)=%d want 2: batch is not held", got)
+	}
+}
+
 // TestFIFO_GrantServeFalseDoesNotLeakInFlight verifies that when a caller has
 // walked away (GrantServe returns false) the in-flight count is not bumped, so a
 // later evicting request is not blocked forever.
