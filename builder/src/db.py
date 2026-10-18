@@ -295,11 +295,18 @@ class Store:
         with self._lock:
             return [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
 
-    def _x(self, sql: str, args: Iterable = ()) -> sqlite3.Cursor:
+    def _x(self, sql: str, args: Iterable = (), commit: bool = True) -> sqlite3.Cursor:
         with self._lock:
             cur = self._conn.execute(sql, tuple(args))
-            self._conn.commit()
+            if commit:
+                self._conn.commit()
             return cur
+
+    def commit(self) -> None:
+        """Finish a run of writes started with ``commit=False``. A pull writes dozens
+        of rows at once, and on a slow filesystem the per-row commit is the whole cost."""
+        with self._lock:
+            self._conn.commit()
 
     # ----- migrations -----------------------------------------------------
     def _tables(self) -> dict[str, str]:
@@ -383,8 +390,12 @@ class Store:
         return sorted({r["base_model"] for r in self._q(q) if r["base_model"]}, key=str.lower)
 
     # ----- profiles -------------------------------------------------------
-    def save_profile(self, d: dict[str, Any]) -> dict:
-        """Create, or update when ``profile_id`` matches an existing profile. No limit."""
+    def save_profile(self, d: dict[str, Any], commit: bool = True) -> dict:
+        """Create, or update when ``profile_id`` matches an existing profile. No limit.
+
+        ``commit=False`` leaves the write in the open transaction so a caller saving
+        many rows pays for one commit instead of one each.
+        """
         pid = d.get("profile_id") or new_id("prof")
         vals = {k: str(d.get(k) or "").strip() for k in PROFILE_FIELDS}
         now = time.time()
@@ -393,7 +404,7 @@ class Store:
             f"VALUES (?, {', '.join('?' * len(PROFILE_FIELDS))}, ?, ?, ?) ON CONFLICT(profile_id) DO UPDATE SET "
             f"{', '.join(f'{k}=excluded.{k}' for k in PROFILE_FIELDS)}, favorite=excluded.favorite, "
             f"updated_at=excluded.updated_at",
-            (pid, *vals.values(), 1 if d.get("favorite") else 0, now, now))
+            (pid, *vals.values(), 1 if d.get("favorite") else 0, now, now), commit=commit)
         return self.get_profile(pid)  # type: ignore[return-value]
 
     def get_profile(self, profile_id: str) -> Optional[dict]:
