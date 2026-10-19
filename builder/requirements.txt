@@ -1,3 +1,4 @@
 flask>=3.0
+waitress>=3.0  # the real server: Flask's own is a development server
 PyYAML>=6.0
 numpy>=1.24  # optional: faster memory search; works without it

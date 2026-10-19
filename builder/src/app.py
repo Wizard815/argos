@@ -321,8 +321,16 @@ def main() -> None:
     # stop, systemd) into a normal exit so the atexit hook stops them too.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     app = create_app()
-    app.run(host=os.environ.get("HOST", "0.0.0.0"), port=int(os.environ.get("PORT", "7861")),
-            debug=False, threaded=True)
+    host, port = os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "7861"))
+    try:
+        from waitress import serve
+    except ImportError:  # not installed: Flask's development server still works, only slower
+        app.run(host=host, port=port, debug=False, threaded=True)
+        return
+    # A fixed pool and kept-alive connections, instead of a new thread and a new HTTP/1.0 connection per request.
+    # The long channel timeout is for the chat and log streams, which can sit quiet while a model thinks.
+    serve(app, host=host, port=port, threads=int(os.environ.get("ARGOS_THREADS", "16")),
+          channel_timeout=900, ident="argos-builder", expose_tracebacks=False)
 
 
 if __name__ == "__main__":
