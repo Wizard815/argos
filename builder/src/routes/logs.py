@@ -48,6 +48,33 @@ def gpu_latest():
     return ok(latest=c.store.gpu_latest())
 
 
+@bp.get("/api/debug/threads")
+def debug_threads():
+    """What every thread is doing and how much CPU it has used: for finding the one that keeps the process busy.
+    Only answers from the machine the app runs on (docker exec ... curl), never from the network."""
+    import sys
+    import threading
+    import traceback
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return err("this is only for the machine the app runs on", 403)
+    ticks = float(__import__("os").sysconf("SC_CLK_TCK"))
+    names = {t.ident: t for t in threading.enumerate()}
+    out = []
+    for ident, frame in sys._current_frames().items():
+        t = names.get(ident)
+        cpu = None
+        try:
+            with open(f"/proc/self/task/{t.native_id}/stat") as fh:
+                f = fh.read().rsplit(")", 1)[1].split()
+                cpu = round((int(f[11]) + int(f[12])) / ticks, 1)  # utime + stime, seconds
+        except (OSError, AttributeError, IndexError, ValueError):
+            pass
+        out.append({"thread": t.name if t else str(ident), "cpu_s": cpu,
+                    "stack": [f"{fs.filename.split('/src/')[-1]}:{fs.lineno} {fs.name}" for fs in traceback.extract_stack(frame)][-8:]})
+    out.sort(key=lambda x: -(x["cpu_s"] or 0))
+    return ok(threads=out)
+
+
 @bp.get("/api/requests")
 def requests_list():
     a = request.args
