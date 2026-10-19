@@ -627,6 +627,12 @@ class Store:
             self._x(f"UPDATE model_sessions SET {', '.join(f'{k}=?' for k in allowed)} WHERE id=?",
                     (*allowed.values(), session_id))
 
+    def open_session_starts(self) -> dict[str, float]:
+        """model id -> when its open session started: two small columns, not the commands and flags of every row.
+        /api/launches asks every second or two, and the full rows made each answer wait seconds on the database."""
+        rows = self._q("SELECT model_id, started_at FROM model_sessions WHERE open=1 ORDER BY started_at DESC")
+        return {r["model_id"]: r["started_at"] for r in rows}  # the oldest start wins, as before
+
     def list_sessions(self, model: Optional[str] = None, since: Optional[float] = None,
                       open_only: bool = False, limit: int = 500) -> list[dict]:
         where, args = [], []

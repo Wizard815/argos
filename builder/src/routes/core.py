@@ -158,7 +158,7 @@ def _engine_running(c) -> list[dict]:
         running = engine_api.running(url, timeout=1.5)
     except Exception:  # noqa: BLE001 - an unreachable engine just adds nothing
         return []
-    seen = {s["model_id"]: s for s in c.store.list_sessions(limit=200) if s.get("open")}
+    seen = {mid: {"started_at": t} for mid, t in c.store.open_session_starts().items()}
     out = []
     for m in running:
         mid, state = str(m["model"]), str(m.get("state") or "ready")
