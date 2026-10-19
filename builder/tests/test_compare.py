@@ -65,5 +65,11 @@ def test_the_assistant_and_memory_know_the_small_changes(app, client):
 
 def test_inventory_lists_lowest_and_highest_speeds(app, client):
     seed(app)
+    inv = app.extensions["pb"].inventory
+    client.get("/api/inventory")  # the first ask starts the speed statistics in the background
+    for _ in range(200):
+        if not inv._speeds_busy:
+            break
+        time.sleep(0.05)
     row = next(m for m in client.get("/api/inventory").get_json()["models"] if m["model_id"] == "qwen3-8b-q4_k_m")
     assert row["decode"] == {"min": 55.0, "max": 62.0, "n": 3} and row["prefill"]["min"] == 700.0 and row["prefill"]["max"] == 800.0

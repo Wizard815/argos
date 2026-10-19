@@ -480,11 +480,22 @@ def test_Store_speed_summary_ignores_short_requests_and_old_history(tmp_path):
     assert r["b"]["prefill"] == {"min": 300.0, "max": 300.0, "n": 1}
 
 
+def _speeds_done(inv):
+    """The speed statistics are computed in the background after the first ask; wait for that pass."""
+    for _ in range(200):
+        if not inv._speeds_busy:
+            return
+        time.sleep(0.05)
+    raise AssertionError("the speed statistics never finished")
+
+
 def test_Inventory_models_summary_is_cached_until_sessions_change(tmp_path):
     store = Store(str(tmp_path / "d.db"))
     inv = Inventory(store, lambda *a, **k: None)
     store.upsert_model_seen({"model_id": "m1", "name": "m1", "origin": "library"})
     assert [r["model_id"] for r in inv.models_summary()] == ["m1"]
+    _speeds_done(inv)
+    inv.models_summary()  # the finished speed pass dropped the list; this one is built and cached again
     store.upsert_model_seen({"model_id": "m2", "name": "m2", "origin": "library"})
     assert [r["model_id"] for r in inv.models_summary()] == ["m1"]  # still inside the TTL
     inv.invalidate()
@@ -511,6 +522,8 @@ def test_Inventory_models_summary_serves_a_stale_list_while_it_rebuilds(tmp_path
     store = Store(str(tmp_path / "d.db"))
     inv = Inventory(store, lambda *a, **k: None)
     store.upsert_model_seen({"model_id": "m1", "name": "m1", "origin": "library"})
+    inv.models_summary()
+    _speeds_done(inv)
     inv.models_summary()
     store.upsert_model_seen({"model_id": "m2", "name": "m2", "origin": "library"})
     inv._summary = (time.time() - 3600, inv._summary[1])  # long past its TTL
@@ -547,3 +560,15 @@ def test_a_slow_request_is_logged(app, client, caplog, monkeypatch):
     with caplog.at_level("WARNING"):
         assert client.get("/api/inventory").status_code == 200
     assert any("slow request" in r.message and "/api/inventory" in r.message for r in caplog.records)
+
+
+def test_Inventory_the_page_gets_speeds_once_the_background_pass_has_run(tmp_path):
+    store, now = Store(str(tmp_path / "d.db")), time.time()
+    _seed_speeds(store, now)
+    store.upsert_model_seen({"model_id": "a", "name": "a", "origin": "library"})
+    inv = Inventory(store, lambda *a, **k: None)
+    first = inv.models_summary()[0]
+    assert first["decode"] is None  # a page never waits for the 90-day scan
+    _speeds_done(inv)
+    later = inv.models_summary()[0]
+    assert later["decode"] == {"min": 10.0, "max": 55.0, "n": 3} and later["requests"] == 5

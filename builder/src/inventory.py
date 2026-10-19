@@ -125,6 +125,7 @@ def extract(command: str, model_path: str = "", arch: Optional[dict] = None, siz
     return facts
 
 
+SPEEDS_TTL_S = 300.0  # the 90-day speed statistics are the expensive part; they may be this old
 SUMMARY_TTL_S = 30.0  # how old the model list may get before a background rebuild; a session change drops it at once
 
 
@@ -136,6 +137,8 @@ class Inventory:
         self._arch_cache: dict[tuple, Optional[dict]] = {}
         self._summary: tuple[float, list[dict]] = (0.0, [])
         self._rebuilding = False
+        self._speeds: tuple[float, dict] = (0.0, {})
+        self._speeds_busy = False
 
     # ----- traits ---------------------------------------------------------------------
     def note(self, kind: str, value: Any, example: str = "") -> Optional[dict]:
@@ -346,7 +349,7 @@ class Inventory:
         with self._lock:
             at, rows = self._summary
             if not at:
-                at, rows = time.time(), self._build_summary(time.time())
+                at, rows = time.time(), self._build_summary(time.time(), self.speed_snapshot())
                 self._summary = (at, rows)
             elif time.time() - at > SUMMARY_TTL_S and not self._rebuilding:
                 self._rebuilding = True
@@ -355,7 +358,7 @@ class Inventory:
 
     def _rebuild_summary(self) -> None:
         try:
-            rows = self._build_summary(time.time())
+            rows = self._build_summary(time.time(), self.speed_snapshot())
             with self._lock:
                 if self._summary[0]:  # an invalidate() while we ran means this answer is already old
                     self._summary = (time.time(), rows)
@@ -364,16 +367,43 @@ class Inventory:
         finally:
             self._rebuilding = False
 
-    def _build_summary(self, now: float) -> list[dict]:
+    def speed_snapshot(self) -> dict:
+        """The 90-day speed statistics per model, as last computed. They come from reading the whole request
+        history, so they are refreshed in the background and a page gets the last answer (empty right after a
+        start, until the first pass finishes) rather than waiting for the scan."""
+        with self._lock:
+            at, speeds = self._speeds
+            if time.time() - at > SPEEDS_TTL_S and not self._speeds_busy:
+                self._speeds_busy = True
+                threading.Thread(target=self._refresh_speeds, name="inventory-speeds", daemon=True).start()
+            return speeds
+
+    def _refresh_speeds(self) -> None:
+        try:
+            speeds = self._speed_summary(time.time())
+            with self._lock:
+                self._speeds = (time.time(), speeds)
+            self.invalidate()  # the list now has speeds to show
+        except Exception:  # noqa: BLE001 - keep the last statistics
+            with self._lock:
+                self._speeds = (time.time(), self._speeds[1])
+        finally:
+            self._speeds_busy = False
+
+    def _speed_summary(self, now: float) -> dict:
+        from .model_perf import MIN_OUTPUT_TOKENS, MIN_PROMPT_TOKENS
+        return self.store.model_speed_summary(now - 90 * 86400, MIN_PROMPT_TOKENS, MIN_OUTPUT_TOKENS, until=now)
+
+    def _build_summary(self, now: float, speeds: Optional[dict] = None) -> list[dict]:
         alias = self.aliases()
         seen = {m["model_id"]: m for m in self.store.list_models_seen()}
         sessions: dict[str, list[dict]] = {}
         for s in self.store.list_sessions(limit=20000):
             sessions.setdefault(s["model_id"], []).append(s)
-        # speed per model over 90 days: requests (long enough to be meaningful) and benchmarks. One pass, read in
-        # slices so the database lock is never held for the whole history.
-        from .model_perf import MIN_OUTPUT_TOKENS, MIN_PROMPT_TOKENS
-        speeds = self.store.model_speed_summary(now - 90 * 86400, MIN_PROMPT_TOKENS, MIN_OUTPUT_TOKENS, until=now)
+        # speed per model over 90 days: requests (long enough to be meaningful) and benchmarks. An explicit
+        # ``now`` computes them here; the page path passes the last background result.
+        if speeds is None:
+            speeds = self._speed_summary(now)
         span = lambda d: {"min": round(d["min"], 1), "max": round(d["max"], 1), "n": d["n"]} if d else None  # noqa: E731
         rows = []
         for mid in sorted(set(seen) | set(sessions)):
