@@ -2057,11 +2057,13 @@ function renderDownloads() {
 // ── Per-GPU VRAM in the top bar ──────────────────────────────
 // One bar per card, so the headroom the pool sees is visible from any page
 // without opening Logs. The query is small and pauses while the tab is hidden.
+let gpuBarsBusy = false;
 async function loadGpuBars() {
   const box = $("#gpuBars");
-  if (!box || document.hidden) return;
+  if (!box || document.hidden || gpuBarsBusy) return;  // a slow answer must not stack up the next ones
   let d;
-  try { d = await api("GET", "/api/gpu/latest"); } catch (e) { return; }
+  gpuBarsBusy = true;
+  try { d = await api("GET", "/api/gpu/latest"); } catch (e) { return; } finally { gpuBarsBusy = false; }
   const rows = (d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0);
   const gb = (mb) => `${(mb / 1024).toFixed(1)}G`;
   box.replaceChildren(...rows.map((g) => {
