@@ -39,6 +39,16 @@ The suite runs on both. Each test gets its own schema, so tests cannot see each 
 ARGOS_DATABASE_URL=postgresql://postgres:test@127.0.0.1:5432/argos venv/bin/python -m pytest tests -q
 ```
 
-## Not yet moved
+## The engine
 
-The engine (Go) keeps its own store and its own database file. The builder is the one that was slow, so it moved first; `internal/store` still speaks SQLite.
+The engine's store (`internal/store`) runs on either database the same way, chosen by the same `ARGOS_DATABASE_URL`. It holds one table, the activity log, and creates it with goose migrations — `internal/store/migrations/postgres` for Postgres and `migrations/sqlite` for the file. Both sets carry the same version numbers, so a database that has already run them does not run them again.
+
+`internal/store/dialect.go` is the engine's half of the seam and mirrors the Python one: `IsPostgres`, and `Rebind`, which turns `?` into `$1, $2, ...`. The id of a new row comes from `RETURNING id` on Postgres, because there is no `LastInsertId` to ask for.
+
+The Postgres migrations use `IF NOT EXISTS` throughout, so the engine can start before or after the data migration — whichever runs first, the other is a no-op.
+
+`go test ./internal/store/` needs no server. To run the Postgres half as well:
+
+```sh
+ARGOS_TEST_POSTGRES=postgresql://postgres:test@127.0.0.1:5432/argos_test go test ./internal/store/
+```

@@ -42,8 +42,11 @@ services:
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-argos}
       - POSTGRES_USER=${POSTGRES_USER:-argos}
-      # Required: a database without a password is not one to expose. setup.sh asks.
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # The default here is a placeholder so the stack starts with no setup at
+      # all. setup.sh writes a random one into .env, and .env is gitignored, so
+      # a real install never uses this value and it never reaches the repo.
+      # Change it if you ever publish this port or share the docker network.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-argos-change-me}
     volumes:
       # A named volume rather than a path in this checkout: Docker keeps it on its own
       # storage, which is a real filesystem. If your Docker storage sits on the Unraid
