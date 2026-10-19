@@ -24,6 +24,12 @@ def state():
               budget=a.budget(), server=a.server_state(), settings=c.settings.get("assistant"), models=a.models())
 
 
+@bp.get("/api/assistant/status")
+def status():
+    """Only which models are loaded: the nav dot, without the conversation, the digest or the memory."""
+    return ok(models=ctx().assistant.models())
+
+
 @bp.post("/api/assistant/compact")
 def compact():
     """Shrink the conversation now: every turn but the last two goes into the summary."""
