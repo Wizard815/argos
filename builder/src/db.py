@@ -263,32 +263,9 @@ class Store:
         self.path = path
         if os.path.dirname(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # the one-time setup only; never held across a query
         self._settings_cache: Optional[dict[str, Any]] = None
-        self._conn = sqlite3.connect(path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        # ARGOS_SQLITE_JOURNAL forces it when the guess is wrong (a bind mount can hide
-        # what the filesystem underneath really is). Whitelisted, never interpolated raw.
-        forced = (os.environ.get("ARGOS_SQLITE_JOURNAL") or "").strip().upper()
-        mode = forced if forced in ("WAL", "TRUNCATE", "DELETE", "PERSIST") else self._journal_for(os.path.abspath(path))
-        # First, so that even choosing the journal waits out an old process still shutting down.
-        # Two writers happen: the telemetry tick and whatever a request is doing.
-        # Without a busy timeout SQLite gives up the moment it is locked, which
-        # surfaces as a route that fails or hangs for no visible reason.
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.execute(f"PRAGMA journal_mode={mode}")
-        if mode == "WAL":
-            # In WAL a power cut can lose the last commits but never corrupts, and the fsync per commit
-            # (telemetry, activity, every settings write) is what a commit otherwise waits for with the lock held.
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-        elif (os.environ.get("ARGOS_SQLITE_LOCKING") or "").strip().lower() != "normal":
-            # Only this process opens the file (the engine has its own), so hold the lock for good instead of
-            # taking and dropping it per query. On a FUSE share that is the difference between 8 file-system
-            # round trips per query (4 locks, 2 journal stats, a read, an fstat) and none: the page cache is
-            # trusted, because nobody else can change the file. ARGOS_SQLITE_LOCKING=normal turns it off.
-            self._conn.execute("PRAGMA locking_mode=EXCLUSIVE")
-        self._conn.execute("PRAGMA cache_size=-65536")  # up to 64 MiB of pages stay resident
-        self._conn.execute("PRAGMA mmap_size=268435456")  # reads come from the mapping, not a read() call each
+        self._local = threading.local()
         with self._lock:
             self._migrate_legacy()
             self._conn.executescript(SCHEMA)
@@ -308,6 +285,46 @@ class Store:
             self._conn.execute("UPDATE notes SET is_open = CASE WHEN collapsed=1 THEN 0 ELSE 1 END")
         self._conn.execute("DELETE FROM notes WHERE deleted=1")
         self._conn.execute("DROP TABLE IF EXISTS note_versions")
+
+    def _connect(self) -> sqlite3.Connection:
+        """A connection for the calling thread.
+
+        One shared connection with a lock around it means a single slow call stops every
+        other request: a query waited 6.5 hours for that lock on a container that had
+        been up for ten. SQLite is happy with a connection per thread, and in WAL readers
+        do not block a writer at all - so a call that gets stuck blocks its own request
+        and nothing else.
+
+        Note what is deliberately absent: locking_mode=EXCLUSIVE. It buys a little on a
+        slow filesystem by holding the file's lock for good, on the assumption that only
+        this process opens it. That assumption is false - a second connection, a backup,
+        an admin sqlite3, a second instance - and the price is that everything else waits
+        forever instead of for the busy timeout.
+        """
+        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        # ARGOS_SQLITE_JOURNAL forces the journal when the guess is wrong (a bind mount can
+        # hide what the filesystem underneath really is). Whitelisted, never raw.
+        forced = (os.environ.get("ARGOS_SQLITE_JOURNAL") or "").strip().upper()
+        mode = forced if forced in ("WAL", "TRUNCATE", "DELETE", "PERSIST") else self._journal_for(os.path.abspath(self.path))
+        # First, so that even choosing the journal waits out an old process still shutting down.
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(f"PRAGMA journal_mode={mode}")
+        if mode == "WAL":
+            # A power cut can lose the last commits but never corrupts, and this is the
+            # fsync per commit that every settings and telemetry write otherwise waits for.
+            conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-65536")  # up to 64 MiB of pages stay resident
+        conn.execute("PRAGMA mmap_size=268435456")  # reads come from the mapping, not a read() call each
+        return conn
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._connect()
+            self._local.conn = conn
+        return conn
 
     @staticmethod
     def _journal_for(path: str) -> str:
@@ -340,28 +357,27 @@ class Store:
         return "WAL"
 
     def _q(self, sql: str, args: Iterable = ()) -> list[dict]:
+        # No lock, and this thread's own connection: a slow call holds up its own request
+        # and nothing else. A shared connection behind one lock is what let a single query
+        # wait six hours while the container answered nothing.
         asked = time.monotonic()
-        with self._lock:
-            got = time.monotonic()
-            rows = [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
+        rows = [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
         done = time.monotonic()
         if done - asked > SLOW_DB_S:
-            log.warning("slow query: waited %.1fs for the database lock, ran %.1fs, %d rows: %s",
-                        got - asked, done - got, len(rows), " ".join(sql.split())[:90])
+            log.warning("slow query: ran %.1fs, %d rows: %s", done - asked, len(rows), " ".join(sql.split())[:90])
         return rows
 
     def _x(self, sql: str, args: Iterable = (), commit: bool = True) -> sqlite3.Cursor:
-        with self._lock:
-            cur = self._conn.execute(sql, tuple(args))
-            if commit:
-                self._conn.commit()
-            return cur
+        # No lock, same reason as _q: SQLite serializes writers itself, with the busy timeout.
+        cur = self._conn.execute(sql, tuple(args))
+        if commit:
+            self._conn.commit()
+        return cur
 
     def commit(self) -> None:
         """Finish a run of writes started with ``commit=False``. A pull writes dozens
         of rows at once, and on a slow filesystem the per-row commit is the whole cost."""
-        with self._lock:
-            self._conn.commit()
+        self._conn.commit()
 
     # ----- migrations -----------------------------------------------------
     def _tables(self) -> dict[str, str]:
