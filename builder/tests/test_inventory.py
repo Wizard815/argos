@@ -545,13 +545,15 @@ def test_Inventory_a_rebuild_that_races_an_invalidate_is_dropped(tmp_path):
     assert inv._summary[0] == 0.0 and not inv._rebuilding
 
 
-def test_Store_logs_a_slow_query_with_where_the_time_went(tmp_path, caplog, monkeypatch):
+def test_Store_logs_a_slow_query_with_what_it_ran(tmp_path, caplog, monkeypatch):
+    """There is no lock wait to report any more: each thread has its own connection, so
+    the log line carries how long the query itself took and what it was."""
     import src.db as dbmod
     monkeypatch.setattr(dbmod, "SLOW_DB_S", 0.0)
     store = Store(str(tmp_path / "d.db"))
     with caplog.at_level("WARNING", logger="argos.db"):
         store.list_runs()
-    assert any("slow query" in r.message and "waited" in r.message and "runs" in r.message for r in caplog.records)
+    assert any("slow query" in r.message and "ran" in r.message and "runs" in r.message for r in caplog.records)
 
 
 def test_a_slow_request_is_logged(app, client, caplog, monkeypatch):

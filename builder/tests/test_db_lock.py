@@ -54,22 +54,47 @@ def test_the_store_still_works_normally(tmp_path):
     assert any(e["message"] == "hello" for e in s.list_events())
 
 
-def test_a_non_wal_journal_holds_the_file_lock_so_queries_skip_the_file_system(tmp_path, monkeypatch):
+def test_a_write_does_not_hold_the_file_lock_for_good(tmp_path, monkeypatch):
+    """locking_mode=EXCLUSIVE held the file's lock permanently, on the assumption that
+    only this process opens it. A second connection then waited forever: a query waited
+    6.5 hours for a lock on a container that had been up for ten. Nothing may hold it,
+    because the assumption is false - a backup, an admin sqlite3, a second instance."""
     import sqlite3
 
-    import pytest
     from src.db import Store
 
     monkeypatch.setenv("ARGOS_SQLITE_JOURNAL", "TRUNCATE")
     monkeypatch.delenv("ARGOS_SQLITE_LOCKING", raising=False)
-    store = Store(str(tmp_path / "x.db"))
-    assert store._conn.execute("PRAGMA locking_mode").fetchone()[0] == "exclusive"
-    store.get_settings()
-    other = sqlite3.connect(str(tmp_path / "x.db"), timeout=0.1)
-    with pytest.raises(sqlite3.OperationalError):  # this process owns the file
-        other.execute("SELECT count(*) FROM settings").fetchall()
+    path = str(tmp_path / "x.db")
+    store = Store(path)
+    store.add_event("test", "hello")            # a write is what takes a lock
+    assert store._conn.execute("PRAGMA locking_mode").fetchone()[0].lower() == "normal"
+
+    other = sqlite3.connect(path, timeout=2)
+    assert other.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
     other.close()
-    assert store.get_settings() is not None
+
+
+def test_each_thread_gets_its_own_connection(tmp_path):
+    """One shared connection behind one lock is what let a single slow call stop every
+    other request. A connection per thread means a stuck call blocks its own request."""
+    import threading
+
+    from src.db import Store
+
+    store = Store(str(tmp_path / "argos.db"))
+    seen: dict[int, int] = {}
+
+    def look() -> None:
+        store.get_settings()                    # touches the connection
+        seen[threading.get_ident()] = id(store._conn)
+
+    threads = [threading.Thread(target=look) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(seen) == 3 and len(set(seen.values())) == 3, "each thread must have its own connection"
 
 
 def test_the_file_lock_can_be_left_normal(tmp_path, monkeypatch):
