@@ -25,6 +25,7 @@ Databases written by earlier versions are migrated in place on open.
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -263,6 +264,7 @@ class Store:
         if os.path.dirname(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
         self._lock = threading.RLock()
+        self._settings_cache: Optional[dict[str, Any]] = None
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         # ARGOS_SQLITE_JOURNAL forces it when the guess is wrong (a bind mount can hide
@@ -275,6 +277,10 @@ class Store:
         # surfaces as a route that fails or hangs for no visible reason.
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(f"PRAGMA journal_mode={mode}")
+        if mode == "WAL":
+            # In WAL a power cut can lose the last commits but never corrupts, and the fsync per commit
+            # (telemetry, activity, every settings write) is what a commit otherwise waits for with the lock held.
+            self._conn.execute("PRAGMA synchronous=NORMAL")
         if mode != "WAL" and (os.environ.get("ARGOS_SQLITE_LOCKING") or "").strip().lower() != "normal":
             # Only this process opens the file (the engine has its own), so hold the lock for good instead of
             # taking and dropping it per query. On a FUSE share that is the difference between 8 file-system
@@ -512,9 +518,16 @@ class Store:
 
     # ----- settings -------------------------------------------------------
     def get_settings(self) -> dict[str, Any]:
-        return {r["key"]: _json(r["value"], None) for r in self._q("SELECT key, value FROM settings")}
+        """Almost every request reads the settings, several times, and each read queued for the one database
+        lock behind everything else. Only set_setting writes the table, so the parsed rows are kept until then."""
+        cached = self._settings_cache
+        if cached is None:
+            cached = {r["key"]: _json(r["value"], None) for r in self._q("SELECT key, value FROM settings")}
+            self._settings_cache = cached
+        return copy.deepcopy(cached)
 
     def set_setting(self, key: str, value: Any) -> None:
+        self._settings_cache = None
         if value is None:
             self._x("DELETE FROM settings WHERE key=?", (key,))
         else:
