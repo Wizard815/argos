@@ -27,7 +27,7 @@ from typing import Any, Optional
 CACHE_PATHS = (
     "/api/settings", "/api/profiles", "/api/launches", "/api/downloads", "/api/library",
     "/api/inventory", "/api/catalog", "/api/models", "/api/layout", "/api/notes",
-    "/api/integrations", "/api/assistant", "/api/gpu/series", "/api/runs", "/api/events",
+    "/api/integrations", "/api/assistant", "/api/gpu/series", "/api/gpu/latest", "/api/runs", "/api/events",
     "/api/requests", "/api/ody/",
 )
 # Deliberately absent: /api/schedule/live and the inventory session view are live by

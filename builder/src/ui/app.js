@@ -330,11 +330,13 @@ function popMenu(anchor, items) {
 }
 
 // ── State & router ───────────────────────────────────────────
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } };
 const S = {
   view: "builder",
   profiles: [], models: [], catalog: [], launches: [], runs: [], best: [], env: [], integrations: null,
   settings: null, library: null, downloads: [],
-  sel: null,            // selected launch id in the playground
+  sel: lsGet("argos.sel") || null,  // selected launch id in the playground (kept across a refresh)
   lastBench: {},        // launch id -> last recorded run
 };
 const VIEWS = { builder: "Builder", models: "Models", profiles: "Profiles", playground: "Playground", perf: "Benchmarks",
@@ -1065,7 +1067,7 @@ function launchState(l) {
 function renderLaunches() {
   const row = (l) => {
     const [dot, label] = launchState(l);
-    return h("div", { class: `launch${l.launch_id === S.sel ? " sel" : ""}`, onclick: () => { S.sel = l.launch_id; renderLaunches(); pollSelected(true); } },
+    return h("div", { class: `launch${l.launch_id === S.sel ? " sel" : ""}`, onclick: () => { S.sel = l.launch_id; lsSet("argos.sel", S.sel); renderLaunches(); pollSelected(true); } },
       h("span", { class: `dot ${dot}` }),
       h("div", { class: "who" },
         h("div", { class: "t" }, l.profile_name || l.base_model || (l.command.split(" ").find((t) => !t.includes("=")) || l.launch_id).split("/").pop()),
@@ -2059,7 +2061,7 @@ async function loadGpuBars() {
   const box = $("#gpuBars");
   if (!box || document.hidden) return;
   let d;
-  try { d = await api("GET", "/api/gpu/series?range=1h"); } catch (e) { return; }
+  try { d = await api("GET", "/api/gpu/latest"); } catch (e) { return; }
   const rows = (d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0);
   const gb = (mb) => `${(mb / 1024).toFixed(1)}G`;
   box.replaceChildren(...rows.map((g) => {
@@ -4335,6 +4337,7 @@ async function tick() {
     if (S.view === "assistant" && !A.busy && tickCount % 3 === 0) loadAssistant();
   } catch (e) { /* server restarting; try again */ }
   const liveLogs = S.view === "logs" && (SHORT_RANGES.has(G.range) || SHORT_RANGES.has($("#rRange").value));
+  if (document.hidden) { pollTimer = setTimeout(tick, 30000); return; }  // nobody is looking: poll rarely
   pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") ? 1500 : liveLogs ? 3000 : 8000);
 }
 
@@ -4344,6 +4347,7 @@ function initTabs() {
     if (!b) return;
     $$("button", bar).forEach((x) => x.classList.toggle("on", x === b));
     $$(".pane", bar.parentElement).forEach((p) => p.classList.toggle("on", p.dataset.pane === b.dataset.pane));
+    if (e.isTrusted) lsSet(`argos.tab.${bar.dataset.tabs}`, b.dataset.pane);
     if (bar.dataset.tabs === "logs") loadLogs();
     else if (bar.dataset.tabs === "inventory") renderInvPane();
     else if (bar.dataset.tabs === "odysseus") loadOdyArea(b.dataset.pane);
@@ -4408,6 +4412,14 @@ function boot() {
   $("#eAsk").addEventListener("keydown", (e) => { if (e.key === "Enter") askAboutEvents(); });
   if (window.ResizeObserver) new ResizeObserver(debounce(() => { if (S.view === "logs" && G.data) renderGpu(); }, 150)).observe($("#gCharts"));
   initTabs();
+  $$(".tabs[data-tabs]").forEach((bar) => {  // back to the tab the page was refreshed on
+    const want = lsGet(`argos.tab.${bar.dataset.tabs}`);
+    const b = want && bar.querySelector(`button[data-pane="${CSS.escape(want)}"]`);
+    if (!b) return;  // only the markup: the view's own loader runs when it is shown, not fourteen at boot
+    $$("button", bar).forEach((x) => x.classList.toggle("on", x === b));
+    $$(".pane", bar.parentElement).forEach((p) => p.classList.toggle("on", p.dataset.pane === want));
+    if (bar.dataset.tabs === "schedule") SC.pane = want;
+  });
   initPanels();
   $("#aMemory").onclick = showMemory;
   $("#bOdysseus").onclick = sendToOdysseus;
