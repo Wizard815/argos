@@ -1,0 +1,44 @@
+# Postgres
+
+Argos runs on either a SQLite file (the default) or Postgres. `ARGOS_DATABASE_URL` picks: set it and Postgres is used, leave it unset and the file under `./data` is.
+
+## Why you would
+
+SQLite is not a bad database, but it has one shape: a single file, one writer at a time, and a journal that a long-running read stops from checkpointing. When the journal grows, every read has to walk it, and queries that took microseconds start taking seconds — and get worse the longer the process runs. Postgres has none of that. Readers never wait for a writer, there is no file lock, and there is no journal to grow.
+
+## How the two are kept in step
+
+`builder/src/dialect.py` is the whole seam. It holds the handful of places the dialects genuinely differ, so the store's ~1000 lines of SQL stay put:
+
+| | SQLite | Postgres |
+|---|---|---|
+| placeholders | `?` | `%s` |
+| a literal `%` | `%` | `%%` — psycopg counts one inside a string too |
+| new row's id | `cursor.lastrowid` | `RETURNING id` |
+| a time bucket | `CAST(ts / ? AS INTEGER)` | `floor(ts / ?)::bigint` — SQLite truncates, Postgres rounds |
+| `SUM(a > 0)` | counts as 0/1 | `SUM(CASE WHEN a > 0 THEN 1 ELSE 0 END)` |
+| case-insensitive sort | `COLLATE NOCASE` | `lower(name)` |
+| schema | `AUTOINCREMENT`, `REAL`, `BLOB` | identity, `double precision`, `bytea` |
+| introspection | `sqlite_master`, `PRAGMA table_info` | `pg_class`, `information_schema` |
+
+The translations are pure functions and are tested without a server in `tests/test_dialect.py`. The rest of the differences are in the store itself, written portably.
+
+## Things that bite
+
+- **A failed statement poisons its connection.** Postgres refuses every later statement on a connection until the failed one is rolled back. `Store._abort()` does that, so one bad write cannot take a thread's connection down for good.
+- **Read rows by name, never by position.** `sqlite3.Row` answers `row[0]`; psycopg's `dict_row` answers `row["col"]` and only that.
+- **Columns have types.** SQLite will put a string in an INTEGER column; Postgres will not.
+- **Close your connections.** A connection left open holds its transaction and the locks in it, so a schema drop or an ALTER waits forever. `Store.close()` exists for that.
+- **Upgrading an old SQLite file is a SQLite thing.** Those tests are skipped under Postgres — there is no v1 or v2 schema inside a fresh Postgres database.
+
+## Testing against Postgres
+
+The suite runs on both. Each test gets its own schema, so tests cannot see each other's rows:
+
+```sh
+ARGOS_DATABASE_URL=postgresql://postgres:test@127.0.0.1:5432/argos venv/bin/python -m pytest tests -q
+```
+
+## Not yet moved
+
+The engine (Go) keeps its own store and its own database file. The builder is the one that was slow, so it moved first; `internal/store` still speaks SQLite.
