@@ -12,12 +12,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
 var migrationFS embed.FS
+
+// The Postgres driver registers itself as "pgx" when its stdlib package is
+// linked. An unused import would be a compile error, so it is named and then
+// discarded - the registration is a side effect of importing it at all.
+var _ = stdlib.GetDefaultDriver
 
 // TokenMetrics holds token usage and performance metrics.
 type TokenMetrics struct {
@@ -126,6 +132,7 @@ type HistogramData struct {
 type Store struct {
 	db       *sql.DB
 	inMemory bool
+	postgres bool
 }
 
 // IsInMemory returns true if the store is using an in-memory database.
@@ -133,56 +140,95 @@ func (s *Store) IsInMemory() bool {
 	return s.inMemory
 }
 
-// New opens a SQLite store at path. An empty path creates an in-memory store.
+// New opens the store at path.
+//
+// An empty path creates an in-memory store, and a postgres:// or postgresql://
+// path opens Postgres instead of a file. Pointing it at Postgres is worth doing
+// when more than one thing writes at once: a SQLite file serialises its
+// writers, and one long read can stop its journal from checkpointing until
+// every query has to walk a growing log.
 func New(path string) (*Store, error) {
 	dsn := strings.TrimSpace(path)
-	diskFile := dsn != ""
+	postgres := IsPostgres(dsn)
+	diskFile := dsn != "" && !postgres
 	if dsn == "" {
 		dsn = ":memory:"
 	}
 
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite store: %w", err)
+	driver := "sqlite"
+	if postgres {
+		driver = "pgx"
 	}
-	db.SetMaxOpenConns(1)
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+
+	if postgres {
+		// A pool rather than the single connection SQLite needs: the whole
+		// point of moving is that readers no longer queue behind a writer.
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(time.Hour)
+	} else {
+		db.SetMaxOpenConns(1)
+	}
 
 	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("configure sqlite store: %w", err)
-	}
-	if diskFile {
-		var mode string
-		if err := db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+	if !postgres {
+		// Both of these are the SQLite file's: a lock timeout, and the journal
+		// the file uses. Postgres has neither, and would reject the statements.
+		if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 			db.Close()
-			return nil, fmt.Errorf("enable sqlite store WAL mode: %w", err)
+			return nil, fmt.Errorf("configure sqlite store: %w", err)
 		}
-		if !strings.EqualFold(mode, "wal") {
-			db.Close()
-			return nil, fmt.Errorf("enable sqlite store WAL mode: got %q", mode)
+		if diskFile {
+			var mode string
+			if err := db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("enable sqlite store WAL mode: %w", err)
+			}
+			if !strings.EqualFold(mode, "wal") {
+				db.Close()
+				return nil, fmt.Errorf("enable sqlite store WAL mode: got %q", mode)
+			}
 		}
 	}
-	if err := runMigrations(ctx, db); err != nil {
+	if err := runMigrations(ctx, db, postgres); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, inMemory: !diskFile}, nil
+	return &Store{db: db, inMemory: dsn == ":memory:", postgres: postgres}, nil
 }
 
-func runMigrations(ctx context.Context, db *sql.DB) error {
-	migrations, err := fs.Sub(migrationFS, "migrations")
-	if err != nil {
-		return fmt.Errorf("sqlite store migrations: %w", err)
+func runMigrations(ctx context.Context, db *sql.DB, postgres bool) error {
+	// The two sets carry the same version numbers, so a database that has
+	// already run them does not run them again.
+	dir, dialect := "migrations/sqlite", goose.DialectSQLite3
+	if postgres {
+		dir, dialect = "migrations/postgres", goose.DialectPostgres
 	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations)
+	migrations, err := fs.Sub(migrationFS, dir)
 	if err != nil {
-		return fmt.Errorf("sqlite store migrations: %w", err)
+		return fmt.Errorf("store migrations: %w", err)
+	}
+	provider, err := goose.NewProvider(dialect, db, migrations)
+	if err != nil {
+		return fmt.Errorf("store migrations: %w", err)
 	}
 	if _, err := provider.Up(ctx); err != nil {
-		return fmt.Errorf("sqlite store migrations up: %w", err)
+		return fmt.Errorf("store migrations up: %w", err)
 	}
 	return nil
+}
+
+// q rebinds a statement with ? placeholders for whichever database this store
+// is on. Every query below goes through it.
+func (s *Store) q(query string) string {
+	if s.postgres {
+		return Rebind(query)
+	}
+	return query
 }
 
 func (s *Store) Close() error {
@@ -201,12 +247,13 @@ func (s *Store) InsertActivity(ctx context.Context, entry ActivityLogEntry) (Act
 		return ActivityLogEntry{}, err
 	}
 
-	res, err := s.db.ExecContext(ctx, `
+	const insertActivity = `
 		INSERT INTO activity (
 			ts_created, src, model_id, req_path, resp_content_type, resp_status_code,
 			cache_tokens, draft_tokens, draft_acc_tokens, input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, duration_ms, error_msg, metadata_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	args := []any{
 		entry.Timestamp.Unix(),
 		entry.Src,
 		entry.Model,
@@ -223,7 +270,20 @@ func (s *Store) InsertActivity(ctx context.Context, entry ActivityLogEntry) (Act
 		entry.DurationMs,
 		entry.ErrorMsg,
 		metadataJSON,
-	)
+	}
+
+	if s.postgres {
+		// Postgres has no LastInsertId, and its driver does not pretend to:
+		// the id comes back in the statement instead.
+		var id int64
+		if err := s.db.QueryRowContext(ctx, s.q(insertActivity+` RETURNING id`), args...).Scan(&id); err != nil {
+			return ActivityLogEntry{}, fmt.Errorf("insert activity: %w", err)
+		}
+		entry.ID = int(id)
+		return entry, nil
+	}
+
+	res, err := s.db.ExecContext(ctx, insertActivity, args...)
 	if err != nil {
 		return ActivityLogEntry{}, fmt.Errorf("insert activity: %w", err)
 	}
@@ -241,17 +301,17 @@ func (s *Store) ListActivity(ctx context.Context, query ActivityQuery) (Activity
 
 	where, args := activityWhere(query.ActivityFilter)
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM activity`+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM activity`+where), args...).Scan(&total); err != nil {
 		return ActivityPage{}, fmt.Errorf("count activity: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.db.QueryContext(ctx, s.q(`
 		SELECT
 			id, ts_created, src, model_id, req_path, resp_content_type, resp_status_code,
 			cache_tokens, draft_tokens, draft_acc_tokens, input_tokens, output_tokens,
 			prompt_per_second, tokens_per_second, duration_ms, error_msg, metadata_json
 		FROM activity`+where+activityOrderBy(query)+`
-		LIMIT ? OFFSET ?`,
+		LIMIT ? OFFSET ?`),
 		append(args, query.Limit, offset)...,
 	)
 	if err != nil {
@@ -286,13 +346,13 @@ func (s *Store) ActivityStats(ctx context.Context, query ActivityStatsQuery) (Ac
 		filter.Models = []string{model}
 	}
 	where, args := activityWhere(filter)
-	row := s.db.QueryRowContext(ctx, `
+	row := s.db.QueryRowContext(ctx, s.q(`
 		SELECT
 			COUNT(*),
 			COALESCE(SUM(input_tokens), 0),
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(CASE WHEN cache_tokens > 0 THEN cache_tokens ELSE 0 END), 0)
-		FROM activity`+where, args...)
+		FROM activity`+where), args...)
 
 	var stats ActivityStats
 	if err := row.Scan(&stats.TotalRequests, &stats.TotalInputTokens, &stats.TotalOutputTokens, &stats.TotalCacheTokens); err != nil {
@@ -319,7 +379,7 @@ func (s *Store) speedValues(ctx context.Context, where string, args []any) (prom
 		filter += ` AND (prompt_per_second > 0 OR tokens_per_second > 0)`
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT prompt_per_second, tokens_per_second FROM activity`+filter, args...)
+		s.q(`SELECT prompt_per_second, tokens_per_second FROM activity`+filter), args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("activity histogram: %w", err)
 	}
@@ -344,13 +404,13 @@ func (s *Store) PruneActivity(ctx context.Context, maxRows int) error {
 	if maxRows <= 0 {
 		return nil
 	}
-	// AUTOINCREMENT ids are monotonic and never reused, so the rows beyond
+	// Identity ids are monotonic and never reused, so the rows beyond
 	// the newest maxRows are exactly those with id <= MAX(id) - maxRows.
 	// One statement keeps the per-insert prune cheap; if ids ever become
 	// sparse this retains fewer than maxRows rows, which is fine for a
 	// bounded recent-activity cap.
 	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM activity WHERE id <= (SELECT MAX(id) FROM activity) - ?`, maxRows,
+		s.q(`DELETE FROM activity WHERE id <= (SELECT MAX(id) FROM activity) - ?`), maxRows,
 	); err != nil {
 		return fmt.Errorf("prune activity: %w", err)
 	}

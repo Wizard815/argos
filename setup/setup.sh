@@ -17,6 +17,11 @@ ask()  { # ask "prompt" default -> REPLY
   local d="${2:-}"; read -r -p "$1${d:+ [$d]}: " REPLY || REPLY=""; REPLY="${REPLY:-$d}"; }
 yes()  { ask "$1 (y/n)" "${2:-n}"; [[ "$REPLY" =~ ^[Yy] ]]; }
 backup() { [[ -f "$1" ]] && cp "$1" "$1.bak" && echo "  backed up $1 -> $1.bak" || true; }
+random_secret() { # a password for the database: 32 hex characters, no punctuation to quote
+  if command -v openssl >/dev/null 2>&1; then openssl rand -hex 32
+  else head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+  fi
+}
 
 [[ -f docker-compose.yml ]] || { echo "Run this from the Argos repo root (no docker-compose.yml here)."; exit 1; }
 [[ -f "$TEMPLATE" ]] || { echo "Missing $TEMPLATE"; exit 1; }
@@ -37,6 +42,9 @@ PREV_ROCM_HOST="$(env_get ROCM_SSH_HOST)"; PREV_ROCM_PORT="$(env_get ROCM_SSH_PO
 PREV_ROCM_USER="$(env_get ROCM_SSH_USER)"; PREV_ROCM_BIN="$(env_get ROCM_SSH_BIN)"
 PREV_CUDA_HOST="$(env_get CUDA_SSH_HOST)"; PREV_POOL="$(env_get ARGOS_SCHEDULE_POOL)"
 PREV_CARDS="$(env_get ARGOS_SCHEDULE_CARDS)"
+# Carried over rather than regenerated: changing it would leave the running
+# Postgres on the old password and the app unable to reach it.
+PREV_PG_PASSWORD="$(env_get POSTGRES_PASSWORD)"
 
 if [[ -f .env ]]; then
   # what the last run chose, as far as .env records it
@@ -208,6 +216,10 @@ if [[ "$REUSE" == 1 ]]; then
 else
 say "6/6  Writing files"
 
+# Kept from the last run if there was one, so a re-run does not lock the app out
+# of a Postgres that is already running on the old password.
+PG_PASSWORD="${PREV_PG_PASSWORD:-$(random_secret)}"
+
 # .env
 backup .env
 {
@@ -226,6 +238,10 @@ backup .env
     [[ -n "$CUSTOM_SSH_HOST" ]] && echo "CUSTOM_SSH_HOST=$CUSTOM_SSH_HOST" && echo "CUSTOM_SSH_PORT=$CUSTOM_SSH_PORT" && echo "CUSTOM_SSH_USER=$SSH_USER" && echo "CUSTOM_SSH_BIN=$CUSTOM_SSH_BIN"
   fi
   [[ "$MODE" == 2 ]] && echo "HOST_MODELS_DIR=$MODELS_DIR" && echo "HOST_HF_DIR=/mnt/user/appdata/hf-cache"
+  # The database password. Generated once and kept, so the compose file's
+  # placeholder is never what a real install runs on.
+  echo "# Postgres (used when ARGOS_DATABASE_URL is set)"
+  echo "POSTGRES_PASSWORD=$PG_PASSWORD"
   if [[ "$SCHED" == pool ]]; then
     echo "# starting values for the Schedule page; what you save there wins"
     echo "ARGOS_SCHEDULE_POOL=1"
