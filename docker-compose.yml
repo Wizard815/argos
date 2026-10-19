@@ -24,3 +24,42 @@ services:
       # starting values for the Schedule page (setup.sh writes them to .env); the page can change them later
       - ARGOS_SCHEDULE_POOL=${ARGOS_SCHEDULE_POOL:-}
       - ARGOS_SCHEDULE_CARDS=${ARGOS_SCHEDULE_CARDS:-}
+      # The database. ARGOS_DATABASE_URL wins; with it unset the builder falls back to
+      # the SQLite file under /data, so a deployment can move across without a flag day.
+      - ARGOS_DATABASE_URL=${ARGOS_DATABASE_URL:-postgresql://${POSTGRES_USER:-argos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-argos}}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Postgres instead of a SQLite file. The store is written to from several places at
+  # once - the telemetry tick, the engine's activity sync, whatever a request is doing -
+  # and one file serialises all of them behind a lock; a read waits for a write, and a
+  # write waits for a read. Postgres does neither, and needs no file lock to read.
+  postgres:
+    image: postgres:17-alpine
+    container_name: argos-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-argos}
+      - POSTGRES_USER=${POSTGRES_USER:-argos}
+      # Required: a database without a password is not one to expose. setup.sh asks.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      # A named volume rather than a path in this checkout: Docker keeps it on its own
+      # storage, which is a real filesystem. If your Docker storage sits on the Unraid
+      # array, point this at a pool instead - Postgres wants real fsync and real locking.
+      - argos-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-argos} -d ${POSTGRES_DB:-argos}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ai_net
+
+volumes:
+  argos-postgres:
+
+networks:
+  ai_net:
+    external: true
