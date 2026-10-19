@@ -41,6 +41,13 @@ def gpu_series():
                          "enabled": c.settings.get("telemetry")["enabled"]})
 
 
+@bp.get("/api/gpu/latest")
+def gpu_latest():
+    """Just the newest reading per GPU: what the header bars need, without the whole series."""
+    c = ctx()
+    return ok(latest=c.store.gpu_latest())
+
+
 @bp.get("/api/requests")
 def requests_list():
     a = request.args
