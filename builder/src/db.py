@@ -281,13 +281,14 @@ class Store:
             # In WAL a power cut can lose the last commits but never corrupts, and the fsync per commit
             # (telemetry, activity, every settings write) is what a commit otherwise waits for with the lock held.
             self._conn.execute("PRAGMA synchronous=NORMAL")
-        if mode != "WAL" and (os.environ.get("ARGOS_SQLITE_LOCKING") or "").strip().lower() != "normal":
+        elif (os.environ.get("ARGOS_SQLITE_LOCKING") or "").strip().lower() != "normal":
             # Only this process opens the file (the engine has its own), so hold the lock for good instead of
             # taking and dropping it per query. On a FUSE share that is the difference between 8 file-system
             # round trips per query (4 locks, 2 journal stats, a read, an fstat) and none: the page cache is
             # trusted, because nobody else can change the file. ARGOS_SQLITE_LOCKING=normal turns it off.
             self._conn.execute("PRAGMA locking_mode=EXCLUSIVE")
-            self._conn.execute("PRAGMA cache_size=-65536")  # up to 64 MiB of pages stay resident
+        self._conn.execute("PRAGMA cache_size=-65536")  # up to 64 MiB of pages stay resident
+        self._conn.execute("PRAGMA mmap_size=268435456")  # reads come from the mapping, not a read() call each
         with self._lock:
             self._migrate_legacy()
             self._conn.executescript(SCHEMA)
