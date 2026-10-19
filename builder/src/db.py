@@ -842,17 +842,22 @@ class Store:
         now = now or time.time()
         current_hour = int(now // 3600) * 3600
         with self._lock:
+            # Only the hours not yet folded in: the last rolled hour is redone in case it was cut short, the
+            # rest of the window is already in gpu_hourly. Re-aggregating every raw sample on every pass kept
+            # the lock - which every page read waits for - for as long as the whole retention window took.
+            last = self._conn.execute("SELECT MAX(hour) FROM gpu_hourly").fetchone()[0]
+            floor = float(last) if last is not None else 0.0
             self._conn.execute(
                 "INSERT INTO gpu_hourly (hour, gpu, name, samples, util_avg, util_max, mem_avg_mb, "
                 "mem_max_mb, mem_total_mb, temp_avg, temp_max, power_avg, power_max) "
                 "SELECT CAST(ts / 3600 AS INTEGER) * 3600 AS h, gpu, MAX(name), COUNT(*), AVG(util), "
                 "MAX(util), AVG(mem_used_mb), MAX(mem_used_mb), MAX(mem_total_mb), AVG(temp_c), "
-                "MAX(temp_c), AVG(power_w), MAX(power_w) FROM gpu_samples WHERE ts < ? "
+                "MAX(temp_c), AVG(power_w), MAX(power_w) FROM gpu_samples WHERE ts >= ? AND ts < ? "
                 "GROUP BY h, gpu ON CONFLICT(hour, gpu) DO UPDATE SET samples=excluded.samples, "
                 "util_avg=excluded.util_avg, util_max=excluded.util_max, mem_avg_mb=excluded.mem_avg_mb, "
                 "mem_max_mb=excluded.mem_max_mb, mem_total_mb=excluded.mem_total_mb, "
                 "temp_avg=excluded.temp_avg, temp_max=excluded.temp_max, power_avg=excluded.power_avg, "
-                "power_max=excluded.power_max", (current_hour,))
+                "power_max=excluded.power_max", (floor, current_hour))
             self._conn.execute("DELETE FROM gpu_samples WHERE ts < ?", (now - keep_raw_s,))
             self._conn.commit()
 
