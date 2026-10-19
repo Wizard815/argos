@@ -8,8 +8,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from src import dialect
 from src.db import Store
 from src.inventory import Inventory, extract, is_known, norm_key
+
+# Upgrading an old SQLite file in place is a thing only a SQLite file does.
+needs_sqlite = pytest.mark.skipif(
+    dialect.is_postgres(dialect.url()),
+    reason="there is no old SQLite file to upgrade inside a Postgres database")
 
 from .fakes import make_engine, serve
 from .ggufs import kv_str, kv_u32, kv_str_array, llama_kvs, write_gguf
@@ -99,6 +105,7 @@ def test_saving_a_profile_registers_its_settings_before_it_ever_runs(client):
     assert client.get("/api/inventory").get_json()["pending"] >= 3
 
 
+@needs_sqlite
 def test_an_old_database_gains_the_inventory_tables(tmp_path):
     path = str(tmp_path / "old.db")
     conn = sqlite3.connect(path)
@@ -452,8 +459,10 @@ def test_request_speeds_of_minus_one_are_not_speeds(tmp_path):
     from src.db import Store
     store = Store(str(tmp_path / "t.db"))
     base = {"ts": 1000.0, "model": "embed", "status": 200}
-    store.add_requests([{**base, "source_id": "a", "prompt_per_second": -1, "tokens_per_second": -1},
-                        {**base, "source_id": "b", "prompt_per_second": 500.0, "tokens_per_second": 80.0}])
+    # source_id is an INTEGER column; SQLite would accept a string here, Postgres
+    # will not, and the test is about the speeds rather than the ids.
+    store.add_requests([{**base, "source_id": 1, "prompt_per_second": -1, "tokens_per_second": -1},
+                        {**base, "source_id": 2, "prompt_per_second": 500.0, "tokens_per_second": 80.0}])
     (row,) = store.request_stats(0)
     assert row["requests"] == 2 and row["tg_avg"] == 80.0 and row["pp_avg"] == 500.0 and row["tg_max"] == 80.0
 

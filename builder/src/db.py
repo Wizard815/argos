@@ -377,12 +377,29 @@ class Store:
             return "TRUNCATE"
         return "WAL"
 
+    def _abort(self) -> None:
+        """Clear a failed statement.
+
+        Postgres refuses every later statement on a connection until the failed
+        one is rolled back - one bad write would otherwise poison the thread's
+        connection for good. SQLite has no such state and does not mind.
+        """
+        if self.pg:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+
     def _q(self, sql: str, args: Iterable = ()) -> list[dict]:
         # No lock, and this thread's own connection: a slow call holds up its own request
         # and nothing else. A shared connection behind one lock is what let a single query
         # wait six hours while the container answered nothing.
         asked = time.monotonic()
-        rows = [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
+        try:
+            rows = [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
+        except Exception:
+            self._abort()
+            raise
         done = time.monotonic()
         if done - asked > SLOW_DB_S:
             log.warning("slow query: ran %.1fs, %d rows: %s", done - asked, len(rows), " ".join(sql.split())[:90])
@@ -404,7 +421,11 @@ class Store:
 
     def _x(self, sql: str, args: Iterable = (), commit: bool = True) -> sqlite3.Cursor:
         # No lock, same reason as _q: SQLite serializes writers itself, with the busy timeout.
-        cur = self._conn.execute(sql, tuple(args))
+        try:
+            cur = self._conn.execute(sql, tuple(args))
+        except Exception:
+            self._abort()
+            raise
         if commit:
             self._conn.commit()
         return cur
@@ -933,7 +954,9 @@ class Store:
             # Only the hours not yet folded in: the last rolled hour is redone in case it was cut short, the
             # rest of the window is already in gpu_hourly. Re-aggregating every raw sample on every pass kept
             # the lock - which every page read waits for - for as long as the whole retention window took.
-            last = self._conn.execute("SELECT MAX(hour) FROM gpu_hourly").fetchone()[0]
+            # By name, not by position: sqlite3.Row answers row[0], psycopg's
+            # dict_row answers row["h"] and only row["h"].
+            last = self._conn.execute("SELECT MAX(hour) AS h FROM gpu_hourly").fetchone()["h"]
             floor = float(last) if last is not None else 0.0
             self._conn.execute(
                 "INSERT INTO gpu_hourly (hour, gpu, name, samples, util_avg, util_max, mem_avg_mb, "
@@ -1006,13 +1029,15 @@ class Store:
 
         sql = ("SELECT model, COUNT(*) AS requests, "
                "SUM(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS tg_sum, "
-               "SUM(tokens_per_second > 0) AS tg_n, "
+               "SUM(CASE WHEN tokens_per_second > 0 THEN 1 ELSE 0 END) AS tg_n, "
                "MIN(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_min, "
                "MAX(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_max, "
-               "SUM(prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ?) AS prefill_n, "
+               "SUM(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? "
+               "THEN 1 ELSE 0 END) AS prefill_n, "
                "MIN(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_min, "
                "MAX(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_max, "
-               "SUM(tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ?) AS decode_n "
+               "SUM(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? "
+               "THEN 1 ELSE 0 END) AS decode_n "
                "FROM requests WHERE ts>=? AND ts<? GROUP BY model")
         t0 = since
         while t0 <= until:
@@ -1034,10 +1059,10 @@ class Store:
                 "SELECT model_id AS model, "
                 "MIN(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_min, "
                 "MAX(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_max, "
-                "SUM(prompt_per_second > 0) AS prefill_n, "
+                "SUM(CASE WHEN prompt_per_second > 0 THEN 1 ELSE 0 END) AS prefill_n, "
                 "MIN(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_min, "
                 "MAX(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_max, "
-                "SUM(tokens_per_second > 0) AS decode_n "
+                "SUM(CASE WHEN tokens_per_second > 0 THEN 1 ELSE 0 END) AS decode_n "
                 "FROM runs WHERE success=1 AND model_id IS NOT NULL AND model_id != '' AND created_at>=? GROUP BY model_id",
                 (since,)):
             d = entry(r["model"])

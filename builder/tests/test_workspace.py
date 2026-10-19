@@ -4,6 +4,9 @@ import json
 import os
 import time
 
+import pytest
+
+from src import dialect
 from src.always import apply_always
 from src.routes.workspace import diff_commands
 
@@ -80,6 +83,8 @@ def test_deleting_a_note_is_final(app, client):
     assert client.get(f"/api/notes/{n['id']}/history").status_code in (404, 405), "there is no history to bring it back from"
 
 
+@pytest.mark.skipif(dialect.is_postgres(dialect.url()),
+                    reason="there is no old SQLite file to upgrade inside a Postgres database")
 def test_old_notes_are_migrated(tmp_path):
     import sqlite3
     from src.db import Store

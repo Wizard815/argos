@@ -3,7 +3,29 @@ import time
 
 import pytest
 
+from src import dialect
 from src.db import Store
+
+
+def integrity_error():
+    """The error a CHECK constraint raises, whichever database it is.
+
+    psycopg's CheckViolation and sqlite3's IntegrityError are the same failure
+    under different names; both subclass their driver's IntegrityError.
+    """
+    if dialect.is_postgres(dialect.url()):
+        import psycopg
+
+        return psycopg.errors.IntegrityError
+    return sqlite3.IntegrityError
+
+
+# Upgrading an old SQLite file in place is a thing only a SQLite file does: a
+# Postgres database is created with the current schema and has no v1 or v2 to
+# migrate from.
+needs_sqlite = pytest.mark.skipif(
+    dialect.is_postgres(dialect.url()),
+    reason="there is no old SQLite file to upgrade inside a Postgres database")
 
 
 def test_runs_upsert_list_delete(tmp_path):
@@ -40,7 +62,7 @@ def test_catalog(tmp_path):
     assert s.list_files("mmproj")[0]["name"] == "mmproj-gemma.gguf"
     assert s.list_files(base_model="qwen")[0]["name"] == "qwen-draft"
     assert s.base_models() == ["gemma", "qwen"]
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(integrity_error()):
         s.add_file("lora", "x", file_path="y")
     assert s.delete_file(fid) and not s.delete_file(fid)
 
@@ -84,6 +106,7 @@ INSERT INTO profiles (profile_id, name, source_model, copied_into, launch_comman
 """
 
 
+@needs_sqlite
 def test_migrates_first_version_database(tmp_path):
     path = str(tmp_path / "legacy.db")
     con = sqlite3.connect(path)
@@ -108,6 +131,7 @@ def test_migrates_first_version_database(tmp_path):
     Store(path)  # reopening a migrated database is a no-op
 
 
+@needs_sqlite
 def test_migrates_v2_catalog_mtp_rows_to_draft(tmp_path):
     path = str(tmp_path / "v2.db")
     con = sqlite3.connect(path)
