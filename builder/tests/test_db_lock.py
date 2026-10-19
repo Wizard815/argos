@@ -1,4 +1,16 @@
-"""Two writers share one SQLite connection: the telemetry tick and a request."""
+"""Two writers share one SQLite connection: the telemetry tick and a request.
+
+These are about the SQLite file specifically - its busy timeout, its journal, its
+file lock. Under Postgres none of those exist, so they are skipped rather than
+pretended to pass.
+"""
+import pytest
+
+from src import dialect
+
+pytestmark = pytest.mark.skipif(
+    dialect.is_postgres(dialect.url()),
+    reason="journal, busy timeout and the file lock are the SQLite file's, not Postgres's")
 
 
 def test_the_store_waits_for_a_lock_instead_of_giving_up(tmp_path):

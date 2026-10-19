@@ -1,4 +1,13 @@
 """A pull writes many profiles: they should cost one commit, not one each."""
+import pytest
+
+from src import dialect
+
+# This one is about SQLite's rollback journal holding the file lock until commit.
+# Postgres has no such lock, so the behaviour it describes does not exist there.
+needs_sqlite = pytest.mark.skipif(
+    dialect.is_postgres(dialect.url()),
+    reason="the writer lock is the SQLite file's, not Postgres's")
 
 
 def test_a_batch_of_profiles_is_committed_once(tmp_path):
@@ -15,6 +24,7 @@ def test_a_batch_of_profiles_is_committed_once(tmp_path):
     assert sorted(p["name"] for p in fresh.list_profiles()) == [f"p{i}" for i in range(5)]
 
 
+@needs_sqlite
 def test_an_uncommitted_write_holds_the_lock(tmp_path):
     """With a rollback journal a writer holds the lock until it commits. That is the
     reason commit=False is only for a run of writes that ends in one commit, and it is

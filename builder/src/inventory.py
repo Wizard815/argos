@@ -250,10 +250,18 @@ class Inventory:
         self.store.update_session(s["id"], ended_at=ended, open=0)
 
     def close_all(self, now: Optional[float] = None) -> None:
-        """Used at shutdown or when Argos goes away for good."""
+        """Used at shutdown or when Argos goes away for good.
+
+        At exit the database may already be gone - a dropped schema, a removed
+        file - and there is nothing left to close, so a failure here is swallowed
+        rather than printed as an unraisable exception during shutdown.
+        """
         self.invalidate()
-        for s in self.store.list_sessions(open_only=True, limit=5000):
-            self._close(s, now or time.time())
+        try:
+            for s in self.store.list_sessions(open_only=True, limit=5000):
+                self._close(s, now or time.time())
+        except Exception:
+            pass
 
     # ----- refresh: new models, new quants, host --------------------------------------
     def refresh(self, library: list[dict], commands: dict[str, str], live_ids: Optional[set[str]] = None,
