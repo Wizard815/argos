@@ -269,6 +269,11 @@ class Store:
         # what the filesystem underneath really is). Whitelisted, never interpolated raw.
         forced = (os.environ.get("ARGOS_SQLITE_JOURNAL") or "").strip().upper()
         mode = forced if forced in ("WAL", "TRUNCATE", "DELETE", "PERSIST") else self._journal_for(os.path.abspath(path))
+        # First, so that even choosing the journal waits out an old process still shutting down.
+        # Two writers happen: the telemetry tick and whatever a request is doing.
+        # Without a busy timeout SQLite gives up the moment it is locked, which
+        # surfaces as a route that fails or hangs for no visible reason.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(f"PRAGMA journal_mode={mode}")
         if mode != "WAL" and (os.environ.get("ARGOS_SQLITE_LOCKING") or "").strip().lower() != "normal":
             # Only this process opens the file (the engine has its own), so hold the lock for good instead of
@@ -277,10 +282,6 @@ class Store:
             # trusted, because nobody else can change the file. ARGOS_SQLITE_LOCKING=normal turns it off.
             self._conn.execute("PRAGMA locking_mode=EXCLUSIVE")
             self._conn.execute("PRAGMA cache_size=-65536")  # up to 64 MiB of pages stay resident
-        # Two writers happen: the telemetry tick and whatever a request is doing.
-        # Without a busy timeout SQLite gives up the moment it is locked, which
-        # surfaces as a route that fails or hangs for no visible reason.
-        self._conn.execute("PRAGMA busy_timeout=5000")
         with self._lock:
             self._migrate_legacy()
             self._conn.executescript(SCHEMA)
