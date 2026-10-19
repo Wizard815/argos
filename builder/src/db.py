@@ -34,7 +34,7 @@ import time
 from typing import Any, Iterable, Optional
 
 log = logging.getLogger("argos.db")
-SLICE_S = 7 * 86400  # how much request history one locked read covers
+SLICE_S = 86400  # how much request history one locked read covers: small, so nothing waits long behind it
 SLOW_DB_S = 1.0  # a query that waits for the lock, or runs, longer than this is logged with where the time went
 
 RUN_COLUMNS: dict[str, str] = {
@@ -894,7 +894,7 @@ class Store:
         prefill and decode speed (requests long enough to be meaningful, plus successful benchmark runs).
 
         The request history is the big table, and one scan over it holds the database lock for the whole scan,
-        which stalls every other call on a slow disk. So it is read a week at a time, taking the lock per slice.
+        which stalls every other call on a slow disk. So it is read a day at a time, taking the lock per slice.
         """
         until = until or time.time()
         out: dict[str, dict[str, Any]] = {}

@@ -246,7 +246,7 @@ def create_app(config: dict | None = None) -> Flask:
     atexit.register(inventory.close_all)
     if cfg["BACKGROUND"]:
         collector.start()
-        # build the model list now, so the first visit to Inventory finds it ready
+        # start the slow part of the model list now, so the first visit to Inventory finds it ready
         threading.Thread(target=inventory.models_summary, name="inventory-prewarm", daemon=True).start()
 
     for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp):
