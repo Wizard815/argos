@@ -341,9 +341,19 @@ const S = {
 };
 const VIEWS = { builder: "Builder", models: "Models", profiles: "Profiles", playground: "Playground", perf: "Benchmarks",
   schedule: "Schedule", inventory: "Inventory", serverlogs: "Logs", logs: "Usage", assistant: "Assistant", env: "Flags", servers: "Servers", integrations: "Odysseus", settings: "Settings" };
+// Data a page needs is fetched when the page is first opened, once, not by every load of the app.
+const _once = {};
+function once(key, fn) {
+  if (!_once[key]) _once[key] = Promise.resolve(fn()).catch((e) => { delete _once[key]; throw e; });
+  return _once[key];
+}
+const ensureBuilderData = () => Promise.all([
+  once("library", loadLibrary), once("catalog", loadCatalog), once("integrations", loadIntegrations), once("traits", loadSeen),
+]).catch(() => {});
 const onShow = {
+  builder: () => { ensureBuilderData(); },
   models: () => { loadLibrary(); loadCatalog(); loadDownloads(); },
-  profiles: () => renderProfiles(),
+  profiles: () => { ensureBuilderData(); renderProfiles(); },
   perf: () => loadPerf(),
   schedule: () => { loadSchedule(); loadLive(); },
   inventory: () => loadInventory(),
@@ -4429,7 +4439,6 @@ function boot() {
   $("#notesBtn").onclick = () => toggleNotesMenu();
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && NOTES.menu) toggleNotesMenu(false); });
   loadNotes();
-  loadSeen();
   loadGpuBars();
   setInterval(loadGpuBars, 8000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) loadGpuBars(); });
@@ -4440,12 +4449,18 @@ function boot() {
   fillImportSelect();
   loadSettings().then((st) => { B.format = st.builder.command_format; }).catch(() => {})
     .finally(() => show(location.hash.slice(1) || "builder"));
-  Promise.all([loadProfiles(), loadModels(), loadCatalog(), loadIntegrations(), loadLibrary(), loadDownloads()])
-    .then(migrateBrowserProfiles).catch(fail);
-  api("GET", "/api/assistant").then((st) => { A.state = st; assistantNav(); }).catch(() => {});
-  // Just the number. Asking for every run made the first page load carry the whole
-  // history to put a count in a badge.
-  api("GET", "/api/runs?limit=1").then((r) => { $("#navPerf").textContent = (r.total ?? r.runs.length) || ""; }).catch(() => {});
+  // Only what every page shows. The library, catalog, downloads, traits and integrations wait for the page that
+  // uses them (onShow); the two nav badges follow a few seconds later, one after the other.
+  Promise.all([loadProfiles(), loadModels()]).then(migrateBrowserProfiles).catch(fail);
+  setTimeout(async () => {
+    try {
+      const st = await api("GET", "/api/assistant/status");
+      A.state = A.state ? { ...A.state, models: st.models } : { messages: [], models: st.models };
+      assistantNav();
+    } catch (e) { /* the dot is optional */ }
+    // Just the number. Asking for every run made the first page load carry the whole history for a badge.
+    try { const r = await api("GET", "/api/runs?limit=1"); $("#navPerf").textContent = (r.total ?? r.runs.length) || ""; } catch (e) { /* ignore */ }
+  }, 4000);
   tick();
 }
 
