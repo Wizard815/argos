@@ -52,3 +52,30 @@ def test_the_store_still_works_normally(tmp_path):
     s = Store(str(tmp_path / "argos.db"))
     s.add_event("test", "hello")
     assert any(e["message"] == "hello" for e in s.list_events())
+
+
+def test_a_non_wal_journal_holds_the_file_lock_so_queries_skip_the_file_system(tmp_path, monkeypatch):
+    import sqlite3
+
+    import pytest
+    from src.db import Store
+
+    monkeypatch.setenv("ARGOS_SQLITE_JOURNAL", "TRUNCATE")
+    monkeypatch.delenv("ARGOS_SQLITE_LOCKING", raising=False)
+    store = Store(str(tmp_path / "x.db"))
+    assert store._conn.execute("PRAGMA locking_mode").fetchone()[0] == "exclusive"
+    store.get_settings()
+    other = sqlite3.connect(str(tmp_path / "x.db"), timeout=0.1)
+    with pytest.raises(sqlite3.OperationalError):  # this process owns the file
+        other.execute("SELECT count(*) FROM settings").fetchall()
+    other.close()
+    assert store.get_settings() is not None
+
+
+def test_the_file_lock_can_be_left_normal(tmp_path, monkeypatch):
+    from src.db import Store
+
+    monkeypatch.setenv("ARGOS_SQLITE_JOURNAL", "TRUNCATE")
+    monkeypatch.setenv("ARGOS_SQLITE_LOCKING", "normal")
+    store = Store(str(tmp_path / "x.db"))
+    assert store._conn.execute("PRAGMA locking_mode").fetchone()[0] == "normal"

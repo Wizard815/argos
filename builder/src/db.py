@@ -34,6 +34,7 @@ import time
 from typing import Any, Iterable, Optional
 
 log = logging.getLogger("argos.db")
+SLICE_S = 7 * 86400  # how much request history one locked read covers
 SLOW_DB_S = 1.0  # a query that waits for the lock, or runs, longer than this is logged with where the time went
 
 RUN_COLUMNS: dict[str, str] = {
@@ -269,6 +270,13 @@ class Store:
         forced = (os.environ.get("ARGOS_SQLITE_JOURNAL") or "").strip().upper()
         mode = forced if forced in ("WAL", "TRUNCATE", "DELETE", "PERSIST") else self._journal_for(os.path.abspath(path))
         self._conn.execute(f"PRAGMA journal_mode={mode}")
+        if mode != "WAL" and (os.environ.get("ARGOS_SQLITE_LOCKING") or "").strip().lower() != "normal":
+            # Only this process opens the file (the engine has its own), so hold the lock for good instead of
+            # taking and dropping it per query. On a FUSE share that is the difference between 8 file-system
+            # round trips per query (4 locks, 2 journal stats, a read, an fstat) and none: the page cache is
+            # trusted, because nobody else can change the file. ARGOS_SQLITE_LOCKING=normal turns it off.
+            self._conn.execute("PRAGMA locking_mode=EXCLUSIVE")
+            self._conn.execute("PRAGMA cache_size=-65536")  # up to 64 MiB of pages stay resident
         # Two writers happen: the telemetry tick and whatever a request is doing.
         # Without a busy timeout SQLite gives up the moment it is locked, which
         # surfaces as a route that fails or hangs for no visible reason.
@@ -886,7 +894,7 @@ class Store:
         prefill and decode speed (requests long enough to be meaningful, plus successful benchmark runs).
 
         The request history is the big table, and one scan over it holds the database lock for the whole scan,
-        which stalls every other call on a slow disk. So it is read a day at a time, taking the lock per slice.
+        which stalls every other call on a slow disk. So it is read a week at a time, taking the lock per slice.
         """
         until = until or time.time()
         out: dict[str, dict[str, Any]] = {}
@@ -913,7 +921,7 @@ class Store:
                "FROM requests WHERE ts>=? AND ts<? GROUP BY model")
         t0 = since
         while t0 <= until:
-            t1 = t0 + 86400
+            t1 = t0 + SLICE_S
             last = t1 > until
             rows = self._q(sql, (min_prompt, min_prompt, min_prompt, min_output, min_output, min_output,
                                  t0, float("inf") if last else t1))
