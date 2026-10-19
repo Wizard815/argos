@@ -776,7 +776,15 @@ class Assistant:
             self._turn.release()
 
     def context_tokens(self, digest: Optional[str] = None) -> int:
-        return sum(estimate_tokens(m["content"]) for m in self._prompt(digest if digest is not None else self.digest()))
+        if digest is None:
+            # The page asks on every load and every few seconds in the Assistant view, and building the digest is
+            # a dozen database queries. A count that is half a minute old is as good for a meter.
+            stamp, text = getattr(self, "_digest_memo", (0.0, ""))
+            if time.time() - stamp > 30:
+                text = self.digest()
+                self._digest_memo = (time.time(), text)
+            digest = text
+        return sum(estimate_tokens(m["content"]) for m in self._prompt(digest))
 
     def reset(self) -> None:
         self.store.clear_chat()
