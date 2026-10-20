@@ -159,8 +159,19 @@ def connect(dsn: str):
     Wrapping psycopg to answer those keeps every one of the store's ~1000 lines
     of SQL as it is.
     """
-    import psycopg
-    from psycopg.rows import dict_row
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ModuleNotFoundError as exc:
+        # The import is lazy so a SQLite deployment needs nothing extra, which
+        # means a missing driver surfaces here rather than at startup. Say what
+        # is wrong and what to install instead of a bare ModuleNotFoundError
+        # from inside a constructor.
+        raise RuntimeError(
+            "ARGOS_DATABASE_URL points at Postgres, but the psycopg driver is not "
+            "installed. Install it with: pip install 'psycopg[binary]>=3.2' "
+            "(it is in builder/requirements.txt)."
+        ) from exc
 
     conn = psycopg.connect(dsn, row_factory=dict_row, autocommit=False,
                            connect_timeout=10)
