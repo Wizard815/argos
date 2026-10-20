@@ -9,7 +9,15 @@ import (
 	"strings"
 )
 
+func isDatabaseURL(path string) bool {
+	p := strings.TrimSpace(path)
+	return strings.HasPrefix(p, "postgres://") || strings.HasPrefix(p, "postgresql://")
+}
+
 func validateStorePath(path string) error {
+	if isDatabaseURL(path) {
+		return nil
+	}
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("store.path must not be empty")
 	}

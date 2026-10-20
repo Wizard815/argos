@@ -37,6 +37,13 @@ COPY builder/requirements.txt /tmp/requirements.txt
 RUN UV_PYTHON_INSTALL_DIR=/opt/python uv venv --python 3.14 /opt/venv \
     && uv pip install --python /opt/venv/bin/python -r /tmp/requirements.txt
 
+# uv brings its own Python and the base image may have none at all, so `python`
+# is not on PATH by default. Put the venv's first: the app's own interpreter is
+# the one anything run in here should get. /app/bin follows so the wrappers
+# shipped with the image - argos-migrate, remote-llama - are found by name
+# rather than having to be spelled out in full.
+ENV PATH="/opt/venv/bin:/app/bin:$PATH"
+
 COPY --from=engine /src/build/argos-linux-amd64 /app/argos
 # The remote-llama wrapper ships in the image so /app/bin/remote-llama always
 # exists and is executable. A host mount can still shadow it -- that is how it
@@ -45,6 +52,12 @@ COPY --from=engine /src/build/argos-linux-amd64 /app/argos
 COPY setup/remote-llama.sh /app/bin/remote-llama
 RUN chmod 755 /app/bin/remote-llama
 COPY builder/src /app/builder/src
+# The scripts that run inside the container - currently the data migration.
+# builder/src alone was copied before, which meant scripts/migrate_to_postgres.py
+# was not in the image and the documented command could not work.
+COPY builder/scripts /app/builder/scripts
+COPY setup/argos-migrate.sh /app/bin/argos-migrate
+RUN chmod 755 /app/bin/argos-migrate
 COPY docker/argos.config.yaml /app/config.yaml
 COPY docker/argos-entrypoint.sh /app/argos-entrypoint.sh
 
