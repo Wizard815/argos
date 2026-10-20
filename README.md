@@ -46,6 +46,36 @@ Open **Odysseus** in the sidebar, paste your Odysseus URL and an API token (Odys
 
 More settings are in [docs/configuration.md](docs/configuration.md). Running without Docker is in [docs/development.md](docs/development.md).
 
+## Postgres (optional)
+
+By default Argos keeps its data in SQLite files under `./data` — one for the builder, one for the engine. You can run both on Postgres instead, which is worth doing when more than one thing writes at once: a single file serialises its writers, and one long read can stop its journal from checkpointing until every query has to walk a growing log.
+
+`docker-compose.yml` already has the service. Set a password and start the stack:
+
+```sh
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
+docker compose up -d --build
+```
+
+Then move the data across — **this is the script; you do not re-run `setup.sh`**:
+
+```sh
+docker compose exec argos python scripts/migrate_to_postgres.py
+```
+
+It copies the builder's database and the engine's activity log in one pass. Then switch over:
+
+```sh
+echo 'ARGOS_DATABASE_URL=postgresql://argos:YOUR_PASSWORD@postgres:5432/argos' >> .env
+docker compose up -d
+```
+
+One variable moves both stores. The migration only *reads* the SQLite files, so they stay as a fallback — delete `ARGOS_DATABASE_URL` to go back. It prints every table's row count before and after and exits non-zero if any came across short; re-running it is safe. Add `--dry-run` to see what it would move without writing.
+
+If you would rather not set a password by hand, `setup/setup.sh` generates one into `.env` for you. `.env` is gitignored, so it stays out of the repo; the compose file's value is only a placeholder for a stack started with no setup at all.
+
+Postgres wants a real filesystem with real `fsync` and real locking, so keep its volume off the Unraid array — a pool or a cache drive is fine. See [docs/postgres.md](docs/postgres.md) for how the two dialects are kept in step.
+
 **Security:** the Playground runs whatever command you give it, and there is no login. Only expose the ports to people you trust.
 
 Argos started as a fork of [llama-swap](https://github.com/mostlygeek/llama-swap) by Benson Wong (MIT, see [LICENSE.md](LICENSE.md)). The engine is now part of Argos and is configured and documented here.
