@@ -68,6 +68,13 @@ var logTimeFormats = map[string]string{
 }
 
 func configStorePath(cfg config.Config) string {
+	// ARGOS_DATABASE_URL wins over the configured path, and it is the same
+	// variable the builder reads, so one setting moves both stores. A
+	// postgres:// value opens Postgres; anything else is a SQLite file, which
+	// keeps the file as the fallback for anyone who does not set it.
+	if url := strings.TrimSpace(os.Getenv("ARGOS_DATABASE_URL")); url != "" {
+		return url
+	}
 	if cfg.Store == nil {
 		return ""
 	}

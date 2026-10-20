@@ -1,4 +1,9 @@
-"""SQLite persistence -- the app's embedded database.
+"""Persistence -- the app's database.
+
+Runs on either SQLite (the default, a file under /data) or Postgres (set
+ARGOS_DATABASE_URL). The two differ in a handful of places - placeholders, a
+time bucket, introspection, and how an INSERT reports the id it just made - and
+those live in dialect.py so that everything below is ordinary SQL.
 
 Tables
 ------
@@ -31,6 +36,8 @@ import logging
 import os
 import sqlite3
 import threading
+
+from . import dialect
 import time
 from typing import Any, Iterable, Optional
 
@@ -261,9 +268,14 @@ def new_id(prefix: str) -> str:
 class Store:
     def __init__(self, path: str):
         self.path = path
-        if os.path.dirname(path):
+        # Postgres when asked for, SQLite otherwise. Read once: a connection that
+        # changed dialect mid-run would be worse than either.
+        self.dsn = dialect.url()
+        self.pg = dialect.is_postgres(self.dsn)
+        if not self.pg and os.path.dirname(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
         self._lock = threading.RLock()  # the one-time setup only; never held across a query
+        self._open: list = []  # every connection made, so close() can reach them all
         self._settings_cache: Optional[dict[str, Any]] = None
         self._local = threading.local()
         with self._lock:
@@ -286,8 +298,12 @@ class Store:
         self._conn.execute("DELETE FROM notes WHERE deleted=1")
         self._conn.execute("DROP TABLE IF EXISTS note_versions")
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
         """A connection for the calling thread.
+
+        Postgres first: a pool would be better still, but a connection per thread
+        is what the store already assumed, and psycopg's own connections are
+        cheap enough at this size.
 
         One shared connection with a lock around it means a single slow call stops every
         other request: a query waited 6.5 hours for that lock on a container that had
@@ -301,6 +317,11 @@ class Store:
         an admin sqlite3, a second instance - and the price is that everything else waits
         forever instead of for the busy timeout.
         """
+        if self.pg:
+            conn = dialect.connect(self.dsn)
+            with self._lock:
+                self._open.append(conn)
+            return conn
         conn = sqlite3.connect(self.path, check_same_thread=False, timeout=5.0)
         conn.row_factory = sqlite3.Row
         # ARGOS_SQLITE_JOURNAL forces the journal when the guess is wrong (a bind mount can
@@ -356,23 +377,76 @@ class Store:
             return "TRUNCATE"
         return "WAL"
 
+    def _abort(self) -> None:
+        """Clear a failed statement.
+
+        Postgres refuses every later statement on a connection until the failed
+        one is rolled back - one bad write would otherwise poison the thread's
+        connection for good. SQLite has no such state and does not mind.
+        """
+        if self.pg:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+
     def _q(self, sql: str, args: Iterable = ()) -> list[dict]:
         # No lock, and this thread's own connection: a slow call holds up its own request
         # and nothing else. A shared connection behind one lock is what let a single query
         # wait six hours while the container answered nothing.
         asked = time.monotonic()
-        rows = [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
+        try:
+            rows = [dict(r) for r in self._conn.execute(sql, tuple(args)).fetchall()]
+        except Exception:
+            self._abort()
+            raise
         done = time.monotonic()
         if done - asked > SLOW_DB_S:
             log.warning("slow query: ran %.1fs, %d rows: %s", done - asked, len(rows), " ".join(sql.split())[:90])
         return rows
 
+    def _insert(self, sql: str, args: Iterable = (), commit: bool = True) -> int:
+        """An INSERT that wants the id it just made.
+
+        SQLite hands it back as ``lastrowid``; Postgres has no rowid and answers
+        with RETURNING. Both are read here so the callers do not have to know
+        which database they are on. Every table these write to has an id column.
+        """
+        if self.pg:
+            cur = self._x(sql.rstrip().rstrip(";") + " RETURNING id", args, commit=commit)
+            row = cur.fetchone()
+            return int(row["id"]) if row else 0
+        cur = self._x(sql, args, commit=commit)
+        return int(cur.lastrowid or 0)
+
     def _x(self, sql: str, args: Iterable = (), commit: bool = True) -> sqlite3.Cursor:
         # No lock, same reason as _q: SQLite serializes writers itself, with the busy timeout.
-        cur = self._conn.execute(sql, tuple(args))
+        try:
+            cur = self._conn.execute(sql, tuple(args))
+        except Exception:
+            self._abort()
+            raise
         if commit:
             self._conn.commit()
         return cur
+
+    def close(self) -> None:
+        """Close every connection this store opened.
+
+        SQLite takes its connections down with the process, so this never
+        mattered. Postgres does not: a connection left open keeps its transaction
+        and the locks in it, and anything that needs those objects - a schema
+        drop, a migration, an ALTER - waits indefinitely. The suite found this
+        as a teardown that never returned.
+        """
+        with self._lock:
+            conns, self._open = self._open, []
+        for conn in conns:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._local = threading.local()
 
     def commit(self) -> None:
         """Finish a run of writes started with ``commit=False``. A pull writes dozens
@@ -381,11 +455,10 @@ class Store:
 
     # ----- migrations -----------------------------------------------------
     def _tables(self) -> dict[str, str]:
-        rows = self._conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table'")
-        return {r[0]: r[1] or "" for r in rows}
+        return dialect.tables(self._conn, self.pg)
 
     def _columns(self, table: str) -> set[str]:
-        return {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+        return dialect.columns(self._conn, table, self.pg)
 
     def _migrate_legacy(self) -> None:
         tables = self._tables()
@@ -501,10 +574,9 @@ class Store:
     def add_file(self, kind: str, base_model: str, *, name: str = "", hf_repo: str = "",
                  file_path: str = "", notes: str = "") -> int:
         name = name or os.path.basename((file_path or hf_repo).rstrip("/")) or kind
-        cur = self._x("INSERT INTO catalog_files (kind, base_model, name, hf_repo, file_path, notes, "
-                      "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                      (kind, base_model, name, hf_repo, file_path, notes, time.time()))
-        return int(cur.lastrowid or 0)
+        return self._insert("INSERT INTO catalog_files (kind, base_model, name, hf_repo, file_path, notes, "
+                            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (kind, base_model, name, hf_repo, file_path, notes, time.time()))
 
     def list_files(self, kind: Optional[str] = None, base_model: Optional[str] = None) -> list[dict]:
         where, args = [], []
@@ -573,7 +645,9 @@ class Store:
             return row is None
 
     def list_models_seen(self) -> list[dict]:
-        rows = self._q("SELECT * FROM models_seen ORDER BY name COLLATE NOCASE")
+        # lower(name), not COLLATE NOCASE: Postgres has no such collation, and
+        # this sorts the same on both.
+        rows = self._q("SELECT * FROM models_seen ORDER BY lower(name)")
         for r in rows:
             r["extra"] = _json(r.get("extra"), {})
         return rows
@@ -595,11 +669,10 @@ class Store:
         with self._lock:
             row = self._conn.execute("SELECT * FROM traits WHERE kind=? AND value=?", (kind, value)).fetchone()
             if row is None:
-                cur = self._conn.execute(
+                tid = self._insert(
                     "INSERT INTO traits (kind, value, status, first_seen, last_seen, count, example) VALUES (?,?,?,?,?,1,?)",
                     (kind, value, status, now, now, example[:300]))
-                self._conn.commit()
-                return dict(self._conn.execute("SELECT * FROM traits WHERE id=?", (cur.lastrowid,)).fetchone()), True
+                return dict(self._conn.execute("SELECT * FROM traits WHERE id=?", (tid,)).fetchone()), True
             self._conn.execute("UPDATE traits SET count=count+1, last_seen=? WHERE id=?", (now, row["id"]))
             self._conn.commit()
             return dict(self._conn.execute("SELECT * FROM traits WHERE id=?", (row["id"],)).fetchone()), False
@@ -632,8 +705,8 @@ class Store:
         for k in ("gpus", "flags", "env"):
             vals[k] = json.dumps(vals[k] if vals[k] is not None else ([] if k == "gpus" else {}))
         cols = ", ".join(vals)
-        return self._x(f"INSERT INTO model_sessions ({cols}) VALUES ({', '.join('?' for _ in vals)})",
-                       tuple(vals.values())).lastrowid
+        return self._insert(f"INSERT INTO model_sessions ({cols}) VALUES ({', '.join('?' for _ in vals)})",
+                            tuple(vals.values()))
 
     def update_session(self, session_id: int, **fields: Any) -> None:
         allowed = {k: v for k, v in fields.items() if k in self.SESSION_FIELDS or k in ("ended_at", "open")}
@@ -695,8 +768,8 @@ class Store:
     def add_note(self, title: str = "", body: str = "", color: str = "yellow", is_open: bool = True) -> dict:
         """A new note. Notes are not tied to a page: an open note shows on every page."""
         now = time.time()
-        nid = self._x("INSERT INTO notes (view, title, body, color, is_open, created_at, updated_at) VALUES ('*',?,?,?,?,?,?)",
-                      (title[:200], body[:20000], color if color in self.NOTE_COLORS else "yellow", int(bool(is_open)), now, now)).lastrowid
+        nid = self._insert("INSERT INTO notes (view, title, body, color, is_open, created_at, updated_at) VALUES ('*',?,?,?,?,?,?)",
+                           (title[:200], body[:20000], color if color in self.NOTE_COLORS else "yellow", int(bool(is_open)), now, now))
         return self.get_note(nid)
 
     def get_note(self, note_id: int) -> Optional[dict]:
@@ -881,7 +954,9 @@ class Store:
             # Only the hours not yet folded in: the last rolled hour is redone in case it was cut short, the
             # rest of the window is already in gpu_hourly. Re-aggregating every raw sample on every pass kept
             # the lock - which every page read waits for - for as long as the whole retention window took.
-            last = self._conn.execute("SELECT MAX(hour) FROM gpu_hourly").fetchone()[0]
+            # By name, not by position: sqlite3.Row answers row[0], psycopg's
+            # dict_row answers row["h"] and only row["h"].
+            last = self._conn.execute("SELECT MAX(hour) AS h FROM gpu_hourly").fetchone()["h"]
             floor = float(last) if last is not None else 0.0
             self._conn.execute(
                 "INSERT INTO gpu_hourly (hour, gpu, name, samples, util_avg, util_max, mem_avg_mb, "
@@ -902,13 +977,14 @@ class Store:
         if not rows:
             return 0
         with self._lock:
-            before = self._conn.total_changes
-            self._conn.executemany(
+            # cursor.rowcount, not sqlite3's total_changes: the latter has no
+            # counterpart in Postgres, and both report the rows an INSERT took.
+            cur = self._conn.executemany(
                 f"INSERT OR IGNORE INTO requests ({', '.join(REQUEST_FIELDS)}) "
                 f"VALUES ({', '.join('?' * len(REQUEST_FIELDS))})",
                 [tuple(_speed(r.get(k)) if k in SPEED_FIELDS else r.get(k) for k in REQUEST_FIELDS) for r in rows])
             self._conn.commit()
-            return self._conn.total_changes - before
+            return int(cur.rowcount)
 
     def list_requests(self, model: Optional[str] = None, since: Optional[float] = None,
                       limit: int = 300) -> list[dict]:
@@ -953,13 +1029,15 @@ class Store:
 
         sql = ("SELECT model, COUNT(*) AS requests, "
                "SUM(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS tg_sum, "
-               "SUM(tokens_per_second > 0) AS tg_n, "
+               "SUM(CASE WHEN tokens_per_second > 0 THEN 1 ELSE 0 END) AS tg_n, "
                "MIN(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_min, "
                "MAX(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_max, "
-               "SUM(prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ?) AS prefill_n, "
+               "SUM(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? "
+               "THEN 1 ELSE 0 END) AS prefill_n, "
                "MIN(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_min, "
                "MAX(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_max, "
-               "SUM(tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ?) AS decode_n "
+               "SUM(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? "
+               "THEN 1 ELSE 0 END) AS decode_n "
                "FROM requests WHERE ts>=? AND ts<? GROUP BY model")
         t0 = since
         while t0 <= until:
@@ -981,10 +1059,10 @@ class Store:
                 "SELECT model_id AS model, "
                 "MIN(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_min, "
                 "MAX(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_max, "
-                "SUM(prompt_per_second > 0) AS prefill_n, "
+                "SUM(CASE WHEN prompt_per_second > 0 THEN 1 ELSE 0 END) AS prefill_n, "
                 "MIN(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_min, "
                 "MAX(CASE WHEN tokens_per_second > 0 THEN tokens_per_second END) AS decode_max, "
-                "SUM(tokens_per_second > 0) AS decode_n "
+                "SUM(CASE WHEN tokens_per_second > 0 THEN 1 ELSE 0 END) AS decode_n "
                 "FROM runs WHERE success=1 AND model_id IS NOT NULL AND model_id != '' AND created_at>=? GROUP BY model_id",
                 (since,)):
             d = entry(r["model"])
@@ -1020,8 +1098,8 @@ class Store:
 
     # ----- assistant chat -------------------------------------------------
     def add_message(self, role: str, content: str) -> int:
-        return int(self._x("INSERT INTO chat_messages (ts, role, content) VALUES (?, ?, ?)",
-                           (time.time(), role, content)).lastrowid or 0)
+        return self._insert("INSERT INTO chat_messages (ts, role, content) VALUES (?, ?, ?)",
+                            (time.time(), role, content))
 
     def list_messages(self) -> list[dict]:
         return self._q("SELECT * FROM chat_messages ORDER BY id")
