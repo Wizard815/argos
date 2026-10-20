@@ -39,6 +39,12 @@ The suite runs on both. Each test gets its own schema, so tests cannot see each 
 ARGOS_DATABASE_URL=postgresql://postgres:test@127.0.0.1:5432/argos venv/bin/python -m pytest tests -q
 ```
 
+## It is opt-in, and that is deliberate
+
+`docker-compose.yml` passes `ARGOS_DATABASE_URL` with **no default**. Unset means SQLite. An earlier version defaulted it to the Postgres URL, which meant starting the stack silently switched a working deployment onto an empty database: the app came up in a fraction of a second showing no profiles, no runs and no history. Nothing was lost — the migration script only reads the files — but nothing was migrated either, and the speed made it look like everything was fine.
+
+`Store` now warns when it finds an empty Postgres beside a populated SQLite file, naming the script that fixes it. It cannot be an error, because a genuinely new install looks identical.
+
 ## The engine
 
 The engine's store (`internal/store`) runs on either database the same way, chosen by the same `ARGOS_DATABASE_URL`. It holds one table, the activity log, and creates it with goose migrations — `internal/store/migrations/postgres` for Postgres and `migrations/sqlite` for the file. Both sets carry the same version numbers, so a database that has already run them does not run them again.

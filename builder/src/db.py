@@ -288,6 +288,34 @@ class Store:
             self._add_missing_columns("notes", {"x": "REAL", "y": "REAL", "w": "REAL", "h": "REAL", "collapsed": "INTEGER DEFAULT 0"})
             self._migrate_notes()
             self._conn.commit()
+        self._warn_if_empty_postgres()
+
+    def _warn_if_empty_postgres(self) -> None:
+        """Postgres with nothing in it, next to a SQLite file that has something.
+
+        That combination is almost always a deployment that was pointed at
+        Postgres without the data being moved across. It does not fail - a
+        genuinely new install looks the same - but it should not be silent: the
+        app comes up fast and empty, which reads as "working" until you notice
+        the profiles are gone.
+        """
+        if not self.pg:
+            return
+        try:
+            rows = sum(int(self._q("SELECT COUNT(*) AS n FROM " + t)[0]["n"])
+                       for t in ("profiles", "runs", "settings"))
+            if rows:
+                return
+            sibling = os.environ.get("ARGOS_BUILDER_DB") or os.path.join(
+                os.path.dirname(os.path.abspath(self.path)) or "/data", "builder.db")
+            if os.path.exists(sibling) and os.path.getsize(sibling) > 0:
+                log.warning(
+                    "running on Postgres, which is empty, but %s exists (%d bytes). "
+                    "This deployment is showing no data. Run scripts/migrate_to_postgres.py "
+                    "to move it across, or unset ARGOS_DATABASE_URL to go back to the file.",
+                    sibling, os.path.getsize(sibling))
+        except Exception:
+            pass
 
     def _migrate_notes(self) -> None:
         """Notes used to belong to a page, keep a history and be hidden on delete. Now there is one set of notes,
