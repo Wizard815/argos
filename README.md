@@ -60,8 +60,10 @@ docker compose up -d --build
 Then move the data across — **this is the script; you do not re-run `setup.sh`**:
 
 ```sh
-docker compose exec argos python scripts/migrate_to_postgres.py
+docker compose exec argos argos-migrate
 ```
+
+If you are on an older image, or want to see what it would do first, `argos-migrate` passes anything through to the script: `docker compose exec argos argos-migrate --dry-run`. The container has no system Python — uv brings its own at `/opt/venv` — so `python scripts/...` is not a command that works in there.
 
 It copies the builder's database and the engine's activity log in one pass. Then switch over:
 

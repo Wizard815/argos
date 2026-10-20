@@ -31,6 +31,21 @@ The translations are pure functions and are tested without a server in `tests/te
 - **Close your connections.** A connection left open holds its transaction and the locks in it, so a schema drop or an ALTER waits forever. `Store.close()` exists for that.
 - **Upgrading an old SQLite file is a SQLite thing.** Those tests are skipped under Postgres — there is no v1 or v2 schema inside a fresh Postgres database.
 
+## The command that runs it
+
+```sh
+docker compose exec argos argos-migrate
+```
+
+It is a small script in the image that calls the real one with the venv's
+interpreter. The indirection exists for a reason: this image has no system
+Python — uv brings its own and installs it at `/opt/venv` — so on an `ubuntu`
+base there is no `python` and no `python3` on `PATH`, and
+`docker compose exec argos python scripts/...` fails with
+`executable file not found in $PATH`. `builder/scripts` is copied into the image
+for the same reason; `builder/src` alone was copied before, so the migration
+script was not in there at all.
+
 ## Testing against Postgres
 
 The suite runs on both. Each test gets its own schema, so tests cannot see each other's rows:
