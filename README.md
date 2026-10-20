@@ -50,7 +50,7 @@ More settings are in [docs/configuration.md](docs/configuration.md). Running wit
 
 By default Argos keeps its data in SQLite files under `./data` — one for the builder, one for the engine. You can run both on Postgres instead, which is worth doing when more than one thing writes at once: a single file serialises its writers, and one long read can stop its journal from checkpointing until every query has to walk a growing log.
 
-`docker-compose.yml` already has the service. Set a password and start the stack:
+**Starting the postgres service does not switch Argos over to it.** Argos stays on the SQLite files until you set `ARGOS_DATABASE_URL`, so starting the stack first is safe. `docker-compose.yml` already has the service — set a password and start it:
 
 ```sh
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
