@@ -329,7 +329,11 @@ def main() -> None:
         return
     # A fixed pool and kept-alive connections, instead of a new thread and a new HTTP/1.0 connection per request.
     # The long channel timeout is for the chat and log streams, which can sit quiet while a model thinks.
-    serve(app, host=host, port=port, threads=int(os.environ.get("ARGOS_THREADS", "16")),
+    # 16 threads is not much once a couple of long-lived log and chat streams are
+    # open: each holds a thread for as long as it is connected. A few slow
+    # requests on top of that and the pool is full and the queue grows until the
+    # page times out. The slow endpoints are fixed, and this is the headroom.
+    serve(app, host=host, port=port, threads=int(os.environ.get("ARGOS_THREADS", "32")),
           channel_timeout=900, ident="argos-builder", expose_tracebacks=False)
 
 
