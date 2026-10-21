@@ -329,7 +329,13 @@ func main() {
 
 		proxyLog.Info("reloading configuration")
 
-		newCfg, err := config.LoadConfigSources(*flagConfig, *flagConfigDir)
+		// Running models keep their ports: numbering by model id would move a
+		// model's port whenever one sorting before it is added, and the
+		// carry-over below would then restart it.
+		activeMu.RLock()
+		prevPorts := activeSrv.Config().Ports
+		activeMu.RUnlock()
+		newCfg, err := config.LoadConfigSourcesKeepingPorts(*flagConfig, *flagConfigDir, prevPorts)
 		if err != nil {
 			proxyLog.Warnf("failed to reload config: %v", err)
 			return

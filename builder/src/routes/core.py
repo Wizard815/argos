@@ -82,6 +82,47 @@ def profiles_list():
     return ok(profiles=profiles)
 
 
+@bp.post("/api/estimate")
+def estimate():
+    """VRAM a command needs: model + KV cache + buffers, and the KV cache for other cache types and contexts."""
+    from ..schedule_rows import estimate_command
+    d = body()
+    _custom_cache()
+    vid = _profile_variants().get(str(d.get("profile_id") or ""))
+    measured = ctx().plans.get()["measured"].get(vid) if vid else None
+    return ok(estimate=estimate_command(str(d.get("command") or ""), compare=True, measured=measured), variant_id=vid)
+
+
+def _custom_cache() -> None:
+    from ..scheduler import set_custom_cache_types
+    set_custom_cache_types(ctx().settings.get("kv")["custom_types"])
+
+
+def _profile_variants() -> dict[str, str]:
+    """profile id -> the model id the engine runs it as (what measurements are filed under)."""
+    from ..cookbook import variant_id
+    out = {}
+    for p in cookbook_state()["presets"]:
+        pid = (p.get("fields") or {}).get("profile_id")
+        if pid:
+            out[pid] = variant_id(p)
+    return out
+
+
+@bp.get("/api/profiles/estimates")
+def profiles_estimates():
+    """profile id -> its VRAM estimate. Separate from /api/profiles so the list never waits on reading model headers."""
+    from ..schedule_rows import estimate_command
+    _custom_cache()
+    variants, measured = _profile_variants(), ctx().plans.get()["measured"]
+    out = {}
+    for p in ctx().store.list_profiles():
+        e = estimate_command(p["launch_command"], measured=measured.get(variants.get(p["profile_id"], "")))
+        out[p["profile_id"]] = {k: e.get(k) for k in ("ok", "error", "gib", "weights_gib", "kv_gib", "overhead_gib", "ctx",
+                                                     "cache_k", "cache_v", "notes", "measured", "estimate_gib")}
+    return ok(estimates=out)
+
+
 @bp.post("/api/profiles")
 def profiles_save():
     c, d = ctx(), body()
@@ -94,7 +135,15 @@ def profiles_save():
     if d.get("profile_id"):
         check_id(d["profile_id"])
     d["model_id"] = model_id_for_command(d["launch_command"])
-    existed = bool(d.get("profile_id") and c.store.get_profile(d["profile_id"]))
+    old = c.store.get_profile(d["profile_id"]) if d.get("profile_id") else None
+    existed = bool(old)
+    if old and old["launch_command"].strip() != d["launch_command"].strip():
+        # the measured size was for the old command: drop it, so the estimate shows until the new one loads
+        vid = _profile_variants().get(old["profile_id"])
+        plan = c.plans.get()
+        if vid and vid in plan["measured"]:
+            plan["measured"].pop(vid)
+            c.plans.update({"measured": plan["measured"]})
     profile = c.store.save_profile(d)
     c.inventory.observe_command(d["launch_command"], profile["name"])
     c.event("profile", f"{'updated' if existed else 'saved'} profile “{profile['name']}”",

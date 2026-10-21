@@ -69,6 +69,13 @@ def run_refresh() -> dict:
             else:
                 version = value
     result = c.inventory.refresh(library, commands, live_ids, hardware, version)
+    cards = len(c.store.gpu_latest())
+    try:
+        fixed = c.store.renumber_session_gpus(cards)
+    except Exception:  # noqa: BLE001 - a history clean-up must not stop the scan
+        fixed = 0
+    if fixed:
+        c.event("inventory", f"renumbered the GPUs of {fixed} old load(s) that named a card past GPU {cards - 1}")
     result["problems"] = problems + result["problems"]
     result["at"] = time.time()
     c.store.set_setting("_inventory_refresh", result)

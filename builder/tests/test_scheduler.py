@@ -70,9 +70,12 @@ def test_estimate_counts_weights_kv_and_buffers():
 
 
 def test_estimate_unknowns_are_flagged_not_hidden():
-    odd = estimate_gib(0, ARCH, 4096, "turbo3", "turbo3")
-    assert any("turbo3" in n for n in odd["notes"])
+    odd = estimate_gib(0, ARCH, 4096, "q3_zz", "q3_zz")
+    assert any("q3_zz" in n for n in odd["notes"])
     assert odd["kv_gib"] > 0
+    # the TurboQuant types are known now: smaller than q8_0, and marked approximate
+    t3, q8 = estimate_gib(0, ARCH, 4096, "turbo3", "turbo3"), estimate_gib(0, ARCH, 4096, "q8_0", "q8_0")
+    assert 0 < t3["kv_gib"] < q8["kv_gib"] and any("approximate" in n for n in t3["notes"])
     assert any("header" in n for n in estimate_gib(10 * 2 ** 30, None, 4096)["notes"])
 
 
@@ -316,3 +319,15 @@ def test_simulation_serves_a_loaded_model_without_loading_again():
     res = simulate(eng, [{"op": "request", "model": "a"}, {"op": "request", "model": "a"}])
     assert [r["result"] for r in res] == ["loaded", "served"]
     assert res[1]["state"]["running"][0]["busy"] == 2
+
+
+def test_custom_cache_types_are_bits_per_value_and_override_the_table():
+    from src import scheduler as S
+    assert S.parse_cache_types("turbo5=3.0, mykv=4.25; junk, x=abc, big=99") == {"turbo5": 0.375, "mykv": 0.53125}
+    try:
+        S.set_custom_cache_types("q3_zz=3")
+        known = estimate_gib(0, ARCH, 4096, "q3_zz", "q3_zz")
+        assert not any("unknown" in n for n in known["notes"])
+        assert known["kv_gib"] < estimate_gib(0, ARCH, 4096, "q8_0", "q8_0")["kv_gib"]
+    finally:
+        S.set_custom_cache_types("")

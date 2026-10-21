@@ -272,6 +272,21 @@ function renderCommand(parsed, multiline) {
   return out;
 }
 
+/** Groups that start closed. Only the groups you open are remembered, and renderTable builds no rows for a
+ *  closed group, so a long list shows its group names and counts and nothing else until one is opened. */
+function openGroups(storeKey) {
+  let open;
+  try { open = new Set(JSON.parse(localStorage.getItem(storeKey) || "[]")); } catch { open = new Set(); }
+  const save = () => { try { localStorage.setItem(storeKey, JSON.stringify([...open])); } catch { /* private window */ } };
+  return {
+    collapsed: { has: (k) => !open.has(k) },
+    toggle(k) { open.has(k) ? open.delete(k) : open.add(k); save(); },
+    openAll(keys) { keys.forEach((k) => open.add(k)); save(); },
+    closeAll() { open.clear(); save(); },
+  };
+}
+const ALL_OPEN = { has: () => false };  // while searching, every match is shown
+
 /** Sortable table. cols: [{key, label, num?, sort?(row), cell(row)}]; opts: {onRow(row), rowClass(row)} */
 function renderTable(table, cols, rows, state, emptyMsg, opts = {}) {
   if (state.key) {
@@ -382,6 +397,8 @@ function show(view) {
 // ── Shared data ──────────────────────────────────────────────
 async function loadProfiles() {
   S.profiles = (await api("GET", "/api/profiles")).profiles;
+  // sizes come separately: they read model headers, and the list must not wait for that
+  api("GET", "/api/profiles/estimates").then((r) => { S.profileEst = r.estimates; if (S.view === "profiles") renderProfiles(); }).catch(() => {});
   $("#navProfiles").textContent = S.profiles.length || "";
   fillImportSelect();
   fillProfileSelect();
@@ -441,7 +458,7 @@ function fillImportSelect() {
 }
 
 // ── Builder ──────────────────────────────────────────────────
-const KV_TYPES = ["", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"];
+const KV_TYPES = ["", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "turbo4", "turbo3", "turbo2"];
 // values seen in the inventory (your custom cache types, split modes…) join the built-in choices
 const SEEN = { cache_type: [], split_mode: [], load_mode: [], spec_type: [] };
 const seenOpts = (kind, base) => [...new Set([...base, ...SEEN[kind]])].map((v) => ({ value: v, label: v || "default", sub: v && !base.includes(v) ? "seen in your runs" : "" }));
@@ -875,6 +892,65 @@ function renderBuilder() {
   src.hidden = !B.source && !B.profileId;
   src.textContent = B.profileId ? `profile${B.source && B.source !== "profile" ? " · " + B.source : ""}` : B.source;
   $("#bSave").title = B.profileId ? "Update this saved profile" : "Save as a new profile";
+  scheduleEstimate();
+}
+
+// ── Builder: what the command needs in VRAM ──────────────────
+const VE = { cmd: null, timer: 0 };
+function scheduleEstimate() {
+  if (!B.cmd || B.cmd === VE.cmd) return;
+  VE.cmd = B.cmd;
+  clearTimeout(VE.timer);
+  VE.timer = setTimeout(async () => {
+    const cmd = VE.cmd;
+    try { const r = await api("POST", "/api/estimate", { command: cmd, profile_id: B.profileId || "" }); if (cmd === VE.cmd) renderEstimate(r.estimate); }
+    catch (e) { fill($("#bVram"), h("p", { class: "hint" }, e.message)); }
+  }, 350);
+}
+const ctxLabel = (c) => (c >= 1024 ? `${num(c / 1024, 0)}K` : String(c));
+function renderEstimate(e) {
+  const box = $("#bVram");
+  if (!e || !e.ok) return fill(box, h("p", { class: "hint", style: "margin:0" }, (e && e.error) || "Pick a model to see its size."));
+  const parts = [["model", e.weights_gib, "var(--accent, #6aa)"], ["KV cache", e.kv_gib, "var(--red)"], ["buffers", e.overhead_gib, "var(--muted)"]];
+  const sum = e.weights_gib + e.kv_gib + e.overhead_gib;
+  const bar = h("div", { class: "vram-bar", title: `${num(sum, 2)} GiB estimated` },
+    parts.map(([l, v, c]) => h("i", { style: `width:${Math.max(0, (v / sum) * 100)}%;background:${c}`, title: `${l}: ${num(v, 2)} GiB` })));
+  const cache = e.cache_k === e.cache_v ? e.cache_k : `${e.cache_k}/${e.cache_v}`;
+  const M = e.measured;
+  const measuredLine = M ? h("div", { class: "vram-sum" }, h("span", { class: "pill ok", title: `Measured ${ago(M.at)}${M.per_card && M.per_card.length > 1 ? ` across ${M.per_card.length} cards (${M.per_card.map((x) => num(x, 1)).join(" + ")} GiB)` : ""}. It replaces the estimate everywhere, until this profile's command changes.` }, "measured"),
+    " ", h("b", {}, `${num(M.gib, 1)} GiB`), ` when it last loaded · the estimate below was ${num(e.estimate_gib, 1)} GiB (${e.estimate_gib > M.gib ? "+" : ""}${num(e.estimate_gib - M.gib, 1)})`) : null;
+  const total = M ? e.estimate_gib : e.gib;
+  const head = h("div", { class: "vram-sum" },
+    M ? "Estimate: " : null, h("b", {}, `${num(total, 1)} GiB`), " = ",
+    `${num(e.weights_gib, 1)} model`, e.extra_gib ? ` (incl. ${num(e.extra_gib, 1)} mmproj/draft)` : "",
+    ` + ${num(e.kv_gib, 1)} KV cache (${ctxLabel(e.ctx)} context, ${cache}) + ${num(e.overhead_gib, 1)} buffers`);
+  const notes = [...(e.notes || []), e.train_ctx && e.ctx > e.train_ctx ? `context is above the model's trained ${ctxLabel(e.train_ctx)}` : null].filter(Boolean);
+  let table = null;
+  if (e.compare) {
+    const C = e.compare;
+    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB)"),
+      h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+        h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num", style: c === e.ctx ? "color:var(--strong)" : "" }, ctxLabel(c))))),
+        h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
+          t.kv_gib.map((v, i) => h("td", { class: "num", style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "" }, v == null ? DASH : num(v, 2)))))))));
+  }
+  // an unknown cache type: say its bits per value here and it is saved to Settings -> KV cache types
+  const unknown = (e.notes || []).map((n) => (n.match(/unknown cache type '([^']+)'/) || [])[1]).find(Boolean);
+  let define = null;
+  if (unknown) {
+    const bits = h("input", { type: "number", step: "0.25", min: "0.5", max: "32", placeholder: "3.5", style: "width:80px" });
+    define = h("div", { class: "row", style: "margin-top:6px;gap:6px;align-items:center" },
+      h("span", { class: "hint", style: "margin:0" }, `${unknown} stores`), bits, h("span", { class: "hint", style: "margin:0" }, "bits per value"),
+      btn("Save", async () => {
+        const v = parseFloat(bits.value);
+        if (!(v > 0)) return toast("Bits per value, e.g. 3.5", "err");
+        const cur = ((S.settings || (await loadSettings())).kv || {}).custom_types || "";
+        const list = cur.split(/[,;\n]+/).map((x) => x.trim()).filter((x) => x && !x.toLowerCase().startsWith(`${unknown.toLowerCase()}=`));
+        try { await api("PUT", "/api/settings/kv", { custom_types: [...list, `${unknown}=${v}`].join(", ") }); await loadSettings(); VE.cmd = null; scheduleEstimate(); toast(`Saved: ${unknown} = ${v} bits per value.`, "ok"); } catch (err) { fail(err); }
+      }, "sm primary"));
+  }
+  fill(box, measuredLine, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, table,
+    h("p", { class: "hint", style: "margin:6px 0 0" }, "Model + KV cache are close. Buffers are a rough guess, and models that keep part of themselves on the CPU (Gemma-4 E2B/E4B) come out high."));
 }
 
 function renderEnv(env) {
@@ -973,6 +1049,7 @@ function reviewChanges(d, name) {
 
 // ── Profiles view ────────────────────────────────────────────
 const profileSort = { key: null, asc: false };
+const PG = openGroups("argos.profiles.open");
 function fillProfileModels() {
   const sel = $("#pModel"), cur = sel.value;
   const ids = [...new Set(S.profiles.map((p) => p.model_id || p.base_model).filter(Boolean))].sort();
@@ -1006,6 +1083,16 @@ function renderProfiles() {
       // the file name once (its id is the same name in lower case); the id only shows when it really differs
       p.base_model || p.model_id || DASH, p.base_model && p.model_id && p.base_model.toLowerCase() !== p.model_id.toLowerCase() ? h("div", { class: "muted mono-sm" }, p.model_id) : null) },
     { label: "Settings", cell: (p) => h("div", { class: "chips" }, settingChips(p.summary)) },
+    { key: "vram", label: "VRAM", num: true, sort: (p) => ((S.profileEst || {})[p.profile_id] || {}).gib || 0, cell: (p) => {
+      const e = (S.profileEst || {})[p.profile_id];
+      if (!e) return h("span", { class: "muted" }, S.profileEst ? DASH : "…");
+      if (!e.ok) return h("span", { class: "pill bad", title: e.error }, "file missing");
+      const est = `${num(e.weights_gib, 2)} model + ${num(e.kv_gib, 2)} KV cache (${ctxLabel(e.ctx)}, ${e.cache_k}) + ${num(e.overhead_gib, 2)} buffers`;
+      if (e.measured) return h("td", { class: "num nowrap", title: `Measured when it last loaded (${ago(e.measured.at)}).\nEstimate was ${num(e.estimate_gib, 2)} GiB: ${est}` },
+        h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, h("span", { class: "pill ok" }, "measured"), ` est. ${num(e.estimate_gib, 1)}`));
+      return h("td", { class: "num nowrap", title: `Estimate: ${est}\nIt is replaced by the real size the first time this profile loads.` },
+        h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, `${num(e.weights_gib, 1)} + ${num(e.kv_gib, 1)} KV @ ${ctxLabel(e.ctx)}`));
+    } },
     { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
     { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
     { label: "", cell: (p) => h("td", { class: "actions" },
@@ -1015,7 +1102,12 @@ function renderProfiles() {
         if (!(await confirmBox(`Delete profile “${p.name}”?`))) return;
         try { await api("DELETE", `/api/profiles/${encodeURIComponent(p.profile_id)}`); toast("Deleted.", "ok"); loadProfiles(); } catch (e) { fail(e); }
       }, "danger")) },
-  ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."));
+  ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."), {
+    // grouped by the model's name (Qwen, Gemma, …), closed until opened; a search or a model filter shows every match
+    group: (p) => { const f = modelFamily({ name: p.base_model || p.model_id || p.name, kind: "other" }); return { key: f, label: f }; },
+    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: q || m ? ALL_OPEN : PG.collapsed,
+    onToggle: (k) => { PG.toggle(k); renderProfiles(); },
+  });
 }
 
 // ── Playground ───────────────────────────────────────────────
@@ -1791,12 +1883,10 @@ async function openPrefab(m, launchIt = false) {
 }
 // The library is a tree: grouped by kind, family (all Qwen together), folder, or your own groups, and every group
 // collapses. Where you left it (grouping, closed groups) is remembered in this browser.
-const ML = { groups: [], by: "kind", collapsed: new Set() };
-try {
-  ML.by = localStorage.getItem("argos.models.by") || "kind";
-  ML.collapsed = new Set(JSON.parse(localStorage.getItem("argos.models.closed") || "[]"));
-} catch (e) { /* private window: defaults */ }
-const mlSave = () => { try { localStorage.setItem("argos.models.by", ML.by); localStorage.setItem("argos.models.closed", JSON.stringify([...ML.collapsed])); } catch (e) { /* ignore */ } };
+// grouped by name (Qwen, Gemma, …) with every group closed until opened
+const ML = { groups: [], by: "family", g: openGroups("argos.models.open") };
+try { ML.by = localStorage.getItem("argos.models.groupby") || "family"; } catch (e) { /* private window: defaults */ }
+const mlSave = () => { try { localStorage.setItem("argos.models.groupby", ML.by); } catch (e) { /* ignore */ } };
 const KIND_GROUPS = [["chat", "Chat"], ["vision", "Vision"], ["mtp", "MTP / draft"], ["embedding", "Embedding"], ["reranker", "Reranker"], ["audio", "Audio"], ["image", "Image"]];
 const cap1 = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
@@ -1921,8 +2011,8 @@ function renderLibrary() {
   by.addEventListener("change", () => { ML.by = by.value; mlSave(); renderLibrary(); });
   const keys = () => [...new Set(rows.map((m) => libraryGroupOf(m).key))];
   fill($("#mGroupBar"), by,
-    ML.by !== "none" ? [btn("Collapse all", () => { keys().forEach((k) => ML.collapsed.add(k)); mlSave(); renderLibrary(); }, "sm ghost"),
-      btn("Expand all", () => { keys().forEach((k) => ML.collapsed.delete(k)); mlSave(); renderLibrary(); }, "sm ghost")] : null,
+    ML.by !== "none" ? [btn("Collapse all", () => { ML.g.closeAll(); renderLibrary(); }, "sm ghost"),
+      btn("Expand all", () => { ML.g.openAll(keys()); renderLibrary(); }, "sm ghost")] : null,
     h("span", { class: "spacer" }),
     btn("Auto group", autoGroup, "sm", "layers"), btn("New group", () => newGroupBox(), "sm ghost", "plus"));
 
@@ -1930,8 +2020,8 @@ function renderLibrary() {
     ? h("span", {}, `The models folder ${lib.models_dir} does not exist. Mount your GGUF folder there (e.g. `, h("b", {}, "-v /path/to/LLMBin:/app/models"), ") or change it in Settings.")
     : all.length ? "No models match." : h("span", {}, "No .gguf files yet. Get one from the ", h("b", {}, "Download"), " tab.");
   const groupOpts = ML.by === "none" ? {} : {
-    group: libraryGroupOf, groupOrder: libraryGroupOrder, collapsed: q ? new Set() : ML.collapsed,
-    onToggle: (k) => { ML.collapsed.has(k) ? ML.collapsed.delete(k) : ML.collapsed.add(k); mlSave(); renderLibrary(); },
+    group: libraryGroupOf, groupOrder: libraryGroupOrder, collapsed: q ? ALL_OPEN : ML.g.collapsed,
+    onToggle: (k) => { ML.g.toggle(k); renderLibrary(); },
     groupExtra: (g) => {
       const total = g.rows.reduce((a, m) => a + (m.size || 0), 0);
       const mine = ML.by === "mine" && g.key !== "g:" ? ML.groups.find((x) => `g:${x.name}` === g.key) : null;
@@ -2828,6 +2918,8 @@ const SETTINGS_FORM = [
     { k: "jinja", label: "--jinja for chat models", type: "check" },
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
     { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
+  { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
+    { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
   { group: "downloads", title: "Downloads", fields: [
     { k: "hf_endpoint", label: "Hugging Face endpoint", ph: "https://huggingface.co" },
     { k: "hf_token", label: "HF token", type: "password", hint: "Only for gated or private repos." },
@@ -3061,7 +3153,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // Long-term history. New quants, cache types, flags and models are recorded as "new" and shown under New & unknown.
 const IV = { pane: "models", data: null, sessions: [], traits: [], showAll: false, suggestions: null, assistNote: "", busy: false,
   filter: "", days: 30, model: "", sortM: { key: null, asc: false }, sortS: { key: null, asc: false },
-  selected: null, page: null, pageDays: 7, byFamily: false, closed: new Set() };
+  selected: null, page: null, pageDays: 7, byFamily: true, g: openGroups("argos.inventory.open") };
 
 function dur(sec) {
   if (sec == null) return DASH;
@@ -3149,8 +3241,8 @@ function renderInvModels() {
     { key: "tps", label: "Decode t/s", num: true, sort: (m) => (m.decode ? m.decode.max : 0), cell: (m) => speedRange(m.decode, 1) },
   ], rows, IV.sortM, "Nothing here yet. Press Scan, or load a model.", { onRow: (m) => openModel(m.model_id), ...(IV.byFamily ? {
     group: (m) => { const f = modelFamily({ name: m.name || m.model_id, kind: "other" }); return { key: f, label: f }; },
-    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: IV.closed,
-    onToggle: (k) => { IV.closed.has(k) ? IV.closed.delete(k) : IV.closed.add(k); renderInvModels(); },
+    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: q ? ALL_OPEN : IV.g.collapsed,
+    onToggle: (k) => { IV.g.toggle(k); renderInvModels(); },
     groupExtra: (g) => h("span", { class: "group-meta" }, `${g.rows.reduce((a, m) => a + (m.sessions || 0), 0)} loads · ${dur(g.rows.reduce((a, m) => a + (m.loaded_seconds || 0), 0))} loaded`),
   } : {}) });
   const famBox = h("input", { type: "checkbox", checked: !!IV.byFamily });
@@ -3778,6 +3870,9 @@ function renderPlan() {
     { label: "Size (GiB)", num: true, cell: sizeInput },
     { key: "eff", label: "Used", num: true, sort: (r) => r.effective_gib, cell: (r) => r.effective_gib
       ? h("span", {}, gib(r.effective_gib), " ", h("span", { class: `pill ${r.source === "measured" ? "ok" : ""}`, title: { plan: "set by hand", measured: "from a measurement", estimate: "estimated from the file" }[r.source] }, r.source))
+      : r.missing ? h("span", { class: "pill bad", title: `The model file is not on disk:
+${r.path}
+This profile cannot start until its --model path is fixed (open it in Builder).` }, "file missing")
       : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
     { label: "Keep loaded", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.persistent.has(r.id), title: "never evicted to make room for another model" });
       c.addEventListener("change", () => { c.checked ? SC.persistent.add(r.id) : SC.persistent.delete(r.id); touch(); }); return h("td", {}, c); } },
