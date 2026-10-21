@@ -226,7 +226,13 @@ def schedule_live():
         real = {str(g["gpu"]): round((g.get("mem_used_mb") or 0) / 1024, 2) for g in ctx().store.gpu_latest()}
         activity = [{"ts": e["ts"], "level": e["level"], "message": e["message"]}
                     for e in ctx().store.list_events(kind="schedule", limit=40)]
-        return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time(), real_gib=real, activity=activity)
+        runners = {}
+        try:  # which runner serves each model; anything not listed is llama.cpp
+            runners = {mid: e.get("metadata", {}).get("argos", {}) for mid, e in ctx().runners.entries().items()}
+        except Exception:  # noqa: BLE001 - the column falls back to llama.cpp
+            pass
+        return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time(), real_gib=real, activity=activity,
+                  runners=runners)
     except Exception as exc:  # noqa: BLE001
         return ok(connected=False, error=str(exc), pool=None)
 

@@ -376,7 +376,7 @@ const onShow = {
   serverlogs: () => { loadServerLogs(true); loadGpuProcs(); },
   assistant: () => loadAssistant(),
   env: () => loadEnv(),
-  servers: () => loadServers(),
+  servers: () => { loadServers(); if (lsGet("argos.tab.servers") === "local") loadLocal(); },
   integrations: () => loadIntegrations(),
   settings: () => loadSettings().then(renderSettings).then(loadIntegrations),
   playground: () => { if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect(); renderLaunches(); pollSelected(true); },
@@ -2983,6 +2983,141 @@ const svAuto = (i) => SV_COLORS[1 + (i % (SV_COLORS.length - 1))][0];
 const blankServer = () => ({ id: null, name: "", kind: "ssh", host: "", port: 22, gpu: "auto", env_kind: "none", env_value: "", llama_server: "",
   model_dirs: [], download_dir: "", color: "", status: "unknown", engines: {}, has_key: false, is_default: false });
 
+// ── Servers → Local: runners installed inside Argos (Mode 1) ───────────────
+const LC = { data: null, polling: {}, open: new Set() };
+async function loadLocal() {
+  try { LC.data = await api("GET", "/api/runners"); } catch (e) { fill($("#lcList"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
+  renderLocal();
+  for (const r of LC.data.runners) if (r.job && r.job.state === "running") pollInstall(r.id);
+}
+async function saveRunner(id, patch) {
+  try { LC.data = await api("PUT", `/api/runners/${encodeURIComponent(id)}`, patch); renderLocal(); } catch (e) { fail(e); }
+}
+function pollInstall(id) {
+  if (LC.polling[id]) return;
+  LC.polling[id] = setInterval(async () => {
+    let j;
+    try { j = (await api("GET", `/api/runners/${encodeURIComponent(id)}/install`)).job; } catch { return; }
+    const pre = document.querySelector(`[data-runner-log="${CSS.escape(id)}"]`);
+    if (pre) { pre.textContent = j.log || ""; pre.scrollTop = pre.scrollHeight; }
+    if (j.state !== "running") {
+      clearInterval(LC.polling[id]); delete LC.polling[id];
+      toast(j.state === "done" ? `${id} installed.` : `${id}: ${j.error || "install failed"}`, j.state === "done" ? "ok" : "err");
+      loadLocal();
+    }
+  }, 1500);
+}
+async function installRunner(r) {
+  const steps = (r.steps || []).map((s) => (s.download ? `download ${s.download}\n  → unpack to ${s.unzip}` : `${s.cwd ? `(in ${s.cwd}) ` : ""}${s.run}`));
+  if (!steps.length) return toast("Nothing to install yet: add an install command first.", "err");
+  const ok = await confirmBox(h("div", {}, h("p", {}, `Install ${r.label} for ${r.device.toUpperCase()} into ${r.folder}. These steps run, in this order:`),
+    h("pre", { class: "pre", style: "max-height:40dvh;white-space:pre-wrap" }, steps.join("\n\n"))), "Install");
+  if (!ok) return;
+  try { await api("POST", `/api/runners/${encodeURIComponent(r.id)}/install`); toast(`Installing ${r.label}…`, "ok"); LC.open.add(r.id); await loadLocal(); pollInstall(r.id); } catch (e) { fail(e); }
+}
+async function checkRunner(r, button) {
+  button.disabled = true; button.textContent = "Starting…";
+  try { const res = await api("POST", `/api/runners/${encodeURIComponent(r.id)}/check`); toast(`${res.model} started and answered (${res.seconds}s).`, "ok"); }
+  catch (e) { fail(e); }
+  button.disabled = false; button.textContent = "Check";
+}
+const TASK_LABEL = { "speech-to-text": "speech to text", "text-to-speech": "text to speech", image: "image", "": "—" };
+function runnerCard(r) {
+  const pill = r.job && r.job.state === "running" ? h("span", { class: "pill warn" }, `installing ${r.job.step}/${r.job.steps}…`)
+    : r.installed ? h("span", { class: "pill ok" }, "installed") : h("span", { class: "pill" }, "not installed");
+  const device = h("select", { title: "What it runs on" }, (LC.data.devices || []).map((d) => h("option", { value: d, selected: d === r.device }, d.toUpperCase())));
+  device.addEventListener("change", () => saveRunner(r.id, { device: device.value }));
+  const on = h("input", { type: "checkbox", checked: r.enabled !== false });
+  on.addEventListener("change", () => saveRunner(r.id, { enabled: on.checked }));
+  const o = r.opts || {};
+  const opt = (k, label, ph, hint) => {
+    const i = h("input", { type: "text", value: o[k] || "", placeholder: ph, spellcheck: "false" });
+    i.addEventListener("change", () => saveRunner(r.id, { opts: { [k]: i.value.trim() } }));
+    return h("label", { class: "field" }, h("span", {}, label), i, hint ? h("small", { class: "hint" }, hint) : null);
+  };
+  const extra = r.addon ? [opt("program", "Use this ffmpeg instead", "path to your own ffmpeg build", "blank = the one installed here, else ffmpeg on PATH")]
+    : r.kind === "kokoro" ? [opt("repo", "Git repository", "https://github.com/remsky/Kokoro-FastAPI", "blank = the official one"),
+      opt("torch_index", "PyTorch from", "e.g. a gfx906 PyTorch wheel index", "for ROCm on MI50s: the ML-gfx906 builds")]
+    : r.kind === "whisper" ? [opt("repo", "Git repository", "https://github.com/ggml-org/whisper.cpp", "blank = prebuilt on Windows, the official repo elsewhere; your fork works here"),
+      opt("gpu_target", "ROCm GPU target", "gfx906", "only for ROCm builds")]
+    : [];
+  const models = (r.models || []).map((m) => {
+    const sel = h("select", { title: "Which runner serves this model" }, [["", `automatic (${r.label})`], ["none", "do not serve"]].map(([v, l]) => h("option", { value: v }, l)));
+    sel.addEventListener("change", async () => { try { await api("PUT", `/api/runners/overrides/${encodeURIComponent(m.id)}`, { runner: sel.value }); loadLocal(); } catch (e) { fail(e); } });
+    const alias = r.kind === "whisper" && m.id === ((o.default_model) || (r.models.slice().sort((a, b) => a.size - b.size)[0] || {}).id) ? "whisper-1"
+      : r.kind === "kokoro" ? "tts-1, tts-1-hd" : "";
+    return h("tr", {}, h("td", { class: "mono-sm" }, m.id), h("td", {}, TASK_LABEL[m.task] || m.task || DASH),
+      h("td", { class: "mono-sm" }, alias || DASH), h("td", { class: "num" }, m.size ? size(m.size) : DASH), h("td", {}, m.path ? sel : ""));
+  });
+  const log = h("pre", { class: "log", style: "max-height:240px", "data-runner-log": r.id }, (r.job && r.job.log) || "");
+  const open = LC.open.has(r.id) || (r.job && r.job.state === "running");
+  const details = h("details", { open }, h("summary", { class: "hint" }, "Install steps and log"),
+    h("pre", { class: "pre", style: "white-space:pre-wrap" }, (r.steps || []).map((s) => (s.download ? `download ${s.download}` : s.run)).join("\n") || "(none)"), log);
+  details.addEventListener("toggle", () => { details.open ? LC.open.add(r.id) : LC.open.delete(r.id); });
+  const actions = [btn(r.installed ? "Reinstall" : "Install", () => installRunner(r), r.installed ? "sm" : "sm primary", "download")];
+  if (!r.addon) { const cb = btn("Check", () => checkRunner(r, cb), "sm", "check"); actions.push(cb); }
+  if (r.kind === "custom") actions.push(btn("Scan again", async () => { try { await api("POST", `/api/runners/${encodeURIComponent(r.id)}/scan`); loadLocal(); } catch (e) { fail(e); } }, "sm ghost"),
+    btn("Remove", async () => { if (!(await confirmBox(`Forget the runner ${r.id}? Its folder stays on disk.`, "Remove"))) return; try { const x = await api("DELETE", `/api/runners/${encodeURIComponent(r.id)}`); toast(`Removed. Files left in ${x.folder}.`, "ok"); loadLocal(); } catch (e) { fail(e); } }, "sm danger"));
+  return h("div", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", {}, r.label), pill, r.task ? h("span", { class: "chip" }, TASK_LABEL[r.task] || r.task) : null,
+      r.endpoint ? h("span", { class: "chip mono-sm" }, r.endpoint) : null, h("span", { class: "spacer" }),
+      h("label", { class: "check" }, on, "on"), r.addon ? null : device, ...actions),
+    h("p", { class: "hint", style: "margin-top:0" }, r.about, r.detail ? ` · found: ${r.detail}` : "", ` · ${r.folder}`),
+    r.kind === "custom" ? customFields(r) : null,
+    extra.length ? h("div", { class: "fields" }, extra) : null,
+    r.addon ? null : h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+      h("thead", {}, h("tr", {}, ["Model", "Does", "Also answers to", "Size", "Served by"].map((x) => h("th", {}, x)))),
+      h("tbody", {}, models.length ? models : h("tr", {}, h("td", { colspan: 5 }, h("span", { class: "muted" },
+        r.kind === "whisper" ? "No whisper model yet. Put a ggml-*.bin file in the models folder or in this runner's models folder." : r.installed ? "—" : "Install it first.")))))),
+    details);
+}
+function customFields(r) {
+  const o = r.opts || {}, sc = r.scan || { install: [], start: [] };
+  const area = (k, label, ph, found) => {
+    const t = h("textarea", { rows: 2, placeholder: ph, spellcheck: "false" }, o[k] || "");
+    t.addEventListener("change", () => saveRunner(r.id, { opts: { [k]: t.value.trim() } }));
+    const pick = found.length ? h("select", { title: "Found by Scan" }, h("option", { value: "" }, `found by Scan (${found.length})…`),
+      found.map((f) => h("option", { value: f.cmd }, `${f.cmd.slice(0, 90)} — ${f.source}`))) : null;
+    if (pick) pick.addEventListener("change", () => { if (pick.value) { t.value = pick.value; saveRunner(r.id, { opts: { [k]: pick.value } }); } });
+    return h("label", { class: "field wide" }, h("span", {}, label), t, pick);
+  };
+  const task = h("select", {}, [["", "what does it do?"], ["speech-to-text", "speech to text"], ["text-to-speech", "text to speech"], ["image", "image"], ["chat", "chat"]]
+    .map(([v, l]) => h("option", { value: v, selected: v === (o.task || "") }, l)));
+  task.addEventListener("change", () => saveRunner(r.id, { opts: { task: task.value } }));
+  const small = (k, label, ph) => { const i = h("input", { type: "text", value: o[k] || "", placeholder: ph }); i.addEventListener("change", () => saveRunner(r.id, { opts: { [k]: i.value.trim() } })); return h("label", { class: "field" }, h("span", {}, label), i); };
+  return h("div", { class: "fields" },
+    h("label", { class: "field" }, h("span", {}, "Repository"), h("input", { type: "text", value: o.repo || "", disabled: true })),
+    h("label", { class: "field" }, h("span", {}, "Does"), task),
+    area("install", "Install command (one per line, runs in the runner's folder)", "uv venv .venv && uv pip install --python .venv -r requirements.txt", sc.install || []),
+    area("start", "Start command (${PORT} is the port Argos gives it; it must listen on 127.0.0.1)", ".venv/bin/python server.py --host 127.0.0.1 --port ${PORT}", sc.start || []),
+    small("check", "Ready check path", "/health"), small("alias", "Also answers to (comma separated)", "e.g. tts-1"), small("vram", "VRAM (GiB)", "0.1 for CPU"));
+}
+function renderLocal() {
+  const D = LC.data;
+  if (!D) return fill($("#lcList"), h("div", { class: "empty" }, "Loading…"));
+  const runners = D.runners.filter((r) => !r.addon), addons = D.runners.filter((r) => r.addon);
+  const url = h("input", { type: "text", placeholder: "https://github.com/you/some-server", style: "flex:1", spellcheck: "false" });
+  const scanBtn = btn("Clone and scan", async () => {
+    if (!url.value.trim()) return;
+    scanBtn.disabled = true; scanBtn.textContent = "Cloning…";
+    try { const res = await api("POST", "/api/runners/custom", { repo: url.value.trim() }); LC.data = res; LC.open.add(res.runner);
+      toast(`Cloned. Scan found ${res.scan.install.length} install and ${res.scan.start.length} start command(s): check them below.`, "ok"); renderLocal(); }
+    catch (e) { fail(e); scanBtn.disabled = false; scanBtn.textContent = "Clone and scan"; }
+  }, "primary", "search");
+  fill($("#lcList"),
+    h("p", { class: "hint" }, "Runners are servers installed inside Argos for models llama-server cannot run. You never pick one per model: the model's type does (a speech-to-text file goes to whisper, Kokoro serves its own voices), and a model's row lets you change it. Argos writes the engine's entries itself",
+      D.engine_file ? ` (${D.engine_file}).` : ". It cannot here: the engine's config folder is not known (ARGOS_SCHEDULE_FILE)."),
+    h("p", { class: "hint" }, `Installed into ${D.root}. Clients call the usual OpenAI paths on this Argos with the model name, or the standard names: whisper-1 for transcription, tts-1 for speech.`),
+    runners.filter((r) => r.kind !== "custom").map(runnerCard),
+    h("h3", { style: "margin:18px 0 6px" }, "Custom"),
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Add from a git repository")),
+      h("p", { class: "hint" }, "Argos clones it and reads its README, build files and Dockerfile for the install and start commands. Nothing runs until you press Install, and every command is shown first."),
+      h("div", { class: "row" }, url, scanBtn)),
+    runners.filter((r) => r.kind === "custom").map(runnerCard),
+    h("h3", { style: "margin:18px 0 6px" }, "Add-ons"),
+    addons.map(runnerCard));
+}
+
 async function loadServers() {
   try {
     SV.servers = (await api("GET", "/api/servers")).servers;
@@ -3789,6 +3924,9 @@ function renderLive() {
   renderTable(table, [
     { label: "Model", cell: (m) => h("td", { class: "cell-model", title: m.id }, h("div", { class: "cell-main" }, h("span", { class: "swatch", style: `--c:${segColor(m.id)}` }), m.id)) },
     { label: "State", cell: (m) => statePill(m.state) },
+    { label: "Runner", cell: (m) => { const r = (L.runners || {})[m.id];
+      return r ? h("span", { class: "chip", title: `${r.task || ""} · ${(r.device || "").toUpperCase()} · Servers → Local` }, `${r.runner}${r.device ? ` · ${r.device}` : ""}`)
+        : h("span", { class: "chip", title: "llama-server, on the default server" }, "llama.cpp"); } },
     { label: "GPU", cell: (m) => m.cards.length ? m.cards.join(", ") : DASH },
     { label: "Size", num: true, cell: (m) => m.size_known ? gib(m.size_gib) : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
     { label: "In flight", num: true, cell: (m) => m.in_flight || DASH },
@@ -4459,6 +4597,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "inventory") renderInvPane();
     else if (bar.dataset.tabs === "odysseus") loadOdyArea(b.dataset.pane);
     else if (bar.dataset.tabs === "schedule") { SC.pane = b.dataset.pane; if (SC.pane === "live") loadLive(); else loadSchedule(); }
+    else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
   }));
 }
 

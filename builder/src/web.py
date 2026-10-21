@@ -38,6 +38,7 @@ class Ctx:
     inventory: Inventory
     memory: Memory
     servers: Servers
+    runners: Any = None
     export_state: dict = field(default_factory=dict)
     schedule_state: dict = field(default_factory=dict)
 

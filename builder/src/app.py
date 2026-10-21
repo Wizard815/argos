@@ -40,10 +40,13 @@ from .downloader import Downloads  # noqa: E402
 from . import engine_proxy, readcache  # noqa: E402
 from .log_analyzer import parse_log_text  # noqa: E402
 from .routes import assistant as assistant_routes  # noqa: E402
+from .routes import runners as runners_routes  # noqa: E402
 from .routes import core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
 from .measure import Measurer  # noqa: E402
 from .runner import Runner  # noqa: E402
 from .scheduler import Plans, idle_unload  # noqa: E402
+from .runners import Runners  # noqa: E402
+from .library import scan_media  # noqa: E402
 from .servers import Servers, gguf_index, load_seed  # noqa: E402
 from .integrations import engine_api  # noqa: E402
 from .inventory import Inventory  # noqa: E402
@@ -100,6 +103,7 @@ def _env_config() -> dict:
         "HF_ENDPOINT": env("HF_ENDPOINT", ""),
         "HF_TOKEN": env("HF_TOKEN", ""),
         "SSH_DIR": env("ARGOS_SSH_DIR", ""),
+        "RUNNERS_DIR": env("ARGOS_RUNNERS_DIR", ""),
         "SERVERS_FILE": env("ARGOS_SERVERS_FILE", ""),
         "SERVERS_JSON": env("ARGOS_SERVERS", ""),
         "TELEMETRY": (env("ARGOS_TELEMETRY") or env("PROFILEBUILDER_TELEMETRY", "1")) not in ("0", "false", "off"),
@@ -142,6 +146,10 @@ def create_app(config: dict | None = None) -> Flask:
     def refresh_plan():
         with app.app_context():
             schedule.apply_plan(force=False)
+            try:
+                app.extensions["pb"].runners.apply()  # a new whisper model in the folder becomes an engine model
+            except Exception as exc:  # noqa: BLE001 - one bad runner must not stop the tick
+                log.warning("runners apply failed: %s", exc)
 
     inventory = Inventory(store, event)
     memory = Memory(store, settings.all, event)
@@ -272,7 +280,9 @@ def create_app(config: dict | None = None) -> Flask:
         downloads=Downloads(store, download_settings, event), collector=collector,
         assistant=Assistant(store, settings, runner, analytics, event, inventory, memory, plans=plans),
         plans=plans, measurer=Measurer(runner, plans, lambda: collector.sample(), event), inventory=inventory,
-        memory=memory, servers=servers)
+        memory=memory, servers=servers,
+        runners=Runners(store, settings, event, lambda: settings.get("paths")["models_dir"], scan_media))
+    app.extensions["pb"].assistant.runners = app.extensions["pb"].runners
     app.extensions["runner"] = runner
     atexit.register(runner.stop_all)
     atexit.register(inventory.close_all)
@@ -290,7 +300,8 @@ def create_app(config: dict | None = None) -> Flask:
         for name, work in prewarm:
             threading.Thread(target=work, name=name, daemon=True).start()
 
-    for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp):
+    for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp,
+               runners_routes.bp):
         app.register_blueprint(bp)
     # last: anything the builder does not own goes to the engine (one port for both)
     app.register_blueprint(engine_proxy.bp)
