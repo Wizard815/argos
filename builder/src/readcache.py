@@ -117,6 +117,11 @@ def install(app, cache: Optional[ReadCache] = None) -> ReadCache:
     @app.after_request
     def _remember(response):
         path = request.full_path.rstrip("?")
+        # A hit runs through after_request too. Storing it again would restart its clock, so a read polled
+        # faster than the TTL never expired and the page showed its first answer for good (a model stuck on
+        # "starting" long after it was ready).
+        if response.headers.get("X-Argos-Cache") == "hit":
+            return response
         if (cacheable(path, request.method) and response.status_code == 200
                 and not response.direct_passthrough and response.mimetype == "application/json"):
             cache.put(path, response.get_data(), response.mimetype)
