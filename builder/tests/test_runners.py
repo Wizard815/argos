@@ -137,3 +137,13 @@ def test_a_custom_runner_with_a_file_pattern_serves_one_model_per_file(tmp_path)
     e = r.entries()
     assert set(e) == {"piper-en_gb-alan", "piper-en_us-amy"}
     assert all("${MODEL_PATH}" not in x["cmd"] and ".onnx" in x["cmd"] for x in e.values())
+
+
+def test_rocm_architectures_are_lowercased_and_the_hip_compiler_is_set(monkeypatch):
+    from src import runners
+    monkeypatch.setattr(runners, "WINDOWS", False)
+    steps = runners.install_steps("whisper", "/data/runners/whisper", "rocm",
+                                  {"repo": "https://github.com/Wizard815/whisper.cpp-rocm10-gfx906", "gpu_target": "GFX906"})
+    assert steps[0]["run"].startswith('git clone --depth 1 "https://github.com/Wizard815/whisper.cpp-rocm10-gfx906"')
+    assert '"-DAMDGPU_TARGETS=gfx906"' in steps[1]["run"] and "HIPCXX=" in steps[1]["run"]
+    assert steps[2]["run"].endswith("--target whisper-server")
