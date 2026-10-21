@@ -21,6 +21,8 @@ def env_defaults(cfg: dict) -> dict:
     return {
         "paths": {
             "models_dir": cfg.get("MODELS_DIR") or os.path.join(root, "models"),
+            # local runners (Servers -> Local): whisper.cpp, Kokoro, custom servers and add-ons, one folder each
+            "runners_dir": cfg.get("RUNNERS_DIR") or os.path.join(os.path.dirname(os.path.abspath(cfg.get("DB") or root)), "runners"),
         },
         "integrations": {
             # the engine is the Argos container's own scheduler; the builder reads GPUs, loads and speeds from it
@@ -46,6 +48,14 @@ def env_defaults(cfg: dict) -> dict:
             "model": "",      # an embedding model id, e.g. nomic-embed-text-v2-q8; blank = search by words only
             "batch": 16,
             "results": 8,     # records the assistant sees per question
+        },
+        "gpu": {
+            # where the GPU toolkits and tools are (Settings -> GPU tools); blank = whatever is on PATH.
+            # A custom ROCm or CUDA on the host is mounted into Argos and its mounted folder goes here.
+            "rocm_path": cfg.get("ROCM_PATH", ""),     # e.g. /opt/rocm-gfx906
+            "cuda_path": cfg.get("CUDA_PATH", ""),     # e.g. /usr/local/cuda-12.4
+            "rocm_smi": "",                            # e.g. /opt/rocm-gfx906/bin/rocm-smi
+            "nvidia_smi": "",
         },
         "kv": {
             # KV cache types the estimator does not know, as name=bits per value, e.g. "turbo5=3.0, mykv=4.25".

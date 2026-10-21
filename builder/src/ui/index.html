@@ -401,12 +401,18 @@
     <!-- SERVERS -->
     <section class="view" id="view-servers">
       <div class="view-head">
-        <div><h1>Servers</h1><p class="sub">Configure SSH servers, install Argos keys, choose model directories, and set the default server. Local is this container.</p></div>
-        <span class="spacer"></span>
-        <button class="btn" id="svImport" title="Copy the servers Odysseus already knows"><i data-icon="plug"></i>Import from Odysseus</button>
-        <button class="btn primary" id="svAdd"><i data-icon="plus"></i>Add server</button>
+        <div><h1>Servers</h1><p class="sub">Where models run. <b>Remote</b>: machines Argos reaches over SSH (Mode 3). <b>Local</b>: runners installed inside Argos itself (Mode 1), such as whisper and Kokoro.</p></div>
       </div>
-      <div id="svList"></div>
+      <div class="tabs" data-tabs="servers">
+        <button data-pane="remote" class="on">Remote (SSH)</button><button data-pane="local">Local</button>
+      </div>
+      <div class="pane on" data-pane="remote">
+        <div class="row" style="margin-bottom:10px"><span class="spacer"></span>
+          <button class="btn" id="svImport" title="Copy the servers Odysseus already knows"><i data-icon="plug"></i>Import from Odysseus</button>
+          <button class="btn primary" id="svAdd"><i data-icon="plus"></i>Add server</button></div>
+        <div id="svList"></div>
+      </div>
+      <div class="pane" data-pane="local"><div id="lcList"></div></div>
     </section>
 
     <!-- INTEGRATIONS -->

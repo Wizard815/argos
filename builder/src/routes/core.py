@@ -612,6 +612,13 @@ def settings_put(group):
     except (KeyError, ValueError) as exc:
         return err(str(exc).strip("'\""))
     c.event("settings", f"saved {group} settings")
+    if group == "gpu":
+        from .. import gputools
+        gputools.configure(saved)
+        try:
+            c.runners.apply()  # the runners' environment follows the toolkit
+        except Exception:  # noqa: BLE001 - the next tick writes it
+            pass
     if group in ("odysseus", "always"):
         c.export_state.pop("_ody_presets", None)
     return ok(settings=c.settings.public()[group], saved=bool(saved))

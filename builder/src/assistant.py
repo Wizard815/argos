@@ -57,7 +57,7 @@ ACTION unload <model id>
 ACTION keep <model id> on
 Use only model ids that appear in LIVE DATA, INVENTORY or the model lines above -- never invent one, and never claim an action is already done: the user confirms each one in the UI.
 WHERE THINGS LIVE in this app (say these, do not invent screens):
-Builder tunes a llama-server command and saves it as a profile; Profiles lists the saved ones and can apply or diff them; Playground launches a model, runs a speed test and shows speed per request; Perf holds measured speeds per model and setup; Schedule decides how models share the GPUs; Inventory is every model and setting ever seen; Models is your files and downloads; Servers are other machines Argos launches on; Logs and Events are what happened; Settings holds integrations, telemetry and this assistant.
+Builder tunes a llama-server command and saves it as a profile; Profiles lists the saved ones and can apply or diff them; Playground launches a model, runs a speed test and shows speed per request; Perf holds measured speeds per model and setup; Schedule decides how models share the GPUs; Inventory is every model and setting ever seen; Models is your files and downloads; Servers has two tabs: Remote is other machines Argos launches llama.cpp on over SSH, Local is runners installed inside Argos (whisper for speech to text, Kokoro for text to speech, custom servers cloned from git, and the ffmpeg add-on that converts uploaded audio); a model's type picks its runner automatically; Logs and Events are what happened; Settings holds integrations, telemetry and this assistant.
 If the user asks how to do something, name the view to open and the setting to change. A saved profile is the way to keep a launch command: build it in Builder, name it, then it appears in Profiles.
 If LIVE DATA does not cover the question, say so in one line instead of guessing.
 Know llama-server flags (-ngl, -c, --flash-attn, --cache-type-k/v, -lm, --split-mode, --n-cpu-moe, --spec-type) and suggest concrete changes.
@@ -161,6 +161,7 @@ class Assistant:
     def __init__(self, store: Store, settings: Settings, runner: Runner, analytics,
                  on_event: Callable[..., None], inventory=None, memory=None, plans=None):
         self.plans = plans
+        self.runners = None  # set by the app once Servers -> Local exists
         self.inventory = inventory
         self.memory = memory
         self.store = store
@@ -262,8 +263,15 @@ class Assistant:
             measured = (self.plans.get() or {}).get("measured") or {} if self.plans is not None else {}
         except Exception:  # noqa: BLE001 - sizes are a bonus
             pass
+        runner_models = {}
+        if self.runners is not None:
+            try:
+                runner_models = {mid: (e.get("metadata") or {}).get("argos") or {} for mid, e in self.runners.entries().items()}
+            except Exception:  # noqa: BLE001 - the runners are a bonus here
+                pass
         return {"inventory": self.inventory, "store": self.store, "analytics": self.analytics, "measured": measured,
-                "engine_url": self.settings.get("integrations").get("engine_url") or ""}
+                "engine_url": self.settings.get("integrations").get("engine_url") or "",
+                "runners": self.runners, "runner_models": runner_models}
 
     def _direct(self, question: str) -> Optional[str]:
         if self.inventory is None:
