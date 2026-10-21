@@ -128,7 +128,9 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
     if kind == "whisper":
         if WINDOWS and device in WHISPER_ZIPS and not opts.get("repo"):
             return [{"download": WHISPER_ZIPS[device], "unzip": os.path.join(folder, "bin")}]
-        flags = {"cpu": "", "cuda": "-DGGML_CUDA=1", "rocm": f"-DGGML_HIP=1 -DAMDGPU_TARGETS={opts.get('gpu_target') or 'gfx906'}"}[device]
+        # the architecture(s) the HIP code is compiled for, e.g. gfx906 (MI50/MI60) - a chip family, not one card
+        targets = ";".join(t.strip() for t in str(opts.get("gpu_target") or "gfx906").replace(";", ",").split(",") if t.strip())
+        flags = {"cpu": "", "cuda": "-DGGML_CUDA=1", "rocm": f'-DGGML_HIP=1 "-DAMDGPU_TARGETS={targets}"'}[device]
         steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         return steps + [{"run": f"cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".strip()},
                         {"run": "cmake --build build -j --config Release --target whisper-server"}]

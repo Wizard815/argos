@@ -3033,13 +3033,14 @@ function runnerCard(r) {
   const opt = (k, label, ph, hint) => {
     const i = h("input", { type: "text", value: o[k] || "", placeholder: ph, spellcheck: "false" });
     i.addEventListener("change", () => saveRunner(r.id, { opts: { [k]: i.value.trim() } }));
-    return h("label", { class: "field" }, h("span", {}, label), i, hint ? h("small", { class: "hint" }, hint) : null);
+    return h("label", { class: "field wide" }, h("span", {}, label), i, hint ? h("small", { class: "hint" }, hint) : null);
   };
-  const extra = r.addon ? [opt("program", "Use this ffmpeg instead", "path to your own ffmpeg build", "blank = the one installed here, else ffmpeg on PATH")]
-    : r.kind === "kokoro" ? [opt("repo", "Git repository", "https://github.com/remsky/Kokoro-FastAPI", "blank = the official one"),
-      opt("torch_index", "PyTorch from", "e.g. a gfx906 PyTorch wheel index", "for ROCm on MI50s: the ML-gfx906 builds")]
-    : r.kind === "whisper" ? [opt("repo", "Git repository", "https://github.com/ggml-org/whisper.cpp", "blank = prebuilt on Windows, the official repo elsewhere; your fork works here"),
-      opt("gpu_target", "ROCm GPU target", "gfx906", "only for ROCm builds")]
+  const rocm = r.device === "rocm";
+  const extra = r.addon ? [opt("program", "Use your own ffmpeg instead", "/opt/ffmpeg/bin/ffmpeg", "blank = the one installed here, else ffmpeg on PATH")]
+    : r.kind === "kokoro" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/Kokoro-FastAPI-fork", "blank = the official Kokoro-FastAPI"),
+      rocm ? opt("torch_index", "Custom PyTorch build (optional)", "https://example.org/gfx906/whl/", "Install puts this PyTorch in place of the stock ROCm one. Stock ROCm PyTorch may not support older cards such as the MI50 (gfx906); give a package index that has a build for yours.") : null]
+    : r.kind === "whisper" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/whisper.cpp-fork", "blank = prebuilt on Windows, the official whisper.cpp elsewhere; a fork builds from source"),
+      rocm ? opt("gpu_target", "GPU architecture", "gfx906", "the chip family the build is compiled for, not one card: every card of that family can run it (MI50 and MI60 are gfx906). Several, comma separated: gfx906,gfx90a") : null]
     : [];
   const models = (r.models || []).map((m) => {
     const sel = h("select", { title: "Which runner serves this model" }, [["", `automatic (${r.label})`], ["none", "do not serve"]].map(([v, l]) => h("option", { value: v }, l)));
@@ -3062,9 +3063,10 @@ function runnerCard(r) {
     h("div", { class: "card-head" }, h("h2", {}, r.label), pill, r.task ? h("span", { class: "chip" }, TASK_LABEL[r.task] || r.task) : null,
       r.endpoint ? h("span", { class: "chip mono-sm" }, r.endpoint) : null, h("span", { class: "spacer" }),
       h("label", { class: "check" }, on, "on"), r.addon ? null : device, ...actions),
-    h("p", { class: "hint", style: "margin-top:0" }, r.about, r.detail ? ` · found: ${r.detail}` : "", ` · ${r.folder}`),
+    h("p", { class: "hint", style: "margin-top:0" }, r.about, r.detail ? ` · found: ${r.detail}` : "", " · ",
+      h("span", { title: r.folder, class: "mono-sm" }, `runners/${r.id}`)),
     r.kind === "custom" ? customFields(r) : null,
-    extra.length ? h("div", { class: "fields" }, extra) : null,
+    extra.some(Boolean) ? h("div", { class: "fields" }, extra.filter(Boolean)) : null,
     r.addon ? null : h("div", { class: "table-wrap" }, h("table", { class: "dense" },
       h("thead", {}, h("tr", {}, ["Model", "Does", "Also answers to", "Size", "Served by"].map((x) => h("th", {}, x)))),
       h("tbody", {}, models.length ? models : h("tr", {}, h("td", { colspan: 5 }, h("span", { class: "muted" },
@@ -3106,8 +3108,9 @@ function renderLocal() {
   }, "primary", "search");
   fill($("#lcList"),
     h("p", { class: "hint" }, "Runners are servers installed inside Argos for models llama-server cannot run. You never pick one per model: the model's type does (a speech-to-text file goes to whisper, Kokoro serves its own voices), and a model's row lets you change it. Argos writes the engine's entries itself",
-      D.engine_file ? ` (${D.engine_file}).` : ". It cannot here: the engine's config folder is not known (ARGOS_SCHEDULE_FILE)."),
-    h("p", { class: "hint" }, `Installed into ${D.root}. Clients call the usual OpenAI paths on this Argos with the model name, or the standard names: whisper-1 for transcription, tts-1 for speech.`),
+      D.engine_file ? h("span", { title: D.engine_file }, " (runners.generated.yaml in the engine's config folder).") : ". It cannot here: the engine's config folder is not known (ARGOS_SCHEDULE_FILE)."),
+    h("p", { class: "hint" }, "Each runner has its own folder in the ", h("span", { title: D.root, class: "mono-sm" }, "runners"),
+      " folder (hover for where). Clients call the usual OpenAI paths on this Argos with the model name, or the standard names: whisper-1 for transcription, tts-1 for speech."),
     runners.filter((r) => r.kind !== "custom").map(runnerCard),
     h("h3", { style: "margin:18px 0 6px" }, "Custom"),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Add from a git repository")),
