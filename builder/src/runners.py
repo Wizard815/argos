@@ -151,10 +151,13 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
             return [{"download": WHISPER_ZIPS[device], "unzip": os.path.join(folder, "bin")}]
         # the architecture(s) the HIP code is compiled for, e.g. gfx906 (MI50/MI60) - a chip family, not one card
         wanted = str(opts.get("gpu_target") or "").strip() or ",".join(rocm_archs()) if device == "rocm" else ""
-        targets = ";".join(t.strip() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
+        targets = ";".join(t.strip().lower() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
         flags = {"cpu": "", "cuda": "-DGGML_CUDA=1", "rocm": f'-DGGML_HIP=1 "-DAMDGPU_TARGETS={targets}"'}[device]
         steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
-        return steps + [{"run": f"cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".strip()},
+        # ROCm: point CMake at ROCm's own clang, as whisper.cpp's HIP build expects (an SDK image sets these already)
+        hip = ('if command -v hipconfig >/dev/null 2>&1; then export HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)"; fi; '
+               if device == "rocm" and not WINDOWS else "")
+        return steps + [{"run": f"{hip}cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".strip()},
                         {"run": "cmake --build build -j --config Release --target whisper-server"}]
     if kind == "sdcpp":
         if WINDOWS and not opts.get("repo"):
@@ -166,7 +169,7 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
         steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 --recursive "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         if device == "rocm":
             wanted = str(opts.get("gpu_target") or "").strip() or ",".join(rocm_archs())
-            targets = ";".join(t.strip() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
+            targets = ";".join(t.strip().lower() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
             rocm = "${ROCM_PATH:-/opt/rocm}"
             flags = (f'-DSD_HIPBLAS=ON "-DGPU_TARGETS={targets}" "-DAMDGPU_TARGETS={targets}" '
                      f"-DCMAKE_C_COMPILER={rocm}/llvm/bin/clang -DCMAKE_CXX_COMPILER={rocm}/llvm/bin/clang++")
