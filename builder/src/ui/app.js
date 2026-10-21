@@ -3038,9 +3038,10 @@ function runnerCard(r) {
   const rocm = r.device === "rocm";
   const extra = r.addon ? [opt("program", "Use your own ffmpeg instead", "/opt/ffmpeg/bin/ffmpeg", "blank = the one installed here, else ffmpeg on PATH")]
     : r.kind === "kokoro" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/Kokoro-FastAPI-fork", "blank = the official Kokoro-FastAPI"),
-      rocm ? opt("torch_index", "Custom PyTorch build (optional)", "https://example.org/gfx906/whl/", "Install puts this PyTorch in place of the stock ROCm one. Stock ROCm PyTorch may not support older cards such as the MI50 (gfx906); give a package index that has a build for yours.") : null]
+      rocm ? opt("torch_index", "Custom PyTorch build (optional)", "https://…/torch-v2.14.1+gfx906…/index.txt",
+        "Paste where the build lives, one of: an index.txt that lists wheel files (how ML-gfx906 publishes its MI50 builds: copy the URL from its Wheels table for your ROCm version); a pip index URL; or .whl files or links, comma separated. Install creates the environment in that build's Python (3.12 for ML-gfx906), installs the build, then Kokoro without the stock ROCm PyTorch. Blank: the stock one.") : null]
     : r.kind === "whisper" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/whisper.cpp-fork", "blank = prebuilt on Windows, the official whisper.cpp elsewhere; a fork builds from source"),
-      rocm ? opt("gpu_target", "GPU architecture", "gfx906", "the chip family the build is compiled for, not one card: every card of that family can run it (MI50 and MI60 are gfx906). Several, comma separated: gfx906,gfx90a") : null]
+      rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "ROCm compiles the GPU code ahead of time for each chip family, with no generic fallback, so the build has to name yours. Blank: Install asks rocminfo which this machine has (gfx906 for MI50/MI60) and builds for all of them. Fill it only to build for other cards, comma separated.") : null]
     : [];
   const models = (r.models || []).map((m) => {
     const sel = h("select", { title: "Which runner serves this model" }, [["", `automatic (${r.label})`], ["none", "do not serve"]].map(([v, l]) => h("option", { value: v }, l)));

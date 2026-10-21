@@ -69,3 +69,30 @@ def test_uploads_are_rebuilt_with_every_field_and_wav_is_left_alone():
     assert audio_convert.convert_form({"model": ["whisper-1"]}, {"file": [("a.wav", "audio/wav", wav)]}, "ffmpeg") is None
     body, ctype, _ = audio_convert.rebuild({"model": ["whisper-1"]}, {"file": [("a.m4a", "audio/mp4", b"abc")]})
     assert ctype.startswith("multipart/form-data; boundary=") and b'name="model"' in body and b"whisper-1" in body and b"abc" in body
+
+
+def test_custom_pytorch_takes_an_index_txt_a_pip_index_or_wheels():
+    from src.runners import install_steps, torch_source
+    t = torch_source("https://example.org/py-gfx906/rocm10.1/torch-v2.14.1+gfx906/index.txt")
+    assert t["kind"] == "index.txt" and t["python"] == "3.12" and "wheels_index" in t["step"]
+    w = torch_source("/wheels/torch-2.14.1-cp312-cp312-linux_x86_64.whl, /wheels/torchaudio-2.14.1-cp312-cp312-linux_x86_64.whl")
+    assert w["kind"] == "wheels" and w["python"] == "3.12" and w["step"]["run"].count(".whl") == 2
+    assert torch_source("https://download.pytorch.org/whl/rocm6.4")["kind"] == "index"
+    assert torch_source("") is None
+    steps = install_steps("kokoro", "/data/runners/kokoro", "rocm", {"torch_index": "https://example.org/x/index.txt"})
+    runs = [s.get("run", "") for s in steps]
+    # the custom build goes in before Kokoro, and Kokoro is installed without its own ROCm PyTorch extra
+    assert "uv venv --python 3.12 .venv" in runs and 'uv pip install --python .venv -e .' in runs
+    assert not any("[rocm]" in r for r in runs)
+    # on CPU the field is ignored
+    assert any('".[cpu]"' in r for r in (s.get("run", "") for s in install_steps("kokoro", "/k", "cpu", {"torch_index": "https://x/index.txt"})))
+
+
+def test_whisper_rocm_build_uses_the_detected_architecture(monkeypatch):
+    from src import runners
+    runners.rocm_archs.cache_clear()
+    monkeypatch.setattr(runners, "rocm_archs", lambda: ("gfx906",))
+    steps = runners.install_steps("whisper", "/data/runners/whisper", "rocm", {"repo": "https://github.com/someone/whisper.cpp-fork"})
+    assert '"-DAMDGPU_TARGETS=gfx906"' in steps[1]["run"]
+    steps = runners.install_steps("whisper", "/w", "rocm", {"repo": "https://x/y", "gpu_target": "gfx906, gfx90a"})
+    assert '"-DAMDGPU_TARGETS=gfx906;gfx90a"' in steps[1]["run"]
