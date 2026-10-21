@@ -15,6 +15,7 @@ the WAV whisper reads.
 """
 from __future__ import annotations
 
+import functools
 import io
 import json
 import os
@@ -24,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from typing import Any, Callable, Optional
@@ -120,16 +122,22 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
     if kind == "kokoro":
         extra = {"cpu": "cpu", "cuda": "gpu", "rocm": "rocm"}[device]
         steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
-        steps += [{"run": "uv venv --python 3.11 .venv"}, {"run": f'uv pip install --python .venv -e ".[{extra}]"'}]
-        if opts.get("torch_index"):  # e.g. a gfx906 PyTorch build
-            steps.append({"run": f'uv pip install --python .venv --reinstall torch --index-url "{opts["torch_index"]}"'})
+        torch = torch_source(opts.get("torch_index") or "") if device == "rocm" else None
+        if torch:
+            # the custom build first, in the Python it was built for; then Kokoro without its own PyTorch extra,
+            # so the stock ROCm wheel never replaces it
+            steps += [{"run": f"uv venv --python {torch['python']} .venv"}, torch["step"],
+                      {"run": 'uv pip install --python .venv -e .'}]
+        else:
+            steps += [{"run": "uv venv --python 3.11 .venv"}, {"run": f'uv pip install --python .venv -e ".[{extra}]"'}]
         steps.append({"run": f'"{os.path.join(".venv", "Scripts" if WINDOWS else "bin", "python" + EXE)}" docker/scripts/download_model.py --output api/src/models/v1_0'})
         return steps
     if kind == "whisper":
         if WINDOWS and device in WHISPER_ZIPS and not opts.get("repo"):
             return [{"download": WHISPER_ZIPS[device], "unzip": os.path.join(folder, "bin")}]
         # the architecture(s) the HIP code is compiled for, e.g. gfx906 (MI50/MI60) - a chip family, not one card
-        targets = ";".join(t.strip() for t in str(opts.get("gpu_target") or "gfx906").replace(";", ",").split(",") if t.strip())
+        wanted = str(opts.get("gpu_target") or "").strip() or ",".join(rocm_archs()) if device == "rocm" else ""
+        targets = ";".join(t.strip() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
         flags = {"cpu": "", "cuda": "-DGGML_CUDA=1", "rocm": f'-DGGML_HIP=1 "-DAMDGPU_TARGETS={targets}"'}[device]
         steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         return steps + [{"run": f"cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".strip()},
@@ -142,6 +150,50 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
         steps = [] if not repo or os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         return steps + [{"run": line} for line in (opts.get("install") or "").splitlines() if line.strip()]
     return []
+
+
+def torch_source(value: str) -> Optional[dict]:
+    """How to install a custom PyTorch build: {"python", "step", "kind"}, from what the field holds.
+
+    - an index.txt that lists wheel files (how ML-gfx906 publishes its gfx906 builds): every wheel in it
+    - a pip index URL (ends in / or has /whl/): torch, torchvision and torchaudio from that index
+    - wheel files or URLs ending in .whl, separated by spaces or commas: exactly those
+    The Python version comes from the wheel names (cp312 -> 3.12) when they say; 3.12 otherwise for index.txt.
+    """
+    v = (value or "").strip()
+    if not v:
+        return None
+    parts = [x for x in re.split(r"[\s,]+", v) if x]
+    if v.lower().endswith("index.txt"):
+        return {"kind": "index.txt", "python": "3.12", "step": {"wheels_index": v}}
+    if all(x.lower().endswith(".whl") for x in parts):
+        py = next((f"3.{m.group(1)}" for x in parts if (m := re.search(r"-cp3(\d+)-", x))), "3.12")
+        return {"kind": "wheels", "python": py, "step": {"run": "uv pip install --python .venv " + " ".join(f'"{x}"' for x in parts)}}
+    return {"kind": "index", "python": "3.11",
+            "step": {"run": f'uv pip install --python .venv torch torchvision torchaudio --index-url "{v}"'}}
+
+
+ROCM_ARCH = re.compile(r"\bgfx[0-9a-f]{3,4}\b")
+
+
+def _url(u: str) -> str:
+    """A URL with "+" and spaces in its path encoded: S3 answers 403 to a raw "+" (torch-2.14.1+gfx906/...)."""
+    parts = urllib.parse.urlsplit(u)
+    return urllib.parse.urlunsplit(parts._replace(path=urllib.parse.quote(urllib.parse.unquote(parts.path), safe="/")))
+
+
+@functools.lru_cache(maxsize=1)
+def rocm_archs() -> tuple[str, ...]:
+    """The GPU architectures on this machine (rocminfo, else rocm-smi). Empty when neither answers."""
+    for argv in (["rocminfo"], ["rocm-smi", "--showproductname"]):
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=20).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        found = sorted(set(ROCM_ARCH.findall(out)) - {"gfx000"})
+        if found:
+            return tuple(found)
+    return ()
 
 
 class Installer:
@@ -174,6 +226,17 @@ class Installer:
         for i, step in enumerate(steps):
             job["step"] = i + 1
             try:
+                if "wheels_index" in step:
+                    url = step["wheels_index"]
+                    self._say(job, f"$ read {url}\n")
+                    with urllib.request.urlopen(_url(url), timeout=60) as r:  # noqa: S310 - the address the user gave
+                        names = [n.strip() for n in r.read().decode("utf-8", "replace").splitlines() if n.strip().endswith(".whl")]
+                    if not names:
+                        raise RuntimeError("the index lists no .whl files")
+                    base = url.rsplit("/", 1)[0]
+                    wheels = " ".join(f'"{_url(base + "/" + n)}"' for n in names)
+                    self._say(job, f"  {len(names)} wheels: {', '.join(names)}\n")
+                    step = {"run": f"uv pip install --python .venv {wheels}"}
                 if "download" in step:
                     self._say(job, f"$ download {step['download']}\n")
                     with urllib.request.urlopen(step["download"], timeout=60) as r:  # noqa: S310 - a fixed release URL
@@ -185,7 +248,7 @@ class Installer:
                     self._say(job, f"  {got / 2 ** 20:.0f} MiB, unpacking to {step['unzip']}\n")
                     with zipfile.ZipFile(data) as z:
                         z.extractall(step["unzip"])
-                else:
+                if "run" in step:
                     cwd = step.get("cwd") or folder
                     os.makedirs(cwd, exist_ok=True)
                     self._say(job, f"$ {step['run']}\n")
