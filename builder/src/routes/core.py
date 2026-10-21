@@ -82,6 +82,25 @@ def profiles_list():
     return ok(profiles=profiles)
 
 
+@bp.post("/api/estimate")
+def estimate():
+    """VRAM a command needs: model + KV cache + buffers, and the KV cache for other cache types and contexts."""
+    from ..schedule_rows import estimate_command
+    return ok(estimate=estimate_command(str(body().get("command") or ""), compare=True))
+
+
+@bp.get("/api/profiles/estimates")
+def profiles_estimates():
+    """profile id -> its VRAM estimate. Separate from /api/profiles so the list never waits on reading model headers."""
+    from ..schedule_rows import estimate_command
+    out = {}
+    for p in ctx().store.list_profiles():
+        e = estimate_command(p["launch_command"])
+        out[p["profile_id"]] = {k: e.get(k) for k in ("ok", "error", "gib", "weights_gib", "kv_gib", "overhead_gib", "ctx",
+                                                     "cache_k", "cache_v", "notes")}
+    return ok(estimates=out)
+
+
 @bp.post("/api/profiles")
 def profiles_save():
     c, d = ctx(), body()

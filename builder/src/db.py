@@ -766,6 +766,27 @@ class Store:
             r["gpus"], r["flags"], r["env"] = _json(r["gpus"], []), _json(r["flags"], {}), _json(r["env"], {})
         return rows
 
+    def renumber_session_gpus(self, card_count: int) -> int:
+        """Fix loads recorded with a GPU number that does not exist, and return how many changed.
+
+        Before the engine numbered its cards from 0 it used the DRM card numbers, which on a host whose GPUs
+        are card1 and card2 recorded "1,2" for what HIP calls 0 and 1. A load that names a card past the last
+        one is shifted down by the gap. A load that only ever named valid numbers cannot be told apart and is
+        left as it is.
+        """
+        if card_count <= 0:
+            return 0
+        changed = 0
+        for r in self._q("SELECT id, gpus FROM model_sessions"):
+            ids = [int(g) for g in _json(r["gpus"], []) if str(g).isdigit()]
+            if not ids or max(ids) < card_count:
+                continue
+            shift = max(ids) - (card_count - 1)
+            fixed = sorted({str(i - shift) for i in ids if i - shift >= 0}, key=int)
+            self._x("UPDATE model_sessions SET gpus=? WHERE id=?", (json.dumps(fixed), r["id"]))
+            changed += 1
+        return changed
+
     def count_sessions(self, open_only: bool = False) -> int:
         return self._q("SELECT COUNT(*) AS n FROM model_sessions" + (" WHERE open=1" if open_only else ""))[0]["n"]
 

@@ -70,9 +70,12 @@ def test_estimate_counts_weights_kv_and_buffers():
 
 
 def test_estimate_unknowns_are_flagged_not_hidden():
-    odd = estimate_gib(0, ARCH, 4096, "turbo3", "turbo3")
-    assert any("turbo3" in n for n in odd["notes"])
+    odd = estimate_gib(0, ARCH, 4096, "q3_zz", "q3_zz")
+    assert any("q3_zz" in n for n in odd["notes"])
     assert odd["kv_gib"] > 0
+    # the TurboQuant types are known now: smaller than q8_0, and marked approximate
+    t3, q8 = estimate_gib(0, ARCH, 4096, "turbo3", "turbo3"), estimate_gib(0, ARCH, 4096, "q8_0", "q8_0")
+    assert 0 < t3["kv_gib"] < q8["kv_gib"] and any("approximate" in n for n in t3["notes"])
     assert any("header" in n for n in estimate_gib(10 * 2 ** 30, None, 4096)["notes"])
 
 

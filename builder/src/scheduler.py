@@ -63,7 +63,19 @@ def env_plan() -> dict:
 
 # bytes per KV element for ggml cache types (block size and header included)
 CACHE_BYTES = {"f32": 4.0, "f16": 2.0, "bf16": 2.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32,
-               "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32}
+               "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32,
+               # TurboQuant forks of llama.cpp: about 4.25, 3.5 and 2.5 bits a value (approximate)
+               "turbo4": 4.25 / 8, "turbo3": 3.5 / 8, "turbo2": 2.5 / 8}
+
+# The cache types the estimator compares side by side, smallest last.
+KV_COMPARE = ("f16", "q8_0", "q5_0", "q4_0", "turbo4", "turbo3", "turbo2")
+
+
+def kv_gib(arch: Optional[dict], ctx: int, cache_k: str = "", cache_v: str = "") -> Optional[float]:
+    """KV cache size alone, for ``ctx`` tokens; None without a model header."""
+    if not arch or not ctx:
+        return None
+    return estimate_gib(0, arch, ctx, cache_k, cache_v)["kv_gib"]
 
 
 class PlanError(ValueError):
@@ -237,6 +249,8 @@ def estimate_gib(weights_bytes: int, arch: Optional[dict], ctx: int, cache_k: st
         kv = (full * ctx + swa * min(ctx, window)) * per_token / GIB
         if swa:
             notes.append(f"{swa} sliding-window layers keep {window} tokens")
+        if any(t.startswith("turbo") for t in (cache_k, cache_v) if t):
+            notes.append("turbo cache sizes are approximate")
     else:
         notes.append("no model header, KV cache not counted")
     overhead = 1.0 + 0.10 * weights
