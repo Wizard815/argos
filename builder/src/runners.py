@@ -37,7 +37,7 @@ RUNNERS_KEY = "_runners"
 FRAGMENT = "runners.generated.yaml"
 
 # task -> the runner type that serves it
-TASK_RUNNER = {"speech-to-text": "whisper", "text-to-speech": "kokoro"}
+TASK_RUNNER = {"speech-to-text": "whisper", "text-to-speech": "kokoro", "image": "sdcpp"}
 
 WHISPER_RELEASE = "b5454"
 WHISPER_ZIPS = {  # prebuilt Windows builds; elsewhere whisper.cpp is built from source
@@ -52,7 +52,7 @@ TYPES: dict[str, dict] = {
     "whisper": {
         "label": "whisper.cpp", "task": "speech-to-text", "endpoint": "/v1/audio/transcriptions",
         "repo": "https://github.com/ggml-org/whisper.cpp",
-        "about": "Speech to text. Serves every whisper model file (ggml-*.bin) in the models folder and in its own models folder.",
+        "about": "Speech to text. Serves every whisper model file (ggml-*.bin) in the models folder Argos uses, the same one as the chat models.",
         "alias": "whisper-1",
     },
     "kokoro": {
@@ -60,6 +60,13 @@ TYPES: dict[str, dict] = {
         "repo": "https://github.com/remsky/Kokoro-FastAPI",
         "about": "Text to speech with 70+ voices. Small enough to run on the CPU.",
         "alias": "tts-1",
+    },
+    "sdcpp": {
+        "label": "stable-diffusion.cpp", "task": "image", "endpoint": "/v1/images/generations",
+        "repo": "https://github.com/leejet/stable-diffusion.cpp",
+        "about": "Image generation. Serves every single-file image model (.gguf, .safetensors, .ckpt) in the models folder; "
+                 "models that need a separate VAE or text encoder take those as extra arguments on their row.",
+        "alias": "dall-e-3",
     },
     "custom": {
         "label": "Custom", "task": "", "endpoint": "",
@@ -102,6 +109,13 @@ def detect(kind: str, folder: str) -> dict:
         gpu = "cuda" if os.path.exists(os.path.join(os.path.dirname(exe), "ggml-cuda.dll")) or os.path.exists(os.path.join(os.path.dirname(exe), "libggml-cuda.so")) else \
               "rocm" if os.path.exists(os.path.join(os.path.dirname(exe), "libggml-hip.so")) else "cpu"
         return {"installed": True, "program": exe, "detail": f"whisper-server ({gpu} build)", "build": gpu}
+    if kind == "sdcpp":
+        exe = _find(folder, ("sd-server" + EXE,))
+        if not exe:
+            return {"installed": False, "program": "", "detail": "no sd-server found"}
+        names = {f.lower() for f in os.listdir(os.path.dirname(exe))}
+        gpu = "cuda" if any("cuda" in n or "cublas" in n for n in names) else "rocm" if any("hip" in n or "rocm" in n for n in names) else "cpu"
+        return {"installed": True, "program": exe, "detail": f"sd-server ({gpu} build)", "build": gpu}
     if kind == "kokoro":
         py = _venv_python(folder)
         model = os.path.exists(os.path.join(folder, "api", "src", "models", "v1_0", "kokoro-v1_0.pth"))
@@ -142,6 +156,24 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
         steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         return steps + [{"run": f"cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".strip()},
                         {"run": "cmake --build build -j --config Release --target whisper-server"}]
+    if kind == "sdcpp":
+        if WINDOWS and not opts.get("repo"):
+            asset = {"cpu": r"bin-win-cpu-x64\.zip$", "cuda": r"bin-win-cuda12-x64\.zip$", "rocm": r"bin-win-rocm-[\d.]+-x64\.zip$"}[device]
+            steps = [{"github_asset": "leejet/stable-diffusion.cpp", "match": asset, "unzip": os.path.join(folder, "bin")}]
+            if device == "cuda":  # the CUDA 12 runtime it needs: reused from another install when one has it
+                steps.append({"cuda_runtime": os.path.join(folder, "bin")})
+            return steps
+        steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 --recursive "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
+        if device == "rocm":
+            wanted = str(opts.get("gpu_target") or "").strip() or ",".join(rocm_archs())
+            targets = ";".join(t.strip() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
+            rocm = "${ROCM_PATH:-/opt/rocm}"
+            flags = (f'-DSD_HIPBLAS=ON "-DGPU_TARGETS={targets}" "-DAMDGPU_TARGETS={targets}" '
+                     f"-DCMAKE_C_COMPILER={rocm}/llvm/bin/clang -DCMAKE_CXX_COMPILER={rocm}/llvm/bin/clang++")
+        else:
+            flags = {"cpu": "", "cuda": "-DSD_CUDA=ON"}[device]
+        return steps + [{"run": f"cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".replace("  ", " ")},
+                        {"run": "cmake --build build -j --config Release --target sd-server"}]
     if kind == "ffmpeg":
         if WINDOWS:
             return [{"download": FFMPEG_ZIP, "unzip": folder}]
@@ -171,6 +203,27 @@ def torch_source(value: str) -> Optional[dict]:
         return {"kind": "wheels", "python": py, "step": {"run": "uv pip install --python .venv " + " ".join(f'"{x}"' for x in parts)}}
     return {"kind": "index", "python": "3.11",
             "step": {"run": f'uv pip install --python .venv torch torchvision torchaudio --index-url "{v}"'}}
+
+
+TORCH_BUILDS_README = "https://raw.githubusercontent.com/mixa3607/ML-gfx906/HEAD/pytorch/README.md"
+_torch_cache: dict = {}
+
+
+def torch_builds() -> list[dict]:
+    """Known custom PyTorch builds for the picker: ML-gfx906's wheel table, read from its README (kept an hour)."""
+    if _torch_cache.get("at", 0) > time.time() - 3600:
+        return _torch_cache["builds"]
+    builds = []
+    try:
+        with urllib.request.urlopen(urllib.request.Request(TORCH_BUILDS_README, headers={"User-Agent": "argos"}), timeout=15) as r:  # noqa: S310
+            text = r.read().decode("utf-8", "replace")
+        for m in re.finditer(r"^\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*(https://\S+?/index\.txt)\s*\|", text, re.M):
+            builds.append({"source": "ML-gfx906", "gpu": "gfx906 (MI50, MI60, Radeon VII)", "torch": m.group(1), "rocm": m.group(2),
+                           "python": "3.12", "url": m.group(3)})
+    except Exception:  # noqa: BLE001 - offline: the field still takes a pasted link
+        pass
+    _torch_cache.update(at=time.time(), builds=builds)
+    return builds
 
 
 ROCM_ARCH = re.compile(r"\bgfx[0-9a-f]{3,4}\b")
@@ -237,6 +290,35 @@ class Installer:
                     wheels = " ".join(f'"{_url(base + "/" + n)}"' for n in names)
                     self._say(job, f"  {len(names)} wheels: {', '.join(names)}\n")
                     step = {"run": f"uv pip install --python .venv {wheels}"}
+                if "github_asset" in step:
+                    api = f"https://api.github.com/repos/{step['github_asset']}/releases/latest"
+                    with urllib.request.urlopen(urllib.request.Request(api, headers={"User-Agent": "argos"}), timeout=60) as r:  # noqa: S310
+                        assets = json.loads(r.read().decode("utf-8")).get("assets") or []
+                    pick = next((a for a in assets if re.search(step["match"], a.get("name", ""))), None)
+                    if not pick:
+                        raise RuntimeError(f"the latest release has no file matching {step['match']}")
+                    self._say(job, f"  latest release file: {pick['name']} ({pick.get('size', 0) / 2 ** 20:.0f} MiB)\n")
+                    step = {"download": pick["browser_download_url"], "unzip": step["unzip"]}
+                if "cuda_runtime" in step:
+                    dest = step["cuda_runtime"]
+                    need = ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
+                    have = [n for n in need if os.path.exists(os.path.join(dest, n))]
+                    if len(have) < len(need):
+                        root = os.path.dirname(folder)
+                        found = {}
+                        for dirpath, _, files in os.walk(root):
+                            for n in need:
+                                if n in files and n not in found:
+                                    found[n] = os.path.join(dirpath, n)
+                        missing = [n for n in need if n not in found and n not in have]
+                        if missing:
+                            raise RuntimeError("the CUDA 12 runtime (" + ", ".join(missing) + ") is not in another runner here; "
+                                               "install whisper.cpp for CUDA first, or copy those DLLs next to sd-server.exe")
+                        for n, src in found.items():
+                            if n not in have:
+                                shutil.copy2(src, os.path.join(dest, n))
+                                self._say(job, f"  copied {n} from {os.path.relpath(src, root)}\n")
+                    step = {}
                 if "download" in step:
                     self._say(job, f"$ download {step['download']}\n")
                     with urllib.request.urlopen(step["download"], timeout=60) as r:  # noqa: S310 - a fixed release URL
@@ -409,18 +491,35 @@ class Runners:
             auto = TASK_RUNNER.get(m.get("task") or "")
             if auto == "whisper" and m.get("format") != "ggml":
                 auto = None  # whisper.cpp reads ggml files only
+            if auto == "sdcpp" and m.get("format") not in ("gguf", "safetensors", "ckpt"):
+                auto = None  # sd-server loads single files; a diffusers folder is ComfyUI's
             runner = overrides.get(m["id"], auto) or ""
             if runner == "kokoro":
                 runner = ""  # Kokoro serves its own model, not files from the folder
             if runner and runner in rec and rec[runner].get("enabled", True):
                 out.append({"id": m["id"], "name": m["name"], "runner": runner, "task": m.get("task"), "path": m["path"],
                             "size": m.get("size") or 0, "auto": runner == auto})
+        for r in rec.values():  # a custom runner with a model-file pattern serves one model per matching file
+            o = r.get("opts") or {}
+            if r["kind"] != "custom" or not o.get("models_glob") or "${MODEL_PATH}" not in (o.get("start") or "") or not r.get("enabled", True):
+                continue
+            import glob
+            for base in {self.models_dir(), self.folder(r)}:
+                if not base or not os.path.isdir(base):
+                    continue
+                for path in sorted(glob.glob(os.path.join(base, o["models_glob"]), recursive=True)):
+                    stem = os.path.splitext(os.path.basename(path))[0]
+                    mid = f"{r['id']}-" + re.sub(r"[^a-z0-9._-]+", "-", stem.lower()).strip("-")
+                    if mid not in seen and os.path.isfile(path):
+                        seen.add(mid)
+                        out.append({"id": mid, "name": stem, "runner": r["id"], "task": o.get("task", ""), "path": path,
+                                    "size": os.path.getsize(path), "auto": True})
         k = rec.get("kokoro")
         if k and k.get("enabled", True) and detect("kokoro", self.folder(k))["installed"]:
             out.append({"id": "kokoro", "name": "Kokoro voices", "runner": "kokoro", "task": "text-to-speech", "path": "", "size": 0, "auto": True})
         for r in rec.values():
             o = r.get("opts") or {}
-            if r["kind"] == "custom" and o.get("start") and r.get("enabled", True):
+            if r["kind"] == "custom" and o.get("start") and r.get("enabled", True) and "${MODEL_PATH}" not in o["start"]:
                 out.append({"id": r["id"], "name": r.get("label") or r["id"], "runner": r["id"], "task": o.get("task", ""), "path": "",
                             "size": 0, "auto": True})
         return out
@@ -458,12 +557,25 @@ class Runners:
                              "VOICES_DIR=src/voices/v1_0", f"WEB_PLAYER_PATH={os.path.join(folder, 'web')}"],
                      "vram": 0.1 if device == "cpu" else 1.5,
                      "capabilities": {"in": ["text"], "out": ["audio"]}}
+            elif r["kind"] == "sdcpp":
+                d = detect("sdcpp", folder)
+                if not d["installed"]:
+                    continue
+                extra = ((r.get("opts") or {}).get("model_args") or {}).get(m["id"], "")
+                e = {"cmd": _join([d["program"], "--listen-ip", "127.0.0.1", "--listen-port", "${PORT}", "-m", m["path"]]) + (f" {extra}" if extra else ""),
+                     "cwd": os.path.dirname(d["program"]), "checkEndpoint": "/",
+                     "vram": 0.1 if device == "cpu" else round(m["size"] / 2 ** 30 * 1.25 + 1.0, 2),
+                     "capabilities": {"in": ["text"], "out": ["image"]}}
+                if m["id"] == (r.get("opts") or {}).get("default_model") or not any(
+                        x.get("aliases") for x in out.values() if (x.get("metadata") or {}).get("argos", {}).get("runner") == "sdcpp"):
+                    e["aliases"] = ["dall-e-3"]
             elif r["kind"] == "custom":
                 o = r.get("opts") or {}
                 if not o.get("start"):
                     continue
-                e = {"cmd": o["start"], "cwd": folder, "checkEndpoint": o.get("check") or "/",
-                     "vram": float(o.get("vram") or 0.1)}
+                cmd = o["start"].replace("${MODEL_PATH}", _join([m["path"]]) if m.get("path") else "")
+                e = {"cmd": cmd, "cwd": folder, "checkEndpoint": o.get("check") or "/",
+                     "vram": float(o.get("vram") or 0.1) if not m.get("size") or device == "cpu" else max(float(o.get("vram") or 0), round(m["size"] / 2 ** 30 * 1.3 + 0.3, 2))}
                 if o.get("alias"):
                     e["aliases"] = [a.strip() for a in str(o["alias"]).split(",") if a.strip()]
             else:

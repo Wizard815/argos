@@ -96,3 +96,44 @@ def test_whisper_rocm_build_uses_the_detected_architecture(monkeypatch):
     assert '"-DAMDGPU_TARGETS=gfx906"' in steps[1]["run"]
     steps = runners.install_steps("whisper", "/w", "rocm", {"repo": "https://x/y", "gpu_target": "gfx906, gfx90a"})
     assert '"-DAMDGPU_TARGETS=gfx906;gfx90a"' in steps[1]["run"]
+
+
+def test_sdcpp_serves_single_file_image_models_with_their_extra_args(tmp_path):
+    exe = "sd-server.exe" if os.name == "nt" else "sd-server"
+    _touch(str(tmp_path / "sdcpp" / "bin" / exe))
+    media = [{"id": "sd-v1-5", "name": "sd-v1-5", "path": "/m/sd-v1-5.gguf", "task": "image", "format": "gguf", "size": 2 * 2 ** 30},
+             {"id": "flux-dev", "name": "flux-dev", "path": "/m/flux-dev.safetensors", "task": "image", "format": "safetensors", "size": 2 ** 30},
+             {"id": "ae", "name": "ae", "path": "/m/vae/ae.safetensors", "task": "vae", "format": "safetensors", "size": 1},
+             {"id": "sdxl-folder", "name": "sdxl", "path": "/m/sdxl", "task": "image", "format": "diffusers", "size": 1}]
+    store = _Store()
+    r = Runners(store, _Settings(str(tmp_path)), lambda *a, **k: None, lambda: "", lambda d: media)
+    rec = r.records()
+    rec["sdcpp"]["device"] = "cuda"
+    rec["sdcpp"]["opts"] = {"model_args": {"flux-dev": "--vae /m/vae/ae.safetensors"}}
+    r.save(rec)
+    e = r.entries()
+    assert set(e) == {"sd-v1-5", "flux-dev"}, "a VAE part and a diffusers folder are not sd-server models"
+    assert "--listen-port ${PORT}" in e["sd-v1-5"]["cmd"] and e["sd-v1-5"]["capabilities"]["out"] == ["image"]
+    assert e["flux-dev"]["cmd"].endswith("--vae /m/vae/ae.safetensors")
+    assert sum(1 for x in e.values() if x.get("aliases") == ["dall-e-3"]) == 1
+    assert e["sd-v1-5"]["vram"] == 3.5  # 2 GiB * 1.25 + 1
+
+
+def test_a_custom_runner_with_a_file_pattern_serves_one_model_per_file(tmp_path):
+    models = tmp_path / "models"
+    _touch(str(models / "voices" / "en_us-amy.onnx"))
+    _touch(str(models / "voices" / "en_gb-alan.onnx"))
+    store = _Store()
+
+    class S(_Settings):
+        def get(self, group):
+            return {"paths": {"runners_dir": str(tmp_path / "runners"), "models_dir": str(models)}}.get(group, {})
+
+    r = Runners(store, S(""), lambda *a, **k: None, lambda: str(models), lambda d: [])
+    rec = r.records()
+    rec["piper"] = {"id": "piper", "kind": "custom", "device": "cpu", "enabled": True, "opts": {
+        "start": "piper-server --port ${PORT} --model ${MODEL_PATH}", "models_glob": "**/*.onnx", "task": "text-to-speech"}}
+    r.save(rec)
+    e = r.entries()
+    assert set(e) == {"piper-en_gb-alan", "piper-en_us-amy"}
+    assert all("${MODEL_PATH}" not in x["cmd"] and ".onnx" in x["cmd"] for x in e.values())

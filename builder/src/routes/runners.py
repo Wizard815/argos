@@ -11,12 +11,13 @@ import urllib.request
 from flask import Blueprint
 
 from ..integrations import engine_api
-from ..runners import ADDONS, DEVICES, TYPES, install_steps, scan
+from ..runners import ADDONS, DEVICES, TYPES, install_steps, rocm_archs, scan, torch_builds
 from ..web import body, ctx, err, ok
 
 bp = Blueprint("runners", __name__)
 EDITABLE = ("device", "enabled", "label", "folder")
-OPTS = ("repo", "torch_index", "gpu_target", "default_model", "program", "install", "start", "check", "task", "alias", "vram")
+OPTS = ("repo", "torch_index", "gpu_target", "default_model", "program", "install", "start", "check", "task", "alias", "vram",
+        "models_glob", "model_args")
 
 
 def _rec(rid: str) -> tuple[dict, dict]:
@@ -29,6 +30,12 @@ def _rec(rid: str) -> tuple[dict, dict]:
 @bp.get("/api/runners")
 def runners_list():
     return ok(**ctx().runners.view())
+
+
+@bp.get("/api/runners/torch-builds")
+def runners_torch_builds():
+    """Custom PyTorch builds Argos knows of, and the GPU architectures this machine has, for the picker."""
+    return ok(builds=torch_builds(), archs=list(rocm_archs()))
 
 
 @bp.put("/api/runners/<rid>")
