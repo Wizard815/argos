@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 from flask import Blueprint
 
@@ -15,9 +15,19 @@ from ..web import body, ctx, err, ok
 bp = Blueprint("odysseus_hub", __name__)
 
 
-def client() -> Odysseus:
+def client(timeout: Optional[float] = None) -> Odysseus:
     o = ctx().settings.get("odysseus")
-    return Odysseus(o["url"], o["token"])
+    return Odysseus(o["url"], o["token"], **({"timeout": timeout} if timeout else {}))
+
+
+# The engine asks for the cookbook state every five minutes and gives the whole
+# call odysseus.timeoutSeconds to answer - 20 by default. Waiting the same 20
+# seconds here means this side can never win that race: the engine's deadline
+# always fires first, so it learns nothing and logs a failure. Answering quickly
+# with the last known presets is worth more than a longer wait, because presets
+# change when a person edits them, not every five minutes.
+PRESETS_TIMEOUT_S = 5.0
+PRESETS_TTL_S = 20.0
 
 
 def cookbook_presets() -> dict:
@@ -29,14 +39,20 @@ def cookbook_presets() -> dict:
     o = c.settings.get("odysseus")
     if not (o["url"] and o["token"] and o.get("use_presets")):
         return {"presets": [], "error": ""}
+    key = (o["url"], o["token"])
     cached = c.export_state.get("_ody_presets")
-    if cached and cached["key"] == (o["url"], o["token"]) and time.time() - cached["at"] < 20:
+    if cached and cached["key"] == key and time.time() - cached["at"] < PRESETS_TTL_S:
         return cached["value"]
     try:
-        value = {"presets": [p for p in as_list(client().cookbook()["presets"], "presets") if isinstance(p, dict)], "error": ""}
+        value = {"presets": [p for p in as_list(client(timeout=PRESETS_TIMEOUT_S).cookbook()["presets"], "presets")
+                             if isinstance(p, dict)], "error": ""}
     except OdysseusError as exc:
+        # A slow or briefly unreachable Odysseus should not empty the engine's
+        # model list. Keep the last good presets and say what went wrong.
+        if cached and cached["key"] == key and cached["value"].get("presets"):
+            return {**cached["value"], "error": str(exc)}
         value = {"presets": [], "error": str(exc)}
-    c.export_state["_ody_presets"] = {"at": time.time(), "key": (o["url"], o["token"]), "value": value}
+    c.export_state["_ody_presets"] = {"at": time.time(), "key": key, "value": value}
     return value
 
 
