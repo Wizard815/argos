@@ -513,6 +513,7 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 	cmd.Stdout = p.processLogger
 	launchEnv := applyLaunchEnvPolicy(p.id, args, p.config.Env)
 	cmd.Env = append(cmd.Environ(), launchEnv...)
+	cmd.Dir = p.config.Cwd
 	cmd.Cancel = func() error { return p.sendStopSignal(cmd) }
 	cmd.WaitDelay = p.waitDelay
 	setProcAttributes(cmd)

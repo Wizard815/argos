@@ -314,6 +314,12 @@ models:
     env:
       - "CUDA_VISIBLE_DEVICES=0,1,2"
 
+    # cwd: the folder the model's process starts in
+    # - optional, default: the engine's own working directory
+    # - servers installed from source (Kokoro, ComfyUI) look for their files
+    #   relative to their own folder; Servers -> Local fills this in for you
+    cwd: /data/runners/kokoro
+
     # proxy: the URL where Argos routes API requests
     # - optional, default: http://localhost:${PORT}
     # - if you used ${PORT} in cmd this can be omitted
