@@ -4,7 +4,7 @@ summary: Put every model in one pool so models load side by side while VRAM fits
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
 config_keys: [routing, models.*.vram]
-updated: 2026-10-11
+updated: 2026-10-21
 ---
 
 # VRAM-aware pool router
@@ -60,8 +60,9 @@ the model starts:
   neither card has 28 free, so the pool evicts until one card does.
 - A `HIP_VISIBLE_DEVICES` in a model's `env` limits the cards it may use.
 - Card ids come from `rocm-smi`, the numbering `HIP_VISIBLE_DEVICES` uses. If
-  `rocm-smi` is missing the pool falls back to `/sys/class/drm` and warns,
-  because those ids may not match. Set `cards` to be sure.
+  `rocm-smi` is missing the pool falls back to `/sys/class/drm`, numbers the
+  cards that have VRAM 0, 1, ... in that order (HIP's usual order, whatever
+  the DRM `cardN` numbers are) and warns. Set `cards` to be sure.
 - Set `placement: off` to plan by total VRAM only.
 
 Do not hard-code a card split such as `-ts 1,1` or `--device` in a model's

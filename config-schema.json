@@ -493,6 +493,11 @@
                         "default": [],
                         "description": "Array of environment variables to inject into cmd's environment. Each value is a string in ENV_NAME=value format."
                     },
+                    "cwd": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Folder the model's process starts in. Empty uses the engine's own working directory. Servers installed from source usually need their install folder here."
+                    },
                     "proxy": {
                         "type": "string",
                         "default": "http://localhost:${PORT}",

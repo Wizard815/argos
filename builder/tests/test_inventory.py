@@ -583,3 +583,15 @@ def test_Inventory_the_page_gets_speeds_once_the_background_pass_has_run(tmp_pat
     _speeds_done(inv)
     later = inv.models_summary()[0]
     assert later["decode"] == {"min": 10.0, "max": 55.0, "n": 3} and later["requests"] == 5
+
+
+def test_old_drm_card_numbers_in_load_history_are_shifted_down(tmp_path):
+    from src.db import Store
+    store = Store(str(tmp_path / "t.db"))
+    a = store.open_session({"model_id": "m", "started_at": 1.0, "last_seen": 1.0, "gpus": ["1", "2"]})
+    b = store.open_session({"model_id": "m", "started_at": 2.0, "last_seen": 2.0, "gpus": ["2"]})
+    c = store.open_session({"model_id": "m", "started_at": 3.0, "last_seen": 3.0, "gpus": ["0", "1"]})
+    assert store.renumber_session_gpus(2) == 2
+    gpus = {s["id"]: s["gpus"] for s in store.list_sessions()}
+    assert gpus[a] == ["0", "1"] and gpus[b] == ["1"] and gpus[c] == ["0", "1"]
+    assert store.renumber_session_gpus(2) == 0  # idempotent

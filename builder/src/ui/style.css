@@ -664,3 +664,10 @@ td.nowrap, .nowrap { white-space: nowrap; }
 .logs-sources .grp { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 4px; }
 pre.log.logs-big { max-height: 70dvh; min-height: 320px; }
 #gLaunches .grp { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 4px; }
+
+/* builder VRAM estimate: model | KV | buffers */
+.vram-sum { font-size: 12.5px; margin-bottom: 6px; }
+.vram-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); }
+.vram-bar i { display: block; height: 100%; }
+.vram-compare { margin-top: 8px; }
+.vram-compare tr.sel td { background: color-mix(in srgb, var(--fg) 6%, transparent); }

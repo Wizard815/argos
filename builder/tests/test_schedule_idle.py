@@ -81,3 +81,23 @@ def test_a_dead_engine_is_not_an_error(monkeypatch):
     monkeypatch.setattr(engine_api, "pool_state", boom)
     assert idle_unload(_Plans({"idle_unload_min": 30, "persistent": []}), _Store(time.time() - 9999),
                        "http://engine", lambda *a, **k: None) == []
+
+
+def test_a_model_just_loaded_for_an_old_favourite_is_not_unloaded(monkeypatch):
+    """Last request hours ago, but it was loaded a moment ago for a request still in flight."""
+    old = time.time() - 5 * 3600
+    plan = {"idle_unload_min": 30, "persistent": []}
+    # still starting: never touched
+    _, unloaded, _ = _run(monkeypatch, plan, old, pool=_pool("starting"))
+    assert unloaded == []
+    # ready, and this load began seconds ago
+    monkeypatch.setattr(engine_api, "pool_state", lambda url, timeout=3.0: _pool())
+    gone = []
+    monkeypatch.setattr(engine_api, "unload_model", lambda url, mid, timeout=60.0: gone.append(mid))
+    idle_unload(_Plans(plan), _Store(old), "http://engine", lambda *a, **k: None, loaded_at={"m1": time.time() - 5})
+    assert gone == []
+    # the engine says it served something a minute ago
+    from datetime import datetime, timezone
+    recent = datetime.fromtimestamp(time.time() - 60, timezone.utc).isoformat()
+    _, unloaded, _ = _run(monkeypatch, plan, old, pool=_pool(last_used=recent))
+    assert unloaded == []

@@ -15,7 +15,7 @@ from .command import parse_command
 from .cookbook import variant_id
 from .gguf import read_arch
 from .library import SHARD, prefab_command
-from .scheduler import GIB, effective_size, estimate_gib
+from .scheduler import CUSTOM_CACHE, GIB, KV_COMPARE, effective_size, estimate_gib, kv_gib
 
 _cache: dict[tuple, object] = {}
 
@@ -48,6 +48,43 @@ def arch_of(path: str) -> Optional[dict]:
     return _cache[key]  # type: ignore[return-value]
 
 
+CTX_COMPARE = (8192, 32768, 65536, 131072, 262144)
+
+
+def estimate_command(command: str, compare: bool = False, measured: Optional[dict] = None) -> dict:
+    """What a launch command needs in VRAM: model file + KV cache + buffers.
+
+    With ``compare``, also the KV cache alone for each cache type at a few context lengths, so the
+    builder can show "q8_0 at 128K is X GiB, turbo3 is Y".
+    """
+    try:
+        s = parse_command(command).summary()
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    path = s.get("model") or ""
+    weights = file_bytes(path) if path.lower().endswith(".gguf") else 0
+    if not weights:
+        return {"ok": False, "error": f"model file not found: {path}" if path else "no --model in the command", "path": path}
+    extra = sum(file_bytes(p) for p in (s.get("mmproj"), s.get("model_draft")) if p)
+    arch = arch_of(path)
+    ctx = s.get("ctx_size") or (arch or {}).get("train_ctx") or 4096
+    ck, cv = s.get("cache_type_k") or "", s.get("cache_type_v") or ""
+    out = {"ok": True, "path": path, "ctx": ctx, "cache_k": ck or "f16", "cache_v": cv or ck or "f16",
+           "train_ctx": (arch or {}).get("train_ctx"), "extra_gib": round(extra / GIB, 2),
+           **estimate_gib(weights, arch, ctx, ck, cv, extra)}
+    if compare and arch:
+        ctxs = sorted({*(c for c in CTX_COMPARE if c <= max(ctx, (arch or {}).get("train_ctx") or ctx)), ctx})
+        types = list(dict.fromkeys([*KV_COMPARE, *CUSTOM_CACHE, *(t for t in (ck, cv) if t)]))
+        out["compare"] = {"ctx": ctxs, "types": [{"type": t, "kv_gib": [kv_gib(arch, c, t, t) for c in ctxs]} for t in types]}
+    # a load that really happened replaces the guess: the plan records what the GPU gained each time this
+    # exact profile loaded cleanly (and forgets it when the profile's command changes)
+    if measured and measured.get("gib"):
+        out["estimate_gib"] = out["gib"]
+        out["gib"] = measured["gib"]
+        out["measured"] = {"gib": measured["gib"], "at": measured.get("at"), "per_card": measured.get("per_card")}
+    return out
+
+
 def _row(row_id: str, name: str, kind: str, command: str, plan: dict, known: Optional[set[str]],
          extra: dict) -> tuple[dict, str]:
     try:
@@ -65,7 +102,9 @@ def _row(row_id: str, name: str, kind: str, command: str, plan: dict, known: Opt
     row = {
         "id": row_id, "name": name, "kind": kind, "path": path, "ctx": ctx,
         "cache_k": s.get("cache_type_k") or "", "cache_v": s.get("cache_type_v") or "",
-        "file_gib": round(weights / GIB, 2), "estimate": est, "plan_gib": plan["sizes"].get(row_id),
+        "file_gib": round(weights / GIB, 2), "estimate": est,
+        # a .gguf the command names that is not on disk: the model cannot start, and it has no size
+        "missing": bool(path.lower().endswith(".gguf") and not weights), "plan_gib": plan["sizes"].get(row_id),
         "measured": plan["measured"].get(row_id), "effective_gib": round(size, 2), "source": source,
         "persistent": row_id in plan["persistent"], "known": None if known is None else row_id in known,
         **extra,
