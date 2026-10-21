@@ -24,6 +24,18 @@ var identityMapPaths = map[string]bool{
 	"routing.router.settings.matrix": true,
 }
 
+// LoadConfigSourcesKeepingPorts is LoadConfigSources for a reload: every
+// model that had a ${PORT} in prev keeps it while no other model holds it, so
+// a running model whose own config did not change is carried over instead of
+// restarted when a model is added or removed.
+func LoadConfigSourcesKeepingPorts(configPath, configDir string, prev map[string]int) (Config, error) {
+	portHintsMu.Lock()
+	defer portHintsMu.Unlock()
+	portHints = prev
+	defer func() { portHints = nil }()
+	return LoadConfigSources(configPath, configDir)
+}
+
 // LoadConfigSources loads and merges configuration from -config (optional)
 // and -config-dir (optional). At least one must be provided. The -config file
 // is loaded first; *.yml/*.yaml files directly under -config-dir are then

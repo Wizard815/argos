@@ -55,6 +55,9 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		return Config{}, err
 	}
 	config.Macros = macroConfig.Macros
+	if len(macroConfig.Ports) > 0 {
+		config.Ports = macroConfig.Ports
+	}
 	for modelID, modelConfig := range config.Models {
 		modelConfig.Macros = macroConfig.Models[modelID].Macros
 		config.Models[modelID] = modelConfig

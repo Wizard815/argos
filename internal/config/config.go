@@ -202,6 +202,10 @@ type Config struct {
 	// automatic port assignments
 	StartPort int `yaml:"startPort"`
 
+	// Ports is the port each model's ${PORT} resolved to. Not configuration:
+	// a reload passes it back so running models keep their ports.
+	Ports map[string]int `yaml:"-" json:"-"`
+
 	// hooks, see: #209
 	Hooks HooksConfig `yaml:"hooks"`
 
