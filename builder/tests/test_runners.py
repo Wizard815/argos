@@ -173,3 +173,16 @@ def test_a_source_build_checks_its_tools_first(monkeypatch):
     assert steps[0] == {"needs": ["git", "cmake", "c++", "hipconfig"]}
     monkeypatch.setattr(runners.shutil, "which", lambda n, path=None: None if n in ("cmake", "hipconfig") else f"/usr/bin/{n}")
     assert runners.missing_tools(["git", "cmake", "c++", "hipconfig"]) == ["cmake", "hipconfig"]
+
+
+def test_a_whisper_server_you_built_is_used_without_installing(tmp_path):
+    exe = tmp_path / "mine" / "whisper-server"
+    _touch(str(exe))
+    _touch(str(tmp_path / "runners" / "whisper" / "models" / "ggml-base.en.bin"))
+    r = Runners(_Store(), _Settings(str(tmp_path / "runners")), lambda *a, **k: None, lambda: "", lambda d: [])
+    rec = r.records()
+    rec["whisper"]["opts"] = {"program": str(exe)}
+    r.save(rec)
+    e = r.entries()
+    assert list(e) == ["ggml-base.en"] and e["ggml-base.en"]["cmd"].startswith(str(exe).replace("\\", "/") if os.name == "nt" else str(exe))
+    assert r.found(rec["whisper"])["detail"] == "your own build"

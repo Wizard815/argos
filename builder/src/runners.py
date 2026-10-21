@@ -480,12 +480,21 @@ class Runners:
     def folder(self, r: dict) -> str:
         return r.get("folder") or os.path.join(self.root(), r["id"])
 
+    def found(self, r: dict) -> dict:
+        """What is installed for this runner. A program you point at (one you built yourself) is used as it is."""
+        own = str((r.get("opts") or {}).get("program") or "").strip()
+        if own and r["kind"] in ("whisper", "sdcpp"):
+            if os.path.isfile(own):
+                return {"installed": True, "program": own, "detail": "your own build", "build": r.get("device", "cpu")}
+            return {"installed": False, "program": "", "detail": f"not found: {own}"}
+        return detect(r["kind"], self.folder(r))
+
     def view(self) -> dict:
         """Every runner and add-on with what is installed and which models it serves."""
         out = []
         models = self.served()
         for r in self.records().values():
-            d = detect(r["kind"], self.folder(r)) if r["kind"] != "custom" else {
+            d = self.found(r) if r["kind"] != "custom" else {
                 "installed": bool((r.get("opts") or {}).get("start")), "program": "", "detail": (r.get("opts") or {}).get("task") or ""}
             t = TYPES.get(r["kind"]) or ADDONS.get(r["kind"]) or {}
             out.append({**r, **d, "label": r.get("label") or t.get("label") or r["id"], "about": t.get("about", ""),
@@ -576,7 +585,7 @@ class Runners:
             device = r.get("device", "cpu")
             folder = self.folder(r)
             if r["kind"] == "whisper":
-                d = detect("whisper", folder)
+                d = self.found(r)
                 if not d["installed"]:
                     continue
                 args = [d["program"], "--host", "127.0.0.1", "--port", "${PORT}", "-m", m["path"],
@@ -598,7 +607,7 @@ class Runners:
                      "vram": 0.1 if device == "cpu" else 1.5,
                      "capabilities": {"in": ["text"], "out": ["audio"]}}
             elif r["kind"] == "sdcpp":
-                d = detect("sdcpp", folder)
+                d = self.found(r)
                 if not d["installed"]:
                     continue
                 extra = ((r.get("opts") or {}).get("model_args") or {}).get(m["id"], "")

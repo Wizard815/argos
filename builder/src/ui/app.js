@@ -2918,7 +2918,7 @@ const SETTINGS_FORM = [
     { k: "jinja", label: "--jinja for chat models", type: "check" },
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
     { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
-  { group: "gpu", title: "GPU tools", hint: "Where the GPU toolkits are. Blank uses whatever is on PATH inside Argos, which is all most setups need. For a custom ROCm (a TheRock build for gfx906, say) or a second CUDA: mount its folder into the Argos container (a volume in docker-compose, e.g. /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro), then put the mounted path here. Runner builds then use its compiler, and runners started by the engine use its libraries. Servers → Local shows which tools it finds.", fields: [
+  { group: "gpu", title: "GPU tools", hint: "Where the GPU toolkits are. Blank uses whatever is on PATH inside Argos, which is all most setups need. For a custom ROCm (a TheRock build for gfx906, say) or a second CUDA: mount its folder into the Argos container (a volume in docker-compose, e.g. /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro), then put the mounted path here. Runner builds then use its compiler, and runners started by the engine use its libraries.", fields: [
     { k: "rocm_path", label: "ROCm location", ph: "/opt/rocm-gfx906" },
     { k: "cuda_path", label: "CUDA location", ph: "/usr/local/cuda-12.4" },
     { k: "rocm_smi", label: "rocm-smi to use", ph: "/opt/rocm-gfx906/bin/rocm-smi", hint: "blank = the one in the ROCm location, else on PATH" },
@@ -2970,8 +2970,10 @@ function renderSettings() {
         if (g.group === "paths") loadLibrary();
       } catch (e) { fail(e); }
     };
+    const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;
+    if (tools) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; fill(tools, toolsLine()); }).catch(() => {});
     return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, g.title), h("span", { class: "spacer" }), btn("Save", save, "sm primary", "save")),
-      g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)));
+      g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)), tools);
   }));
 }
 
@@ -3047,9 +3049,12 @@ function runnerCard(r) {
       rocm ? torchPicker(r) : null,
       rocm ? opt("torch_index", "…or paste a link to a build", "https://example.org/torch-builds/index.txt",
         "Paste where the build lives, one of: an index.txt that lists wheel files (how ML-gfx906 publishes its MI50 builds: copy the URL from its Wheels table for your ROCm version); a pip index URL; or .whl files or links, comma separated. Install creates the environment in that build's Python (3.12 for ML-gfx906), installs the build, then Kokoro without the stock ROCm PyTorch. Blank: the stock one.") : null]
-    : r.kind === "sdcpp" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/stable-diffusion.cpp-fork", "blank = the latest prebuilt release on Windows, the official repo built from source elsewhere"),
+    : r.kind === "sdcpp" ? [opt("program", "Use an sd-server you already built (optional)", "/opt/sdcpp/build/bin/sd-server", "With this set Argos uses that file and never compiles."),
+      opt("repo", "Git repository (optional)", "https://github.com/someone/stable-diffusion.cpp-fork", "blank = the latest prebuilt release on Windows, the official repo built from source elsewhere"),
       rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "Blank: Install asks rocminfo which chip families this machine has (gfx906 for MI50/MI60) and builds for them.") : null]
-    : r.kind === "whisper" ? [opt("args", "Extra arguments (optional)", "--threads 8 --beam-size 5",
+    : r.kind === "whisper" ? [opt("program", "Use a whisper-server you already built (optional)", "/opt/whisper/build/bin/whisper-server",
+        "A built program, not a repo: with this set Argos uses that file and never compiles. Leave blank to install from a repository below."),
+      opt("args", "Extra arguments (optional)", "--threads 8 --beam-size 5",
         "Added to every whisper-server this runner starts. Argos already passes the host, port, model and the OpenAI path, and starts and stops the server itself, so a fork's own --lazy-load and --idle-timeout are best left out: they are off unless you add them here."),
       opt("repo", "Git repository (optional)", "https://github.com/someone/whisper.cpp-fork", "blank = prebuilt on Windows, the official whisper.cpp elsewhere; a fork builds from source"),
       rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "ROCm compiles the GPU code ahead of time for each chip family, with no generic fallback, so the build has to name yours. Blank: Install asks rocminfo which this machine has (gfx906 for MI50/MI60) and builds for all of them. Fill it only to build for other cards, comma separated.") : null]
@@ -3155,7 +3160,6 @@ function renderLocal() {
   fill($("#lcList"),
     h("p", { class: "hint" }, "Runners are servers installed inside Argos for models llama-server cannot run. You never pick one per model: the model's type does (a speech-to-text file goes to whisper, Kokoro serves its own voices), and a model's row lets you change it. Argos writes the engine's entries itself",
       D.engine_file ? h("span", { title: D.engine_file }, " (runners.generated.yaml in the engine's config folder).") : ". It cannot here: the engine's config folder is not known (ARGOS_SCHEDULE_FILE)."),
-    toolsLine(),
     h("p", { class: "hint" }, "Each runner has its own folder in the ", h("span", { title: D.root, class: "mono-sm" }, "runners"),
       " folder (hover for where). Clients call the usual OpenAI paths on this Argos with the model name, or the standard names: whisper-1 for transcription, tts-1 for speech."),
     runners.filter((r) => r.kind !== "custom").map(runnerCard),
