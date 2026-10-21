@@ -16,7 +16,7 @@ from ..web import body, ctx, err, ok
 
 bp = Blueprint("runners", __name__)
 EDITABLE = ("device", "enabled", "label", "folder")
-OPTS = ("repo", "torch_index", "gpu_target", "default_model", "program", "install", "start", "check", "task", "alias", "vram",
+OPTS = ("args", "repo", "torch_index", "gpu_target", "default_model", "program", "install", "start", "check", "task", "alias", "vram",
         "models_glob", "model_args")
 
 
@@ -35,7 +35,8 @@ def runners_list():
 @bp.get("/api/runners/torch-builds")
 def runners_torch_builds():
     """Custom PyTorch builds Argos knows of, and the GPU architectures this machine has, for the picker."""
-    return ok(builds=torch_builds(), archs=list(rocm_archs()))
+    from .. import gputools
+    return ok(builds=torch_builds(), archs=list(rocm_archs()), tools=gputools.status())
 
 
 @bp.put("/api/runners/<rid>")
@@ -119,7 +120,7 @@ def runners_install(rid):
             pass
 
     try:
-        job = c.runners.installer.start(rid, folder, steps, done)
+        job = c.runners.installer.start(rid, folder, steps, done, r.get("device", ""))
     except RuntimeError as exc:
         return err(str(exc), 409)
     c.event("runners", f"installing {rid} ({r.get('device', 'cpu')})", data={"runner": rid, "steps": len(steps)})

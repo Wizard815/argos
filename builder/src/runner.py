@@ -12,6 +12,8 @@ import errno
 import json
 import os
 import shutil
+
+from . import gputools
 import signal
 import socket
 import subprocess
@@ -250,7 +252,7 @@ class GpuSampler:
              "--format=csv,noheader,nounits"]
 
     def __init__(self, interval: float = 0.25):
-        self.exe = shutil.which("nvidia-smi")
+        self.exe = gputools.tool("nvidia-smi")
         self.interval = interval
         self.peak: dict = {}
         self._stop = threading.Event()

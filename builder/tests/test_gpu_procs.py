@@ -14,7 +14,7 @@ PID     PROCESS NAME    GPU(s)  VRAM USED       SDMA USED       CU OCCUPANCY
 
 
 def test_rocm_showpids_is_parsed(monkeypatch):
-    monkeypatch.setattr(gpu_procs.shutil, "which", lambda name: "rocm-smi" if name == "rocm-smi" else None)
+    monkeypatch.setattr(gpu_procs.gputools, "tool", lambda name: "rocm-smi" if name == "rocm-smi" else "")
     monkeypatch.setattr(gpu_procs, "_run", lambda argv, timeout=8.0: ROCM)
     monkeypatch.setattr(gpu_procs, "_commands", lambda pids: {4242: "llama-server -m /m/x.gguf --port 5801"})
     out = gpu_procs.listing([{"model": "qwen-embed", "cmd": "llama-server -m /m/x.gguf --port 5801"}], [])

@@ -153,7 +153,8 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
         wanted = str(opts.get("gpu_target") or "").strip() or ",".join(rocm_archs()) if device == "rocm" else ""
         targets = ";".join(t.strip().lower() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
         flags = {"cpu": "", "cuda": "-DGGML_CUDA=1", "rocm": f'-DGGML_HIP=1 "-DAMDGPU_TARGETS={targets}"'}[device]
-        steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
+        steps = [{"needs": build_needs(device)}]
+        steps += [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         # ROCm: point CMake at ROCm's own clang, as whisper.cpp's HIP build expects (an SDK image sets these already)
         hip = ('if command -v hipconfig >/dev/null 2>&1; then export HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)"; fi; '
                if device == "rocm" and not WINDOWS else "")
@@ -166,7 +167,8 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
             if device == "cuda":  # the CUDA 12 runtime it needs: reused from another install when one has it
                 steps.append({"cuda_runtime": os.path.join(folder, "bin")})
             return steps
-        steps = [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 --recursive "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
+        steps = [{"needs": build_needs(device)}]
+        steps += [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 --recursive "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         if device == "rocm":
             wanted = str(opts.get("gpu_target") or "").strip() or ",".join(rocm_archs())
             targets = ";".join(t.strip().lower() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
@@ -185,6 +187,21 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
         steps = [] if not repo or os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         return steps + [{"run": line} for line in (opts.get("install") or "").splitlines() if line.strip()]
     return []
+
+
+def build_needs(device: str) -> list[str]:
+    """What a source build needs on this machine: the build tools, and the GPU compiler for the device."""
+    return ["git", "cmake", "c++"] + (["hipconfig"] if device == "rocm" else ["nvcc"] if device == "cuda" else [])
+
+
+APT = {"git": "git", "cmake": "cmake", "c++": "build-essential"}
+
+
+def missing_tools(needs: list[str]) -> list[str]:
+    from . import gputools
+    path = gputools.env().get("PATH")
+    found = {"c++": shutil.which("c++", path=path) or shutil.which("g++", path=path) or shutil.which("clang++", path=path)}
+    return [n for n in needs if not (found.get(n) if n in found else shutil.which(n, path=path))]
 
 
 def torch_source(value: str) -> Optional[dict]:
@@ -262,26 +279,45 @@ class Installer:
     def status(self, rid: str) -> dict:
         return dict(self.jobs.get(rid) or {"state": "idle", "log": ""})
 
-    def start(self, rid: str, folder: str, steps: list[dict], done: Callable[[bool, str], None]) -> dict:
+    def start(self, rid: str, folder: str, steps: list[dict], done: Callable[[bool, str], None], device: str = "") -> dict:
         with self._lock:
             if (self.jobs.get(rid) or {}).get("state") == "running":
                 raise RuntimeError("already installing")
             job = {"state": "running", "log": "", "step": 0, "steps": len(steps), "started": time.time()}
             self.jobs[rid] = job
         os.makedirs(folder, exist_ok=True)
-        threading.Thread(target=self._run, args=(job, folder, steps, done), daemon=True, name=f"install-{rid}").start()
+        threading.Thread(target=self._run, args=(job, folder, steps, done, device), daemon=True, name=f"install-{rid}").start()
         return dict(job)
 
     @staticmethod
     def _say(job: dict, text: str) -> None:
         job["log"] = (job["log"] + text)[-200_000:]
 
-    def _run(self, job: dict, folder: str, steps: list[dict], done) -> None:
+    def _run(self, job: dict, folder: str, steps: list[dict], done, device: str = "") -> None:
+        from . import gputools
         ok, err = True, ""
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        # the configured ROCm / CUDA (Settings -> GPU tools) in front, so a build finds that compiler and those libraries
+        env = {**gputools.env(device=device), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
         for i, step in enumerate(steps):
             job["step"] = i + 1
             try:
+                if "needs" in step:
+                    missing = missing_tools(step["needs"])
+                    self._say(job, "$ check tools: " + ", ".join(step["needs"]) + (f" (missing: {', '.join(missing)})" if missing else " (all here)") + "\n")
+                    apt = [APT[n] for n in missing if n in APT]
+                    if apt:
+                        if not shutil.which("apt-get") or (hasattr(os, "geteuid") and os.geteuid() != 0):
+                            raise RuntimeError(f"{', '.join(n for n in missing if n in APT)} not installed, and this machine cannot "
+                                               "apt-get them: install them in the Argos image")
+                        step = {"run": "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
+                                       + " ".join(sorted(set(apt)))}
+                    gpu = [n for n in missing if n not in APT]
+                    if gpu:
+                        what = "ROCm compiler (hipconfig, hipcc, ROCm's clang)" if "hipconfig" in gpu else "CUDA compiler (nvcc)"
+                        raise RuntimeError(f"no {what} here. Building for this GPU needs the toolkit's SDK, not only its runtime: set "
+                                           "Settings -> GPU tools to an SDK mounted into Argos, or base the Argos image on an SDK image")
+                    if "run" not in step:
+                        step = {}
                 if "wheels_index" in step:
                     url = step["wheels_index"]
                     self._say(job, f"$ read {url}\n")
@@ -545,7 +581,8 @@ class Runners:
                     continue
                 args = [d["program"], "--host", "127.0.0.1", "--port", "${PORT}", "-m", m["path"],
                         "--inference-path", "/v1/audio/transcriptions"] + (["-ng"] if device == "cpu" else [])
-                e = {"cmd": _join(args), "cwd": os.path.dirname(d["program"]), "checkEndpoint": "/",
+                extra = str((r.get("opts") or {}).get("args") or "").strip()
+                e = {"cmd": _join(args) + (f" {extra}" if extra else ""), "cwd": os.path.dirname(d["program"]), "checkEndpoint": "/",
                      "vram": 0.1 if device == "cpu" else round(m["size"] / 2 ** 30 * 1.3 + 0.3, 2),
                      "capabilities": {"in": ["audio"], "out": ["text"]}}
                 if m["id"] == default_stt:
@@ -583,6 +620,10 @@ class Runners:
                     e["aliases"] = [a.strip() for a in str(o["alias"]).split(",") if a.strip()]
             else:
                 continue
+            from . import gputools
+            tool_env = gputools.run_env(device)
+            if tool_env:  # a custom ROCm / CUDA: the server finds its libraries there
+                e["env"] = [*e.get("env", []), *tool_env]
             e["metadata"] = {"argos": {"runner": r["kind"], "runner_id": r["id"], "task": m.get("task") or "", "device": device}}
             out[m["id"]] = e
         return out
