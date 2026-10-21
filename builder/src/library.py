@@ -18,6 +18,7 @@ file: the user's defaults from Settings, adjusted for the kind of model.
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import re
 import shlex
@@ -95,9 +96,11 @@ def media_kind(rel_path: str) -> Optional[tuple[str, str]]:
 # /mnt/user), where every listing and stat is a round trip. A page load asks for the library from a dozen
 # places, so the walk is shared: one at a time, kept for SCAN_TTL_S, and dropped as soon as this app changes
 # the folder (a download finishing, a delete, a rescan).
+log = logging.getLogger("argos.library")
 SCAN_TTL_S = 60.0
 _scan_lock = threading.RLock()
 _scans: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+_rebuilding: set[tuple[str, str]] = set()
 
 
 def forget_scans() -> None:
@@ -107,13 +110,49 @@ def forget_scans() -> None:
 
 
 def _cached(kind: str, fn: Callable[[str], list[dict]], models_dir: str) -> list[dict]:
+    """The scan, from cache, without ever making a request wait for a walk.
+
+    This used to re-walk inside the lock whenever the entry was older than
+    SCAN_TTL_S. On a share where the walk takes longer than that TTL it means
+    every single request re-walks, and every other thread queues behind the
+    lock while it does - so one slow folder stopped the whole app. The pool
+    filled, the task queue grew without limit, and the page timed out.
+
+    Now an entry past its TTL is served as it is and rebuilt by one background
+    thread. Only a scan with nothing to serve - the first ask, or the one right
+    after forget_scans() - waits, which is what keeps a delete or a rescan
+    visible immediately.
+    """
     key = (kind, models_dir)
     with _scan_lock:
         hit = _scans.get(key)
-        if hit is None or time.time() - hit[0] > SCAN_TTL_S:
-            hit = (time.time(), fn(models_dir))
-            _scans[key] = hit
-        return copy.deepcopy(hit[1])
+        if hit is None:
+            value = fn(models_dir)
+            _scans[key] = (time.time(), value)
+            return copy.deepcopy(value)
+        value = copy.deepcopy(hit[1])
+        start = time.time() - hit[0] > SCAN_TTL_S and key not in _rebuilding
+        if start:
+            _rebuilding.add(key)
+    if start:
+        # Outside the lock, so readers are never held up by a walk.
+        threading.Thread(target=_rebuild, args=(key, fn, models_dir), daemon=True,
+                         name="library-scan").start()
+    return value
+
+
+def _rebuild(key: tuple[str, str], fn: Callable[[str], list[dict]], models_dir: str) -> None:
+    try:
+        value = fn(models_dir)
+    except Exception:  # noqa: BLE001 - a failed walk keeps the last good list
+        log.exception("library scan failed; keeping the last list")
+        value = None
+    finally:
+        with _scan_lock:
+            _rebuilding.discard(key)
+    if value is not None:
+        with _scan_lock:
+            _scans[key] = (time.time(), value)
 
 
 def scan_models(models_dir: str) -> list[dict]:

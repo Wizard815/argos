@@ -24,9 +24,17 @@ services:
       # starting values for the Schedule page (setup.sh writes them to .env); the page can change them later
       - ARGOS_SCHEDULE_POOL=${ARGOS_SCHEDULE_POOL:-}
       - ARGOS_SCHEDULE_CARDS=${ARGOS_SCHEDULE_CARDS:-}
-      # The database. ARGOS_DATABASE_URL wins; with it unset the builder falls back to
-      # the SQLite file under /data, so a deployment can move across without a flag day.
-      - ARGOS_DATABASE_URL=${ARGOS_DATABASE_URL:-postgresql://${POSTGRES_USER:-argos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-argos}}
+      # The database. LEAVE THIS UNSET to keep using the SQLite files under /data.
+      #
+      # It has no default on purpose. An earlier version defaulted it to the
+      # Postgres URL, which meant every deployment that had not opted in quietly
+      # switched to a freshly created, empty database - the app came up in a
+      # fraction of a second showing no profiles, no runs and no history, because
+      # there was nothing in it. Nothing was lost, but nothing was migrated either.
+      #
+      # Set it in .env AFTER running scripts/migrate_to_postgres.py:
+      #   ARGOS_DATABASE_URL=postgresql://argos:YOUR_PASSWORD@postgres:5432/argos
+      - ARGOS_DATABASE_URL=${ARGOS_DATABASE_URL:-}
     depends_on:
       postgres:
         condition: service_healthy

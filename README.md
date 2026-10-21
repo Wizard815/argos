@@ -50,7 +50,7 @@ More settings are in [docs/configuration.md](docs/configuration.md). Running wit
 
 By default Argos keeps its data in SQLite files under `./data` — one for the builder, one for the engine. You can run both on Postgres instead, which is worth doing when more than one thing writes at once: a single file serialises its writers, and one long read can stop its journal from checkpointing until every query has to walk a growing log.
 
-`docker-compose.yml` already has the service. Set a password and start the stack:
+**Starting the postgres service does not switch Argos over to it.** Argos stays on the SQLite files until you set `ARGOS_DATABASE_URL`, so starting the stack first is safe. `docker-compose.yml` already has the service — set a password and start it:
 
 ```sh
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
@@ -60,8 +60,10 @@ docker compose up -d --build
 Then move the data across — **this is the script; you do not re-run `setup.sh`**:
 
 ```sh
-docker compose exec argos python scripts/migrate_to_postgres.py
+docker compose exec argos argos-migrate
 ```
+
+If you are on an older image, or want to see what it would do first, `argos-migrate` passes anything through to the script: `docker compose exec argos argos-migrate --dry-run`. The container has no system Python — uv brings its own at `/opt/venv` — so `python scripts/...` is not a command that works in there.
 
 It copies the builder's database and the engine's activity log in one pass. Then switch over:
 

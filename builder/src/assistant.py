@@ -777,14 +777,32 @@ class Assistant:
 
     def context_tokens(self, digest: Optional[str] = None) -> int:
         if digest is None:
-            # The page asks on every load and every few seconds in the Assistant view, and building the digest is
-            # a dozen database queries. A count that is half a minute old is as good for a meter.
+            # The page asks on every load and every few seconds in the Assistant
+            # view, and building the digest is a dozen database queries plus
+            # whatever the tools answer. A count that is half a minute old is as
+            # good for a meter - so past the memo's age the last one is served
+            # and rebuilt off the request, rather than making the page wait for
+            # it. Rebuilding inline is what made this endpoint take 28 seconds.
             stamp, text = getattr(self, "_digest_memo", (0.0, ""))
-            if time.time() - stamp > 30:
+            if not text:
                 text = self.digest()
                 self._digest_memo = (time.time(), text)
+            elif time.time() - stamp > 30 and not getattr(self, "_digest_busy", False):
+                self._digest_busy = True
+                threading.Thread(target=self._refresh_digest, daemon=True,
+                                 name="assistant-digest").start()
             digest = text
         return sum(estimate_tokens(m["content"]) for m in self._prompt(digest))
+
+    def _refresh_digest(self) -> None:
+        try:
+            text = self.digest()
+        except Exception:  # noqa: BLE001 - keep the last good digest
+            logger.exception("could not rebuild the assistant digest")
+        else:
+            self._digest_memo = (time.time(), text)
+        finally:
+            self._digest_busy = False
 
     def reset(self) -> None:
         self.store.clear_chat()

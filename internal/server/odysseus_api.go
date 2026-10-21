@@ -20,9 +20,12 @@ import (
 // timer, the GET /v1/models trigger and the manual endpoint from stampeding the
 // same endpoint and writing the same file concurrently.
 type odysseusState struct {
-	mu          sync.Mutex
-	lastRun     time.Time
-	lastErr     string
+	mu      sync.Mutex
+	lastRun time.Time
+	lastErr string
+	// failed is whether the last refresh attempt failed, so a run of failures
+	// can be reported once rather than on every attempt.
+	failed      bool
 	lastModels  int
 	lastProfile int
 	lastWrote   bool
@@ -37,6 +40,39 @@ type odysseusState struct {
 	// /v1/models listing, and an unmappable preset would otherwise repeat the
 	// same line indefinitely.
 	lastWarnings []string
+}
+
+// logRefreshFailure reports a failing refresh once, and stays quiet until it
+// recovers.
+//
+// Three things refresh on their own clocks - the timer, the GET /v1/models
+// trigger, and the manual endpoint - and the /v1/models trigger fires at most
+// every odysseusMinTriggerInterval. When Odysseus is unreachable, each of them
+// failed and each of them logged, so a single unreachable dependency produced a
+// warning every thirty seconds for as long as it stayed down and buried
+// everything else in the log. The first failure is worth knowing about; the
+// hundred after it are the same news.
+func (s *Server) logRefreshFailure(where string, err error) {
+	s.odysseus.mu.Lock()
+	already := s.odysseus.failed
+	s.odysseus.failed = true
+	s.odysseus.mu.Unlock()
+	if !already {
+		s.proxylog.Warnf("odysseus: %s refresh failed: %v "+
+			"(further failures are not logged until it recovers)", where, err)
+	}
+}
+
+// logRefreshSuccess reports the recovery, once, and nothing on the ordinary
+// path where refreshes have been working all along.
+func (s *Server) logRefreshSuccess(where string) {
+	s.odysseus.mu.Lock()
+	was := s.odysseus.failed
+	s.odysseus.failed = false
+	s.odysseus.mu.Unlock()
+	if was {
+		s.proxylog.Infof("odysseus: %s refresh recovered", where)
+	}
 }
 
 // odysseusMinTriggerInterval coalesces the /v1/models trigger. That endpoint is
@@ -162,9 +198,10 @@ func (s *Server) startOdysseusRefresh() {
 		defer cancel()
 		rr, err := s.runOdysseusRefresh(ctx)
 		if err != nil {
-			s.proxylog.Warnf("odysseus: startup refresh failed: %v", err)
+			s.logRefreshFailure("startup", err)
 			return
 		}
+		s.logRefreshSuccess("startup")
 		s.proxylog.Infof("odysseus: startup refresh found %d variant(s) in %d profile(s), config changed=%v",
 			rr.Models, rr.Profiles, rr.Wrote)
 	}()
@@ -176,7 +213,13 @@ func (s *Server) startOdysseusRefresh() {
 	}
 
 	go func() {
-		ticker := time.NewTicker(time.Duration(cfg.RefreshSeconds) * time.Second)
+		// Backing off while it fails: retrying an unreachable dependency at full
+		// rate every few minutes for days is a lot of work to learn the same
+		// thing, and it is what filled the log.
+		interval := time.Duration(cfg.RefreshSeconds) * time.Second
+		const backoffCap = 8
+		next := interval
+		ticker := time.NewTicker(next)
 		defer ticker.Stop()
 		for {
 			select {
@@ -187,9 +230,17 @@ func (s *Server) startOdysseusRefresh() {
 				rr, err := s.runOdysseusRefresh(ctx)
 				cancel()
 				if err != nil {
-					s.proxylog.Warnf("odysseus: periodic refresh failed: %v", err)
+					s.logRefreshFailure("periodic", err)
+					next *= 2
+					if next > interval*backoffCap {
+						next = interval * backoffCap
+					}
+					ticker.Reset(next)
 					continue
 				}
+				s.logRefreshSuccess("periodic")
+				next = interval
+				ticker.Reset(next)
 				if rr.Wrote {
 					s.proxylog.Infof("odysseus: refresh found %d variant(s) in %d profile(s), config changed",
 						rr.Models, rr.Profiles)
@@ -219,9 +270,10 @@ func (s *Server) triggerBackgroundOdysseusRefresh() {
 		defer cancel()
 		rr, err := s.runOdysseusRefresh(ctx)
 		if err != nil {
-			s.proxylog.Warnf("odysseus: background refresh failed: %v", err)
+			s.logRefreshFailure("background", err)
 			return
 		}
+		s.logRefreshSuccess("background")
 		if rr.Wrote {
 			s.proxylog.Infof("odysseus: background refresh found %d variant(s) in %d profile(s), config changed",
 				rr.Models, rr.Profiles)
@@ -249,7 +301,7 @@ func (s *Server) handleAPIOdysseusRefresh(w http.ResponseWriter, r *http.Request
 
 	rr, err := s.runOdysseusRefresh(ctx)
 	if err != nil {
-		s.proxylog.Warnf("odysseus: refresh failed: %v", err)
+		s.logRefreshFailure("manual", err)
 		w.WriteHeader(http.StatusBadGateway)
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok":       false,

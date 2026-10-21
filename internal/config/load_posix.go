@@ -11,9 +11,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func isDatabaseURL(path string) bool {
+	p := strings.TrimSpace(path)
+	return strings.HasPrefix(p, "postgres://") || strings.HasPrefix(p, "postgresql://")
+}
+
 func validateStorePath(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("store.path must not be empty")
+	}
+
+	// A database URL is not a file. Without this it gets stat-ed, found not to
+	// exist, and its "parent directory" checked for writability - which fails
+	// with an error about a directory that has nothing to do with anything.
+	if isDatabaseURL(path) {
+		return nil
 	}
 
 	if info, err := os.Stat(path); err != nil {
