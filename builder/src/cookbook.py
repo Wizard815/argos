@@ -26,6 +26,20 @@ def _label_key(label: str) -> str:
     return key[:40].strip("-")
 
 
+def _numbered(name: str, n: int) -> str:
+    """The n-th label to try for ``name`` when the plain one is taken: "name 2", "name 3", ...
+
+    The key is cut at 40 characters, so for a long name "name 2" cuts back to the very key that was taken and
+    the search never ended (every page that listed profiles spun one CPU forever). Then the number is kept and
+    the name is cut instead; that label is already a key, so the engine derives the same variant id from it.
+    """
+    label = f"{name} {n}"
+    if _label_key(label).endswith(f"-{n}"):
+        return label
+    suffix = f"-{n}"
+    return (_label_key(name)[:40 - len(suffix)].strip("-") + suffix).lstrip("-")
+
+
 def profile_presets(profiles: list[dict], taken: Optional[dict] = None,
                     always: Optional[dict] = None) -> tuple[list[dict], list[str]]:
     """Profiles -> Odysseus presets. ``taken`` maps model ID -> labels already used; ``always`` adds the global env and flags."""
@@ -45,7 +59,7 @@ def profile_presets(profiles: list[dict], taken: Optional[dict] = None,
         mid = swap_model_id(model_path)
         label, n = p["name"], 2
         while _label_key(label) in taken.setdefault(mid, set()) or not _label_key(label):
-            label = f"{p['name']} {n}"
+            label = _numbered(p["name"], n)
             n += 1
         taken[mid].add(_label_key(label))
         text = cmd.to_string(style="odysseus")
