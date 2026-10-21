@@ -21,6 +21,8 @@ import glob
 import json
 import os
 import shutil
+
+from . import gputools
 import subprocess
 import threading
 import time
@@ -91,7 +93,7 @@ def parse_nvidia_csv(text: str) -> list[dict]:
 
 
 def read_nvidia_smi() -> list[dict]:
-    exe = shutil.which("nvidia-smi")
+    exe = gputools.tool("nvidia-smi")
     if not exe:
         return []
     try:

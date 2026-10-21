@@ -376,7 +376,7 @@ const onShow = {
   serverlogs: () => { loadServerLogs(true); loadGpuProcs(); },
   assistant: () => loadAssistant(),
   env: () => loadEnv(),
-  servers: () => loadServers(),
+  servers: () => { loadServers(); if (lsGet("argos.tab.servers") === "local") loadLocal(); },
   integrations: () => loadIntegrations(),
   settings: () => loadSettings().then(renderSettings).then(loadIntegrations),
   playground: () => { if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect(); renderLaunches(); pollSelected(true); },
@@ -2918,6 +2918,11 @@ const SETTINGS_FORM = [
     { k: "jinja", label: "--jinja for chat models", type: "check" },
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
     { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
+  { group: "gpu", title: "GPU tools", hint: "Where the GPU toolkits are. Blank uses whatever is on PATH inside Argos, which is all most setups need. For a custom ROCm (a TheRock build for gfx906, say) or a second CUDA: mount its folder into the Argos container (a volume in docker-compose, e.g. /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro), then put the mounted path here. Runner builds then use its compiler, and runners started by the engine use its libraries.", fields: [
+    { k: "rocm_path", label: "ROCm location", ph: "/opt/rocm-gfx906" },
+    { k: "cuda_path", label: "CUDA location", ph: "/usr/local/cuda-12.4" },
+    { k: "rocm_smi", label: "rocm-smi to use", ph: "/opt/rocm-gfx906/bin/rocm-smi", hint: "blank = the one in the ROCm location, else on PATH" },
+    { k: "nvidia_smi", label: "nvidia-smi to use", ph: "/usr/bin/nvidia-smi", hint: "blank = on PATH" }] },
   { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
     { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
   { group: "downloads", title: "Downloads", fields: [
@@ -2965,8 +2970,10 @@ function renderSettings() {
         if (g.group === "paths") loadLibrary();
       } catch (e) { fail(e); }
     };
+    const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;
+    if (tools) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; fill(tools, toolsLine()); }).catch(() => {});
     return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, g.title), h("span", { class: "spacer" }), btn("Save", save, "sm primary", "save")),
-      g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)));
+      g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)), tools);
   }));
 }
 
@@ -2982,6 +2989,188 @@ const SV_COLORS = [["", "Auto"], ["#ff5555", "Red"], ["#ffb86c", "Orange"], ["#f
 const svAuto = (i) => SV_COLORS[1 + (i % (SV_COLORS.length - 1))][0];
 const blankServer = () => ({ id: null, name: "", kind: "ssh", host: "", port: 22, gpu: "auto", env_kind: "none", env_value: "", llama_server: "",
   model_dirs: [], download_dir: "", color: "", status: "unknown", engines: {}, has_key: false, is_default: false });
+
+// ── Servers → Local: runners installed inside Argos (Mode 1) ───────────────
+const LC = { data: null, polling: {}, open: new Set() };
+async function loadLocal() {
+  if (!LC.torch) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; if (LC.data) renderLocal(); }).catch(() => {});
+  try { LC.data = await api("GET", "/api/runners"); } catch (e) { fill($("#lcList"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
+  renderLocal();
+  for (const r of LC.data.runners) if (r.job && r.job.state === "running") pollInstall(r.id);
+}
+async function saveRunner(id, patch) {
+  try { LC.data = await api("PUT", `/api/runners/${encodeURIComponent(id)}`, patch); renderLocal(); } catch (e) { fail(e); }
+}
+function pollInstall(id) {
+  if (LC.polling[id]) return;
+  LC.polling[id] = setInterval(async () => {
+    let j;
+    try { j = (await api("GET", `/api/runners/${encodeURIComponent(id)}/install`)).job; } catch { return; }
+    const pre = document.querySelector(`[data-runner-log="${CSS.escape(id)}"]`);
+    if (pre) { pre.textContent = j.log || ""; pre.scrollTop = pre.scrollHeight; }
+    if (j.state !== "running") {
+      clearInterval(LC.polling[id]); delete LC.polling[id];
+      toast(j.state === "done" ? `${id} installed.` : `${id}: ${j.error || "install failed"}`, j.state === "done" ? "ok" : "err");
+      loadLocal();
+    }
+  }, 1500);
+}
+async function installRunner(r) {
+  const steps = (r.steps || []).map((s) => (s.download ? `download ${s.download}\n  → unpack to ${s.unzip}` : `${s.cwd ? `(in ${s.cwd}) ` : ""}${s.run}`));
+  if (!steps.length) return toast("Nothing to install yet: add an install command first.", "err");
+  const ok = await confirmBox(h("div", {}, h("p", {}, `Install ${r.label} for ${r.device.toUpperCase()} into ${r.folder}. These steps run, in this order:`),
+    h("pre", { class: "pre", style: "max-height:40dvh;white-space:pre-wrap" }, steps.join("\n\n"))), "Install");
+  if (!ok) return;
+  try { await api("POST", `/api/runners/${encodeURIComponent(r.id)}/install`); toast(`Installing ${r.label}…`, "ok"); LC.open.add(r.id); await loadLocal(); pollInstall(r.id); } catch (e) { fail(e); }
+}
+async function checkRunner(r, button) {
+  button.disabled = true; button.textContent = "Starting…";
+  try { const res = await api("POST", `/api/runners/${encodeURIComponent(r.id)}/check`); toast(`${res.model} started and answered (${res.seconds}s).`, "ok"); }
+  catch (e) { fail(e); }
+  button.disabled = false; button.textContent = "Check";
+}
+const TASK_LABEL = { "speech-to-text": "speech to text", "text-to-speech": "text to speech", image: "image", "": "—" };
+function runnerCard(r) {
+  const pill = r.job && r.job.state === "running" ? h("span", { class: "pill warn" }, `installing ${r.job.step}/${r.job.steps}…`)
+    : r.installed ? h("span", { class: "pill ok" }, "installed") : h("span", { class: "pill" }, "not installed");
+  const device = h("select", { title: "What it runs on" }, (LC.data.devices || []).map((d) => h("option", { value: d, selected: d === r.device }, d.toUpperCase())));
+  device.addEventListener("change", () => saveRunner(r.id, { device: device.value }));
+  const on = h("input", { type: "checkbox", checked: r.enabled !== false });
+  on.addEventListener("change", () => saveRunner(r.id, { enabled: on.checked }));
+  const o = r.opts || {};
+  const opt = (k, label, ph, hint) => {
+    const i = h("input", { type: "text", value: o[k] || "", placeholder: ph, spellcheck: "false" });
+    i.addEventListener("change", () => saveRunner(r.id, { opts: { [k]: i.value.trim() } }));
+    return h("label", { class: "field wide" }, h("span", {}, label), i, hint ? h("small", { class: "hint" }, hint) : null);
+  };
+  const rocm = r.device === "rocm";
+  const extra = r.addon ? [opt("program", "Use your own ffmpeg instead", "/opt/ffmpeg/bin/ffmpeg", "blank = the one installed here, else ffmpeg on PATH")]
+    : r.kind === "kokoro" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/Kokoro-FastAPI-fork", "blank = the official Kokoro-FastAPI"),
+      rocm ? torchPicker(r) : null,
+      rocm ? opt("torch_index", "…or paste a link to a build", "https://example.org/torch-builds/index.txt",
+        "Paste where the build lives, one of: an index.txt that lists wheel files (how ML-gfx906 publishes its MI50 builds: copy the URL from its Wheels table for your ROCm version); a pip index URL; or .whl files or links, comma separated. Install creates the environment in that build's Python (3.12 for ML-gfx906), installs the build, then Kokoro without the stock ROCm PyTorch. Blank: the stock one.") : null]
+    : r.kind === "sdcpp" ? [opt("program", "Use an sd-server you already built (optional)", "/opt/sdcpp/build/bin/sd-server", "With this set Argos uses that file and never compiles."),
+      opt("repo", "Git repository (optional)", "https://github.com/someone/stable-diffusion.cpp-fork", "blank = the latest prebuilt release on Windows, the official repo built from source elsewhere"),
+      rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "Blank: Install asks rocminfo which chip families this machine has (gfx906 for MI50/MI60) and builds for them.") : null]
+    : r.kind === "whisper" ? [opt("program", "Use a whisper-server you already built (optional)", "/opt/whisper/build/bin/whisper-server",
+        "A built program, not a repo: with this set Argos uses that file and never compiles. Leave blank to install from a repository below."),
+      opt("args", "Extra arguments (optional)", "--threads 8 --beam-size 5",
+        "Added to every whisper-server this runner starts. Argos already passes the host, port, model and the OpenAI path, and starts and stops the server itself, so a fork's own --lazy-load and --idle-timeout are best left out: they are off unless you add them here."),
+      opt("repo", "Git repository (optional)", "https://github.com/someone/whisper.cpp-fork", "blank = prebuilt on Windows, the official whisper.cpp elsewhere; a fork builds from source"),
+      rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "ROCm compiles the GPU code ahead of time for each chip family, with no generic fallback, so the build has to name yours. Blank: Install asks rocminfo which this machine has (gfx906 for MI50/MI60) and builds for all of them. Fill it only to build for other cards, comma separated.") : null]
+    : [];
+  const models = (r.models || []).map((m) => {
+    const sel = h("select", { title: "Which runner serves this model" }, [["", `automatic (${r.label})`], ["none", "do not serve"]].map(([v, l]) => h("option", { value: v }, l)));
+    sel.addEventListener("change", async () => { try { await api("PUT", `/api/runners/overrides/${encodeURIComponent(m.id)}`, { runner: sel.value }); loadLocal(); } catch (e) { fail(e); } });
+    const alias = r.kind === "whisper" && m.id === ((o.default_model) || (r.models.slice().sort((a, b) => a.size - b.size)[0] || {}).id) ? "whisper-1"
+      : r.kind === "kokoro" ? "tts-1, tts-1-hd" : r.kind === "sdcpp" && m === r.models[0] ? "dall-e-3" : "";
+    let args = null;
+    if (r.kind === "sdcpp") {
+      args = h("input", { type: "text", value: (o.model_args || {})[m.id] || "", placeholder: "--vae /models/vae/ae.safetensors --steps 20", spellcheck: "false", style: "min-width:220px",
+        title: "Added to this model's sd-server command: the VAE, text encoder (--llm, --clip_l, --t5xxl) or defaults it needs" });
+      args.addEventListener("change", () => saveRunner(r.id, { opts: { model_args: { ...(o.model_args || {}), [m.id]: args.value.trim() } } }));
+    }
+    return h("tr", {}, h("td", { class: "mono-sm" }, m.id), h("td", {}, TASK_LABEL[m.task] || m.task || DASH),
+      h("td", { class: "mono-sm" }, alias || DASH), h("td", { class: "num" }, m.size ? size(m.size) : DASH), h("td", {}, m.path ? sel : ""),
+      r.kind === "sdcpp" ? h("td", {}, args) : null);
+  });
+  const log = h("pre", { class: "log", style: "max-height:240px", "data-runner-log": r.id }, (r.job && r.job.log) || "");
+  const open = LC.open.has(r.id) || (r.job && r.job.state === "running");
+  const details = h("details", { open }, h("summary", { class: "hint" }, "Install steps and log"),
+    h("pre", { class: "pre", style: "white-space:pre-wrap" }, (r.steps || []).map((s) => (s.download ? `download ${s.download}` : s.run)).join("\n") || "(none)"), log);
+  details.addEventListener("toggle", () => { details.open ? LC.open.add(r.id) : LC.open.delete(r.id); });
+  const actions = [btn(r.installed ? "Reinstall" : "Install", () => installRunner(r), r.installed ? "sm" : "sm primary", "download")];
+  if (!r.addon) { const cb = btn("Check", () => checkRunner(r, cb), "sm", "check"); actions.push(cb); }
+  if (r.kind === "custom") actions.push(btn("Scan again", async () => { try { await api("POST", `/api/runners/${encodeURIComponent(r.id)}/scan`); loadLocal(); } catch (e) { fail(e); } }, "sm ghost"),
+    btn("Remove", async () => { if (!(await confirmBox(`Forget the runner ${r.id}? Its folder stays on disk.`, "Remove"))) return; try { const x = await api("DELETE", `/api/runners/${encodeURIComponent(r.id)}`); toast(`Removed. Files left in ${x.folder}.`, "ok"); loadLocal(); } catch (e) { fail(e); } }, "sm danger"));
+  return h("div", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", {}, r.label), pill, r.task ? h("span", { class: "chip" }, TASK_LABEL[r.task] || r.task) : null,
+      r.endpoint ? h("span", { class: "chip mono-sm" }, r.endpoint) : null, h("span", { class: "spacer" }),
+      h("label", { class: "check" }, on, "on"), r.addon ? null : device, ...actions),
+    h("p", { class: "hint", style: "margin-top:0" }, r.about, r.detail ? ` · found: ${r.detail}` : "", " · ",
+      h("span", { title: r.folder, class: "mono-sm" }, `runners/${r.id}`)),
+    r.kind === "custom" ? customFields(r) : null,
+    extra.some(Boolean) ? h("div", { class: "fields" }, extra.filter(Boolean)) : null,
+    r.addon ? null : h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+      h("thead", {}, h("tr", {}, ["Model", "Does", "Also answers to", "Size", "Served by", ...(r.kind === "sdcpp" ? ["Extra arguments"] : [])].map((x) => h("th", {}, x)))),
+      h("tbody", {}, models.length ? models : h("tr", {}, h("td", { colspan: 5 }, h("span", { class: "muted" },
+        r.kind === "whisper" ? "No whisper model yet. Put a ggml-*.bin file in the models folder Argos uses (the same one as your chat models)."
+          : r.kind === "sdcpp" ? "No image model yet. Put a .gguf, .safetensors or .ckpt image model in the models folder Argos uses."
+          : r.kind === "custom" ? "One model: this runner's start command. Give a model-file pattern and ${MODEL_PATH} in the start command to serve one model per file."
+          : r.installed ? "—" : "Install it first.")))))),
+    details);
+}
+function toolsLine() {
+  const t = (LC.torch || {}).tools;
+  if (!t) return null;
+  const u = t.using || {};
+  const item = (name, path, need) => h("span", { class: `pill ${path ? "ok" : need ? "warn" : ""}`, title: path || "not found" }, `${name} ${path ? "✓" : "—"}`);
+  return h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;margin:0 0 8px" },
+    h("span", { class: "hint", style: "margin:0" }, "Tools here:"),
+    item("git", u.git), item("cmake", u.cmake), item("C++ compiler", u["c++"]), item("ROCm compiler", u.hipconfig), item("CUDA compiler", u.nvcc),
+    item("rocm-smi", u["rocm-smi"]), item("nvidia-smi", u["nvidia-smi"]),
+    h("span", { class: "hint", style: "margin:0" }, "Install fetches git, cmake and a C++ compiler itself when they are missing. A GPU compiler comes from the ROCm or CUDA SDK: Settings → GPU tools."));
+}
+function torchPicker(r) {
+  const T = LC.torch || { builds: [], archs: [] };
+  const cur = (r.opts || {}).torch_index || "";
+  const sel = h("select", {}, h("option", { value: "" }, T.builds.length ? "the stock ROCm PyTorch" : "no list available (offline): paste a link below"),
+    T.builds.map((b) => h("option", { value: b.url, selected: b.url === cur }, `PyTorch ${b.torch} · ROCm ${b.rocm} · ${b.gpu} · ${b.source}`)),
+    cur && !T.builds.some((b) => b.url === cur) ? h("option", { value: cur, selected: true }, "the link pasted below") : null);
+  sel.addEventListener("change", () => saveRunner(r.id, { opts: { torch_index: sel.value } }));
+  const archs = T.archs.length ? `This machine reports ${T.archs.join(", ")}.` : "rocminfo did not answer here, so the cards are unknown.";
+  return h("label", { class: "field wide" }, h("span", {}, "Custom PyTorch build (optional)"), sel,
+    h("small", { class: "hint" }, `${archs} Stock ROCm PyTorch may not support older cards like the MI50 (gfx906). Pick the build for your card whose ROCm version matches the ROCm on this machine (rocminfo shows it as "Runtime Version"). Install then makes Kokoro's environment in that build's Python, installs the build, and installs Kokoro without the stock one.`));
+}
+function customFields(r) {
+  const o = r.opts || {}, sc = r.scan || { install: [], start: [] };
+  const area = (k, label, ph, found) => {
+    const t = h("textarea", { rows: 2, placeholder: ph, spellcheck: "false" }, o[k] || "");
+    t.addEventListener("change", () => saveRunner(r.id, { opts: { [k]: t.value.trim() } }));
+    const pick = found.length ? h("select", { title: "Found by Scan" }, h("option", { value: "" }, `found by Scan (${found.length})…`),
+      found.map((f) => h("option", { value: f.cmd }, `${f.cmd.slice(0, 90)} — ${f.source}`))) : null;
+    if (pick) pick.addEventListener("change", () => { if (pick.value) { t.value = pick.value; saveRunner(r.id, { opts: { [k]: pick.value } }); } });
+    return h("label", { class: "field wide" }, h("span", {}, label), t, pick);
+  };
+  const task = h("select", {}, [["", "what does it do?"], ["speech-to-text", "speech to text"], ["text-to-speech", "text to speech"], ["image", "image"], ["chat", "chat"]]
+    .map(([v, l]) => h("option", { value: v, selected: v === (o.task || "") }, l)));
+  task.addEventListener("change", () => saveRunner(r.id, { opts: { task: task.value } }));
+  const small = (k, label, ph) => { const i = h("input", { type: "text", value: o[k] || "", placeholder: ph }); i.addEventListener("change", () => saveRunner(r.id, { opts: { [k]: i.value.trim() } })); return h("label", { class: "field" }, h("span", {}, label), i); };
+  return h("div", { class: "fields" },
+    h("label", { class: "field" }, h("span", {}, "Repository"), h("input", { type: "text", value: o.repo || "", disabled: true })),
+    h("label", { class: "field" }, h("span", {}, "Does"), task),
+    area("install", "Install command (one per line, runs in the runner's folder)", "uv venv .venv && uv pip install --python .venv -r requirements.txt", sc.install || []),
+    area("start", "Start command (${PORT} is the port Argos gives it; it must listen on 127.0.0.1)", ".venv/bin/python server.py --host 127.0.0.1 --port ${PORT}", sc.start || []),
+    small("models_glob", "Model files (optional)", "**/*.onnx"),
+    h("p", { class: "hint wide", style: "margin:0" }, "Like your llama.cpp box: one program, many models. With a pattern here and ${MODEL_PATH} in the start command, every matching file in the models folder Argos uses (the same one llama.cpp reads, e.g. your LLMBin) becomes its own model, each started on demand and able to run beside the others. Without it, the start command is one model."),
+    small("check", "Ready check path", "/health"), small("alias", "Also answers to (comma separated)", "e.g. tts-1"), small("vram", "VRAM (GiB)", "0.1 for CPU; per file it is worked out from the size"));
+}
+function renderLocal() {
+  const D = LC.data;
+  if (!D) return fill($("#lcList"), h("div", { class: "empty" }, "Loading…"));
+  const runners = D.runners.filter((r) => !r.addon), addons = D.runners.filter((r) => r.addon);
+  const url = h("input", { type: "text", placeholder: "https://github.com/you/some-server", style: "flex:1", spellcheck: "false" });
+  const scanBtn = btn("Clone and scan", async () => {
+    if (!url.value.trim()) return;
+    scanBtn.disabled = true; scanBtn.textContent = "Cloning…";
+    try { const res = await api("POST", "/api/runners/custom", { repo: url.value.trim() }); LC.data = res; LC.open.add(res.runner);
+      toast(`Cloned. Scan found ${res.scan.install.length} install and ${res.scan.start.length} start command(s): check them below.`, "ok"); renderLocal(); }
+    catch (e) { fail(e); scanBtn.disabled = false; scanBtn.textContent = "Clone and scan"; }
+  }, "primary", "search");
+  fill($("#lcList"),
+    h("p", { class: "hint" }, "Runners are servers installed inside Argos for models llama-server cannot run. You never pick one per model: the model's type does (a speech-to-text file goes to whisper, Kokoro serves its own voices), and a model's row lets you change it. Argos writes the engine's entries itself",
+      D.engine_file ? h("span", { title: D.engine_file }, " (runners.generated.yaml in the engine's config folder).") : ". It cannot here: the engine's config folder is not known (ARGOS_SCHEDULE_FILE)."),
+    h("p", { class: "hint" }, "Each runner has its own folder in the ", h("span", { title: D.root, class: "mono-sm" }, "runners"),
+      " folder (hover for where). Clients call the usual OpenAI paths on this Argos with the model name, or the standard names: whisper-1 for transcription, tts-1 for speech."),
+    runners.filter((r) => r.kind !== "custom").map(runnerCard),
+    h("h3", { style: "margin:18px 0 6px" }, "Custom"),
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Add from a git repository")),
+      h("p", { class: "hint" }, "Argos clones it and reads its README, build files and Dockerfile for the install and start commands. Nothing runs until you press Install, and every command is shown first."),
+      h("div", { class: "row" }, url, scanBtn)),
+    runners.filter((r) => r.kind === "custom").map(runnerCard),
+    h("h3", { style: "margin:18px 0 6px" }, "Add-ons"),
+    addons.map(runnerCard));
+}
 
 async function loadServers() {
   try {
@@ -3789,6 +3978,9 @@ function renderLive() {
   renderTable(table, [
     { label: "Model", cell: (m) => h("td", { class: "cell-model", title: m.id }, h("div", { class: "cell-main" }, h("span", { class: "swatch", style: `--c:${segColor(m.id)}` }), m.id)) },
     { label: "State", cell: (m) => statePill(m.state) },
+    { label: "Runner", cell: (m) => { const r = (L.runners || {})[m.id];
+      return r ? h("span", { class: "chip", title: `${r.task || ""} · ${(r.device || "").toUpperCase()} · Servers → Local` }, `${r.runner}${r.device ? ` · ${r.device}` : ""}`)
+        : h("span", { class: "chip", title: "llama-server, on the default server" }, "llama.cpp"); } },
     { label: "GPU", cell: (m) => m.cards.length ? m.cards.join(", ") : DASH },
     { label: "Size", num: true, cell: (m) => m.size_known ? gib(m.size_gib) : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
     { label: "In flight", num: true, cell: (m) => m.in_flight || DASH },
@@ -4459,6 +4651,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "inventory") renderInvPane();
     else if (bar.dataset.tabs === "odysseus") loadOdyArea(b.dataset.pane);
     else if (bar.dataset.tabs === "schedule") { SC.pane = b.dataset.pane; if (SC.pane === "live") loadLive(); else loadSchedule(); }
+    else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
   }));
 }
 
