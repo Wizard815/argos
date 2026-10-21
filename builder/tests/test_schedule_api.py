@@ -357,3 +357,15 @@ def test_live_row_actions(app, client, monkeypatch, tmp_path):
         assert client.get("/api/schedule/live/big/command").get_json()["source"] == "prefab"
         assert client.get("/api/schedule/live/ghost/command").status_code == 404
         assert client.post("/api/schedule/live/big/explode").status_code == 404
+
+
+def test_profile_variants_the_pool_lists_count_as_known(app, client):
+    """The engine leaves profile variants out of /v1/models; the pool still plans them, so they must get sizes."""
+    from src.routes import schedule as sched
+    state = pool_state(**{"base--fast": ("stopped", [])})
+    with serve(make_engine([], [], pool=state, model_ids=["base"])) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
+        with app.app_context():
+            app.extensions["pb"].schedule_state.pop("_known", None)
+            known, src = sched.known_ids()
+    assert src == "live" and {"base", "base--fast"} <= known

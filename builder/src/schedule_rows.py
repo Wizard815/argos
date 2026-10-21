@@ -65,7 +65,9 @@ def _row(row_id: str, name: str, kind: str, command: str, plan: dict, known: Opt
     row = {
         "id": row_id, "name": name, "kind": kind, "path": path, "ctx": ctx,
         "cache_k": s.get("cache_type_k") or "", "cache_v": s.get("cache_type_v") or "",
-        "file_gib": round(weights / GIB, 2), "estimate": est, "plan_gib": plan["sizes"].get(row_id),
+        "file_gib": round(weights / GIB, 2), "estimate": est,
+        # a .gguf the command names that is not on disk: the model cannot start, and it has no size
+        "missing": bool(path.lower().endswith(".gguf") and not weights), "plan_gib": plan["sizes"].get(row_id),
         "measured": plan["measured"].get(row_id), "effective_gib": round(size, 2), "source": source,
         "persistent": row_id in plan["persistent"], "known": None if known is None else row_id in known,
         **extra,

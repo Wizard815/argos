@@ -3797,6 +3797,9 @@ function renderPlan() {
     { label: "Size (GiB)", num: true, cell: sizeInput },
     { key: "eff", label: "Used", num: true, sort: (r) => r.effective_gib, cell: (r) => r.effective_gib
       ? h("span", {}, gib(r.effective_gib), " ", h("span", { class: `pill ${r.source === "measured" ? "ok" : ""}`, title: { plan: "set by hand", measured: "from a measurement", estimate: "estimated from the file" }[r.source] }, r.source))
+      : r.missing ? h("span", { class: "pill bad", title: `The model file is not on disk:
+${r.path}
+This profile cannot start until its --model path is fixed (open it in Builder).` }, "file missing")
       : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
     { label: "Keep loaded", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.persistent.has(r.id), title: "never evicted to make room for another model" });
       c.addEventListener("change", () => { c.checked ? SC.persistent.add(r.id) : SC.persistent.delete(r.id); touch(); }); return h("td", {}, c); } },

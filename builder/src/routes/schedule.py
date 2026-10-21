@@ -38,7 +38,14 @@ def known_ids() -> tuple[Optional[set[str]], str]:
     value: tuple[Optional[set[str]], str] = (None, "")
     if url:
         try:
-            value = (engine_api.model_ids(url), "live")
+            ids = engine_api.model_ids(url)
+            # profile variants are left out of /v1/models but the pool plans them, so its list counts too;
+            # trusting /v1/models alone marked every profile "not in the engine" and sent it no size
+            try:
+                ids |= {str(m["id"]) for m in engine_api.pool_state(url).get("models") or [] if m.get("id")}
+            except Exception:  # noqa: BLE001 - another router: /v1/models is all there is
+                pass
+            value = (ids, "live")
         except Exception:  # noqa: BLE001 - the Live view and Integrations page show connection problems
             pass
     c.schedule_state["_known"] = {"at": time.time(), "key": url, "value": value}
