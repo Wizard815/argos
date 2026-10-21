@@ -397,6 +397,8 @@ function show(view) {
 // ── Shared data ──────────────────────────────────────────────
 async function loadProfiles() {
   S.profiles = (await api("GET", "/api/profiles")).profiles;
+  // sizes come separately: they read model headers, and the list must not wait for that
+  api("GET", "/api/profiles/estimates").then((r) => { S.profileEst = r.estimates; if (S.view === "profiles") renderProfiles(); }).catch(() => {});
   $("#navProfiles").textContent = S.profiles.length || "";
   fillImportSelect();
   fillProfileSelect();
@@ -456,7 +458,7 @@ function fillImportSelect() {
 }
 
 // ── Builder ──────────────────────────────────────────────────
-const KV_TYPES = ["", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"];
+const KV_TYPES = ["", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "turbo4", "turbo3", "turbo2"];
 // values seen in the inventory (your custom cache types, split modes…) join the built-in choices
 const SEEN = { cache_type: [], split_mode: [], load_mode: [], spec_type: [] };
 const seenOpts = (kind, base) => [...new Set([...base, ...SEEN[kind]])].map((v) => ({ value: v, label: v || "default", sub: v && !base.includes(v) ? "seen in your runs" : "" }));
@@ -890,6 +892,45 @@ function renderBuilder() {
   src.hidden = !B.source && !B.profileId;
   src.textContent = B.profileId ? `profile${B.source && B.source !== "profile" ? " · " + B.source : ""}` : B.source;
   $("#bSave").title = B.profileId ? "Update this saved profile" : "Save as a new profile";
+  scheduleEstimate();
+}
+
+// ── Builder: what the command needs in VRAM ──────────────────
+const VE = { cmd: null, timer: 0 };
+function scheduleEstimate() {
+  if (!B.cmd || B.cmd === VE.cmd) return;
+  VE.cmd = B.cmd;
+  clearTimeout(VE.timer);
+  VE.timer = setTimeout(async () => {
+    const cmd = VE.cmd;
+    try { const r = await api("POST", "/api/estimate", { command: cmd }); if (cmd === VE.cmd) renderEstimate(r.estimate); }
+    catch (e) { fill($("#bVram"), h("p", { class: "hint" }, e.message)); }
+  }, 350);
+}
+const ctxLabel = (c) => (c >= 1024 ? `${num(c / 1024, 0)}K` : String(c));
+function renderEstimate(e) {
+  const box = $("#bVram");
+  if (!e || !e.ok) return fill(box, h("p", { class: "hint", style: "margin:0" }, (e && e.error) || "Pick a model to see its size."));
+  const parts = [["model", e.weights_gib, "var(--accent, #6aa)"], ["KV cache", e.kv_gib, "var(--red)"], ["buffers", e.overhead_gib, "var(--muted)"]];
+  const bar = h("div", { class: "vram-bar", title: `${num(e.gib, 2)} GiB in total` },
+    parts.map(([l, v, c]) => h("i", { style: `width:${Math.max(0, (v / e.gib) * 100)}%;background:${c}`, title: `${l}: ${num(v, 2)} GiB` })));
+  const cache = e.cache_k === e.cache_v ? e.cache_k : `${e.cache_k}/${e.cache_v}`;
+  const head = h("div", { class: "vram-sum" },
+    h("b", {}, `${num(e.gib, 1)} GiB`), " = ",
+    `${num(e.weights_gib, 1)} model`, e.extra_gib ? ` (incl. ${num(e.extra_gib, 1)} mmproj/draft)` : "",
+    ` + ${num(e.kv_gib, 1)} KV cache (${ctxLabel(e.ctx)} context, ${cache}) + ${num(e.overhead_gib, 1)} buffers`);
+  const notes = [...(e.notes || []), e.train_ctx && e.ctx > e.train_ctx ? `context is above the model's trained ${ctxLabel(e.train_ctx)}` : null].filter(Boolean);
+  let table = null;
+  if (e.compare) {
+    const C = e.compare;
+    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB)"),
+      h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+        h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num", style: c === e.ctx ? "color:var(--strong)" : "" }, ctxLabel(c))))),
+        h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
+          t.kv_gib.map((v, i) => h("td", { class: "num", style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "" }, v == null ? DASH : num(v, 2)))))))));
+  }
+  fill(box, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, table,
+    h("p", { class: "hint", style: "margin:6px 0 0" }, "Model + KV cache are close. Buffers are a rough guess, and models that keep part of themselves on the CPU (Gemma-4 E2B/E4B) come out high."));
 }
 
 function renderEnv(env) {
@@ -1022,6 +1063,13 @@ function renderProfiles() {
       // the file name once (its id is the same name in lower case); the id only shows when it really differs
       p.base_model || p.model_id || DASH, p.base_model && p.model_id && p.base_model.toLowerCase() !== p.model_id.toLowerCase() ? h("div", { class: "muted mono-sm" }, p.model_id) : null) },
     { label: "Settings", cell: (p) => h("div", { class: "chips" }, settingChips(p.summary)) },
+    { key: "vram", label: "VRAM", num: true, sort: (p) => ((S.profileEst || {})[p.profile_id] || {}).gib || 0, cell: (p) => {
+      const e = (S.profileEst || {})[p.profile_id];
+      if (!e) return h("span", { class: "muted" }, S.profileEst ? DASH : "…");
+      if (!e.ok) return h("span", { class: "pill bad", title: e.error }, "file missing");
+      return h("td", { class: "num nowrap", title: `${num(e.weights_gib, 2)} model + ${num(e.kv_gib, 2)} KV cache (${ctxLabel(e.ctx)}, ${e.cache_k}) + ${num(e.overhead_gib, 2)} buffers` },
+        h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, `${num(e.weights_gib, 1)} + ${num(e.kv_gib, 1)} KV @ ${ctxLabel(e.ctx)}`));
+    } },
     { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
     { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
     { label: "", cell: (p) => h("td", { class: "actions" },

@@ -15,7 +15,7 @@ from .command import parse_command
 from .cookbook import variant_id
 from .gguf import read_arch
 from .library import SHARD, prefab_command
-from .scheduler import GIB, effective_size, estimate_gib
+from .scheduler import GIB, KV_COMPARE, effective_size, estimate_gib, kv_gib
 
 _cache: dict[tuple, object] = {}
 
@@ -46,6 +46,36 @@ def arch_of(path: str) -> Optional[dict]:
     if key not in _cache:
         _cache[key] = read_arch(path)
     return _cache[key]  # type: ignore[return-value]
+
+
+CTX_COMPARE = (8192, 32768, 65536, 131072, 262144)
+
+
+def estimate_command(command: str, compare: bool = False) -> dict:
+    """What a launch command needs in VRAM: model file + KV cache + buffers.
+
+    With ``compare``, also the KV cache alone for each cache type at a few context lengths, so the
+    builder can show "q8_0 at 128K is X GiB, turbo3 is Y".
+    """
+    try:
+        s = parse_command(command).summary()
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    path = s.get("model") or ""
+    weights = file_bytes(path) if path.lower().endswith(".gguf") else 0
+    if not weights:
+        return {"ok": False, "error": f"model file not found: {path}" if path else "no --model in the command", "path": path}
+    extra = sum(file_bytes(p) for p in (s.get("mmproj"), s.get("model_draft")) if p)
+    arch = arch_of(path)
+    ctx = s.get("ctx_size") or (arch or {}).get("train_ctx") or 4096
+    ck, cv = s.get("cache_type_k") or "", s.get("cache_type_v") or ""
+    out = {"ok": True, "path": path, "ctx": ctx, "cache_k": ck or "f16", "cache_v": cv or ck or "f16",
+           "train_ctx": (arch or {}).get("train_ctx"), "extra_gib": round(extra / GIB, 2),
+           **estimate_gib(weights, arch, ctx, ck, cv, extra)}
+    if compare and arch:
+        ctxs = sorted({*(c for c in CTX_COMPARE if c <= max(ctx, (arch or {}).get("train_ctx") or ctx)), ctx})
+        out["compare"] = {"ctx": ctxs, "types": [{"type": t, "kv_gib": [kv_gib(arch, c, t, t) for c in ctxs]} for t in KV_COMPARE]}
+    return out
 
 
 def _row(row_id: str, name: str, kind: str, command: str, plan: dict, known: Optional[set[str]],
