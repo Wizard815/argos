@@ -903,7 +903,7 @@ function scheduleEstimate() {
   clearTimeout(VE.timer);
   VE.timer = setTimeout(async () => {
     const cmd = VE.cmd;
-    try { const r = await api("POST", "/api/estimate", { command: cmd }); if (cmd === VE.cmd) renderEstimate(r.estimate); }
+    try { const r = await api("POST", "/api/estimate", { command: cmd, profile_id: B.profileId || "" }); if (cmd === VE.cmd) renderEstimate(r.estimate); }
     catch (e) { fill($("#bVram"), h("p", { class: "hint" }, e.message)); }
   }, 350);
 }
@@ -912,11 +912,16 @@ function renderEstimate(e) {
   const box = $("#bVram");
   if (!e || !e.ok) return fill(box, h("p", { class: "hint", style: "margin:0" }, (e && e.error) || "Pick a model to see its size."));
   const parts = [["model", e.weights_gib, "var(--accent, #6aa)"], ["KV cache", e.kv_gib, "var(--red)"], ["buffers", e.overhead_gib, "var(--muted)"]];
-  const bar = h("div", { class: "vram-bar", title: `${num(e.gib, 2)} GiB in total` },
-    parts.map(([l, v, c]) => h("i", { style: `width:${Math.max(0, (v / e.gib) * 100)}%;background:${c}`, title: `${l}: ${num(v, 2)} GiB` })));
+  const sum = e.weights_gib + e.kv_gib + e.overhead_gib;
+  const bar = h("div", { class: "vram-bar", title: `${num(sum, 2)} GiB estimated` },
+    parts.map(([l, v, c]) => h("i", { style: `width:${Math.max(0, (v / sum) * 100)}%;background:${c}`, title: `${l}: ${num(v, 2)} GiB` })));
   const cache = e.cache_k === e.cache_v ? e.cache_k : `${e.cache_k}/${e.cache_v}`;
+  const M = e.measured;
+  const measuredLine = M ? h("div", { class: "vram-sum" }, h("span", { class: "pill ok", title: `Measured ${ago(M.at)}${M.per_card && M.per_card.length > 1 ? ` across ${M.per_card.length} cards (${M.per_card.map((x) => num(x, 1)).join(" + ")} GiB)` : ""}. It replaces the estimate everywhere, until this profile's command changes.` }, "measured"),
+    " ", h("b", {}, `${num(M.gib, 1)} GiB`), ` when it last loaded · the estimate below was ${num(e.estimate_gib, 1)} GiB (${e.estimate_gib > M.gib ? "+" : ""}${num(e.estimate_gib - M.gib, 1)})`) : null;
+  const total = M ? e.estimate_gib : e.gib;
   const head = h("div", { class: "vram-sum" },
-    h("b", {}, `${num(e.gib, 1)} GiB`), " = ",
+    M ? "Estimate: " : null, h("b", {}, `${num(total, 1)} GiB`), " = ",
     `${num(e.weights_gib, 1)} model`, e.extra_gib ? ` (incl. ${num(e.extra_gib, 1)} mmproj/draft)` : "",
     ` + ${num(e.kv_gib, 1)} KV cache (${ctxLabel(e.ctx)} context, ${cache}) + ${num(e.overhead_gib, 1)} buffers`);
   const notes = [...(e.notes || []), e.train_ctx && e.ctx > e.train_ctx ? `context is above the model's trained ${ctxLabel(e.train_ctx)}` : null].filter(Boolean);
@@ -929,7 +934,22 @@ function renderEstimate(e) {
         h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
           t.kv_gib.map((v, i) => h("td", { class: "num", style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "" }, v == null ? DASH : num(v, 2)))))))));
   }
-  fill(box, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, table,
+  // an unknown cache type: say its bits per value here and it is saved to Settings -> KV cache types
+  const unknown = (e.notes || []).map((n) => (n.match(/unknown cache type '([^']+)'/) || [])[1]).find(Boolean);
+  let define = null;
+  if (unknown) {
+    const bits = h("input", { type: "number", step: "0.25", min: "0.5", max: "32", placeholder: "3.5", style: "width:80px" });
+    define = h("div", { class: "row", style: "margin-top:6px;gap:6px;align-items:center" },
+      h("span", { class: "hint", style: "margin:0" }, `${unknown} stores`), bits, h("span", { class: "hint", style: "margin:0" }, "bits per value"),
+      btn("Save", async () => {
+        const v = parseFloat(bits.value);
+        if (!(v > 0)) return toast("Bits per value, e.g. 3.5", "err");
+        const cur = ((S.settings || (await loadSettings())).kv || {}).custom_types || "";
+        const list = cur.split(/[,;\n]+/).map((x) => x.trim()).filter((x) => x && !x.toLowerCase().startsWith(`${unknown.toLowerCase()}=`));
+        try { await api("PUT", "/api/settings/kv", { custom_types: [...list, `${unknown}=${v}`].join(", ") }); await loadSettings(); VE.cmd = null; scheduleEstimate(); toast(`Saved: ${unknown} = ${v} bits per value.`, "ok"); } catch (err) { fail(err); }
+      }, "sm primary"));
+  }
+  fill(box, measuredLine, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, table,
     h("p", { class: "hint", style: "margin:6px 0 0" }, "Model + KV cache are close. Buffers are a rough guess, and models that keep part of themselves on the CPU (Gemma-4 E2B/E4B) come out high."));
 }
 
@@ -1067,7 +1087,10 @@ function renderProfiles() {
       const e = (S.profileEst || {})[p.profile_id];
       if (!e) return h("span", { class: "muted" }, S.profileEst ? DASH : "…");
       if (!e.ok) return h("span", { class: "pill bad", title: e.error }, "file missing");
-      return h("td", { class: "num nowrap", title: `${num(e.weights_gib, 2)} model + ${num(e.kv_gib, 2)} KV cache (${ctxLabel(e.ctx)}, ${e.cache_k}) + ${num(e.overhead_gib, 2)} buffers` },
+      const est = `${num(e.weights_gib, 2)} model + ${num(e.kv_gib, 2)} KV cache (${ctxLabel(e.ctx)}, ${e.cache_k}) + ${num(e.overhead_gib, 2)} buffers`;
+      if (e.measured) return h("td", { class: "num nowrap", title: `Measured when it last loaded (${ago(e.measured.at)}).\nEstimate was ${num(e.estimate_gib, 2)} GiB: ${est}` },
+        h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, h("span", { class: "pill ok" }, "measured"), ` est. ${num(e.estimate_gib, 1)}`));
+      return h("td", { class: "num nowrap", title: `Estimate: ${est}\nIt is replaced by the real size the first time this profile loads.` },
         h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, `${num(e.weights_gib, 1)} + ${num(e.kv_gib, 1)} KV @ ${ctxLabel(e.ctx)}`));
     } },
     { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
@@ -2895,6 +2918,8 @@ const SETTINGS_FORM = [
     { k: "jinja", label: "--jinja for chat models", type: "check" },
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
     { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
+  { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
+    { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
   { group: "downloads", title: "Downloads", fields: [
     { k: "hf_endpoint", label: "Hugging Face endpoint", ph: "https://huggingface.co" },
     { k: "hf_token", label: "HF token", type: "password", hint: "Only for gated or private repos." },

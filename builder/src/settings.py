@@ -47,6 +47,11 @@ def env_defaults(cfg: dict) -> dict:
             "batch": 16,
             "results": 8,     # records the assistant sees per question
         },
+        "kv": {
+            # KV cache types the estimator does not know, as name=bits per value, e.g. "turbo5=3.0, mykv=4.25".
+            # bits per value = bytes per block * 8 / values per block (q8_0: 34 bytes per 32 values = 8.5)
+            "custom_types": "",
+        },
         "builder": {
             # "odysseus" rewrites commands into the Cookbook's shape on every edit
             "command_format": "odysseus",

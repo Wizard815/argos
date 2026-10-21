@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import os
 import tempfile
+import re
 import time
 from typing import Any, Optional
 
@@ -66,6 +67,34 @@ CACHE_BYTES = {"f32": 4.0, "f16": 2.0, "bf16": 2.0, "q8_0": 34 / 32, "q5_1": 24 
                "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32,
                # TurboQuant forks of llama.cpp: about 4.25, 3.5 and 2.5 bits a value (approximate)
                "turbo4": 4.25 / 8, "turbo3": 3.5 / 8, "turbo2": 2.5 / 8}
+
+# Your own cache types (Settings -> KV cache types), name -> bytes per value. Set by set_custom_cache_types.
+CUSTOM_CACHE: dict[str, float] = {}
+
+
+def parse_cache_types(text: str) -> dict[str, float]:
+    """"turbo5=3.0, mykv=4.25" -> {"turbo5": 0.375, "mykv": 0.53125} (bits per value -> bytes). Bad entries are skipped."""
+    out: dict[str, float] = {}
+    for part in re.split(r"[,;\n]+", text or ""):
+        name, _, bits = part.partition("=")
+        name = name.strip().lower()
+        try:
+            v = float(bits)
+        except ValueError:
+            continue
+        if name and 0 < v <= 32:
+            out[name] = v / 8
+    return out
+
+
+def set_custom_cache_types(text: str) -> None:
+    CUSTOM_CACHE.clear()
+    CUSTOM_CACHE.update(parse_cache_types(text))
+
+
+def cache_bytes(name: str) -> Optional[float]:
+    return CUSTOM_CACHE.get(name) if name in CUSTOM_CACHE else CACHE_BYTES.get(name)
+
 
 # The cache types the estimator compares side by side, smallest last.
 KV_COMPARE = ("f16", "q8_0", "q5_0", "q4_0", "turbo4", "turbo3", "turbo2")
@@ -169,7 +198,18 @@ class Plans:
         return plan
 
 
-def idle_unload(plans, store, engine_url, event, now=None) -> list[str]:
+def _iso_ts(value) -> float:
+    """The engine's last_used (RFC 3339) as a Unix time; 0 when missing or unreadable."""
+    if not value:
+        return 0.0
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def idle_unload(plans, store, engine_url, event, now=None, loaded_at: Optional[dict] = None) -> list[str]:
     """Unload the models this schedule loaded once nothing has asked for them for a while.
 
     The engine unloads its own models when a new one needs the room, but a model
@@ -184,6 +224,11 @@ def idle_unload(plans, store, engine_url, event, now=None) -> list[str]:
     from .integrations import engine_api
     plan = plans.get()
     minutes = int(plan.get("idle_unload_min") or 0)
+    if loaded_at is None:
+        try:
+            loaded_at = store.open_session_starts()  # model id -> when its current load began
+        except Exception:  # noqa: BLE001 - older stores: the other signs of use still count
+            loaded_at = {}
     if minutes <= 0 or not engine_url:
         return []
     now = now or time.time()
@@ -197,12 +242,17 @@ def idle_unload(plans, store, engine_url, event, now=None) -> list[str]:
         model_id = str(model.get("id") or "")
         if not model_id or model.get("persistent") or model.get("protected") or model_id in keep:
             continue
-        if str(model.get("state") or "") not in ("ready", "starting"):
+        # only a model that is up: one still starting is being loaded because something just asked for it
+        if str(model.get("state") or "") != "ready":
             continue
         history = store.list_requests(model=model_id, limit=1)
         if not history:
             continue
-        idle_s = now - float(history[0].get("ts") or 0)
+        # idle since the latest sign of use: its last recorded request, the engine's own last-used time,
+        # or the start of this load. The request history alone said "unused for hours" about a model
+        # loaded a second ago for a request still in flight, and unloading it failed that request.
+        seen = [float(history[0].get("ts") or 0), (loaded_at or {}).get(model_id) or 0.0, _iso_ts(model.get("last_used"))]
+        idle_s = now - max(seen)
         if idle_s < minutes * 60:
             continue
         try:
@@ -239,18 +289,19 @@ def estimate_gib(weights_bytes: int, arch: Optional[dict], ctx: int, cache_k: st
     notes: list[str] = []
     kv = 0.0
     if arch and ctx:
-        bk, bv = CACHE_BYTES.get(cache_k or "f16"), CACHE_BYTES.get(cache_v or cache_k or "f16")
+        bk, bv = cache_bytes(cache_k or "f16"), cache_bytes(cache_v or cache_k or "f16")
         if bk is None or bv is None:
+            bad = cache_k if bk is None else (cache_v or cache_k)
             bk, bv = bk or CACHE_BYTES["q8_0"], bv or CACHE_BYTES["q8_0"]
-            notes.append(f"unknown cache type {cache_k or cache_v!r}, counted as q8_0")
+            notes.append(f"unknown cache type {bad!r}, counted as q8_0: set its bits per value under Settings -> KV cache types")
         per_token = arch["kv_heads"] * (arch["key_len"] * bk + arch["value_len"] * bv)
         swa, window = int(arch.get("swa_layers") or 0), int(arch.get("swa_window") or 0)
         full = arch["attn_layers"] - swa
         kv = (full * ctx + swa * min(ctx, window)) * per_token / GIB
         if swa:
             notes.append(f"{swa} sliding-window layers keep {window} tokens")
-        if any(t.startswith("turbo") for t in (cache_k, cache_v) if t):
-            notes.append("turbo cache sizes are approximate")
+        if any(t.startswith("turbo") or t in CUSTOM_CACHE for t in (cache_k, cache_v) if t):
+            notes.append("turbo and custom cache sizes come from bits per value, so they are approximate")
     else:
         notes.append("no model header, KV cache not counted")
     overhead = 1.0 + 0.10 * weights
