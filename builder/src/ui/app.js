@@ -272,6 +272,21 @@ function renderCommand(parsed, multiline) {
   return out;
 }
 
+/** Groups that start closed. Only the groups you open are remembered, and renderTable builds no rows for a
+ *  closed group, so a long list shows its group names and counts and nothing else until one is opened. */
+function openGroups(storeKey) {
+  let open;
+  try { open = new Set(JSON.parse(localStorage.getItem(storeKey) || "[]")); } catch { open = new Set(); }
+  const save = () => { try { localStorage.setItem(storeKey, JSON.stringify([...open])); } catch { /* private window */ } };
+  return {
+    collapsed: { has: (k) => !open.has(k) },
+    toggle(k) { open.has(k) ? open.delete(k) : open.add(k); save(); },
+    openAll(keys) { keys.forEach((k) => open.add(k)); save(); },
+    closeAll() { open.clear(); save(); },
+  };
+}
+const ALL_OPEN = { has: () => false };  // while searching, every match is shown
+
 /** Sortable table. cols: [{key, label, num?, sort?(row), cell(row)}]; opts: {onRow(row), rowClass(row)} */
 function renderTable(table, cols, rows, state, emptyMsg, opts = {}) {
   if (state.key) {
@@ -973,6 +988,7 @@ function reviewChanges(d, name) {
 
 // ── Profiles view ────────────────────────────────────────────
 const profileSort = { key: null, asc: false };
+const PG = openGroups("argos.profiles.open");
 function fillProfileModels() {
   const sel = $("#pModel"), cur = sel.value;
   const ids = [...new Set(S.profiles.map((p) => p.model_id || p.base_model).filter(Boolean))].sort();
@@ -1015,7 +1031,12 @@ function renderProfiles() {
         if (!(await confirmBox(`Delete profile “${p.name}”?`))) return;
         try { await api("DELETE", `/api/profiles/${encodeURIComponent(p.profile_id)}`); toast("Deleted.", "ok"); loadProfiles(); } catch (e) { fail(e); }
       }, "danger")) },
-  ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."));
+  ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."), {
+    // grouped by the model's name (Qwen, Gemma, …), closed until opened; a search or a model filter shows every match
+    group: (p) => { const f = modelFamily({ name: p.base_model || p.model_id || p.name, kind: "other" }); return { key: f, label: f }; },
+    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: q || m ? ALL_OPEN : PG.collapsed,
+    onToggle: (k) => { PG.toggle(k); renderProfiles(); },
+  });
 }
 
 // ── Playground ───────────────────────────────────────────────
@@ -1791,12 +1812,10 @@ async function openPrefab(m, launchIt = false) {
 }
 // The library is a tree: grouped by kind, family (all Qwen together), folder, or your own groups, and every group
 // collapses. Where you left it (grouping, closed groups) is remembered in this browser.
-const ML = { groups: [], by: "kind", collapsed: new Set() };
-try {
-  ML.by = localStorage.getItem("argos.models.by") || "kind";
-  ML.collapsed = new Set(JSON.parse(localStorage.getItem("argos.models.closed") || "[]"));
-} catch (e) { /* private window: defaults */ }
-const mlSave = () => { try { localStorage.setItem("argos.models.by", ML.by); localStorage.setItem("argos.models.closed", JSON.stringify([...ML.collapsed])); } catch (e) { /* ignore */ } };
+// grouped by name (Qwen, Gemma, …) with every group closed until opened
+const ML = { groups: [], by: "family", g: openGroups("argos.models.open") };
+try { ML.by = localStorage.getItem("argos.models.groupby") || "family"; } catch (e) { /* private window: defaults */ }
+const mlSave = () => { try { localStorage.setItem("argos.models.groupby", ML.by); } catch (e) { /* ignore */ } };
 const KIND_GROUPS = [["chat", "Chat"], ["vision", "Vision"], ["mtp", "MTP / draft"], ["embedding", "Embedding"], ["reranker", "Reranker"], ["audio", "Audio"], ["image", "Image"]];
 const cap1 = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
@@ -1921,8 +1940,8 @@ function renderLibrary() {
   by.addEventListener("change", () => { ML.by = by.value; mlSave(); renderLibrary(); });
   const keys = () => [...new Set(rows.map((m) => libraryGroupOf(m).key))];
   fill($("#mGroupBar"), by,
-    ML.by !== "none" ? [btn("Collapse all", () => { keys().forEach((k) => ML.collapsed.add(k)); mlSave(); renderLibrary(); }, "sm ghost"),
-      btn("Expand all", () => { keys().forEach((k) => ML.collapsed.delete(k)); mlSave(); renderLibrary(); }, "sm ghost")] : null,
+    ML.by !== "none" ? [btn("Collapse all", () => { ML.g.closeAll(); renderLibrary(); }, "sm ghost"),
+      btn("Expand all", () => { ML.g.openAll(keys()); renderLibrary(); }, "sm ghost")] : null,
     h("span", { class: "spacer" }),
     btn("Auto group", autoGroup, "sm", "layers"), btn("New group", () => newGroupBox(), "sm ghost", "plus"));
 
@@ -1930,8 +1949,8 @@ function renderLibrary() {
     ? h("span", {}, `The models folder ${lib.models_dir} does not exist. Mount your GGUF folder there (e.g. `, h("b", {}, "-v /path/to/LLMBin:/app/models"), ") or change it in Settings.")
     : all.length ? "No models match." : h("span", {}, "No .gguf files yet. Get one from the ", h("b", {}, "Download"), " tab.");
   const groupOpts = ML.by === "none" ? {} : {
-    group: libraryGroupOf, groupOrder: libraryGroupOrder, collapsed: q ? new Set() : ML.collapsed,
-    onToggle: (k) => { ML.collapsed.has(k) ? ML.collapsed.delete(k) : ML.collapsed.add(k); mlSave(); renderLibrary(); },
+    group: libraryGroupOf, groupOrder: libraryGroupOrder, collapsed: q ? ALL_OPEN : ML.g.collapsed,
+    onToggle: (k) => { ML.g.toggle(k); renderLibrary(); },
     groupExtra: (g) => {
       const total = g.rows.reduce((a, m) => a + (m.size || 0), 0);
       const mine = ML.by === "mine" && g.key !== "g:" ? ML.groups.find((x) => `g:${x.name}` === g.key) : null;
@@ -3061,7 +3080,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // Long-term history. New quants, cache types, flags and models are recorded as "new" and shown under New & unknown.
 const IV = { pane: "models", data: null, sessions: [], traits: [], showAll: false, suggestions: null, assistNote: "", busy: false,
   filter: "", days: 30, model: "", sortM: { key: null, asc: false }, sortS: { key: null, asc: false },
-  selected: null, page: null, pageDays: 7, byFamily: false, closed: new Set() };
+  selected: null, page: null, pageDays: 7, byFamily: true, g: openGroups("argos.inventory.open") };
 
 function dur(sec) {
   if (sec == null) return DASH;
@@ -3149,8 +3168,8 @@ function renderInvModels() {
     { key: "tps", label: "Decode t/s", num: true, sort: (m) => (m.decode ? m.decode.max : 0), cell: (m) => speedRange(m.decode, 1) },
   ], rows, IV.sortM, "Nothing here yet. Press Scan, or load a model.", { onRow: (m) => openModel(m.model_id), ...(IV.byFamily ? {
     group: (m) => { const f = modelFamily({ name: m.name || m.model_id, kind: "other" }); return { key: f, label: f }; },
-    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: IV.closed,
-    onToggle: (k) => { IV.closed.has(k) ? IV.closed.delete(k) : IV.closed.add(k); renderInvModels(); },
+    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: q ? ALL_OPEN : IV.g.collapsed,
+    onToggle: (k) => { IV.g.toggle(k); renderInvModels(); },
     groupExtra: (g) => h("span", { class: "group-meta" }, `${g.rows.reduce((a, m) => a + (m.sessions || 0), 0)} loads · ${dur(g.rows.reduce((a, m) => a + (m.loaded_seconds || 0), 0))} loaded`),
   } : {}) });
   const famBox = h("input", { type: "checkbox", checked: !!IV.byFamily });
