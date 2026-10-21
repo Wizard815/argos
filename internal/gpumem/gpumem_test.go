@@ -36,7 +36,8 @@ func TestGPUMem_FromSysfs(t *testing.T) {
 
 	cards := FromSysfs(root)
 	require.Len(t, cards, 2)
-	assert.Equal(t, "2", cards[0].ID, "ordered numerically, not as strings")
-	assert.Equal(t, "10", cards[1].ID)
+	// card2 then card10 (numeric order, not string order), renumbered from 0 as HIP does
+	assert.Equal(t, "0", cards[0].ID)
+	assert.Equal(t, "1", cards[1].ID)
 	assert.Nil(t, FromSysfs(filepath.Join(root, "missing")))
 }

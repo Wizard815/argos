@@ -167,7 +167,7 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		var source string
 		cards, source = detect()
 		if source == "sysfs" {
-			logger.Warnf("pool: rocm-smi is unavailable, so card ids come from /sys/class/drm and may not match HIP_VISIBLE_DEVICES. Set routing.router.settings.pool.cards to be sure")
+			logger.Warnf("pool: rocm-smi is unavailable, so cards are numbered 0..n-1 in /sys/class/drm order, which is HIP's usual order. Set routing.router.settings.pool.cards to be sure")
 		}
 	}
 
