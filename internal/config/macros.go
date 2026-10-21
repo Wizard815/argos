@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -24,7 +25,16 @@ type modelMacroConfig struct {
 type configMacroConfig struct {
 	Macros MacroList                   `yaml:"macros"`
 	Models map[string]modelMacroConfig `yaml:"models"`
+	// Ports is the ${PORT} each model was given, recorded so a reload can keep it.
+	Ports map[string]int `yaml:"-"`
 }
+
+// portHints are the ports a reload asks models to keep (see
+// LoadConfigSourcesKeepingPorts). Held under portHintsMu for one load.
+var (
+	portHintsMu sync.Mutex
+	portHints   map[string]int
+)
 
 // validateMacro validates macro name and value constraints
 func validateMacro(name string, value any) error {
@@ -153,7 +163,18 @@ func resolveConfigMacros(yamlStr string) (map[string]any, configMacroConfig, err
 	}
 	sort.Strings(modelIDs)
 
-	nextPort := startPort
+	// Ports are handed out in model-ID order, so adding a model that sorts
+	// before a running one used to shift that one's port: its config no longer
+	// matched, and the reload stopped a model nothing had changed. A model
+	// that had a port before keeps it while it is free; only the others are
+	// numbered in order, skipping the ports already kept.
+	declarations.Ports = map[string]int{}
+	taken := map[int]bool{}
+	type portModel struct {
+		id    string
+		model map[string]any
+	}
+	var needPort []portModel
 	for _, modelID := range modelIDs {
 		model, ok := models[modelID].(map[string]any)
 		if !ok {
@@ -182,20 +203,39 @@ func resolveConfigMacros(yamlStr string) (map[string]any, configMacroConfig, err
 			if !cmdHasPort && proxyHasPort {
 				return nil, configMacroConfig{}, fmt.Errorf("model %s: proxy uses ${PORT} but cmd does not - ${PORT} is only available when used in cmd", modelID)
 			}
-
-			portMacro := MacroList{{Name: "PORT", Value: nextPort}}
-			resolved = substituteMacroList(model, portMacro)
-			model = resolved.(map[string]any)
-			if err := substituteSetParamsByIDKeys(model, portMacro); err != nil {
-				return nil, configMacroConfig{}, fmt.Errorf("model %s filters.setParamsByID: %w", modelID, err)
+			if p, ok := portHints[modelID]; ok && p >= startPort && !taken[p] {
+				declarations.Ports[modelID] = p
+				taken[p] = true
 			}
-			nextPort++
-		}
-
-		if err := validateSetParamsByIDKeys(model, modelID); err != nil {
-			return nil, configMacroConfig{}, err
+			needPort = append(needPort, portModel{modelID, model})
 		}
 		models[modelID] = model
+	}
+
+	nextPort := startPort
+	for _, pm := range needPort {
+		port, kept := declarations.Ports[pm.id]
+		if !kept {
+			for taken[nextPort] {
+				nextPort++
+			}
+			port = nextPort
+			taken[port] = true
+			declarations.Ports[pm.id] = port
+		}
+		portMacro := MacroList{{Name: "PORT", Value: port}}
+		model := substituteMacroList(pm.model, portMacro).(map[string]any)
+		if err := substituteSetParamsByIDKeys(model, portMacro); err != nil {
+			return nil, configMacroConfig{}, fmt.Errorf("model %s filters.setParamsByID: %w", pm.id, err)
+		}
+		models[pm.id] = model
+	}
+	for _, modelID := range modelIDs {
+		if model, ok := models[modelID].(map[string]any); ok {
+			if err := validateSetParamsByIDKeys(model, modelID); err != nil {
+				return nil, configMacroConfig{}, err
+			}
+		}
 	}
 	raw["models"] = models
 
