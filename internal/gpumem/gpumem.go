@@ -15,7 +15,8 @@ import (
 )
 
 // Card is one GPU. ID is the string HIP_VISIBLE_DEVICES takes: ROCm's GPU
-// index when rocm-smi answered, otherwise the DRM card number.
+// index when rocm-smi answered, otherwise the card's position among the DRM
+// cards that have VRAM (see FromSysfs).
 type Card struct {
 	ID       string
 	TotalGiB float64
@@ -31,7 +32,7 @@ const gib = 1 << 30
 
 // Detect returns the installed cards ordered by numeric ID. rocm-smi is
 // preferred because its indices are the ones HIP_VISIBLE_DEVICES uses; the
-// sysfs fallback numbers cards by DRM card number, which need not match.
+// sysfs fallback numbers the cards 0..n-1 in DRM order, HIP's usual order.
 // source reports where the cards came from, "rocm-smi" or "sysfs"; both are
 // empty when nothing could be read.
 func Detect() (cards []Card, source string) {
@@ -83,6 +84,12 @@ func ParseROCmSMI(text string) []Card {
 var cardDir = regexp.MustCompile(`^card(\d+)$`)
 
 // FromSysfs reads mem_info_vram_total for every DRM card that reports it.
+//
+// The cards are numbered 0, 1, ... in DRM order, not by their DRM number. HIP
+// numbers devices from 0 in that same order, while DRM numbers often start at
+// 1 (card0 is a display or simply absent): with two MI50s at card1 and card2
+// the DRM numbers sent models to HIP device 1 and a device 2 that does not
+// exist.
 func FromSysfs(root string) []Card {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -105,6 +112,9 @@ func FromSysfs(root string) []Card {
 		cards = append(cards, Card{ID: m[1], TotalGiB: float64(bytes) / gib})
 	}
 	sortCards(cards)
+	for i := range cards {
+		cards[i].ID = strconv.Itoa(i)
+	}
 	return cards
 }
 
