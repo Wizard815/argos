@@ -21,6 +21,8 @@ def env_defaults(cfg: dict) -> dict:
     return {
         "paths": {
             "models_dir": cfg.get("MODELS_DIR") or os.path.join(root, "models"),
+            # local runners (Servers -> Local): whisper.cpp, Kokoro, custom servers and add-ons, one folder each
+            "runners_dir": cfg.get("RUNNERS_DIR") or os.path.join(os.path.dirname(os.path.abspath(cfg.get("DB") or root)), "runners"),
         },
         "integrations": {
             # the engine is the Argos container's own scheduler; the builder reads GPUs, loads and speeds from it

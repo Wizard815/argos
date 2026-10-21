@@ -181,6 +181,37 @@ def problems(ctx: dict, q: str) -> list[str]:
     return ["PROBLEMS in the last 24 h:"] + [f"- {e['message'][:160]}" for e in ev[:8]]
 
 
+def runners_info(ctx: dict, q: str) -> list[str]:
+    """The local runners (Servers -> Local): what is installed, on what, and how a client calls each model."""
+    runners = ctx.get("runners")
+    if runners is None:
+        return []
+    view = runners.view()
+    entries = runners.entries()
+    out = ["LOCAL RUNNERS (Servers -> Local; servers installed inside Argos for models llama-server cannot run):"]
+    for r in view["runners"]:
+        state = "installed" if r.get("installed") else "not installed"
+        if r.get("enabled") is False:
+            state += ", turned off"
+        if r.get("addon"):
+            out.append(f"- add-on {r['label']}: {state}" + ("; Argos converts uploaded audio (m4a, mp3, ogg...) to WAV before whisper" if r.get("installed") else ""))
+            continue
+        models = [m["id"] for m in r.get("models") or []]
+        line = f"- {r['label']} ({r.get('task') or 'custom'}), {state}, on {str(r.get('device') or 'cpu').upper()}"
+        if r.get("endpoint"):
+            line += f", called at {r['endpoint']}"
+        if models:
+            names = []
+            for mid in models:
+                alias = (entries.get(mid) or {}).get("aliases") or []
+                names.append(mid + (f" (also {', '.join(alias)})" if alias else ""))
+            line += "; models: " + ", ".join(names)
+        out.append(line)
+    out.append("Requests pick the model by name, like chat: POST /v1/audio/transcriptions with model whisper-1 and the audio file, "
+               "or POST /v1/audio/speech with model tts-1, input text and a voice (e.g. af_heart, bm_george). Everything else uses llama.cpp.")
+    return out
+
+
 # ----- choosing -----------------------------------------------------------------------
 _RULES: list[tuple[re.Pattern, Callable[[dict, str], list[str]]]] = [
     (re.compile(r"\b(loaded|running|in use|memory|vram|loaded now|on the gpu|resident)\b", re.I), loaded_now),
@@ -189,6 +220,7 @@ _RULES: list[tuple[re.Pattern, Callable[[dict, str], list[str]]]] = [
     (re.compile(r"\b(spec|specs|details?|tell me about|info)\b", re.I), model_details),
     (re.compile(r"\b(perform|performed|fast|fastest|slow|speed|t/s|tok|benchmark|compare|vs|decode|prefill)\b", re.I), performance),
     (re.compile(r"\b(error|errors|problem|problems|crash|crashed|fail|failed|wrong|broken)\b", re.I), problems),
+    (re.compile(r"\b(speech|speak|voice|voices|tts|transcri\w*|whisper|kokoro|audio|runner|runners|ffmpeg|npc|stt|comfy\w*|image|local)\b", re.I), runners_info),
 ]
 
 
@@ -232,7 +264,10 @@ def list_everything(ctx: dict) -> str:
     extra = {m["model_id"]: (m.get("extra") or {}) for m in ctx["inventory"].store.list_models_seen()}
     files = [m for m in rows if m["present"] and m["origin"] != "engine" and m["kind"] not in ("mmproj", "mtp", "draft")]
     helpers = [m for m in rows if m["present"] and m["origin"] != "engine" and m["kind"] in ("mmproj", "mtp", "draft")]
-    served = [m for m in rows if m["present"] and m["origin"] == "engine"]
+    runner_models = ctx.get("runner_models") or {}
+    by_runner = [m for m in rows if m["present"] and m["model_id"] in runner_models]
+    served = [m for m in rows if m["present"] and m["origin"] == "engine" and m["model_id"] not in runner_models]
+    files = [m for m in files if m["model_id"] not in runner_models]
     gone = [m for m in rows if not m["present"]]
 
     def line(i: int, m: dict) -> str:
@@ -240,8 +275,16 @@ def list_everything(ctx: dict) -> str:
         bits = [b for b in (_gib(m["size_gib"]) if m["size_gib"] else "", p, "/".join(m["quants"])) if b]
         return f"{i}. {m['name']}" + (f" ({', '.join(bits)})" if bits else "")
 
-    out = [f"Argos knows **{len(rows)} models**: {len(files)} model files, {len(helpers)} helper files (draft, mtp, mmproj), "
+    out = [f"Argos knows **{len(rows)} models**: {len(files)} model files, {len(by_runner)} served by local runners, "
+           f"{len(helpers)} helper files (draft, mtp, mmproj), "
            f"{len(served)} names the engine serves that are not files here, {len(gone)} no longer on disk."]
+
+    def runner_line(i: int, m: dict) -> str:
+        meta = runner_models.get(m["model_id"]) or {}
+        return f"{i}. {m['name']} ({meta.get('runner', '?')}, {meta.get('task') or '?'}, {str(meta.get('device') or '').upper()})"
+
+    if by_runner:
+        out += ["", f"**Served by local runners ({len(by_runner)})**"] + [runner_line(i, m) for i, m in enumerate(sorted(by_runner, key=lambda m: m["name"].lower()), 1)]
     for title, group in ((f"Model files ({len(files)})", files), (f"Helper files ({len(helpers)})", helpers),
                          (f"Served by the engine, no file found here ({len(served)})", served), (f"No longer on disk ({len(gone)})", gone)):
         if group:
