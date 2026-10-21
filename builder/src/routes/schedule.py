@@ -56,6 +56,7 @@ def compute(plan: Optional[dict] = None) -> dict:
     c = ctx()
     plan = plan or c.plans.get()
     known, known_from = known_ids()
+    core._custom_cache()
     library = scan_models(c.settings.get("paths")["models_dir"])
     presets = core.cookbook_state()["presets"]
     rows, commands = build_rows(library, presets, plan, c.settings.get("prefab"), known)

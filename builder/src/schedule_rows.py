@@ -15,7 +15,7 @@ from .command import parse_command
 from .cookbook import variant_id
 from .gguf import read_arch
 from .library import SHARD, prefab_command
-from .scheduler import GIB, KV_COMPARE, effective_size, estimate_gib, kv_gib
+from .scheduler import CUSTOM_CACHE, GIB, KV_COMPARE, effective_size, estimate_gib, kv_gib
 
 _cache: dict[tuple, object] = {}
 
@@ -51,7 +51,7 @@ def arch_of(path: str) -> Optional[dict]:
 CTX_COMPARE = (8192, 32768, 65536, 131072, 262144)
 
 
-def estimate_command(command: str, compare: bool = False) -> dict:
+def estimate_command(command: str, compare: bool = False, measured: Optional[dict] = None) -> dict:
     """What a launch command needs in VRAM: model file + KV cache + buffers.
 
     With ``compare``, also the KV cache alone for each cache type at a few context lengths, so the
@@ -74,7 +74,14 @@ def estimate_command(command: str, compare: bool = False) -> dict:
            **estimate_gib(weights, arch, ctx, ck, cv, extra)}
     if compare and arch:
         ctxs = sorted({*(c for c in CTX_COMPARE if c <= max(ctx, (arch or {}).get("train_ctx") or ctx)), ctx})
-        out["compare"] = {"ctx": ctxs, "types": [{"type": t, "kv_gib": [kv_gib(arch, c, t, t) for c in ctxs]} for t in KV_COMPARE]}
+        types = list(dict.fromkeys([*KV_COMPARE, *CUSTOM_CACHE, *(t for t in (ck, cv) if t)]))
+        out["compare"] = {"ctx": ctxs, "types": [{"type": t, "kv_gib": [kv_gib(arch, c, t, t) for c in ctxs]} for t in types]}
+    # a load that really happened replaces the guess: the plan records what the GPU gained each time this
+    # exact profile loaded cleanly (and forgets it when the profile's command changes)
+    if measured and measured.get("gib"):
+        out["estimate_gib"] = out["gib"]
+        out["gib"] = measured["gib"]
+        out["measured"] = {"gib": measured["gib"], "at": measured.get("at"), "per_card": measured.get("per_card")}
     return out
 
 
