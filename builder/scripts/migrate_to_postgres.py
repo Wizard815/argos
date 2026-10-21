@@ -102,6 +102,7 @@ def main() -> int:
         sources.append((a.engine_sqlite, "engine"))
 
     plan = []
+    seen: dict[str, str] = {}
     for path, which in sources:
         src = sqlite3.connect(path)
         src.row_factory = sqlite3.Row
@@ -110,7 +111,16 @@ def main() -> int:
             n = src.execute('SELECT COUNT(*) FROM "' + t + '"').fetchone()[0]
             cols = columns(src, t)
             print("  %-18s %6d rows  %d columns" % (t, n, len(cols)))
-            plan.append((t, cols, n, path))
+            # A database from before the engine and builder were split can hold
+            # the other one's tables, usually stale. The first source listed
+            # wins, and duplicates are skipped rather than merged - but say so,
+            # because silently copying the older of two copies is how you get a
+            # migration that looks successful and moves nothing.
+            if t in seen:
+                print("      ^ also in %s; %s is copied and this one is skipped" % (seen[t], seen[t]))
+            else:
+                seen[t] = path
+                plan.append((t, cols, n, path))
         src.close()
     print("to   " + a.postgres)
     if a.dry_run:

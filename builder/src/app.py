@@ -21,6 +21,7 @@ where everyone who can reach it may run programs on this machine.
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import signal
 import sys
@@ -46,15 +47,46 @@ from .scheduler import Plans, idle_unload  # noqa: E402
 from .servers import Servers, gguf_index, load_seed  # noqa: E402
 from .integrations import engine_api  # noqa: E402
 from .inventory import Inventory  # noqa: E402
+from .library import scan_media, scan_models  # noqa: E402
 from .memory import Memory  # noqa: E402
 from .services import Analytics, Recorder  # noqa: E402
 from .settings import Settings, env_defaults  # noqa: E402
 from .telemetry import Collector  # noqa: E402
 from .web import Ctx, err  # noqa: E402
 
+log = logging.getLogger("argos.app")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SLOW_REQUEST_S = 2.0  # a request slower than this is logged, so a stall shows up in the container log
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+
+
+def _prewarm_library(settings) -> None:
+    """Walk the models folder once, off the request path.
+
+    The walk is cached, but the first request after a restart pays for it in
+    full, and on a share that is seconds. Doing it here means the first page
+    load is served from a warm cache instead of waiting for a walk.
+    """
+    try:
+        models_dir = settings.get("paths")["models_dir"]
+        scan_models(models_dir)
+        scan_media(models_dir)
+    except Exception:  # noqa: BLE001 - a warm-up must never stop the app
+        log.exception("library prewarm failed")
+
+
+def _prewarm_digest(assistant) -> None:
+    """Build the assistant's digest once, off the request path.
+
+    It is a dozen database queries plus whatever the tools answer, it is
+    memoised after the first build, and until this ran the first viewer paid for
+    it on a page load.
+    """
+    try:
+        assistant.context_tokens()
+    except Exception:  # noqa: BLE001 - a warm-up must never stop the app
+        log.exception("assistant prewarm failed")
 
 
 def _env_config() -> dict:
@@ -246,8 +278,17 @@ def create_app(config: dict | None = None) -> Flask:
     atexit.register(inventory.close_all)
     if cfg["BACKGROUND"]:
         collector.start()
-        # start the slow part of the model list now, so the first visit to Inventory finds it ready
-        threading.Thread(target=inventory.models_summary, name="inventory-prewarm", daemon=True).start()
+        # Start the slow reads now, so the first visit to a page finds them ready
+        # rather than paying for them. Every one of these is cached afterwards, so
+        # this is about the first page load after a restart and nothing else.
+        # Each runs in its own thread and none of them may stop the app.
+        prewarm = (
+            ("inventory-prewarm", lambda: inventory.models_summary()),
+            ("library-prewarm", lambda: _prewarm_library(settings)),
+            ("assistant-prewarm", lambda: _prewarm_digest(app.extensions["pb"].assistant)),
+        )
+        for name, work in prewarm:
+            threading.Thread(target=work, name=name, daemon=True).start()
 
     for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp):
         app.register_blueprint(bp)
@@ -329,7 +370,11 @@ def main() -> None:
         return
     # A fixed pool and kept-alive connections, instead of a new thread and a new HTTP/1.0 connection per request.
     # The long channel timeout is for the chat and log streams, which can sit quiet while a model thinks.
-    serve(app, host=host, port=port, threads=int(os.environ.get("ARGOS_THREADS", "16")),
+    # 16 threads is not much once a couple of long-lived log and chat streams are
+    # open: each holds a thread for as long as it is connected. A few slow
+    # requests on top of that and the pool is full and the queue grows until the
+    # page times out. The slow endpoints are fixed, and this is the headroom.
+    serve(app, host=host, port=port, threads=int(os.environ.get("ARGOS_THREADS", "32")),
           channel_timeout=900, ident="argos-builder", expose_tracebacks=False)
 
 
