@@ -81,6 +81,10 @@ type ModelConfig struct {
 	Proxy         string   `yaml:"proxy"`
 	Aliases       []string `yaml:"aliases"`
 	Env           []string `yaml:"env"`
+	// Cwd is the folder the model's process starts in. Empty: the engine's own.
+	// Servers installed from source (Kokoro, ComfyUI) find their files relative
+	// to their own folder, so they need it.
+	Cwd string `yaml:"cwd"`
 	CheckEndpoint string   `yaml:"checkEndpoint"`
 	UnloadAfter   int      `yaml:"ttl"`
 	UnloadTimeout int      `yaml:"unloadTimeout"`
