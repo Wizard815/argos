@@ -2986,6 +2986,7 @@ const blankServer = () => ({ id: null, name: "", kind: "ssh", host: "", port: 22
 // ── Servers → Local: runners installed inside Argos (Mode 1) ───────────────
 const LC = { data: null, polling: {}, open: new Set() };
 async function loadLocal() {
+  if (!LC.torch) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; if (LC.data) renderLocal(); }).catch(() => {});
   try { LC.data = await api("GET", "/api/runners"); } catch (e) { fill($("#lcList"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
   renderLocal();
   for (const r of LC.data.runners) if (r.job && r.job.state === "running") pollInstall(r.id);
@@ -3038,8 +3039,11 @@ function runnerCard(r) {
   const rocm = r.device === "rocm";
   const extra = r.addon ? [opt("program", "Use your own ffmpeg instead", "/opt/ffmpeg/bin/ffmpeg", "blank = the one installed here, else ffmpeg on PATH")]
     : r.kind === "kokoro" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/Kokoro-FastAPI-fork", "blank = the official Kokoro-FastAPI"),
-      rocm ? opt("torch_index", "Custom PyTorch build (optional)", "https://…/torch-v2.14.1+gfx906…/index.txt",
+      rocm ? torchPicker(r) : null,
+      rocm ? opt("torch_index", "…or paste a link to a build", "https://example.org/torch-builds/index.txt",
         "Paste where the build lives, one of: an index.txt that lists wheel files (how ML-gfx906 publishes its MI50 builds: copy the URL from its Wheels table for your ROCm version); a pip index URL; or .whl files or links, comma separated. Install creates the environment in that build's Python (3.12 for ML-gfx906), installs the build, then Kokoro without the stock ROCm PyTorch. Blank: the stock one.") : null]
+    : r.kind === "sdcpp" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/stable-diffusion.cpp-fork", "blank = the latest prebuilt release on Windows, the official repo built from source elsewhere"),
+      rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "Blank: Install asks rocminfo which chip families this machine has (gfx906 for MI50/MI60) and builds for them.") : null]
     : r.kind === "whisper" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/whisper.cpp-fork", "blank = prebuilt on Windows, the official whisper.cpp elsewhere; a fork builds from source"),
       rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "ROCm compiles the GPU code ahead of time for each chip family, with no generic fallback, so the build has to name yours. Blank: Install asks rocminfo which this machine has (gfx906 for MI50/MI60) and builds for all of them. Fill it only to build for other cards, comma separated.") : null]
     : [];
@@ -3047,9 +3051,16 @@ function runnerCard(r) {
     const sel = h("select", { title: "Which runner serves this model" }, [["", `automatic (${r.label})`], ["none", "do not serve"]].map(([v, l]) => h("option", { value: v }, l)));
     sel.addEventListener("change", async () => { try { await api("PUT", `/api/runners/overrides/${encodeURIComponent(m.id)}`, { runner: sel.value }); loadLocal(); } catch (e) { fail(e); } });
     const alias = r.kind === "whisper" && m.id === ((o.default_model) || (r.models.slice().sort((a, b) => a.size - b.size)[0] || {}).id) ? "whisper-1"
-      : r.kind === "kokoro" ? "tts-1, tts-1-hd" : "";
+      : r.kind === "kokoro" ? "tts-1, tts-1-hd" : r.kind === "sdcpp" && m === r.models[0] ? "dall-e-3" : "";
+    let args = null;
+    if (r.kind === "sdcpp") {
+      args = h("input", { type: "text", value: (o.model_args || {})[m.id] || "", placeholder: "--vae /models/vae/ae.safetensors --steps 20", spellcheck: "false", style: "min-width:220px",
+        title: "Added to this model's sd-server command: the VAE, text encoder (--llm, --clip_l, --t5xxl) or defaults it needs" });
+      args.addEventListener("change", () => saveRunner(r.id, { opts: { model_args: { ...(o.model_args || {}), [m.id]: args.value.trim() } } }));
+    }
     return h("tr", {}, h("td", { class: "mono-sm" }, m.id), h("td", {}, TASK_LABEL[m.task] || m.task || DASH),
-      h("td", { class: "mono-sm" }, alias || DASH), h("td", { class: "num" }, m.size ? size(m.size) : DASH), h("td", {}, m.path ? sel : ""));
+      h("td", { class: "mono-sm" }, alias || DASH), h("td", { class: "num" }, m.size ? size(m.size) : DASH), h("td", {}, m.path ? sel : ""),
+      r.kind === "sdcpp" ? h("td", {}, args) : null);
   });
   const log = h("pre", { class: "log", style: "max-height:240px", "data-runner-log": r.id }, (r.job && r.job.log) || "");
   const open = LC.open.has(r.id) || (r.job && r.job.state === "running");
@@ -3069,10 +3080,24 @@ function runnerCard(r) {
     r.kind === "custom" ? customFields(r) : null,
     extra.some(Boolean) ? h("div", { class: "fields" }, extra.filter(Boolean)) : null,
     r.addon ? null : h("div", { class: "table-wrap" }, h("table", { class: "dense" },
-      h("thead", {}, h("tr", {}, ["Model", "Does", "Also answers to", "Size", "Served by"].map((x) => h("th", {}, x)))),
+      h("thead", {}, h("tr", {}, ["Model", "Does", "Also answers to", "Size", "Served by", ...(r.kind === "sdcpp" ? ["Extra arguments"] : [])].map((x) => h("th", {}, x)))),
       h("tbody", {}, models.length ? models : h("tr", {}, h("td", { colspan: 5 }, h("span", { class: "muted" },
-        r.kind === "whisper" ? "No whisper model yet. Put a ggml-*.bin file in the models folder or in this runner's models folder." : r.installed ? "—" : "Install it first.")))))),
+        r.kind === "whisper" ? "No whisper model yet. Put a ggml-*.bin file in the models folder Argos uses (the same one as your chat models)."
+          : r.kind === "sdcpp" ? "No image model yet. Put a .gguf, .safetensors or .ckpt image model in the models folder Argos uses."
+          : r.kind === "custom" ? "One model: this runner's start command. Give a model-file pattern and ${MODEL_PATH} in the start command to serve one model per file."
+          : r.installed ? "—" : "Install it first.")))))),
     details);
+}
+function torchPicker(r) {
+  const T = LC.torch || { builds: [], archs: [] };
+  const cur = (r.opts || {}).torch_index || "";
+  const sel = h("select", {}, h("option", { value: "" }, T.builds.length ? "the stock ROCm PyTorch" : "no list available (offline): paste a link below"),
+    T.builds.map((b) => h("option", { value: b.url, selected: b.url === cur }, `PyTorch ${b.torch} · ROCm ${b.rocm} · ${b.gpu} · ${b.source}`)),
+    cur && !T.builds.some((b) => b.url === cur) ? h("option", { value: cur, selected: true }, "the link pasted below") : null);
+  sel.addEventListener("change", () => saveRunner(r.id, { opts: { torch_index: sel.value } }));
+  const archs = T.archs.length ? `This machine reports ${T.archs.join(", ")}.` : "rocminfo did not answer here, so the cards are unknown.";
+  return h("label", { class: "field wide" }, h("span", {}, "Custom PyTorch build (optional)"), sel,
+    h("small", { class: "hint" }, `${archs} Stock ROCm PyTorch may not support older cards like the MI50 (gfx906). Pick the build for your card whose ROCm version matches the ROCm on this machine (rocminfo shows it as "Runtime Version"). Install then makes Kokoro's environment in that build's Python, installs the build, and installs Kokoro without the stock one.`));
 }
 function customFields(r) {
   const o = r.opts || {}, sc = r.scan || { install: [], start: [] };
@@ -3093,7 +3118,9 @@ function customFields(r) {
     h("label", { class: "field" }, h("span", {}, "Does"), task),
     area("install", "Install command (one per line, runs in the runner's folder)", "uv venv .venv && uv pip install --python .venv -r requirements.txt", sc.install || []),
     area("start", "Start command (${PORT} is the port Argos gives it; it must listen on 127.0.0.1)", ".venv/bin/python server.py --host 127.0.0.1 --port ${PORT}", sc.start || []),
-    small("check", "Ready check path", "/health"), small("alias", "Also answers to (comma separated)", "e.g. tts-1"), small("vram", "VRAM (GiB)", "0.1 for CPU"));
+    small("models_glob", "Model files (optional)", "**/*.onnx"),
+    h("p", { class: "hint wide", style: "margin:0" }, "Like your llama.cpp box: one program, many models. With a pattern here and ${MODEL_PATH} in the start command, every matching file in the models folder Argos uses (the same one llama.cpp reads, e.g. your LLMBin) becomes its own model, each started on demand and able to run beside the others. Without it, the start command is one model."),
+    small("check", "Ready check path", "/health"), small("alias", "Also answers to (comma separated)", "e.g. tts-1"), small("vram", "VRAM (GiB)", "0.1 for CPU; per file it is worked out from the size"));
 }
 function renderLocal() {
   const D = LC.data;
