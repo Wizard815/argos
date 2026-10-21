@@ -93,9 +93,9 @@ def test_whisper_rocm_build_uses_the_detected_architecture(monkeypatch):
     runners.rocm_archs.cache_clear()
     monkeypatch.setattr(runners, "rocm_archs", lambda: ("gfx906",))
     steps = runners.install_steps("whisper", "/data/runners/whisper", "rocm", {"repo": "https://github.com/someone/whisper.cpp-fork"})
-    assert '"-DAMDGPU_TARGETS=gfx906"' in steps[1]["run"]
+    assert '"-DAMDGPU_TARGETS=gfx906"' in steps[2]["run"]
     steps = runners.install_steps("whisper", "/w", "rocm", {"repo": "https://x/y", "gpu_target": "gfx906, gfx90a"})
-    assert '"-DAMDGPU_TARGETS=gfx906;gfx90a"' in steps[1]["run"]
+    assert '"-DAMDGPU_TARGETS=gfx906;gfx90a"' in steps[2]["run"]
 
 
 def test_sdcpp_serves_single_file_image_models_with_their_extra_args(tmp_path):
@@ -144,6 +144,32 @@ def test_rocm_architectures_are_lowercased_and_the_hip_compiler_is_set(monkeypat
     monkeypatch.setattr(runners, "WINDOWS", False)
     steps = runners.install_steps("whisper", "/data/runners/whisper", "rocm",
                                   {"repo": "https://github.com/Wizard815/whisper.cpp-rocm10-gfx906", "gpu_target": "GFX906"})
-    assert steps[0]["run"].startswith('git clone --depth 1 "https://github.com/Wizard815/whisper.cpp-rocm10-gfx906"')
-    assert '"-DAMDGPU_TARGETS=gfx906"' in steps[1]["run"] and "HIPCXX=" in steps[1]["run"]
-    assert steps[2]["run"].endswith("--target whisper-server")
+    assert steps[0] == {"needs": ["git", "cmake", "c++", "hipconfig"]}
+    assert steps[1]["run"].startswith('git clone --depth 1 "https://github.com/Wizard815/whisper.cpp-rocm10-gfx906"')
+    assert '"-DAMDGPU_TARGETS=gfx906"' in steps[2]["run"] and "HIPCXX=" in steps[2]["run"]
+    assert steps[3]["run"].endswith("--target whisper-server")
+
+
+def test_gpu_tools_put_a_custom_rocm_in_front_for_builds_and_runs(tmp_path):
+    from src import gputools
+    rocm = tmp_path / "rocm-gfx906"
+    for d in ("bin", "llvm/bin", "lib"):
+        (rocm / d).mkdir(parents=True)
+    try:
+        gputools.configure({"rocm_path": str(rocm)})
+        e = gputools.env({"PATH": "/usr/bin"}, "rocm")
+        assert e["PATH"].split(os.pathsep if os.name != "nt" else ";")[0] == str(rocm / "bin") and e["ROCM_PATH"] == str(rocm)
+        lines = gputools.run_env("rocm")
+        assert any(x.startswith("ROCM_PATH=") for x in lines) and not any(x.startswith("PATH=") for x in lines)
+        assert gputools.run_env("cuda") == [] and gputools.run_env("cpu") == []
+    finally:
+        gputools.configure({})
+
+
+def test_a_source_build_checks_its_tools_first(monkeypatch):
+    from src import runners
+    monkeypatch.setattr(runners, "WINDOWS", False)
+    steps = runners.install_steps("whisper", "/data/runners/whisper", "rocm", {"repo": "https://x/y", "gpu_target": "gfx906"})
+    assert steps[0] == {"needs": ["git", "cmake", "c++", "hipconfig"]}
+    monkeypatch.setattr(runners.shutil, "which", lambda n, path=None: None if n in ("cmake", "hipconfig") else f"/usr/bin/{n}")
+    assert runners.missing_tools(["git", "cmake", "c++", "hipconfig"]) == ["cmake", "hipconfig"]

@@ -49,6 +49,14 @@ def env_defaults(cfg: dict) -> dict:
             "batch": 16,
             "results": 8,     # records the assistant sees per question
         },
+        "gpu": {
+            # where the GPU toolkits and tools are (Settings -> GPU tools); blank = whatever is on PATH.
+            # A custom ROCm or CUDA on the host is mounted into Argos and its mounted folder goes here.
+            "rocm_path": cfg.get("ROCM_PATH", ""),     # e.g. /opt/rocm-gfx906
+            "cuda_path": cfg.get("CUDA_PATH", ""),     # e.g. /usr/local/cuda-12.4
+            "rocm_smi": "",                            # e.g. /opt/rocm-gfx906/bin/rocm-smi
+            "nvidia_smi": "",
+        },
         "kv": {
             # KV cache types the estimator does not know, as name=bits per value, e.g. "turbo5=3.0, mykv=4.25".
             # bits per value = bytes per block * 8 / values per block (q8_0: 34 bytes per 32 values = 8.5)

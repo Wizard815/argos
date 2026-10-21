@@ -2918,6 +2918,11 @@ const SETTINGS_FORM = [
     { k: "jinja", label: "--jinja for chat models", type: "check" },
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
     { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
+  { group: "gpu", title: "GPU tools", hint: "Where the GPU toolkits are. Blank uses whatever is on PATH inside Argos, which is all most setups need. For a custom ROCm (a TheRock build for gfx906, say) or a second CUDA: mount its folder into the Argos container (a volume in docker-compose, e.g. /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro), then put the mounted path here. Runner builds then use its compiler, and runners started by the engine use its libraries. Servers → Local shows which tools it finds.", fields: [
+    { k: "rocm_path", label: "ROCm location", ph: "/opt/rocm-gfx906" },
+    { k: "cuda_path", label: "CUDA location", ph: "/usr/local/cuda-12.4" },
+    { k: "rocm_smi", label: "rocm-smi to use", ph: "/opt/rocm-gfx906/bin/rocm-smi", hint: "blank = the one in the ROCm location, else on PATH" },
+    { k: "nvidia_smi", label: "nvidia-smi to use", ph: "/usr/bin/nvidia-smi", hint: "blank = on PATH" }] },
   { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
     { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
   { group: "downloads", title: "Downloads", fields: [
@@ -3044,7 +3049,9 @@ function runnerCard(r) {
         "Paste where the build lives, one of: an index.txt that lists wheel files (how ML-gfx906 publishes its MI50 builds: copy the URL from its Wheels table for your ROCm version); a pip index URL; or .whl files or links, comma separated. Install creates the environment in that build's Python (3.12 for ML-gfx906), installs the build, then Kokoro without the stock ROCm PyTorch. Blank: the stock one.") : null]
     : r.kind === "sdcpp" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/stable-diffusion.cpp-fork", "blank = the latest prebuilt release on Windows, the official repo built from source elsewhere"),
       rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "Blank: Install asks rocminfo which chip families this machine has (gfx906 for MI50/MI60) and builds for them.") : null]
-    : r.kind === "whisper" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/whisper.cpp-fork", "blank = prebuilt on Windows, the official whisper.cpp elsewhere; a fork builds from source"),
+    : r.kind === "whisper" ? [opt("args", "Extra arguments (optional)", "--threads 8 --beam-size 5",
+        "Added to every whisper-server this runner starts. Argos already passes the host, port, model and the OpenAI path, and starts and stops the server itself, so a fork's own --lazy-load and --idle-timeout are best left out: they are off unless you add them here."),
+      opt("repo", "Git repository (optional)", "https://github.com/someone/whisper.cpp-fork", "blank = prebuilt on Windows, the official whisper.cpp elsewhere; a fork builds from source"),
       rocm ? opt("gpu_target", "GPU architecture (optional)", "detected", "ROCm compiles the GPU code ahead of time for each chip family, with no generic fallback, so the build has to name yours. Blank: Install asks rocminfo which this machine has (gfx906 for MI50/MI60) and builds for all of them. Fill it only to build for other cards, comma separated.") : null]
     : [];
   const models = (r.models || []).map((m) => {
@@ -3087,6 +3094,17 @@ function runnerCard(r) {
           : r.kind === "custom" ? "One model: this runner's start command. Give a model-file pattern and ${MODEL_PATH} in the start command to serve one model per file."
           : r.installed ? "—" : "Install it first.")))))),
     details);
+}
+function toolsLine() {
+  const t = (LC.torch || {}).tools;
+  if (!t) return null;
+  const u = t.using || {};
+  const item = (name, path, need) => h("span", { class: `pill ${path ? "ok" : need ? "warn" : ""}`, title: path || "not found" }, `${name} ${path ? "✓" : "—"}`);
+  return h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;margin:0 0 8px" },
+    h("span", { class: "hint", style: "margin:0" }, "Tools here:"),
+    item("git", u.git), item("cmake", u.cmake), item("C++ compiler", u["c++"]), item("ROCm compiler", u.hipconfig), item("CUDA compiler", u.nvcc),
+    item("rocm-smi", u["rocm-smi"]), item("nvidia-smi", u["nvidia-smi"]),
+    h("span", { class: "hint", style: "margin:0" }, "Install fetches git, cmake and a C++ compiler itself when they are missing. A GPU compiler comes from the ROCm or CUDA SDK: Settings → GPU tools."));
 }
 function torchPicker(r) {
   const T = LC.torch || { builds: [], archs: [] };
@@ -3137,6 +3155,7 @@ function renderLocal() {
   fill($("#lcList"),
     h("p", { class: "hint" }, "Runners are servers installed inside Argos for models llama-server cannot run. You never pick one per model: the model's type does (a speech-to-text file goes to whisper, Kokoro serves its own voices), and a model's row lets you change it. Argos writes the engine's entries itself",
       D.engine_file ? h("span", { title: D.engine_file }, " (runners.generated.yaml in the engine's config folder).") : ". It cannot here: the engine's config folder is not known (ARGOS_SCHEDULE_FILE)."),
+    toolsLine(),
     h("p", { class: "hint" }, "Each runner has its own folder in the ", h("span", { title: D.root, class: "mono-sm" }, "runners"),
       " folder (hover for where). Clients call the usual OpenAI paths on this Argos with the model name, or the standard names: whisper-1 for transcription, tts-1 for speech."),
     runners.filter((r) => r.kind !== "custom").map(runnerCard),

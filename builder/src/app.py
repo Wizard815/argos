@@ -283,6 +283,8 @@ def create_app(config: dict | None = None) -> Flask:
         memory=memory, servers=servers,
         runners=Runners(store, settings, event, lambda: settings.get("paths")["models_dir"], scan_media))
     app.extensions["pb"].assistant.runners = app.extensions["pb"].runners
+    from . import gputools
+    gputools.configure(settings.get("gpu"))
     app.extensions["runner"] = runner
     atexit.register(runner.stop_all)
     atexit.register(inventory.close_all)

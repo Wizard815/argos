@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import re
 import shutil
+
+from . import gputools
 import signal
 import subprocess
 import sys
@@ -29,7 +31,7 @@ def _run(argv: list[str], timeout: float = 8.0) -> str:
 
 
 def _nvidia() -> Optional[list[dict]]:
-    exe = shutil.which("nvidia-smi")
+    exe = gputools.tool("nvidia-smi")
     if not exe:
         return None
     index = {}
@@ -49,7 +51,7 @@ def _nvidia() -> Optional[list[dict]]:
 
 
 def _rocm() -> Optional[list[dict]]:
-    exe = shutil.which("rocm-smi")
+    exe = gputools.tool("rocm-smi")
     if not exe:
         return None
     out = []
