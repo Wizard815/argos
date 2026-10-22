@@ -1736,7 +1736,7 @@ function renderIntegrations() {
             h("div", { class: "s" }, sub ? sub(x) : (x.reason || "")))));
       };
       add("New profiles", r.imported, "ok", (x) => x.model_id || "");
-      add("Updated from Odysseus", r.updated, "warn", (x) => x.model_id || "");
+      add("Updated from Odysseus", r.updated, "warn", (x) => (x.renamed_from ? `renamed from ${x.renamed_from} · ` : "") + (x.model_id || ""));
       add("Already here, unchanged", r.skipped, "", (x) => x.reason);
       add("Could not be used", r.failed, "bad", (x) => x.reason);
       fill(pullOut, r.note ? h("p", { class: "hint", style: "margin:0 0 6px" }, r.note) : null, ...rows,
