@@ -176,3 +176,20 @@ def test_scan_models_hands_out_copies(tmp_path):
     (tmp_path / "A-Q4_K_M.gguf").write_bytes(b"x")
     lib.scan_models(str(tmp_path))[0]["name"] = "mutated"
     assert lib.scan_models(str(tmp_path))[0]["name"] == "A-Q4_K_M"
+
+
+def test_hugging_face_cache_files_are_named_by_their_repo(tmp_path):
+    from src.library import _scan_media, display_name
+    snap = tmp_path / "HFCache" / "hub" / "models--unsloth--whisper-large-v3" / "snapshots" / "1c3aae815bd9d41a"
+    snap.mkdir(parents=True)
+    (snap / "model.safetensors").write_bytes(b"x")
+    (m,) = _scan_media(str(tmp_path))
+    assert m["name"] == "whisper-large-v3" and m["task"] == "speech-to-text"
+    assert display_name("/m/Qwen3-0.6B-Q8_0.gguf", "Qwen3-0.6B-Q8_0") == "Qwen3-0.6B-Q8_0"
+    assert display_name("/m/flux-schnell/diffusion_pytorch_model.safetensors", "diffusion_pytorch_model") == "flux-schnell"
+
+
+def test_a_renamed_model_keeps_its_id_and_file_name():
+    from src.library import with_names
+    (m,) = with_names([{"id": "model", "name": "model", "path": "/x"}], {"model": "Whisper large v3"})
+    assert (m["id"], m["name"], m["file_name"], m["renamed"]) == ("model", "Whisper large v3", "model", True)

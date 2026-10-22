@@ -1892,10 +1892,7 @@ const cap1 = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 /** "Qwen" for qwen3.6-35b…, "Hermes" for NousResearch_Hermes-4…, the folder for audio/image models. */
 function modelFamily(m) {
-  if (m.listed_only) {
-    const seg = (m.dir || "").split(/[\\/]/).filter((x) => x && x !== ".").pop();
-    return cap1(seg || m.kind);
-  }
+  // by the model's name, for audio and image models too (their folder can be a Hugging Face snapshot hash)
   let n = m.name.replace(/^[A-Z][A-Za-z0-9]*_(?=[A-Za-z])/, "").toLowerCase().replace(/^(mtp|mmproj|draft)[-_]/, "");
   return cap1((n.match(/^[a-z]+/) || [m.kind])[0]);
 }
@@ -1984,9 +1981,22 @@ async function deleteModel(m) {
       loadLibrary();
     } }]);
 }
+function renameModel(m) {
+  const input = h("input", { type: "text", value: m.name, style: "width:100%" });
+  modal(`Rename ${m.file_name || m.name}`, h("div", {},
+    h("p", { class: "hint", style: "margin-top:0" }, "Changes the name shown here and the group it falls in. The file on disk, its id and its profiles stay the same. Empty: back to the name from the file."),
+    input), [
+    { label: "Cancel", run: (c) => c() },
+    { label: "Rename", cls: "primary", run: async (c) => {
+      c();
+      try { await api("PUT", `/api/library/names/${encodeURIComponent(m.id)}`, { name: input.value.trim() }); await loadLibrary(); toast("Renamed.", "ok"); } catch (e) { fail(e); }
+    } }]);
+  setTimeout(() => { input.focus(); input.select(); }, 30);
+}
 function modelMenu(btnEl, m) {
   const g = myGroupOf(m);
   popMenu(btnEl, [
+    { label: "Rename…", icon: "pencil", run: () => renameModel(m) },
     { label: "Move to group…", icon: "layers", run: () => newGroupBox(m) },
     g ? { label: `Take out of ${g.name}`, icon: "x", run: () => saveGroups(ML.groups.map((x) => ({ name: x.name, models: x.models.filter((id) => id !== m.id) }))) } : null,
     { label: "Delete from disk…", icon: "trash", danger: true, run: () => deleteModel(m) },
