@@ -211,7 +211,12 @@ def pull():
         return ok(imported=[], updated=[], skipped=[], failed=[],
                   note="Odysseus has no Cookbook presets to pull, or presets are switched off under Settings → Odysseus.")
 
-    here = {p.get("name"): p for p in c.store.list_profiles() if p.get("source") == "odysseus"}
+    pulled = [p for p in c.store.list_profiles() if p.get("source") == "odysseus"]
+    by_cmd: dict[str, list[dict]] = {}
+    for p in pulled:
+        by_cmd.setdefault((p.get("launch_command") or "").strip(), []).append(p)
+    by_name = {p.get("name"): p for p in pulled}
+    claimed: set[str] = set()  # one profile per preset, even when two presets share a name or a command
     imported, updated, skipped, failed = [], [], [], []
     for raw in presets:
         p = normalize_preset(raw)
@@ -231,8 +236,16 @@ def pull():
                            "reason": f"no .gguf model path in the command (found {model or 'nothing'})"})
             continue
         name = label or swap_model_id(model)
-        was = here.get(name)
-        if was and (was.get("launch_command") or "").strip() == cmd:
+        # The profile this preset made before: first by its command, which survives a rename on either side,
+        # then by name. Older pulls named every profile after the model (Odysseus did not send the preset's
+        # label), so matching by name alone made a second profile for each one once the real names arrived.
+        was = next((p for p in by_cmd.get(cmd, []) if p["profile_id"] not in claimed), None)
+        if was is None:
+            cand = by_name.get(name)
+            was = cand if cand and cand["profile_id"] not in claimed else None
+        if was:
+            claimed.add(was["profile_id"])
+        if was and (was.get("launch_command") or "").strip() == cmd and was.get("name") == name:
             skipped.append({"label": name, "reason": "already here, unchanged"})
             continue
         profile = c.store.save_profile({
@@ -241,6 +254,8 @@ def pull():
             "source": "odysseus", "launch_command": cmd, "notes": "Pulled from Odysseus",
         }, commit=False)
         row = {"label": name, "profile_id": profile["profile_id"], "model_id": profile.get("model_id") or ""}
+        if was and was.get("name") != name:
+            row["renamed_from"] = was.get("name")
         (updated if was else imported).append(row)
     # One commit for the lot: a pull writes dozens of rows, and each commit is a
     # journal write, which on a FUSE share is the difference between a moment and a

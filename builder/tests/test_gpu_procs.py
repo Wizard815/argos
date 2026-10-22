@@ -29,3 +29,48 @@ def test_kill_refuses_anything_not_on_a_gpu_and_pid_one():
         gpu_procs.kill(123, {456})
     with pytest.raises(PermissionError):
         gpu_procs.kill(1, {1})
+
+
+def _fake_kfd(root, procs, gpus=("0", "4521", "8840")):
+    import os
+    for i, gid in enumerate(gpus):
+        os.makedirs(os.path.join(root, "topology", "nodes", str(i)))
+        with open(os.path.join(root, "topology", "nodes", str(i), "gpu_id"), "w") as f:
+            f.write(gid)
+    for pid, files in procs.items():
+        d = os.path.join(root, "proc", str(pid))
+        os.makedirs(os.path.join(d, "stats_4521"))
+        for name, value in files.items():
+            with open(os.path.join(d, name), "w") as f:
+                f.write(str(value))
+
+
+def test_kfd_shows_gpu_memory_of_processes_argos_cannot_see(tmp_path, monkeypatch):
+    root = str(tmp_path / "kfd")
+    _fake_kfd(root, {550406: {"vram_4521": 3482193920, "vram_8840": 0, "sdma_4521": 0, "stats_4521/cu_occupancy": 0}})
+    monkeypatch.setattr(gpu_procs, "_host_pids", lambda: {})
+    (p,) = gpu_procs.kfd_processes(root, sample_s=0)
+    # card 0 is the first GPU node (node 0 is the CPU), the numbering rocm-smi and HIP use
+    assert (p["host_pid"], p["gpu"], p["vram_gib"], p["visible"], p["busy"]) == (550406, "0", 3.24, False, False)
+    assert gpu_procs.kfd_processes(str(tmp_path / "none"), sample_s=0) is None
+
+
+def test_a_process_outside_the_container_is_never_signalled(app, client, monkeypatch):
+    monkeypatch.setattr(gpu_procs, "listing", lambda running, launches: {"tool": "kernel (KFD)", "note": "", "processes": [
+        {"pid": 550406, "host_pid": 550406, "visible": False, "name": "not visible from Argos", "vram_gib": 3.2, "owner": None}]})
+    killed = []
+    monkeypatch.setattr(gpu_procs, "kill", lambda *a, **k: killed.append(a))
+    r = client.post("/api/gpu/processes/550406/kill", json={"hard": True})
+    assert r.status_code == 409 and "kill 550406" in r.get_json()["error"] and killed == []
+
+
+def test_a_dry_run_says_what_would_happen_and_signals_nothing(app, client, monkeypatch):
+    row = {"pid": 4242, "visible": True, "name": "llama-server", "vram_gib": 3.3, "owner": None, "cmd": "llama-server --port 8081"}
+    monkeypatch.setattr(gpu_procs, "listing", lambda running, launches: {"tool": "x", "note": "", "processes": [row]})
+    killed = []
+    monkeypatch.setattr(gpu_procs, "kill", lambda *a, **k: killed.append(a))
+    monkeypatch.setattr(gpu_procs.os, "kill", lambda *a: killed.append(a))
+    for hard in (False, True):
+        out = client.post("/api/gpu/processes/4242/kill", json={"dry_run": True, "hard": hard}).get_json()
+        assert out["dry_run"] and out["allowed"] and "PID 4242" in out["would"] and "3.3 GiB" in out["would"]
+    assert killed == []

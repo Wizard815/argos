@@ -5,9 +5,14 @@ Open items from building and testing Argos on Windows (RTX 3060) and Unraid
 
 ## Test on the Unraid box (MI50s)
 
-- [ ] Rebuild the image and redeploy: the engine changes (`cwd`, sticky
-      ports, sysfs card numbering, placement across reloads) only arrive
-      with a new image, and a restart clears stuck threads.
+- [ ] Rebuild the image and redeploy. Engine changes since the last image:
+      `cwd`, ports kept across reloads, sysfs card numbering, placement
+      across reloads. A restart also clears stuck threads.
+- [ ] Off-Argos: open Usage -> Off-Argos and find the 3.3 GiB process
+      (PID 550406). Without `pid: host` it shows PID, card, VRAM and
+      whether it is working; run the host commands it gives to name it.
+      Then add `pid: host` to the Argos service and check its name,
+      container, model files, ports, log and the dry-run Stop / Kill.
 - [ ] Base the Argos image on a ROCm image instead of the llama.cpp server
       image (`BASE_IMAGE` / `BASE_TAG` in `.env`); Mode 3 does not need
       llama.cpp inside Argos.
@@ -34,11 +39,23 @@ Open items from building and testing Argos on Windows (RTX 3060) and Unraid
 - [ ] The engine knows fewer profile variants than the builder has
       profiles: check `odysseus.baseURL` points at the builder, and look at
       which profiles are still missing in Schedule -> Plan.
-- [ ] GPU processes card: needs the builder to see the host's processes
-      (`pid: host`) to show servers other containers started.
+- [ ] Models page: Hugging Face cache models (e.g. whisper-large-v3) now
+      show their repo name; check the groups look right.
+
+## Waiting on Odysseus
+
+- [ ] Odysseus's `/api/codex/cookbook/presets` (`routes/codex_routes.py`,
+      `codex_cookbook_presets`) does not send each preset's `label`, so
+      pulled profiles are named after the model. Add
+      `"label": p.get("label")` there, deploy Odysseus, then press
+      "Pull presets into profiles" again: Argos now renames the profiles it
+      pulled before (matched by command) instead of adding duplicates.
+      Profile variant ids change with the names.
 
 ## Build next
 
+- [ ] Warn when a runner's device does not match the build it has (a CUDA
+      whisper-server set to ROCm showed as "whisper · rocm").
 - [ ] stable-diffusion.cpp: install and run for real (Windows CUDA 12 build
       and a small single-file image model), generate through
       `/v1/images/generations`.
@@ -50,14 +67,18 @@ Open items from building and testing Argos on Windows (RTX 3060) and Unraid
 - [ ] "Served by" choice on the Models page, not only in Servers -> Local.
 - [ ] The engine's own GPU readings should use the rocm-smi / nvidia-smi set
       in Settings -> GPU tools (today only the builder does).
-- [ ] Kokoro is booked on a GPU card by the pool even on CPU (0.1 GiB);
-      CPU runners should not be placed on a card.
+- [ ] CPU runners (Kokoro on CPU) should not be placed on a GPU card by the
+      pool.
 - [ ] VRAM estimate: the buffer term is too high for small models, and
       Gemma-4 E2B/E4B come out about 2.7 GiB high (part of them stays on the
       CPU). Measured sizes already replace the estimate after a load.
 - [ ] Custom runner Scan: try it on a real repo (e.g. the whisper fork,
       Chatterbox) and tune what it picks up.
 - [ ] Text to speech with cloned voices for NPCs (Chatterbox) as a recipe.
+- [ ] Off-Argos: container names (the id needs the Docker socket to become a
+      name), and `docker logs` output for processes that log to Docker.
+- [ ] Browser history for tabs inside a page (Schedule Live / Plan), not
+      only for pages.
 
 ## UI ideas, not started
 
@@ -67,9 +88,24 @@ Open items from building and testing Argos on Windows (RTX 3060) and Unraid
 - [ ] Assistant questions and answers in Logs, to debug bad answers.
 - [ ] Demo mode with fake models and traffic, for trying Argos with no GPU.
 
+## Done
+
+- [x] Usage -> Off-Argos: every GPU process Argos did not start, read from
+      the kernel (no rocm-smi needed), with Watch (command, parent, uptime,
+      container, user, folder, CPU, model files, ports, GPU env, log tail,
+      the server's own status) and a dry run before Stop / Kill. Tested in
+      Linux containers with and without `pid: host`.
+- [x] Browser Back / Forward between pages; unsaved Builder work is kept.
+- [x] Odysseus pull matches earlier profiles by command and renames them.
+- [x] Models: Hugging Face cache models named by their repo; Rename.
+- [x] Servers -> Local: whisper.cpp, Kokoro, stable-diffusion.cpp and
+      custom runners; ffmpeg add-on; Settings -> GPU tools.
+- [x] VRAM per profile and in Builder; measured size replaces the estimate;
+      custom KV cache types.
+
 ## Known test failures
 
-- [ ] About 20 builder tests fail on Windows only (POSIX commands and
+- [ ] About 19 builder tests fail on Windows only (POSIX commands and
       paths); they pass in the container. Make them pass on Windows or mark
       them POSIX-only.
 - [ ] `demo/run_demo.py` is broken (UNIQUE constraint on servers.name).

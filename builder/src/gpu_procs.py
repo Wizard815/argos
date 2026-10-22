@@ -11,12 +11,13 @@ from __future__ import annotations
 import os
 import re
 import shutil
-
-from . import gputools
 import signal
 import subprocess
 import sys
+import time
 from typing import Optional
+
+from . import gputools
 
 GIB = 2 ** 30
 PORT = re.compile(r"--port[= ](\d+)")
@@ -86,6 +87,110 @@ def _kfd() -> list[dict]:
     return out
 
 
+# where the kernel lists GPU processes; overridable so a test can stand in for a GPU
+KFD = os.environ.get("ARGOS_KFD_ROOT") or "/sys/class/kfd/kfd"
+
+# environment variables worth showing for a GPU process (the rest can hold secrets)
+GPU_ENV = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL",
+           "HSA_OVERRIDE_GFX_VERSION", "HCC_AMDGPU_TARGET", "LLAMA_ARG_N_GPU_LAYERS", "OMP_NUM_THREADS")
+MODEL_FILE = re.compile(r"(?i)\.(gguf|safetensors|bin|ckpt|onnx|pt|pth)$")
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _kfd_gpus(root: str = KFD) -> dict[str, str]:
+    """KFD gpu_id -> card index (0, 1, ...), in topology order: the numbering rocm-smi and HIP use."""
+    nodes = os.path.join(root, "topology", "nodes")
+    try:
+        names = sorted(os.listdir(nodes), key=lambda n: int(n) if n.isdigit() else 1 << 30)
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for n in names:
+        gid = _read(os.path.join(nodes, n, "gpu_id"))
+        if gid and gid != "0":
+            out[gid] = str(len(out))
+    return out
+
+
+def _kfd_sample(root: str) -> dict[int, dict]:
+    """host pid -> {"vram": {card: bytes}, "sdma": total bytes, "cu": occupancy} for every process using KFD."""
+    gpus = _kfd_gpus(root)
+    out: dict[int, dict] = {}
+    try:
+        pids = [d for d in os.listdir(os.path.join(root, "proc")) if d.isdigit()]
+    except OSError:
+        return out
+    for pid in pids:
+        base = os.path.join(root, "proc", pid)
+        rec = {"vram": {}, "sdma": 0, "cu": 0}
+        try:
+            entries = os.listdir(base)
+        except OSError:
+            continue
+        for e in entries:
+            if e.startswith("vram_"):
+                v = _read(os.path.join(base, e))
+                if v.isdigit() and int(v) > 0:
+                    rec["vram"][gpus.get(e[5:], e[5:])] = int(v)
+            elif e.startswith("sdma_"):
+                v = _read(os.path.join(base, e))
+                rec["sdma"] += int(v) if v.isdigit() else 0
+            elif e.startswith("stats_"):
+                v = _read(os.path.join(base, e, "cu_occupancy"))
+                rec["cu"] += int(v) if v.isdigit() else 0
+        out[int(pid)] = rec
+    return out
+
+
+def _host_pids() -> dict[int, int]:
+    """host pid -> the pid this container sees, for every process visible here (from NSpid in /proc/*/status).
+    KFD names processes by their host pid; inside a container they have other numbers."""
+    out: dict[int, int] = {}
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return out
+    for pid in pids:
+        for line in _read(f"/proc/{pid}/status").splitlines():
+            if line.startswith("NSpid:"):
+                ns = [int(x) for x in line.split()[1:] if x.isdigit()]
+                if ns:
+                    out[ns[0]] = int(pid)
+                break
+    return out
+
+
+def kfd_processes(root: str = KFD, sample_s: float = 0.4) -> Optional[list[dict]]:
+    """Every process using an AMD GPU, read from the kernel (no rocm-smi needed), with its VRAM and whether it is
+    working. Sees processes in other containers and on the host, by their host pid; their names only when this
+    container shares the host's PID namespace. None when this machine has no KFD."""
+    if not os.path.isdir(os.path.join(root, "proc")):
+        return None
+    first = _kfd_sample(root)
+    if sample_s:
+        time.sleep(sample_s)
+    second = _kfd_sample(root) if sample_s else first
+    local = _host_pids()
+    out = []
+    for hpid, rec in second.items():
+        lp = local.get(hpid)
+        name = _read(f"/proc/{lp}/comm") if lp else ""
+        moved = rec["sdma"] - (first.get(hpid) or {}).get("sdma", rec["sdma"])
+        out.append({"pid": lp or hpid, "host_pid": hpid, "local_pid": lp, "visible": bool(lp),
+                    "name": name or "not visible from Argos",
+                    "gpu": ",".join(sorted(rec["vram"], key=lambda g: int(g) if g.isdigit() else 99)) or "?",
+                    "vram_gib": round(sum(rec["vram"].values()) / GIB, 2) if rec["vram"] else None,
+                    "busy": bool(rec["cu"] > 0 or moved > 0), "cu_occupancy": rec["cu"], "sdma_bytes": max(0, moved)})
+    return out
+
+
 def _commands(pids: list[int]) -> dict[int, str]:
     """The command line of each process (best effort: Linux /proc, or PowerShell on Windows)."""
     out: dict[int, str] = {}
@@ -117,6 +222,10 @@ def listing(engine_running: list[dict], launches: list[dict]) -> dict:
     tool = "nvidia-smi"
     procs = _nvidia()
     if procs is None:
+        kfd = kfd_processes()
+        if kfd is not None:
+            tool, procs = "kernel (KFD)", kfd
+    if procs is None:
         tool, procs = "rocm-smi", _rocm()
     if procs is None or (not procs and sys.platform.startswith("linux")):
         found = _kfd()
@@ -124,7 +233,7 @@ def listing(engine_running: list[dict], launches: list[dict]) -> dict:
             tool, procs = "/dev/kfd", found
     if procs is None:
         return {"tool": None, "processes": [], "note": "No GPU tool found here (nvidia-smi or rocm-smi)."}
-    cmds = _commands([p["pid"] for p in procs])
+    cmds = _commands([p["pid"] for p in procs if p.get("visible", True)])
     by_port: dict[str, str] = {}
     for r in engine_running:
         m = PORT.search(r.get("cmd") or "")
@@ -138,11 +247,238 @@ def listing(engine_running: list[dict], launches: list[dict]) -> dict:
         m = PORT.search(p["cmd"])
         p["owner"] = by_port.get(m.group(1)) if m else None
         p["self"] = p["pid"] == os.getpid()
+        p.setdefault("visible", True)
+        p["argos"] = bool(p["owner"] or p["self"])
     note = ""
+    hidden = [p for p in procs if not p["visible"]]
+    if hidden:
+        note = (f"{len(hidden)} process(es) are outside this container, so only their PID and VRAM are known here. "
+                "On the host: ps -o pid,comm,args -p <PID> names it, and cat /proc/<PID>/cgroup shows the container. "
+                "To see names here and stop them from Argos, give Argos the host's PID namespace (pid: host).")
     if not procs:
         note = ("No processes reported. If the card still shows used memory, the processes are in another container: "
                 "run the builder with the host's PID namespace (pid: host) so they are visible here.")
     return {"tool": tool, "processes": sorted(procs, key=lambda p: -(p["vram_gib"] or 0)), "note": note}
+
+
+# ----- one process, watched ------------------------------------------------------------
+def _process_info(pid: int) -> dict:
+    """Parent, start time and user of a process this machine can see."""
+    if sys.platform == "win32":
+        ps = (f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}'; if ($p) {{ "
+              "$q = Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.ParentProcessId)\"; "
+              "'{0}|{1}|{2}|{3}' -f $p.ParentProcessId, $q.Name, $p.CreationDate.ToUniversalTime().ToString('o'), $p.WorkingSetSize }")
+        out = _run(["powershell", "-NoProfile", "-Command", ps], 15).strip()
+        if not out:
+            return {"alive": False}
+        ppid, pname, started, rss = (out.split("|") + ["", "", "", ""])[:4]
+        try:  # the string is UTC; mktime would read it as local time and be an hour out across daylight saving
+            import calendar
+            ts = calendar.timegm(time.strptime(started[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            ts = None
+        return {"alive": True, "parent_pid": int(ppid) if ppid.isdigit() else None, "parent": pname, "started_at": ts,
+                "ram_gib": round(int(rss) / GIB, 2) if rss.isdigit() else None}
+    stat = _read(f"/proc/{pid}/stat")
+    if not stat:
+        return {"alive": False}
+    fields = stat.rsplit(")", 1)[-1].split()
+    ppid = int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else None
+    started = None
+    try:
+        boot = float(next(l.split()[1] for l in _read("/proc/stat").splitlines() if l.startswith("btime")))
+        started = boot + int(fields[19]) / os.sysconf("SC_CLK_TCK")
+    except (StopIteration, IndexError, ValueError, OSError):
+        pass
+    rss = next((l.split()[1] for l in _read(f"/proc/{pid}/status").splitlines() if l.startswith("VmRSS:")), "")
+    return {"alive": True, "parent_pid": ppid, "parent": _read(f"/proc/{ppid}/comm") if ppid else "", "started_at": started,
+            "ram_gib": round(int(rss) * 1024 / GIB, 2) if rss.isdigit() else None}
+
+
+def _linux_extra(pid: int) -> dict:
+    """What /proc says about a process beyond its command: container, user, folder, CPU, threads, open model
+    files, ports it listens on, GPU environment and where its output goes. Needs the process visible here."""
+    base = f"/proc/{pid}"
+    out: dict = {}
+    status = dict(l.split(":", 1) for l in _read(f"{base}/status").splitlines() if ":" in l)
+    uid = (status.get("Uid") or "").split()
+    if uid:
+        try:
+            import pwd
+            out["user"] = pwd.getpwuid(int(uid[0])).pw_name
+        except (KeyError, ValueError, ImportError):
+            out["user"] = f"uid {uid[0]}"
+    out["threads"] = int(status["Threads"].strip()) if status.get("Threads", "").strip().isdigit() else None
+    # the container: docker / containerd put the container id in the cgroup path
+    # cgroup v1 names it docker/<id>; v2 with a private cgroup namespace shows a bare /../<id>; the mounts
+    # (/docker/containers/<id>/hostname ...) say it either way
+    cg = _read(f"{base}/cgroup")
+    m = re.search(r"(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])", cg) or         re.search(r"/(?:docker/)?containers/([0-9a-f]{64})", _read(f"{base}/mountinfo"))
+    out["container"] = m.group(1)[:12] if m else ("this machine (no container)" if cg else None)
+    # its own network addresses, so a server in another container can be reached on its container IP
+    fib = _read(f"{base}/net/fib_trie").splitlines()
+    out["addresses"] = sorted({fib[i - 1].split()[-1] for i, l in enumerate(fib) if "/32 host LOCAL" in l and i
+                               and not fib[i - 1].split()[-1].startswith("127.")})
+    try:
+        out["cwd"] = os.readlink(f"{base}/cwd")
+    except OSError:
+        out["cwd"] = None
+    # CPU: two looks at utime+stime, 0.3 s apart
+    def ticks() -> int:
+        f = _read(f"{base}/stat").rsplit(")", 1)[-1].split()
+        return int(f[11]) + int(f[12]) if len(f) > 12 else 0
+    try:
+        t0, w0 = ticks(), time.time()
+        time.sleep(0.3)
+        out["cpu_pct"] = round((ticks() - t0) / os.sysconf("SC_CLK_TCK") / (time.time() - w0) * 100, 1)
+    except (OSError, ValueError):
+        out["cpu_pct"] = None
+    # open files: model files it has open, its sockets, and where stdout / stderr go
+    sockets, files, logs = set(), [], {}
+    try:
+        fds = os.listdir(f"{base}/fd")
+    except OSError:
+        fds = []
+    for fd in fds:
+        try:
+            target = os.readlink(f"{base}/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith("socket:["):
+            sockets.add(target[8:-1])
+        elif MODEL_FILE.search(target) and target not in files:
+            files.append(target)
+        if fd in ("1", "2"):
+            logs[fd] = target
+    out["model_files"] = files[:10]
+    out["stdout"], out["stderr"] = logs.get("1"), logs.get("2")
+    # listening ports: its own network namespace's tables, matched to its sockets
+    ports = []
+    for table in ("tcp", "tcp6"):
+        for line in _read(f"{base}/net/{table}").splitlines()[1:]:
+            f = line.split()
+            if len(f) > 9 and f[3] == "0A" and f[9] in sockets:  # 0A = LISTEN
+                port = int(f[1].rsplit(":", 1)[1], 16)
+                if port not in ports:
+                    ports.append(port)
+    out["listening"] = sorted(ports)
+    env = {}
+    try:
+        with open(f"{base}/environ", "rb") as f:
+            for item in f.read().split(b"\0"):
+                k, _, v = item.decode("utf-8", "replace").partition("=")
+                if k in GPU_ENV:
+                    env[k] = v
+    except OSError:
+        pass
+    out["gpu_env"] = env
+    return out
+
+
+def log_tail(pid: int, lines: int = 80) -> Optional[dict]:
+    """The end of a process's output, when it goes to a file Argos can read (not a terminal, pipe or socket)."""
+    for fd in ("1", "2"):
+        try:
+            target = os.readlink(f"/proc/{pid}/fd/{fd}")
+        except OSError:
+            continue
+        path = f"/proc/{pid}/fd/{fd}"
+        if target.startswith(("/dev/", "pipe:", "socket:", "anon_inode:")) or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 64 * 1024))
+                text = f.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        return {"file": target, "text": "\n".join(text.splitlines()[-lines:])}
+    return None
+
+
+def _get_json(url: str, timeout: float = 1.5):
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310 - a port on this machine
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 - not every server answers every path
+        return None
+
+
+def _server(port: str, addresses: tuple = ()) -> Optional[dict]:
+    """What an HTTP server on this port says about itself: llama-server answers /health, /props and /slots.
+    Tried on this machine first, then on the process's own addresses (a server in another container)."""
+    base, health = "", None
+    for host in ("127.0.0.1", *addresses):
+        base = f"http://{host}:{port}"
+        health = _get_json(base + "/health", timeout=1.0)
+        if health is not None:
+            break
+    if health is None:
+        return None
+    props = _get_json(base + "/props") or {}
+    slots = _get_json(base + "/slots")
+    models = _get_json(base + "/v1/models") or {}
+    busy, work = None, []
+    if isinstance(slots, list):
+        active = [x for x in slots if isinstance(x, dict) and (x.get("is_processing") or x.get("state") == 1)]
+        busy = len(active)
+        for x in active:  # what each busy slot is doing: reading the prompt, or writing the answer
+            done, total = x.get("n_prompt_tokens_processed"), x.get("n_prompt_tokens")
+            dec = (x.get("next_token") or [{}])[0] if isinstance(x.get("next_token"), list) else (x.get("next_token") or {})
+            work.append({"slot": x.get("id"), "prompt_done": done, "prompt_total": total, "decoded": dec.get("n_decoded")})
+    model = props.get("model_path") or next((m.get("id") for m in models.get("data") or [] if isinstance(m, dict)), "")
+    gen = props.get("default_generation_settings") or {}
+    return {"url": base, "health": health.get("status") if isinstance(health, dict) else str(health)[:40],
+            "model": os.path.basename(str(model)) if model else "", "n_ctx": gen.get("n_ctx") or props.get("n_ctx"),
+            "slots": len(slots) if isinstance(slots, list) else None, "slots_busy": busy, "work": work,
+            "build": props.get("build_info") or ""}
+
+
+def watch(pid: int, row: dict) -> dict:
+    """Everything Argos can tell about one GPU process, for the Off-Argos watch panel. Changes nothing."""
+    cmd = row.get("cmd") or ""
+    m = PORT.search(cmd)
+    visible = row.get("visible", True)
+    extra = _linux_extra(pid) if visible and sys.platform.startswith("linux") else {}
+    port = m.group(1) if m else (str(extra["listening"][0]) if extra.get("listening") else None)
+    out = {**row, "port": port, "info": _process_info(pid) if visible else {"alive": None}, "extra": extra,
+           "server": _server(port, tuple(extra.get("addresses") or ())) if port else None}
+    tail = log_tail(pid) if visible and sys.platform.startswith("linux") else None
+    if tail:
+        out["log"] = tail
+        out["logs"] = f"from {tail['file']}, the file its output goes to"
+        return out
+    if extra.get("stdout"):
+        out["logs"] = (f"its output goes to {extra['stdout']}, which Argos cannot read back (a terminal, pipe or Docker's log). "
+                       + ("For a container: docker logs " + extra["container"] if extra.get("container", "").isalnum() else ""))
+        return out
+    out["logs"] = ("Argos did not start this process, so its output went to wherever it was started"
+                   + (f" ({out['info'].get('parent')})" if out["info"].get("parent") else "")
+                   + " and Argos cannot read it. What it is doing comes from asking the server itself (health, model, busy slots) "
+                     "and from the GPU. Start it through Argos to have its log in Logs.")
+    return out
+
+
+def kill_plan(pid: int, row: dict, force: bool) -> dict:
+    """What Stop or Kill would do to this process, without doing it (a dry run)."""
+    what = f"{row.get('name') or 'process'} (PID {pid})"
+    if not row.get("visible", True):
+        hp = row.get("host_pid", pid)
+        return {"allowed": False, "would": f"nothing: {what} is outside this container", "host_command": f"kill {'-9 ' if force else ''}{hp}"}
+    if pid in (os.getpid(), 1):
+        return {"allowed": False, "would": "nothing: Argos never stops itself or PID 1"}
+    if sys.platform == "win32":
+        # os.kill on Windows is TerminateProcess for any signal: Stop and Kill are the same there
+        how = f"end PID {pid} at once (on Windows a console program cannot be asked to close, so Stop and Kill are the same)"
+    else:
+        how = f"send {'SIGKILL' if force else 'SIGTERM'} to PID {pid}" + (" (immediate, no clean-up)" if force else " (it can shut down cleanly)")
+    owner = row.get("owner") or ""
+    note = f"It is {owner}: unloading it from Schedule → Live is the clean way." if owner.startswith("model ") else ""
+    return {"allowed": True, "would": f"{how}: {what}" + (f", which holds {row['vram_gib']} GiB of GPU memory" if row.get("vram_gib") else ""),
+            "frees": row.get("vram_gib"), "note": note}
 
 
 def kill(pid: int, allowed: set[int], force: bool = False) -> str:
