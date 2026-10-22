@@ -87,7 +87,13 @@ def _kfd() -> list[dict]:
     return out
 
 
-KFD = "/sys/class/kfd/kfd"
+# where the kernel lists GPU processes; overridable so a test can stand in for a GPU
+KFD = os.environ.get("ARGOS_KFD_ROOT") or "/sys/class/kfd/kfd"
+
+# environment variables worth showing for a GPU process (the rest can hold secrets)
+GPU_ENV = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL",
+           "HSA_OVERRIDE_GFX_VERSION", "HCC_AMDGPU_TARGET", "LLAMA_ARG_N_GPU_LAYERS", "OMP_NUM_THREADS")
+MODEL_FILE = re.compile(r"(?i)\.(gguf|safetensors|bin|ckpt|onnx|pt|pth)$")
 
 
 def _read(path: str) -> str:
@@ -289,6 +295,108 @@ def _process_info(pid: int) -> dict:
             "ram_gib": round(int(rss) * 1024 / GIB, 2) if rss.isdigit() else None}
 
 
+def _linux_extra(pid: int) -> dict:
+    """What /proc says about a process beyond its command: container, user, folder, CPU, threads, open model
+    files, ports it listens on, GPU environment and where its output goes. Needs the process visible here."""
+    base = f"/proc/{pid}"
+    out: dict = {}
+    status = dict(l.split(":", 1) for l in _read(f"{base}/status").splitlines() if ":" in l)
+    uid = (status.get("Uid") or "").split()
+    if uid:
+        try:
+            import pwd
+            out["user"] = pwd.getpwuid(int(uid[0])).pw_name
+        except (KeyError, ValueError, ImportError):
+            out["user"] = f"uid {uid[0]}"
+    out["threads"] = int(status["Threads"].strip()) if status.get("Threads", "").strip().isdigit() else None
+    # the container: docker / containerd put the container id in the cgroup path
+    # cgroup v1 names it docker/<id>; v2 with a private cgroup namespace shows a bare /../<id>; the mounts
+    # (/docker/containers/<id>/hostname ...) say it either way
+    cg = _read(f"{base}/cgroup")
+    m = re.search(r"(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])", cg) or         re.search(r"/(?:docker/)?containers/([0-9a-f]{64})", _read(f"{base}/mountinfo"))
+    out["container"] = m.group(1)[:12] if m else ("this machine (no container)" if cg else None)
+    # its own network addresses, so a server in another container can be reached on its container IP
+    fib = _read(f"{base}/net/fib_trie").splitlines()
+    out["addresses"] = sorted({fib[i - 1].split()[-1] for i, l in enumerate(fib) if "/32 host LOCAL" in l and i
+                               and not fib[i - 1].split()[-1].startswith("127.")})
+    try:
+        out["cwd"] = os.readlink(f"{base}/cwd")
+    except OSError:
+        out["cwd"] = None
+    # CPU: two looks at utime+stime, 0.3 s apart
+    def ticks() -> int:
+        f = _read(f"{base}/stat").rsplit(")", 1)[-1].split()
+        return int(f[11]) + int(f[12]) if len(f) > 12 else 0
+    try:
+        t0, w0 = ticks(), time.time()
+        time.sleep(0.3)
+        out["cpu_pct"] = round((ticks() - t0) / os.sysconf("SC_CLK_TCK") / (time.time() - w0) * 100, 1)
+    except (OSError, ValueError):
+        out["cpu_pct"] = None
+    # open files: model files it has open, its sockets, and where stdout / stderr go
+    sockets, files, logs = set(), [], {}
+    try:
+        fds = os.listdir(f"{base}/fd")
+    except OSError:
+        fds = []
+    for fd in fds:
+        try:
+            target = os.readlink(f"{base}/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith("socket:["):
+            sockets.add(target[8:-1])
+        elif MODEL_FILE.search(target) and target not in files:
+            files.append(target)
+        if fd in ("1", "2"):
+            logs[fd] = target
+    out["model_files"] = files[:10]
+    out["stdout"], out["stderr"] = logs.get("1"), logs.get("2")
+    # listening ports: its own network namespace's tables, matched to its sockets
+    ports = []
+    for table in ("tcp", "tcp6"):
+        for line in _read(f"{base}/net/{table}").splitlines()[1:]:
+            f = line.split()
+            if len(f) > 9 and f[3] == "0A" and f[9] in sockets:  # 0A = LISTEN
+                port = int(f[1].rsplit(":", 1)[1], 16)
+                if port not in ports:
+                    ports.append(port)
+    out["listening"] = sorted(ports)
+    env = {}
+    try:
+        with open(f"{base}/environ", "rb") as f:
+            for item in f.read().split(b"\0"):
+                k, _, v = item.decode("utf-8", "replace").partition("=")
+                if k in GPU_ENV:
+                    env[k] = v
+    except OSError:
+        pass
+    out["gpu_env"] = env
+    return out
+
+
+def log_tail(pid: int, lines: int = 80) -> Optional[dict]:
+    """The end of a process's output, when it goes to a file Argos can read (not a terminal, pipe or socket)."""
+    for fd in ("1", "2"):
+        try:
+            target = os.readlink(f"/proc/{pid}/fd/{fd}")
+        except OSError:
+            continue
+        path = f"/proc/{pid}/fd/{fd}"
+        if target.startswith(("/dev/", "pipe:", "socket:", "anon_inode:")) or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 64 * 1024))
+                text = f.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        return {"file": target, "text": "\n".join(text.splitlines()[-lines:])}
+    return None
+
+
 def _get_json(url: str, timeout: float = 1.5):
     import json
     import urllib.request
@@ -299,10 +407,15 @@ def _get_json(url: str, timeout: float = 1.5):
         return None
 
 
-def _server(port: str) -> Optional[dict]:
-    """What an HTTP server on this port says about itself: llama-server answers /health, /props and /slots."""
-    base = f"http://127.0.0.1:{port}"
-    health = _get_json(base + "/health")
+def _server(port: str, addresses: tuple = ()) -> Optional[dict]:
+    """What an HTTP server on this port says about itself: llama-server answers /health, /props and /slots.
+    Tried on this machine first, then on the process's own addresses (a server in another container)."""
+    base, health = "", None
+    for host in ("127.0.0.1", *addresses):
+        base = f"http://{host}:{port}"
+        health = _get_json(base + "/health", timeout=1.0)
+        if health is not None:
+            break
     if health is None:
         return None
     props = _get_json(base + "/props") or {}
@@ -328,8 +441,20 @@ def watch(pid: int, row: dict) -> dict:
     """Everything Argos can tell about one GPU process, for the Off-Argos watch panel. Changes nothing."""
     cmd = row.get("cmd") or ""
     m = PORT.search(cmd)
-    out = {**row, "port": m.group(1) if m else None, "info": _process_info(pid) if row.get("visible", True) else {"alive": None},
-           "server": _server(m.group(1)) if m else None}
+    visible = row.get("visible", True)
+    extra = _linux_extra(pid) if visible and sys.platform.startswith("linux") else {}
+    port = m.group(1) if m else (str(extra["listening"][0]) if extra.get("listening") else None)
+    out = {**row, "port": port, "info": _process_info(pid) if visible else {"alive": None}, "extra": extra,
+           "server": _server(port, tuple(extra.get("addresses") or ())) if port else None}
+    tail = log_tail(pid) if visible and sys.platform.startswith("linux") else None
+    if tail:
+        out["log"] = tail
+        out["logs"] = f"from {tail['file']}, the file its output goes to"
+        return out
+    if extra.get("stdout"):
+        out["logs"] = (f"its output goes to {extra['stdout']}, which Argos cannot read back (a terminal, pipe or Docker's log). "
+                       + ("For a container: docker logs " + extra["container"] if extra.get("container", "").isalnum() else ""))
+        return out
     out["logs"] = ("Argos did not start this process, so its output went to wherever it was started"
                    + (f" ({out['info'].get('parent')})" if out["info"].get("parent") else "")
                    + " and Argos cannot read it. What it is doing comes from asking the server itself (health, model, busy slots) "
