@@ -71,3 +71,23 @@ def test_nothing_to_pull_says_that_too(client, app, monkeypatch):
     _presets(monkeypatch, [])
     out = client.post("/api/ody/pull").get_json()
     assert out["ok"] and "no Cookbook presets" in out["note"]
+
+
+def test_profiles_pulled_under_the_model_name_get_the_preset_name_instead_of_duplicates(client, app, monkeypatch):
+    """Odysseus used to send no label, so every profile was named after the model. Once the real names
+    arrive, the same profiles are renamed rather than a second set made."""
+    cmd_a = 'llama-server -m /m/Qwen3-8B-Q4_K_M.gguf --port 8080 -c 8192'
+    cmd_b = 'llama-server -m /m/Qwen3-8B-Q4_K_M.gguf --port 8080 -c 32768'
+    _presets(monkeypatch, [{"name": "Qwen3-8B-GGUF", "cmd": cmd_a}, {"name": "Qwen3-8B-GGUF", "cmd": cmd_b}])
+    client.post("/api/ody/pull")
+    store = app.extensions["pb"].store
+    before = {p["profile_id"] for p in store.list_profiles() if p["source"] == "odysseus"}
+    assert len(before) == 2, "two presets of one model are two profiles, not one overwritten"
+
+    _presets(monkeypatch, [{"name": "Qwen3-8B-GGUF", "label": "qwen fast", "cmd": cmd_a},
+                           {"name": "Qwen3-8B-GGUF", "label": "qwen long ctx", "cmd": cmd_b}])
+    out = client.post("/api/ody/pull").get_json()
+    assert out["imported"] == [] and len(out["updated"]) == 2
+    assert {u["renamed_from"] for u in out["updated"]} == {"Qwen3-8B-GGUF"}
+    after = {p["profile_id"]: p["name"] for p in store.list_profiles() if p["source"] == "odysseus"}
+    assert set(after) == before and sorted(after.values()) == ["qwen fast", "qwen long ctx"]
