@@ -2439,7 +2439,45 @@ function loadLogs() {
   const pane = $(".tabs[data-tabs=logs] button.on")?.dataset.pane || "gpu";
   if (pane === "gpu") loadGpu();
   else if (pane === "requests") loadRequests();
+  else if (pane === "offargos") loadOffArgos();
   else loadEvents();
+}
+
+// ── Usage → Off-Argos: GPU memory Argos did not start ────────
+async function loadOffArgos() {
+  const table = $("#oaTable");
+  fill($("#oaNote"), "reading…");
+  let r;
+  try { r = await api("GET", "/api/gpu/processes"); } catch (e) { fill(table, h("tbody", {}, h("tr", {}, h("td", {}, e.message)))); fill($("#oaNote")); return; }
+  const all = r.processes || [], off = all.filter((p) => !p.argos);
+  const sum = (xs) => xs.reduce((a, p) => a + (p.vram_gib || 0), 0);
+  const stat = (k, v, unit) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v, unit && h("small", {}, unit)));
+  fill($("#oaNote"), r.tool ? `read from ${r.tool}` : "");
+  fill($("#oaStats"), stat("Off-Argos", num(sum(off), 1), "GiB"), stat("Processes", off.length), stat("Argos's own", num(sum(all.filter((p) => p.argos)), 1), "GiB"));
+  const hostCmds = (p) => `ps -o pid,ppid,etime,comm,args -p ${p.host_pid || p.pid}
+cat /proc/${p.host_pid || p.pid}/cgroup
+kill ${p.host_pid || p.pid}`;
+  const stop = async (p, hard) => {
+    if (!(await confirmBox(`${hard ? "Kill" : "Stop"} ${p.name} (PID ${p.pid})${p.vram_gib ? `, holding ${num(p.vram_gib, 1)} GiB` : ""}? Argos did not start it.`, hard ? "Kill" : "Stop"))) return;
+    try { const x = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { hard }); toast(`${p.name}: ${x.result}.`, "ok"); } catch (e) { fail(e); }
+    setTimeout(loadOffArgos, 1500);
+  };
+  renderTable(table, [
+    { label: "PID", num: true, cell: (p) => h("td", { class: "num", title: p.local_pid && p.host_pid && p.local_pid !== p.host_pid ? `host PID ${p.host_pid}` : "" }, String(p.host_pid || p.pid)) },
+    { label: "Process", cell: (p) => (p.visible === false ? h("span", { class: "muted", title: "outside this container: only its PID and memory are known here" }, "not visible from Argos") : p.name) },
+    { label: "GPU", cell: (p) => p.gpu },
+    { label: "VRAM", num: true, cell: (p) => (p.vram_gib != null ? gib(p.vram_gib) : DASH) },
+    { label: "Doing anything?", cell: (p) => (p.busy == null ? DASH : p.busy ? h("span", { class: "pill warn", title: `GPU compute units in use: ${p.cu_occupancy || 0}` }, "working") : h("span", { class: "pill", title: "no GPU work and no memory transfers in the last moment: idle, or left behind" }, "idle")) },
+    { label: "Command", cell: (p) => h("td", { class: "mono-sm", title: p.cmd || "", style: "max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, p.cmd || DASH) },
+    { label: "", cell: (p) => h("td", { class: "actions nowrap" }, p.visible === false
+      ? btn("Commands for the host", () => modal(`PID ${p.host_pid || p.pid} on the host`, h("div", {},
+          h("p", { class: "hint", style: "margin-top:0" }, "Run these on the Unraid host (or any shell that sees all processes): the first names it, the second shows which container it belongs to, the third stops it."),
+          h("pre", { class: "pre" }, hostCmds(p))), [{ label: "Copy", run: () => copyText(hostCmds(p)) }, { label: "Close", run: (c) => c() }]), "sm")
+      : [btn("Stop", () => stop(p, false), "sm ghost"), " ", btn("Kill", () => stop(p, true), "sm danger")]) },
+  ], off, { key: null }, "Nothing outside Argos is using the GPUs.");
+  fill($("#oaHint"), off.some((p) => p.visible === false)
+    ? "Some of these run in another container or on the host. Argos sees them through the kernel, so it knows their PID, card, memory and whether they are working, but not their name. Give the Argos container the host's PID namespace (pid: host in docker-compose) and it shows their names and can stop them here."
+    : r.note || "");
 }
 
 // ── Logs: what is really on the GPUs ─────────────────────────
@@ -2537,6 +2575,7 @@ function initServerLogs() {
   $("#slErrors").addEventListener("change", () => loadServerLogs(true));
   $("#slCopy").onclick = () => { navigator.clipboard?.writeText($("#slLog").textContent || "").then(() => toast("Copied.", "ok"), () => toast("Could not copy.", "err")); };
   $("#gpuProcRefresh").onclick = () => loadGpuProcs();
+  $("#oaRefresh").onclick = () => loadOffArgos();
 }
 
 // ── Assistant ────────────────────────────────────────────────

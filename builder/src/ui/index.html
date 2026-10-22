@@ -318,7 +318,17 @@
         <div><h1>Usage</h1><p class="sub">Long-term history in the embedded database: GPU readings, request speeds, and everything this app did.</p></div>
       </div>
       <div class="tabs" data-tabs="logs">
-        <button data-pane="gpu" class="on">GPU</button><button data-pane="requests">Requests</button><button data-pane="events">Events</button>
+        <button data-pane="gpu" class="on">GPU</button><button data-pane="requests">Requests</button><button data-pane="events">Events</button><button data-pane="offargos">Off-Argos</button>
+      </div>
+      <div class="pane" data-pane="offargos">
+        <div class="card">
+          <div class="card-head"><h2>Using the GPUs, not started by Argos</h2><span class="spacer"></span>
+            <span class="hint" id="oaNote" style="margin:0"></span>
+            <button class="btn sm ghost" id="oaRefresh"><i data-icon="refresh"></i>Refresh</button></div>
+          <div class="stats" id="oaStats"></div>
+          <div class="table-wrap"><table id="oaTable"></table></div>
+          <p class="hint" id="oaHint"></p>
+        </div>
       </div>
       <div class="pane on" data-pane="gpu">
         <div class="row" style="margin-bottom:12px">

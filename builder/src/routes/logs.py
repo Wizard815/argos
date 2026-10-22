@@ -117,6 +117,10 @@ def gpu_process_kill(pid):
     if row is None:
         return err("that process is not using a GPU as far as this app can see", 404)
     b = body()
+    if not row.get("visible", True):
+        # its number is the host's; inside this container the same number can be another process entirely
+        return err(f"PID {pid} is outside this container, so Argos cannot stop it. On the host: kill {row.get('host_pid', pid)} "
+                   "(or give Argos the host's PID namespace, pid: host)", 409)
     if (row.get("owner") or "").startswith("model ") and not b.get("force"):
         return err(f"{row['owner']} is loaded by the engine: unload it from Schedule → Live instead", 409)
     try:
