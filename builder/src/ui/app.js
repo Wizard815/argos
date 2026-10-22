@@ -382,7 +382,10 @@ const onShow = {
   playground: () => { if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect(); renderLaunches(); pollSelected(true); },
 };
 
-function show(view) {
+// Every page switch is a browser history entry, so Back and Forward move between the pages you visited.
+// Pages are only shown and hidden (nothing reloads), so the Builder's unsaved command is still there when you
+// come back to it. `replace` is for the first page after a load, which must not add an entry of its own.
+function show(view, { replace = false } = {}) {
   if (view === "catalog") view = "models";
   if (!VIEWS[view]) view = "builder";
   S.view = view;
@@ -390,7 +393,7 @@ function show(view) {
   $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   $("#topTitle").textContent = VIEWS[view];
   document.body.classList.remove("nav-open");
-  if (location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
+  if (location.hash !== `#${view}`) history[replace ? "replaceState" : "pushState"](null, "", `#${view}`);
   onShow[view]?.();
 }
 
@@ -4678,7 +4681,11 @@ function boot() {
     else if (a === "open-nav") document.body.classList.add("nav-open");
     else if (a === "close-nav") document.body.classList.remove("nav-open");
   });
-  window.addEventListener("hashchange", () => show(location.hash.slice(1)));
+  // Back / Forward (and a typed #view): show that page without adding another entry
+  // a Back fires both events: only the first one shows the page, so its data is not fetched twice
+  const fromHistory = () => { const v = location.hash.slice(1) || "builder"; if (v !== S.view) show(v, { replace: true }); };
+  window.addEventListener("popstate", fromHistory);
+  window.addEventListener("hashchange", fromHistory);
   themeLabel();
   $("#pSearch").addEventListener("input", debounce(renderProfiles, 120));
   $("#pModel").addEventListener("change", renderProfiles);
@@ -4746,7 +4753,7 @@ function boot() {
   initAssistant();
   fillImportSelect();
   loadSettings().then((st) => { B.format = st.builder.command_format; }).catch(() => {})
-    .finally(() => show(location.hash.slice(1) || "builder"));
+    .finally(() => show(location.hash.slice(1) || "builder", { replace: true }));
   // Only what every page shows. The library, catalog, downloads, traits and integrations wait for the page that
   // uses them (onShow); the two nav badges follow a few seconds later, one after the other.
   Promise.all([loadProfiles(), loadModels()]).then(migrateBrowserProfiles).catch(fail);
