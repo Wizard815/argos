@@ -62,3 +62,15 @@ def test_a_process_outside_the_container_is_never_signalled(app, client, monkeyp
     monkeypatch.setattr(gpu_procs, "kill", lambda *a, **k: killed.append(a))
     r = client.post("/api/gpu/processes/550406/kill", json={"hard": True})
     assert r.status_code == 409 and "kill 550406" in r.get_json()["error"] and killed == []
+
+
+def test_a_dry_run_says_what_would_happen_and_signals_nothing(app, client, monkeypatch):
+    row = {"pid": 4242, "visible": True, "name": "llama-server", "vram_gib": 3.3, "owner": None, "cmd": "llama-server --port 8081"}
+    monkeypatch.setattr(gpu_procs, "listing", lambda running, launches: {"tool": "x", "note": "", "processes": [row]})
+    killed = []
+    monkeypatch.setattr(gpu_procs, "kill", lambda *a, **k: killed.append(a))
+    monkeypatch.setattr(gpu_procs.os, "kill", lambda *a: killed.append(a))
+    for hard in (False, True):
+        out = client.post("/api/gpu/processes/4242/kill", json={"dry_run": True, "hard": hard}).get_json()
+        assert out["dry_run"] and out["allowed"] and "PID 4242" in out["would"] and "3.3 GiB" in out["would"]
+    assert killed == []

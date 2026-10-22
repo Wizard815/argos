@@ -255,6 +255,107 @@ def listing(engine_running: list[dict], launches: list[dict]) -> dict:
     return {"tool": tool, "processes": sorted(procs, key=lambda p: -(p["vram_gib"] or 0)), "note": note}
 
 
+# ----- one process, watched ------------------------------------------------------------
+def _process_info(pid: int) -> dict:
+    """Parent, start time and user of a process this machine can see."""
+    if sys.platform == "win32":
+        ps = (f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}'; if ($p) {{ "
+              "$q = Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.ParentProcessId)\"; "
+              "'{0}|{1}|{2}|{3}' -f $p.ParentProcessId, $q.Name, $p.CreationDate.ToUniversalTime().ToString('o'), $p.WorkingSetSize }")
+        out = _run(["powershell", "-NoProfile", "-Command", ps], 15).strip()
+        if not out:
+            return {"alive": False}
+        ppid, pname, started, rss = (out.split("|") + ["", "", "", ""])[:4]
+        try:  # the string is UTC; mktime would read it as local time and be an hour out across daylight saving
+            import calendar
+            ts = calendar.timegm(time.strptime(started[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            ts = None
+        return {"alive": True, "parent_pid": int(ppid) if ppid.isdigit() else None, "parent": pname, "started_at": ts,
+                "ram_gib": round(int(rss) / GIB, 2) if rss.isdigit() else None}
+    stat = _read(f"/proc/{pid}/stat")
+    if not stat:
+        return {"alive": False}
+    fields = stat.rsplit(")", 1)[-1].split()
+    ppid = int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else None
+    started = None
+    try:
+        boot = float(next(l.split()[1] for l in _read("/proc/stat").splitlines() if l.startswith("btime")))
+        started = boot + int(fields[19]) / os.sysconf("SC_CLK_TCK")
+    except (StopIteration, IndexError, ValueError, OSError):
+        pass
+    rss = next((l.split()[1] for l in _read(f"/proc/{pid}/status").splitlines() if l.startswith("VmRSS:")), "")
+    return {"alive": True, "parent_pid": ppid, "parent": _read(f"/proc/{ppid}/comm") if ppid else "", "started_at": started,
+            "ram_gib": round(int(rss) * 1024 / GIB, 2) if rss.isdigit() else None}
+
+
+def _get_json(url: str, timeout: float = 1.5):
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310 - a port on this machine
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 - not every server answers every path
+        return None
+
+
+def _server(port: str) -> Optional[dict]:
+    """What an HTTP server on this port says about itself: llama-server answers /health, /props and /slots."""
+    base = f"http://127.0.0.1:{port}"
+    health = _get_json(base + "/health")
+    if health is None:
+        return None
+    props = _get_json(base + "/props") or {}
+    slots = _get_json(base + "/slots")
+    models = _get_json(base + "/v1/models") or {}
+    busy, work = None, []
+    if isinstance(slots, list):
+        active = [x for x in slots if isinstance(x, dict) and (x.get("is_processing") or x.get("state") == 1)]
+        busy = len(active)
+        for x in active:  # what each busy slot is doing: reading the prompt, or writing the answer
+            done, total = x.get("n_prompt_tokens_processed"), x.get("n_prompt_tokens")
+            dec = (x.get("next_token") or [{}])[0] if isinstance(x.get("next_token"), list) else (x.get("next_token") or {})
+            work.append({"slot": x.get("id"), "prompt_done": done, "prompt_total": total, "decoded": dec.get("n_decoded")})
+    model = props.get("model_path") or next((m.get("id") for m in models.get("data") or [] if isinstance(m, dict)), "")
+    gen = props.get("default_generation_settings") or {}
+    return {"url": base, "health": health.get("status") if isinstance(health, dict) else str(health)[:40],
+            "model": os.path.basename(str(model)) if model else "", "n_ctx": gen.get("n_ctx") or props.get("n_ctx"),
+            "slots": len(slots) if isinstance(slots, list) else None, "slots_busy": busy, "work": work,
+            "build": props.get("build_info") or ""}
+
+
+def watch(pid: int, row: dict) -> dict:
+    """Everything Argos can tell about one GPU process, for the Off-Argos watch panel. Changes nothing."""
+    cmd = row.get("cmd") or ""
+    m = PORT.search(cmd)
+    out = {**row, "port": m.group(1) if m else None, "info": _process_info(pid) if row.get("visible", True) else {"alive": None},
+           "server": _server(m.group(1)) if m else None}
+    out["logs"] = ("Argos did not start this process, so its output went to wherever it was started"
+                   + (f" ({out['info'].get('parent')})" if out["info"].get("parent") else "")
+                   + " and Argos cannot read it. What it is doing comes from asking the server itself (health, model, busy slots) "
+                     "and from the GPU. Start it through Argos to have its log in Logs.")
+    return out
+
+
+def kill_plan(pid: int, row: dict, force: bool) -> dict:
+    """What Stop or Kill would do to this process, without doing it (a dry run)."""
+    what = f"{row.get('name') or 'process'} (PID {pid})"
+    if not row.get("visible", True):
+        hp = row.get("host_pid", pid)
+        return {"allowed": False, "would": f"nothing: {what} is outside this container", "host_command": f"kill {'-9 ' if force else ''}{hp}"}
+    if pid in (os.getpid(), 1):
+        return {"allowed": False, "would": "nothing: Argos never stops itself or PID 1"}
+    if sys.platform == "win32":
+        # os.kill on Windows is TerminateProcess for any signal: Stop and Kill are the same there
+        how = f"end PID {pid} at once (on Windows a console program cannot be asked to close, so Stop and Kill are the same)"
+    else:
+        how = f"send {'SIGKILL' if force else 'SIGTERM'} to PID {pid}" + (" (immediate, no clean-up)" if force else " (it can shut down cleanly)")
+    owner = row.get("owner") or ""
+    note = f"It is {owner}: unloading it from Schedule → Live is the clean way." if owner.startswith("model ") else ""
+    return {"allowed": True, "would": f"{how}: {what}" + (f", which holds {row['vram_gib']} GiB of GPU memory" if row.get("vram_gib") else ""),
+            "frees": row.get("vram_gib"), "note": note}
+
+
 def kill(pid: int, allowed: set[int], force: bool = False) -> str:
     """Stop one process the listing showed. Refuses anything else, this process and PID 1."""
     if pid not in allowed:
