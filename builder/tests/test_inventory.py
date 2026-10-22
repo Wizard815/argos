@@ -258,7 +258,7 @@ def test_refresh_survives_garbage_files_and_a_dead_engine(app, client):
     client.put("/api/settings/integrations", json={"engine_url": "http://127.0.0.1:9"})
     r = refresh(client)
     assert "broken" in r["models_new"], "an unreadable file is still a model, just without header facts"
-    assert any("engine" in p for p in r["problems"]) and r["host_changed"] is True, "local host facts are kept anyway"
+    assert any(p.startswith("Argos ") for p in r["problems"]) and r["host_changed"] is True, "local host facts are kept anyway"
 
 
 def test_refresh_reads_engine_and_keeps_host_changes(app, client):

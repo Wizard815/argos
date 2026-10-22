@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { Model } from "../../lib/types";
-  import { capabilityLabels } from "../../lib/capabilities";
   import { fetchOdysseusModelState, setOdysseusModelProfile, setModelMode, MODEL_MODES, type ModelMode } from "../../stores/api";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
@@ -11,11 +10,6 @@
   }
 
   let { model }: Props = $props();
-
-  let capabilities = $derived.by(() => {
-    const caps = model?.capabilities ?? {};
-    return Object.entries(caps).filter(([, v]) => v);
-  });
 
   // ---- Odysseus per-model profile picker ----
   // The model's `profile` field is its current choice and `cmd`/`env` are the

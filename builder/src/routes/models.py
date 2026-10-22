@@ -8,7 +8,7 @@ from flask import Blueprint, request
 
 from ..downloader import DownloadError, fit
 from ..integrations import engine_api
-from ..library import forget_scans, library_with_profiles, prefab_command, prefab_with_launcher, scan_media, scan_models
+from ..library import forget_scans, library_with_profiles, prefab_command, prefab_with_launcher, scan_media, scan_models, NAMES_KEY, with_names
 from ..telemetry import read_amd_sysfs, read_engine, read_nvidia_smi
 from ..web import body, check_id, ctx, err, ok
 from .core import _render
@@ -24,8 +24,23 @@ def models_dir() -> str:
 def library():
     c = ctx()
     d = models_dir()
-    models = library_with_profiles(scan_models(d), c.store.list_profiles())
-    return ok(models_dir=d, exists=os.path.isdir(d), models=models, media=scan_media(d))
+    names = c.store.get_settings().get(NAMES_KEY) or {}
+    models = with_names(library_with_profiles(scan_models(d), c.store.list_profiles()), names)
+    return ok(models_dir=d, exists=os.path.isdir(d), models=models, media=with_names(scan_media(d), names))
+
+
+@bp.put("/api/library/names/<path:model_id>")
+def library_rename(model_id):
+    """Show a model under another name, or under its file's name again with an empty one. No file is touched."""
+    c = ctx()
+    name = str(body().get("name") or "").strip()[:120]
+    names = c.store.get_settings().get(NAMES_KEY) or {}
+    if name:
+        names[model_id] = name
+    else:
+        names.pop(model_id, None)
+    c.store.set_setting(NAMES_KEY, names)
+    return ok(names=names)
 
 
 @bp.post("/api/library/rescan")

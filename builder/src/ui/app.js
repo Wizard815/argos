@@ -382,7 +382,10 @@ const onShow = {
   playground: () => { if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect(); renderLaunches(); pollSelected(true); },
 };
 
-function show(view) {
+// Every page switch is a browser history entry, so Back and Forward move between the pages you visited.
+// Pages are only shown and hidden (nothing reloads), so the Builder's unsaved command is still there when you
+// come back to it. `replace` is for the first page after a load, which must not add an entry of its own.
+function show(view, { replace = false } = {}) {
   if (view === "catalog") view = "models";
   if (!VIEWS[view]) view = "builder";
   S.view = view;
@@ -390,7 +393,7 @@ function show(view) {
   $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   $("#topTitle").textContent = VIEWS[view];
   document.body.classList.remove("nav-open");
-  if (location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
+  if (location.hash !== `#${view}`) history[replace ? "replaceState" : "pushState"](null, "", `#${view}`);
   onShow[view]?.();
 }
 
@@ -1736,7 +1739,7 @@ function renderIntegrations() {
             h("div", { class: "s" }, sub ? sub(x) : (x.reason || "")))));
       };
       add("New profiles", r.imported, "ok", (x) => x.model_id || "");
-      add("Updated from Odysseus", r.updated, "warn", (x) => x.model_id || "");
+      add("Updated from Odysseus", r.updated, "warn", (x) => (x.renamed_from ? `renamed from ${x.renamed_from} · ` : "") + (x.model_id || ""));
       add("Already here, unchanged", r.skipped, "", (x) => x.reason);
       add("Could not be used", r.failed, "bad", (x) => x.reason);
       fill(pullOut, r.note ? h("p", { class: "hint", style: "margin:0 0 6px" }, r.note) : null, ...rows,
@@ -1892,10 +1895,7 @@ const cap1 = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 /** "Qwen" for qwen3.6-35b…, "Hermes" for NousResearch_Hermes-4…, the folder for audio/image models. */
 function modelFamily(m) {
-  if (m.listed_only) {
-    const seg = (m.dir || "").split(/[\\/]/).filter((x) => x && x !== ".").pop();
-    return cap1(seg || m.kind);
-  }
+  // by the model's name, for audio and image models too (their folder can be a Hugging Face snapshot hash)
   let n = m.name.replace(/^[A-Z][A-Za-z0-9]*_(?=[A-Za-z])/, "").toLowerCase().replace(/^(mtp|mmproj|draft)[-_]/, "");
   return cap1((n.match(/^[a-z]+/) || [m.kind])[0]);
 }
@@ -1984,9 +1984,22 @@ async function deleteModel(m) {
       loadLibrary();
     } }]);
 }
+function renameModel(m) {
+  const input = h("input", { type: "text", value: m.name, style: "width:100%" });
+  modal(`Rename ${m.file_name || m.name}`, h("div", {},
+    h("p", { class: "hint", style: "margin-top:0" }, "Changes the name shown here and the group it falls in. The file on disk, its id and its profiles stay the same. Empty: back to the name from the file."),
+    input), [
+    { label: "Cancel", run: (c) => c() },
+    { label: "Rename", cls: "primary", run: async (c) => {
+      c();
+      try { await api("PUT", `/api/library/names/${encodeURIComponent(m.id)}`, { name: input.value.trim() }); await loadLibrary(); toast("Renamed.", "ok"); } catch (e) { fail(e); }
+    } }]);
+  setTimeout(() => { input.focus(); input.select(); }, 30);
+}
 function modelMenu(btnEl, m) {
   const g = myGroupOf(m);
   popMenu(btnEl, [
+    { label: "Rename…", icon: "pencil", run: () => renameModel(m) },
     { label: "Move to group…", icon: "layers", run: () => newGroupBox(m) },
     g ? { label: `Take out of ${g.name}`, icon: "x", run: () => saveGroups(ML.groups.map((x) => ({ name: x.name, models: x.models.filter((id) => id !== m.id) }))) } : null,
     { label: "Delete from disk…", icon: "trash", danger: true, run: () => deleteModel(m) },
@@ -2426,7 +2439,112 @@ function loadLogs() {
   const pane = $(".tabs[data-tabs=logs] button.on")?.dataset.pane || "gpu";
   if (pane === "gpu") loadGpu();
   else if (pane === "requests") loadRequests();
+  else if (pane === "offargos") loadOffArgos();
   else loadEvents();
+}
+
+// ── Usage → Off-Argos: GPU memory Argos did not start ────────
+// Stop and Kill always show their dry run first: what would be sent to which process, and what it frees.
+async function stopPlan(p, hard) {
+  let plan;
+  try { plan = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { hard, dry_run: true }); } catch (e) { return fail(e); }
+  const lines = [h("p", { style: "margin-top:0" }, h("b", {}, "Dry run, nothing has been done. "), `Argos would ${plan.would}.`),
+    plan.note ? h("p", { class: "hint" }, plan.note) : null,
+    plan.host_command ? h("pre", { class: "pre" }, plan.host_command) : null];
+  const actions = [{ label: "Close", run: (c) => c() }];
+  if (plan.allowed) actions.push({ label: hard ? "Kill it now" : "Stop it now", cls: "danger", run: async (c) => {
+    c();
+    try { const x = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { hard, force: true }); toast(`${p.name}: ${x.result}.`, "ok"); } catch (e) { fail(e); }
+    setTimeout(loadOffArgos, 1500);
+  } });
+  modal(`${hard ? "Kill" : "Stop"} · PID ${p.pid}`, h("div", {}, lines), actions);
+}
+
+const OW = { pid: null, timer: 0 };
+function watchProc(pid) {
+  OW.pid = pid;
+  clearInterval(OW.timer);
+  const tick = async () => {
+    if (OW.pid !== pid || S.view !== "logs") { clearInterval(OW.timer); return; }
+    let r;
+    try { r = (await api("GET", `/api/gpu/processes/${pid}`)).process; } catch (e) { fill($("#oaWatch"), h("div", { class: "card" }, h("div", { class: "empty" }, `PID ${pid}: ${e.message}`))); clearInterval(OW.timer); return; }
+    const I = r.info || {}, V = r.server;
+    const up = I.started_at ? dur(Date.now() / 1000 - I.started_at) : DASH;
+    fill($("#oaWatch"), h("div", { class: "card" },
+      h("div", { class: "card-head" }, h("h2", {}, `Watching PID ${r.host_pid || r.pid} · ${r.name}`),
+        h("span", { class: `pill ${I.alive === false ? "bad" : "ok"}` }, I.alive === false ? "gone" : "running"),
+        h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, "refreshes every 3 s · read only"),
+        btn("Stop watching", () => { OW.pid = null; clearInterval(OW.timer); fill($("#oaWatch")); }, "sm ghost")),
+      h("div", { class: "stats" },
+        h("div", { class: "stat" }, h("div", { class: "k" }, "Up for"), h("div", { class: "v" }, up)),
+        h("div", { class: "stat" }, h("div", { class: "k" }, "GPU"), h("div", { class: "v" }, r.gpu || DASH)),
+        h("div", { class: "stat" }, h("div", { class: "k" }, "VRAM"), h("div", { class: "v" }, r.vram_gib != null ? num(r.vram_gib, 2) : "—", h("small", {}, r.vram_gib != null ? "GiB" : "not reported"))),
+        h("div", { class: "stat" }, h("div", { class: "k" }, "RAM"), h("div", { class: "v" }, I.ram_gib != null ? num(I.ram_gib, 2) : DASH, h("small", {}, "GiB"))),
+        V ? h("div", { class: "stat" }, h("div", { class: "k" }, "Doing"), h("div", { class: "v" }, V.slots_busy ? `${V.slots_busy} of ${V.slots} busy` : V.slots != null ? "idle" : (V.health || "?"))) : null),
+      kvTable([
+        ["Command", h("span", { class: "mono-sm" }, r.cmd || DASH)],
+        ["Started by", I.parent ? `${I.parent} (PID ${I.parent_pid})` : I.alive === null ? "outside this container" : DASH],
+        ["Started", I.started_at ? new Date(I.started_at * 1000).toLocaleString() : DASH],
+        ["Listens on", r.port ? `port ${r.port}` : DASH],
+        ["Server", V ? `${V.health} at ${V.url}${V.model ? ` · model ${V.model}` : ""}${V.n_ctx ? ` · ${num(V.n_ctx, 0)} context` : ""}${V.build ? ` · build ${V.build}` : ""}` : "does not answer HTTP on its port"],
+        V && (V.work || []).length ? ["Working on", (V.work || []).map((w) => `slot ${w.slot}: ${w.prompt_total ? `prompt ${num(w.prompt_done || 0, 0)} of ${num(w.prompt_total, 0)} tokens read` : "a request"}${w.decoded ? `, ${num(w.decoded, 0)} tokens written` : ""}`).join(" · ")] : null,
+        ...(() => { const X = r.extra || {}; if (!Object.keys(X).length) return [];
+          return [
+            ["Container", X.container || DASH],
+            ["User", X.user || DASH],
+            ["Folder", X.cwd ? h("span", { class: "mono-sm" }, X.cwd) : DASH],
+            ["CPU", X.cpu_pct != null ? `${num(X.cpu_pct, 1)}%${X.threads ? ` · ${X.threads} threads` : ""}` : DASH],
+            ["Model files open", (X.model_files || []).length ? h("span", { class: "mono-sm" }, X.model_files.join("\n")) : DASH],
+            ["Listening on", (X.listening || []).length ? X.listening.map((p) => `port ${p}`).join(", ") : DASH],
+            ["GPU settings", Object.keys(X.gpu_env || {}).length ? h("span", { class: "mono-sm" }, Object.entries(X.gpu_env).map(([k, v]) => `${k}=${v}`).join("  ")) : "none set"],
+          ]; })(),
+        ["Logs", r.logs],
+      ].filter(Boolean)),
+      r.log ? h("pre", { class: "log", style: "max-height:260px;margin-top:8px" }, r.log.text || "(empty)") : null,
+      h("div", { class: "row", style: "margin-top:10px;gap:6px" },
+        h("span", { class: "hint", style: "margin:0" }, "To end it (both show a dry run first):"),
+        r.visible === false ? null : btn("Stop…", () => stopPlan(r, false), "sm ghost"),
+        r.visible === false ? null : btn("Kill…", () => stopPlan(r, true), "sm danger"))));
+  };
+  tick();
+  OW.timer = setInterval(tick, 3000);
+}
+
+async function loadOffArgos() {
+  const table = $("#oaTable");
+  fill($("#oaNote"), "reading…");
+  let r;
+  try { r = await api("GET", "/api/gpu/processes"); } catch (e) { fill(table, h("tbody", {}, h("tr", {}, h("td", {}, e.message)))); fill($("#oaNote")); return; }
+  const all = r.processes || [], off = all.filter((p) => !p.argos);
+  const sum = (xs) => xs.reduce((a, p) => a + (p.vram_gib || 0), 0);
+  const stat = (k, v, unit) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v, unit && h("small", {}, unit)));
+  fill($("#oaNote"), r.tool ? `read from ${r.tool}` : "");
+  fill($("#oaStats"), stat("Off-Argos", off.some((p) => p.vram_gib == null) ? "?" : num(sum(off), 1), off.some((p) => p.vram_gib == null) ? "not reported" : "GiB"), stat("Processes", off.length), stat("Argos's own", num(sum(all.filter((p) => p.argos)), 1), "GiB"));
+  const hostCmds = (p) => `ps -o pid,ppid,etime,comm,args -p ${p.host_pid || p.pid}
+cat /proc/${p.host_pid || p.pid}/cgroup
+kill ${p.host_pid || p.pid}`;
+  const stop = async (p, hard) => {
+    if (!(await confirmBox(`${hard ? "Kill" : "Stop"} ${p.name} (PID ${p.pid})${p.vram_gib ? `, holding ${num(p.vram_gib, 1)} GiB` : ""}? Argos did not start it.`, hard ? "Kill" : "Stop"))) return;
+    try { const x = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { hard }); toast(`${p.name}: ${x.result}.`, "ok"); } catch (e) { fail(e); }
+    setTimeout(loadOffArgos, 1500);
+  };
+  renderTable(table, [
+    { label: "PID", num: true, cell: (p) => h("td", { class: "num", title: p.local_pid && p.host_pid && p.local_pid !== p.host_pid ? `host PID ${p.host_pid}` : "" }, String(p.host_pid || p.pid)) },
+    { label: "Process", cell: (p) => (p.visible === false ? h("span", { class: "muted", title: "outside this container: only its PID and memory are known here" }, "not visible from Argos") : p.name) },
+    { label: "GPU", cell: (p) => p.gpu },
+    { label: "VRAM", num: true, cell: (p) => (p.vram_gib != null ? gib(p.vram_gib) : DASH) },
+    { label: "Doing anything?", cell: (p) => (p.busy == null ? DASH : p.busy ? h("span", { class: "pill warn", title: `GPU compute units in use: ${p.cu_occupancy || 0}` }, "working") : h("span", { class: "pill", title: "no GPU work and no memory transfers in the last moment: idle, or left behind" }, "idle")) },
+    { label: "Command", cell: (p) => h("td", { class: "mono-sm", title: p.cmd || "", style: "max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, p.cmd || DASH) },
+    { label: "", cell: (p) => h("td", { class: "actions nowrap" }, p.visible === false
+      ? btn("Commands for the host", () => modal(`PID ${p.host_pid || p.pid} on the host`, h("div", {},
+          h("p", { class: "hint", style: "margin-top:0" }, "Run these on the Unraid host (or any shell that sees all processes): the first names it, the second shows which container it belongs to, the third stops it."),
+          h("pre", { class: "pre" }, hostCmds(p))), [{ label: "Copy", run: () => copyText(hostCmds(p)) }, { label: "Close", run: (c) => c() }]), "sm")
+      : [btn("Watch", () => watchProc(p.pid), "sm primary", "eye"), " ", btn("Stop…", () => stopPlan(p, false), "sm ghost"), " ", btn("Kill…", () => stopPlan(p, true), "sm danger")]) },
+  ], off, { key: null }, "Nothing outside Argos is using the GPUs.");
+
+  fill($("#oaHint"), off.some((p) => p.visible === false)
+    ? "Some of these run in another container or on the host. Argos sees them through the kernel, so it knows their PID, card, memory and whether they are working, but not their name. Give the Argos container the host's PID namespace (pid: host in docker-compose) and it shows their names and can stop them here."
+    : r.note || "");
 }
 
 // ── Logs: what is really on the GPUs ─────────────────────────
@@ -2524,6 +2642,7 @@ function initServerLogs() {
   $("#slErrors").addEventListener("change", () => loadServerLogs(true));
   $("#slCopy").onclick = () => { navigator.clipboard?.writeText($("#slLog").textContent || "").then(() => toast("Copied.", "ok"), () => toast("Could not copy.", "err")); };
   $("#gpuProcRefresh").onclick = () => loadGpuProcs();
+  $("#oaRefresh").onclick = () => loadOffArgos();
 }
 
 // ── Assistant ────────────────────────────────────────────────
@@ -4668,7 +4787,11 @@ function boot() {
     else if (a === "open-nav") document.body.classList.add("nav-open");
     else if (a === "close-nav") document.body.classList.remove("nav-open");
   });
-  window.addEventListener("hashchange", () => show(location.hash.slice(1)));
+  // Back / Forward (and a typed #view): show that page without adding another entry
+  // a Back fires both events: only the first one shows the page, so its data is not fetched twice
+  const fromHistory = () => { const v = location.hash.slice(1) || "builder"; if (v !== S.view) show(v, { replace: true }); };
+  window.addEventListener("popstate", fromHistory);
+  window.addEventListener("hashchange", fromHistory);
   themeLabel();
   $("#pSearch").addEventListener("input", debounce(renderProfiles, 120));
   $("#pModel").addEventListener("change", renderProfiles);
@@ -4736,7 +4859,7 @@ function boot() {
   initAssistant();
   fillImportSelect();
   loadSettings().then((st) => { B.format = st.builder.command_format; }).catch(() => {})
-    .finally(() => show(location.hash.slice(1) || "builder"));
+    .finally(() => show(location.hash.slice(1) || "builder", { replace: true }));
   // Only what every page shows. The library, catalog, downloads, traits and integrations wait for the page that
   // uses them (onShow); the two nav badges follow a few seconds later, one after the other.
   Promise.all([loadProfiles(), loadModels()]).then(migrateBrowserProfiles).catch(fail);
