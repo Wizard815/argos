@@ -192,7 +192,7 @@ def _scan_models(models_dir: str) -> list[dict]:
                 size, shards = sum(_size(p) for p in present), total
                 if len(present) < total:
                     shards = -total  # incomplete split: flagged in the UI
-            name = re.sub(r"\.gguf$", "", os.path.basename(path), flags=re.IGNORECASE)
+            name = display_name(path, re.sub(r"\.gguf$", "", os.path.basename(path), flags=re.IGNORECASE))
             out.append({
                 "id": swap_model_id(path), "name": name, "path": path,
                 "dir": os.path.relpath(root, models_dir), "size": size, "shards": shards,
@@ -232,9 +232,31 @@ def _scan_media(models_dir: str) -> list[dict]:
     return sorted(out, key=lambda m: (m["kind"], m["name"].lower()))
 
 
+# file names that say nothing about the model: the folder names it instead
+GENERIC_STEM = re.compile(r"(?i)^(model|ggml-model|pytorch_model|diffusion_pytorch_model|consolidated|weights|checkpoint|"
+                          r"model[-_.](fp16|bf16|f16|fp32|q\d\w*)|model-\d{5}-of-\d{5})$")
+HF_REPO = re.compile(r"(?:^|[\\/])models--([^\\/]+?)--([^\\/]+)(?:[\\/]|$)")
+
+
+def display_name(path: str, stem: str) -> str:
+    """A readable name for a model file.
+
+    Hugging Face's cache stores files as models--<org>--<repo>/snapshots/<hash>/model.safetensors, which
+    read as a file called "model" in a folder named by a hash. The repo name is the model's name there,
+    and a generic file name anywhere else takes its folder's name."""
+    m = HF_REPO.search(path)
+    if m:
+        repo = m.group(2)
+        return repo if GENERIC_STEM.match(stem) or stem.lower() in repo.lower() else stem
+    if GENERIC_STEM.match(stem):
+        parent = os.path.basename(os.path.dirname(path.rstrip("/\\")))
+        return parent or stem
+    return stem
+
+
 def _media_entry(path: str, models_dir: str, kind: tuple[str, str], size: int, fmt: str) -> dict:
     name = os.path.basename(path.rstrip("/\\"))
-    stem = re.sub(r"\.(gguf|bin|safetensors|ckpt|onnx|pt|pth)$", "", name, flags=re.IGNORECASE)
+    stem = display_name(path, re.sub(r"\.(gguf|bin|safetensors|ckpt|onnx|pt|pth)$", "", name, flags=re.IGNORECASE))
     return {"id": swap_model_id(stem), "name": stem, "path": path,
             "dir": os.path.relpath(os.path.dirname(path) if fmt != "diffusers" else path, models_dir),
             "size": size, "shards": 1, "quant": quant_of(name), "mmproj": [], "kind": kind[0], "task": kind[1],
@@ -319,6 +341,19 @@ def prefab_with_launcher(prefab: dict, launcher: str) -> dict:
     out = dict(prefab or {})
     if not (out.get("program") or "").strip() and launcher:
         out["program"] = launcher
+    return out
+
+
+NAMES_KEY = "_model_names"
+
+
+def with_names(models: list[dict], names: dict) -> list[dict]:
+    """Your own names for models (Models -> Rename) over the ones taken from the files. Only the shown name changes:
+    the file, its id and its profiles stay as they are."""
+    out = []
+    for m in models:
+        own = (names or {}).get(m["id"])
+        out.append({**m, "name": own, "file_name": m["name"], "renamed": True} if own else m)
     return out
 
 
