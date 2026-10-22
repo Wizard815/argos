@@ -11,12 +11,13 @@ from __future__ import annotations
 import os
 import re
 import shutil
-
-from . import gputools
 import signal
 import subprocess
 import sys
+import time
 from typing import Optional
+
+from . import gputools
 
 GIB = 2 ** 30
 PORT = re.compile(r"--port[= ](\d+)")
@@ -86,6 +87,104 @@ def _kfd() -> list[dict]:
     return out
 
 
+KFD = "/sys/class/kfd/kfd"
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _kfd_gpus(root: str = KFD) -> dict[str, str]:
+    """KFD gpu_id -> card index (0, 1, ...), in topology order: the numbering rocm-smi and HIP use."""
+    nodes = os.path.join(root, "topology", "nodes")
+    try:
+        names = sorted(os.listdir(nodes), key=lambda n: int(n) if n.isdigit() else 1 << 30)
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for n in names:
+        gid = _read(os.path.join(nodes, n, "gpu_id"))
+        if gid and gid != "0":
+            out[gid] = str(len(out))
+    return out
+
+
+def _kfd_sample(root: str) -> dict[int, dict]:
+    """host pid -> {"vram": {card: bytes}, "sdma": total bytes, "cu": occupancy} for every process using KFD."""
+    gpus = _kfd_gpus(root)
+    out: dict[int, dict] = {}
+    try:
+        pids = [d for d in os.listdir(os.path.join(root, "proc")) if d.isdigit()]
+    except OSError:
+        return out
+    for pid in pids:
+        base = os.path.join(root, "proc", pid)
+        rec = {"vram": {}, "sdma": 0, "cu": 0}
+        try:
+            entries = os.listdir(base)
+        except OSError:
+            continue
+        for e in entries:
+            if e.startswith("vram_"):
+                v = _read(os.path.join(base, e))
+                if v.isdigit() and int(v) > 0:
+                    rec["vram"][gpus.get(e[5:], e[5:])] = int(v)
+            elif e.startswith("sdma_"):
+                v = _read(os.path.join(base, e))
+                rec["sdma"] += int(v) if v.isdigit() else 0
+            elif e.startswith("stats_"):
+                v = _read(os.path.join(base, e, "cu_occupancy"))
+                rec["cu"] += int(v) if v.isdigit() else 0
+        out[int(pid)] = rec
+    return out
+
+
+def _host_pids() -> dict[int, int]:
+    """host pid -> the pid this container sees, for every process visible here (from NSpid in /proc/*/status).
+    KFD names processes by their host pid; inside a container they have other numbers."""
+    out: dict[int, int] = {}
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return out
+    for pid in pids:
+        for line in _read(f"/proc/{pid}/status").splitlines():
+            if line.startswith("NSpid:"):
+                ns = [int(x) for x in line.split()[1:] if x.isdigit()]
+                if ns:
+                    out[ns[0]] = int(pid)
+                break
+    return out
+
+
+def kfd_processes(root: str = KFD, sample_s: float = 0.4) -> Optional[list[dict]]:
+    """Every process using an AMD GPU, read from the kernel (no rocm-smi needed), with its VRAM and whether it is
+    working. Sees processes in other containers and on the host, by their host pid; their names only when this
+    container shares the host's PID namespace. None when this machine has no KFD."""
+    if not os.path.isdir(os.path.join(root, "proc")):
+        return None
+    first = _kfd_sample(root)
+    if sample_s:
+        time.sleep(sample_s)
+    second = _kfd_sample(root) if sample_s else first
+    local = _host_pids()
+    out = []
+    for hpid, rec in second.items():
+        lp = local.get(hpid)
+        name = _read(f"/proc/{lp}/comm") if lp else ""
+        moved = rec["sdma"] - (first.get(hpid) or {}).get("sdma", rec["sdma"])
+        out.append({"pid": lp or hpid, "host_pid": hpid, "local_pid": lp, "visible": bool(lp),
+                    "name": name or "not visible from Argos",
+                    "gpu": ",".join(sorted(rec["vram"], key=lambda g: int(g) if g.isdigit() else 99)) or "?",
+                    "vram_gib": round(sum(rec["vram"].values()) / GIB, 2) if rec["vram"] else None,
+                    "busy": bool(rec["cu"] > 0 or moved > 0), "cu_occupancy": rec["cu"], "sdma_bytes": max(0, moved)})
+    return out
+
+
 def _commands(pids: list[int]) -> dict[int, str]:
     """The command line of each process (best effort: Linux /proc, or PowerShell on Windows)."""
     out: dict[int, str] = {}
@@ -117,6 +216,10 @@ def listing(engine_running: list[dict], launches: list[dict]) -> dict:
     tool = "nvidia-smi"
     procs = _nvidia()
     if procs is None:
+        kfd = kfd_processes()
+        if kfd is not None:
+            tool, procs = "kernel (KFD)", kfd
+    if procs is None:
         tool, procs = "rocm-smi", _rocm()
     if procs is None or (not procs and sys.platform.startswith("linux")):
         found = _kfd()
@@ -124,7 +227,7 @@ def listing(engine_running: list[dict], launches: list[dict]) -> dict:
             tool, procs = "/dev/kfd", found
     if procs is None:
         return {"tool": None, "processes": [], "note": "No GPU tool found here (nvidia-smi or rocm-smi)."}
-    cmds = _commands([p["pid"] for p in procs])
+    cmds = _commands([p["pid"] for p in procs if p.get("visible", True)])
     by_port: dict[str, str] = {}
     for r in engine_running:
         m = PORT.search(r.get("cmd") or "")
@@ -138,7 +241,14 @@ def listing(engine_running: list[dict], launches: list[dict]) -> dict:
         m = PORT.search(p["cmd"])
         p["owner"] = by_port.get(m.group(1)) if m else None
         p["self"] = p["pid"] == os.getpid()
+        p.setdefault("visible", True)
+        p["argos"] = bool(p["owner"] or p["self"])
     note = ""
+    hidden = [p for p in procs if not p["visible"]]
+    if hidden:
+        note = (f"{len(hidden)} process(es) are outside this container, so only their PID and VRAM are known here. "
+                "On the host: ps -o pid,comm,args -p <PID> names it, and cat /proc/<PID>/cgroup shows the container. "
+                "To see names here and stop them from Argos, give Argos the host's PID namespace (pid: host).")
     if not procs:
         note = ("No processes reported. If the card still shows used memory, the processes are in another container: "
                 "run the builder with the host's PID namespace (pid: host) so they are visible here.")
