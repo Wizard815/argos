@@ -106,6 +106,16 @@ def gpu_processes():
     return ok(**_gpu_listing())
 
 
+@bp.get("/api/gpu/processes/<int:pid>")
+def gpu_process_watch(pid):
+    """One process in detail: what it is, what started it, what it serves and whether it is busy. Read only."""
+    from .. import gpu_procs
+    row = next((p for p in _gpu_listing()["processes"] if p["pid"] == pid or p.get("host_pid") == pid), None)
+    if row is None:
+        return err("that process is not using a GPU any more", 404)
+    return ok(process=gpu_procs.watch(row["pid"], row))
+
+
 @bp.post("/api/gpu/processes/<int:pid>/kill")
 def gpu_process_kill(pid):
     """Stop a process that is using a GPU. One the engine owns must be unloaded from Schedule instead,
@@ -117,6 +127,8 @@ def gpu_process_kill(pid):
     if row is None:
         return err("that process is not using a GPU as far as this app can see", 404)
     b = body()
+    if b.get("dry_run"):  # say what would happen, touch nothing
+        return ok(dry_run=True, **gpu_procs.kill_plan(pid, row, bool(b.get("hard"))))
     if not row.get("visible", True):
         # its number is the host's; inside this container the same number can be another process entirely
         return err(f"PID {pid} is outside this container, so Argos cannot stop it. On the host: kill {row.get('host_pid', pid)} "

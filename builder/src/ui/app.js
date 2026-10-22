@@ -2444,6 +2444,61 @@ function loadLogs() {
 }
 
 // ── Usage → Off-Argos: GPU memory Argos did not start ────────
+// Stop and Kill always show their dry run first: what would be sent to which process, and what it frees.
+async function stopPlan(p, hard) {
+  let plan;
+  try { plan = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { hard, dry_run: true }); } catch (e) { return fail(e); }
+  const lines = [h("p", { style: "margin-top:0" }, h("b", {}, "Dry run, nothing has been done. "), `Argos would ${plan.would}.`),
+    plan.note ? h("p", { class: "hint" }, plan.note) : null,
+    plan.host_command ? h("pre", { class: "pre" }, plan.host_command) : null];
+  const actions = [{ label: "Close", run: (c) => c() }];
+  if (plan.allowed) actions.push({ label: hard ? "Kill it now" : "Stop it now", cls: "danger", run: async (c) => {
+    c();
+    try { const x = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { hard, force: true }); toast(`${p.name}: ${x.result}.`, "ok"); } catch (e) { fail(e); }
+    setTimeout(loadOffArgos, 1500);
+  } });
+  modal(`${hard ? "Kill" : "Stop"} · PID ${p.pid}`, h("div", {}, lines), actions);
+}
+
+const OW = { pid: null, timer: 0 };
+function watchProc(pid) {
+  OW.pid = pid;
+  clearInterval(OW.timer);
+  const tick = async () => {
+    if (OW.pid !== pid || S.view !== "logs") { clearInterval(OW.timer); return; }
+    let r;
+    try { r = (await api("GET", `/api/gpu/processes/${pid}`)).process; } catch (e) { fill($("#oaWatch"), h("div", { class: "card" }, h("div", { class: "empty" }, `PID ${pid}: ${e.message}`))); clearInterval(OW.timer); return; }
+    const I = r.info || {}, V = r.server;
+    const up = I.started_at ? dur(Date.now() / 1000 - I.started_at) : DASH;
+    fill($("#oaWatch"), h("div", { class: "card" },
+      h("div", { class: "card-head" }, h("h2", {}, `Watching PID ${r.host_pid || r.pid} · ${r.name}`),
+        h("span", { class: `pill ${I.alive === false ? "bad" : "ok"}` }, I.alive === false ? "gone" : "running"),
+        h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, "refreshes every 3 s · read only"),
+        btn("Stop watching", () => { OW.pid = null; clearInterval(OW.timer); fill($("#oaWatch")); }, "sm ghost")),
+      h("div", { class: "stats" },
+        h("div", { class: "stat" }, h("div", { class: "k" }, "Up for"), h("div", { class: "v" }, up)),
+        h("div", { class: "stat" }, h("div", { class: "k" }, "GPU"), h("div", { class: "v" }, r.gpu || DASH)),
+        h("div", { class: "stat" }, h("div", { class: "k" }, "VRAM"), h("div", { class: "v" }, r.vram_gib != null ? num(r.vram_gib, 2) : "—", h("small", {}, r.vram_gib != null ? "GiB" : "not reported"))),
+        h("div", { class: "stat" }, h("div", { class: "k" }, "RAM"), h("div", { class: "v" }, I.ram_gib != null ? num(I.ram_gib, 2) : DASH, h("small", {}, "GiB"))),
+        V ? h("div", { class: "stat" }, h("div", { class: "k" }, "Doing"), h("div", { class: "v" }, V.slots_busy ? `${V.slots_busy} of ${V.slots} busy` : V.slots != null ? "idle" : (V.health || "?"))) : null),
+      kvTable([
+        ["Command", h("span", { class: "mono-sm" }, r.cmd || DASH)],
+        ["Started by", I.parent ? `${I.parent} (PID ${I.parent_pid})` : I.alive === null ? "outside this container" : DASH],
+        ["Started", I.started_at ? new Date(I.started_at * 1000).toLocaleString() : DASH],
+        ["Listens on", r.port ? `port ${r.port}` : DASH],
+        ["Server", V ? `${V.health} at ${V.url}${V.model ? ` · model ${V.model}` : ""}${V.n_ctx ? ` · ${num(V.n_ctx, 0)} context` : ""}${V.build ? ` · build ${V.build}` : ""}` : "does not answer HTTP on its port"],
+        V && (V.work || []).length ? ["Working on", (V.work || []).map((w) => `slot ${w.slot}: ${w.prompt_total ? `prompt ${num(w.prompt_done || 0, 0)} of ${num(w.prompt_total, 0)} tokens read` : "a request"}${w.decoded ? `, ${num(w.decoded, 0)} tokens written` : ""}`).join(" · ")] : null,
+        ["Logs", r.logs],
+      ].filter(Boolean)),
+      h("div", { class: "row", style: "margin-top:10px;gap:6px" },
+        h("span", { class: "hint", style: "margin:0" }, "To end it (both show a dry run first):"),
+        r.visible === false ? null : btn("Stop…", () => stopPlan(r, false), "sm ghost"),
+        r.visible === false ? null : btn("Kill…", () => stopPlan(r, true), "sm danger"))));
+  };
+  tick();
+  OW.timer = setInterval(tick, 3000);
+}
+
 async function loadOffArgos() {
   const table = $("#oaTable");
   fill($("#oaNote"), "reading…");
@@ -2453,7 +2508,7 @@ async function loadOffArgos() {
   const sum = (xs) => xs.reduce((a, p) => a + (p.vram_gib || 0), 0);
   const stat = (k, v, unit) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v, unit && h("small", {}, unit)));
   fill($("#oaNote"), r.tool ? `read from ${r.tool}` : "");
-  fill($("#oaStats"), stat("Off-Argos", num(sum(off), 1), "GiB"), stat("Processes", off.length), stat("Argos's own", num(sum(all.filter((p) => p.argos)), 1), "GiB"));
+  fill($("#oaStats"), stat("Off-Argos", off.some((p) => p.vram_gib == null) ? "?" : num(sum(off), 1), off.some((p) => p.vram_gib == null) ? "not reported" : "GiB"), stat("Processes", off.length), stat("Argos's own", num(sum(all.filter((p) => p.argos)), 1), "GiB"));
   const hostCmds = (p) => `ps -o pid,ppid,etime,comm,args -p ${p.host_pid || p.pid}
 cat /proc/${p.host_pid || p.pid}/cgroup
 kill ${p.host_pid || p.pid}`;
@@ -2473,8 +2528,9 @@ kill ${p.host_pid || p.pid}`;
       ? btn("Commands for the host", () => modal(`PID ${p.host_pid || p.pid} on the host`, h("div", {},
           h("p", { class: "hint", style: "margin-top:0" }, "Run these on the Unraid host (or any shell that sees all processes): the first names it, the second shows which container it belongs to, the third stops it."),
           h("pre", { class: "pre" }, hostCmds(p))), [{ label: "Copy", run: () => copyText(hostCmds(p)) }, { label: "Close", run: (c) => c() }]), "sm")
-      : [btn("Stop", () => stop(p, false), "sm ghost"), " ", btn("Kill", () => stop(p, true), "sm danger")]) },
+      : [btn("Watch", () => watchProc(p.pid), "sm primary", "eye"), " ", btn("Stop…", () => stopPlan(p, false), "sm ghost"), " ", btn("Kill…", () => stopPlan(p, true), "sm danger")]) },
   ], off, { key: null }, "Nothing outside Argos is using the GPUs.");
+
   fill($("#oaHint"), off.some((p) => p.visible === false)
     ? "Some of these run in another container or on the host. Argos sees them through the kernel, so it knows their PID, card, memory and whether they are working, but not their name. Give the Argos container the host's PID namespace (pid: host in docker-compose) and it shows their names and can stop them here."
     : r.note || "");
