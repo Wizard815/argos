@@ -590,6 +590,47 @@ function buildField(f) {
   return h("label", { class: `field${f.seg ? " span2" : ""}${f.wide ? " wide" : ""}` }, h("span", {}, f.label, h("code", {}, f.flag)), shown);
 }
 
+// ── Builder: which GPUs this command may use ─────────────────
+// Written as an env var on the command (HIP_VISIBLE_DEVICES=0,1 and the like), so it is saved with the
+// profile. Chips for the cards Argos sees, a box for typing the list, and which variable to set.
+const GPU_VARS = ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"];
+const BG = { cards: [], el: null };
+const gpuVarIn = (env) => GPU_VARS.find((k) => k in (env || {}));
+const gpuDefaultVar = () => (BG.cards.some((g) => /nvidia|geforce|rtx|quadro|tesla/i.test(g.name || "")) ? "CUDA_VISIBLE_DEVICES" : "HIP_VISIBLE_DEVICES");
+function setGpus(list, variable) {
+  const env = { ...((B.parsed && B.parsed.env) || {}) };
+  const keep = variable || gpuVarIn(env) || gpuDefaultVar();
+  for (const k of GPU_VARS) delete env[k];
+  const cards = list.map((x) => String(x).trim()).filter(Boolean);
+  if (cards.length) env[keep] = cards.join(",");
+  edit({}, env);
+}
+function buildGpuField() {
+  const text = h("input", { type: "text", placeholder: "all", spellcheck: "false", style: "width:90px" });
+  const which = h("select", {}, GPU_VARS.map((k) => h("option", { value: k }, k)));
+  const chips = h("span", { class: "chips", style: "align-items:center" });
+  const parse = () => text.value.split(",").map((x) => x.trim()).filter(Boolean);
+  text.addEventListener("change", () => setGpus(parse(), which.value));
+  text.addEventListener("keydown", (e) => { if (e.key === "Enter") setGpus(parse(), which.value); });
+  which.addEventListener("change", () => setGpus(parse(), which.value));
+  BG.el = { text, which, chips, parse };
+  api("GET", "/api/gpu/latest").then((d) => { BG.cards = (d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0); syncGpuField(); }).catch(() => {});
+  return h("label", { class: "field span2", title: "Which cards this model may use. Blank = all of them." },
+    h("span", {}, "GPUs", h("code", {}, "VISIBLE_DEVICES")), h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" }, chips, text, which));
+}
+function syncGpuField() {
+  if (!BG.el) return;
+  const env = (B.parsed && B.parsed.env) || {};
+  const v = gpuVarIn(env);
+  const picked = v ? String(env[v]).split(",").map((x) => x.trim()).filter(Boolean) : [];
+  if (BG.el.text !== document.activeElement) BG.el.text.value = picked.join(",");
+  BG.el.which.value = v || gpuDefaultVar();
+  const toggle = (id) => setGpus(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id].sort((a, b) => Number(a) - Number(b)), BG.el.which.value);
+  fill(BG.el.chips, h("button", { type: "button", class: `chip${picked.length ? "" : " on"}`, title: "No pin: every card", onclick: () => setGpus([], BG.el.which.value) }, "All"),
+    BG.cards.map((g) => h("button", { type: "button", class: `chip${picked.includes(String(g.gpu)) ? " on" : ""}`,
+      title: `${g.name || "GPU " + g.gpu}${g.mem_total_mb ? ` · ${(g.mem_total_mb / 1024).toFixed(0)} GiB` : ""}`, onclick: () => toggle(String(g.gpu)) }, `GPU${g.gpu}`)));
+}
+
 function setSeg(f, v) {
   if (f.name === "mmap") edit({ mmap: v === "mmap" ? true : null, "no-mmap": v === "no-mmap" ? true : null });
   else edit({ [f.name]: v || null });
@@ -623,7 +664,7 @@ function initBuilder() {
     } catch (e) { fail(e); }
   };
   $("#bAlwaysEdit").onclick = editAlways;
-  fill($("#bFields"), SETTINGS.map(buildField));
+  fill($("#bFields"), SETTINGS.map(buildField), buildGpuField());
   fill($("#bFiles"), FILES.map(buildField));
   document.body.append(h("datalist", { id: "list-spectype" }, h("option", { value: "draft-mtp" })));
   $("#parseBtn").onclick = () => openCommand($("#composerInput").value, { source: "pasted" });
@@ -888,6 +929,7 @@ function renderBuilder() {
     renderEnv(p.env || {});
     renderOther(p.args || []);
   });
+  syncGpuField();
   fill($("#bPreview"), renderCommand(p, B.layout === "multi"));
   $$("#bLayout button").forEach((b) => b.classList.toggle("on", b.dataset.v === B.layout));
   $$("#bFormat button").forEach((b) => b.classList.toggle("on", b.dataset.v === B.format));
@@ -3068,10 +3110,6 @@ const SETTINGS_FORM = [
     { k: "jinja", label: "--jinja for chat models", type: "check" },
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
     { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
-  { group: "gpu", title: "GPUs", hint: "Which cards models may use. Set here, it is added to every model the engine starts and every launch here (with Always set's switches), so it need not be in each profile's environment. A profile that names its own cards (HIP_VISIBLE_DEVICES=1, say) keeps them.", fields: [
-    { k: "visible", label: "Visible GPUs", type: "gpus", ph: "0,1", hint: "numbered from 0 the way HIP and CUDA count them; blank = all cards" },
-    { k: "visible_var", label: "Set it as", type: "select", options: [["auto", "Auto: HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES"], ["HIP_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES (AMD)"],
-      ["ROCR_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES (AMD, in containers)"], ["CUDA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES (NVIDIA)"]] }] },
   { group: "gpu", title: "GPU tools", hint: "Where the GPU toolkits are. Blank uses whatever is on PATH inside Argos, which is all most setups need. For a custom ROCm (a TheRock build for gfx906, say) or a second CUDA: mount its folder into the Argos container (a volume in docker-compose, e.g. /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro), then put the mounted path here. Runner builds then use its compiler, and runners started by the engine use its libraries.", fields: [
     { k: "rocm_path", label: "ROCm location", ph: "/opt/rocm-gfx906" },
     { k: "cuda_path", label: "CUDA location", ph: "/usr/local/cuda-12.4" },
@@ -3099,22 +3137,6 @@ function settingsField(f, val) {
   } else if (f.type === "check") {
     input = h("input", { type: "checkbox", checked: !!val });
     return { input, el: h("label", { class: "check wide" }, input, f.label) };
-  } else if (f.type === "gpus") {
-    // the list as text, with a chip per detected card that adds or removes its number
-    input = h("input", { type: "text", value: val ?? "", placeholder: f.ph || "", spellcheck: "false" });
-    const chips = h("span", { class: "chips" });
-    const draw = (cards) => {
-      const picked = new Set(input.value.split(",").map((x) => x.trim()).filter(Boolean));
-      fill(chips, cards.map((g) => h("button", { type: "button", class: `chip${picked.has(String(g.gpu)) ? " on" : ""}`, title: g.name || "",
-        onclick: () => {
-          const now = new Set(input.value.split(",").map((x) => x.trim()).filter(Boolean));
-          now.has(String(g.gpu)) ? now.delete(String(g.gpu)) : now.add(String(g.gpu));
-          input.value = [...now].sort((a, b) => Number(a) - Number(b)).join(",");
-          draw(cards);
-        } }, `GPU${g.gpu}`)));
-    };
-    api("GET", "/api/gpu/latest").then((d) => draw((d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0))).catch(() => {});
-    return { input, el: h("label", { class: "field wide" }, h("span", {}, f.label), input, chips, f.hint ? h("span", { class: "muted mono-sm" }, f.hint) : null) };
   } else if (f.type === "textarea") {
     input = h("textarea", { rows: 3, placeholder: f.ph || "", spellcheck: "false" }, val || "");
   } else {
@@ -3140,7 +3162,7 @@ function renderSettings() {
         if (g.group === "paths") loadLibrary();
       } catch (e) { fail(e); }
     };
-    const tools = g.title === "GPU tools" ? h("div", { id: "sToolsLine" }) : null;
+    const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;
     if (tools) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; fill(tools, toolsLine()); }).catch(() => {});
     return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, g.title), h("span", { class: "spacer" }), btn("Save", save, "sm primary", "save")),
       g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)), tools);

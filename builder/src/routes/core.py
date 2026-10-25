@@ -11,7 +11,7 @@ from urllib.parse import quote
 from flask import Blueprint, abort, current_app, request
 
 from ..command import guess_base_model, parse_command, swap_model_id, to_odysseus
-from ..always import always_for, apply_always
+from ..always import apply_always
 from ..cookbook import build_state, normalize_preset
 from ..integrations import engine_api
 from ..library import model_id_for_command
@@ -51,7 +51,7 @@ def command_parse():
         cmd = parse_command(d.get("command") or "")
     except ValueError as exc:
         return err(str(exc))
-    return ok(**_render(cmd, _format(d)), always_added=apply_always(cmd.to_string(), always_for(ctx().settings))[1])
+    return ok(**_render(cmd, _format(d)), always_added=apply_always(cmd.to_string(), ctx().settings.get("always"))[1])
 
 
 @bp.post("/api/command/build")
@@ -66,7 +66,7 @@ def command_build():
     except ValueError as exc:
         return err(str(exc))
     out = _render(cmd, _format(d))
-    out["always_added"] = apply_always(cmd.to_string(), always_for(ctx().settings))[1]
+    out["always_added"] = apply_always(cmd.to_string(), ctx().settings.get("always"))[1]
     return ok(**out)
 
 
@@ -322,7 +322,7 @@ def launch():
     if not command:
         return err("command is required")
     name = (d.get("profile_name") or "").strip()
-    always = always_for(c.settings)
+    always = c.settings.get("always")
     if always["on_launch"]:
         command = apply_always(command, always)[0]
     served = _engine_model(c, command)
@@ -576,7 +576,7 @@ def cookbook_state() -> dict:
     from .odysseus_hub import cookbook_presets
 
     c = ctx()
-    always = always_for(c.settings)
+    always = c.settings.get("always")
     return build_state(c.store.list_profiles(), c.runner.list(), cookbook_presets(), always if always["on_export"] else None)
 
 

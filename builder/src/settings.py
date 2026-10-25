@@ -56,10 +56,6 @@ def env_defaults(cfg: dict) -> dict:
             "cuda_path": cfg.get("CUDA_PATH", ""),     # e.g. /usr/local/cuda-12.4
             "rocm_smi": "",                            # e.g. /opt/rocm-gfx906/bin/rocm-smi
             "nvidia_smi": "",
-            # which cards a model may use, numbered from 0 the way HIP and CUDA count them ("0,1"); blank = all.
-            # Added to every command that does not pick its own cards, so it need not be in each profile's env.
-            "visible": "",
-            "visible_var": "auto",  # auto (HIP and CUDA), HIP_VISIBLE_DEVICES, ROCR_VISIBLE_DEVICES, CUDA_VISIBLE_DEVICES
         },
         "kv": {
             # KV cache types the estimator does not know, as name=bits per value, e.g. "turbo5=3.0, mykv=4.25".

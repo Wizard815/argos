@@ -48,30 +48,6 @@ def test_always_reaches_the_builder_launches_and_export(app, client, tmp_path):
     assert all("--no-warmup" not in p["cmd"] for p in state() if (p.get("fields") or {}).get("source") == "argos")
 
 
-
-def test_always_pins_the_gpus_chosen_in_settings_unless_the_command_picks_its_own():
-    gpu = {"env": "", "flags": "", "gpu": {"visible": "0, 1", "visible_var": "auto"}}
-    cmd, added = apply_always("llama-server -m /m/a.gguf", gpu)
-    assert added == ["HIP_VISIBLE_DEVICES=0,1", "CUDA_VISIBLE_DEVICES=0,1"], "auto covers AMD and NVIDIA"
-    for own in ("HIP_VISIBLE_DEVICES=1", "CUDA_VISIBLE_DEVICES=1", "ROCR_VISIBLE_DEVICES=1"):
-        assert apply_always(f"{own} llama-server -m /m/a.gguf", gpu)[1] == [], f"{own}: the profile's own cards win"
-    one = {"env": "", "flags": "", "gpu": {"visible": "1", "visible_var": "ROCR_VISIBLE_DEVICES"}}
-    assert apply_always("llama-server -m /m/a.gguf", one)[1] == ["ROCR_VISIBLE_DEVICES=1"]
-    assert apply_always("llama-server -m /m/a.gguf", {"env": "", "flags": "", "gpu": {"visible": ""}}) == ("llama-server -m /m/a.gguf", [])
-    pinned = {"env": "HIP_VISIBLE_DEVICES=1", "flags": "", "gpu": {"visible": "0", "visible_var": "auto"}}
-    assert apply_always("llama-server -m /m/a.gguf", pinned)[1] == ["HIP_VISIBLE_DEVICES=1"], "an Always-set selector wins too"
-
-
-def test_the_gpu_setting_reaches_the_builder_and_the_engine(app, client):
-    assert client.put("/api/settings/gpu", json={"visible": "1", "visible_var": "HIP_VISIBLE_DEVICES"}).get_json()["ok"]
-    j = client.post("/api/command/parse", json={"command": "llama-server -m /m/a.gguf", "format": "plain"}).get_json()
-    assert j["always_added"] == ["HIP_VISIBLE_DEVICES=1"] and "HIP_VISIBLE_DEVICES" not in j["command"], \
-        "shown as added, not written into the profile"
-    client.post("/api/profiles", json={"name": "p", "base_model": "a", "launch_command": "llama-server --model /m/a.gguf --port 8080"})
-    ours = [x for x in client.get("/api/cookbook/state").get_json()["presets"] if (x.get("fields") or {}).get("source") == "argos"]
-    assert "HIP_VISIBLE_DEVICES=1" in ours[0]["cmd"], "the engine starts it on that card"
-
-
 # ----- notes ------------------------------------------------------------------------------------
 def test_notes_are_one_set_for_every_page(app, client):
     n = client.post("/api/notes", json={"title": "try", "body": "v1", "color": "nope"}).get_json()["note"]
