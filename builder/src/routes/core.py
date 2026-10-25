@@ -12,6 +12,7 @@ from flask import Blueprint, abort, current_app, request
 
 from ..command import guess_base_model, parse_command, swap_model_id, to_odysseus
 from ..always import apply_always
+from ..gpu_pick import vars_for as gpu_vars_for
 from ..cookbook import build_state, normalize_preset
 from ..integrations import engine_api
 from ..library import model_id_for_command
@@ -51,7 +52,8 @@ def command_parse():
         cmd = parse_command(d.get("command") or "")
     except ValueError as exc:
         return err(str(exc))
-    return ok(**_render(cmd, _format(d)), always_added=apply_always(cmd.to_string(), ctx().settings.get("always"))[1])
+    return ok(**_render(cmd, _format(d)), always_added=apply_always(cmd.to_string(), ctx().settings.get("always"))[1],
+              gpu_vars=gpu_vars_for(cmd))
 
 
 @bp.post("/api/command/build")
@@ -67,6 +69,7 @@ def command_build():
         return err(str(exc))
     out = _render(cmd, _format(d))
     out["always_added"] = apply_always(cmd.to_string(), ctx().settings.get("always"))[1]
+    out["gpu_vars"] = gpu_vars_for(cmd)
     return ok(**out)
 
 

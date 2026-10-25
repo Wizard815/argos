@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .command import parse_command
+from .gpu_pick import resolve as resolve_gpus
 from .db import new_id
 
 _FILLER = (
@@ -93,6 +94,7 @@ class Runner:
             cmd = parse_command(command)
         except ValueError as exc:
             raise LaunchError(f"could not parse command: {exc}") from exc
+        resolve_gpus(cmd)  # ARGOS_GPUS -> HIP / CUDA / ... for where this runs
         if "${PORT}" in (cmd.get("port") or ""):
             cmd.set("port", free_port())
         s = cmd.summary()

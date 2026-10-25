@@ -1,6 +1,6 @@
 ---
 title: Choosing GPUs and context in the Builder, and stretching it with RoPE
-summary: The Builder's GPUs field pins a profile to chosen cards; its VRAM card sets context from the KV table and can stretch a model to 1M with YaRN.
+summary: The Builder's GPUs field saves card numbers and Argos sets HIP or CUDA for where the model runs; its VRAM card sets context from the KV table and can stretch a model to 1M with YaRN.
 category: guides
 tags: [gpu, hip_visible_devices, cuda_visible_devices, context, rope, yarn, vram, builder]
 updated: 2026-10-25
@@ -8,21 +8,26 @@ updated: 2026-10-25
 
 # Choosing GPUs in the Builder
 
-The Builder's settings have a **GPUs** field next to Context and GPU layers. The
-chips are the cards Argos sees: **All** (no pin) and one per card. Click cards to
-pick them, or type the list (`0,1`, numbered from 0 the way HIP and CUDA count
-them) in the box beside them.
+The Builder's settings have a **GPUs** field next to Context and GPU layers:
+**All** (no pin) and a chip per card Argos sees. Click cards to pick them, or type
+the list (`0,1`, numbered from 0 the way HIP and CUDA count them).
 
-It is written into the command's environment, so it is saved with the profile:
+Only the card numbers are saved, as `ARGOS_GPUS=0,1` on the profile. Which
+variable the GPU runtime reads depends on where the model runs, so Argos sets it
+when the model launches or is handed to the engine:
 
-```
-HIP_VISIBLE_DEVICES=0,1 llama-server --model ...
-```
+| runs on | gets |
+| --- | --- |
+| a remote launcher (`/app/bin/remote-llama rocm`) | that backend's variable: `HIP_VISIBLE_DEVICES`, `CUDA_VISIBLE_DEVICES` or `GGML_VK_VISIBLE_DEVICES` |
+| this machine with ROCm (`/dev/kfd` or `rocm-smi`) | `HIP_VISIBLE_DEVICES` |
+| this machine with NVIDIA (`/dev/nvidiactl` or `nvidia-smi`) | `CUDA_VISIBLE_DEVICES` |
+| both, or neither found | both |
 
-The select beside it picks the variable: `HIP_VISIBLE_DEVICES` (AMD),
-`ROCR_VISIBLE_DEVICES` (AMD inside containers) or `CUDA_VISIBLE_DEVICES`
-(NVIDIA). It starts on the one the command already uses, else CUDA when Argos
-sees an NVIDIA card and HIP otherwise. Picking **All** removes the variable.
+The line under the field shows what this command will launch as.
+`ARGOS_GPUS` itself never reaches the process.
+
+A command that sets one of those variables by hand keeps it: the field shows its
+cards and says so, and picking cards in the field replaces it with `ARGOS_GPUS`.
 
 # Context from the VRAM card
 
