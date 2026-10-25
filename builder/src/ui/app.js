@@ -910,7 +910,21 @@ function scheduleEstimate() {
     catch (e) { fill($("#bVram"), h("p", { class: "hint" }, e.message)); }
   }, 350);
 }
-const ctxLabel = (c) => (c >= 1024 ? `${num(c / 1024, 0)}K` : String(c));
+const ctxLabel = (c) => (c >= 1048576 && c % 1048576 === 0 ? `${c / 1048576}M` : c >= 1024 ? `${num(c / 1024, 0)}K` : String(c));
+
+// Past the trained context the model needs RoPE stretched to cope: YaRN, scaled by how far past it goes,
+// from the context it was trained on. Back inside it, those flags come off again.
+const ROPE_OFF = { "rope-scaling": null, "rope-scale": null, "yarn-orig-ctx": null };
+const ropeOn = () => argValue("rope-scaling") === "yarn";
+const ropeEdits = (c, train) => ({ "rope-scaling": "yarn", "rope-scale": String(Number((c / train).toFixed(3))), "yarn-orig-ctx": train });
+/** A click in the VRAM card's KV table: that context, and that cache type when a row was picked. */
+function useContext(c, type, e) {
+  const edits = { "ctx-size": c };
+  if (type) Object.assign(edits, { "cache-type-k": type, "cache-type-v": type });
+  if (e.train_ctx && c > e.train_ctx) Object.assign(edits, ropeEdits(c, e.train_ctx));
+  else if (ropeOn()) Object.assign(edits, ROPE_OFF);
+  edit(edits);
+}
 function renderEstimate(e) {
   const box = $("#bVram");
   if (!e || !e.ok) return fill(box, h("p", { class: "hint", style: "margin:0" }, (e && e.error) || "Pick a model to see its size."));
@@ -927,15 +941,32 @@ function renderEstimate(e) {
     M ? "Estimate: " : null, h("b", {}, `${num(total, 1)} GiB`), " = ",
     `${num(e.weights_gib, 1)} model`, e.extra_gib ? ` (incl. ${num(e.extra_gib, 1)} mmproj/draft)` : "",
     ` + ${num(e.kv_gib, 1)} KV cache (${ctxLabel(e.ctx)} context, ${cache}) + ${num(e.overhead_gib, 1)} buffers`);
-  const notes = [...(e.notes || []), e.train_ctx && e.ctx > e.train_ctx ? `context is above the model's trained ${ctxLabel(e.train_ctx)}` : null].filter(Boolean);
+  const stretched = e.train_ctx && e.ctx > e.train_ctx;
+  const notes = [...(e.notes || []), stretched ? (ropeOn()
+    ? `RoPE stretched with YaRN ×${argValue("rope-scale") || "?"} from the trained ${ctxLabel(e.train_ctx)}: answers can get worse at long range`
+    : `context is above the model's trained ${ctxLabel(e.train_ctx)}: turn on RoPE below, or the model will not cope`) : null].filter(Boolean);
   let table = null;
   if (e.compare) {
     const C = e.compare;
-    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB)"),
+    const ropeCol = (c) => e.train_ctx && c > e.train_ctx;
+    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB) · click to use it"),
       h("div", { class: "table-wrap" }, h("table", { class: "dense" },
-        h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num", style: c === e.ctx ? "color:var(--strong)" : "" }, ctxLabel(c))))),
+        h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num pick", style: c === e.ctx ? "color:var(--strong)" : "",
+          title: `Use ${ctxLabel(c)} context${ropeCol(c) ? " (stretched with RoPE)" : ""}`, onclick: () => useContext(c, null, e) },
+          ctxLabel(c), ropeCol(c) ? h("span", { class: "muted", style: "font-weight:400" }, " RoPE") : null)))),
         h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
-          t.kv_gib.map((v, i) => h("td", { class: "num", style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "" }, v == null ? DASH : num(v, 2)))))))));
+          t.kv_gib.map((v, i) => v == null ? h("td", { class: "num" }, DASH) : h("td", { class: "num pick",
+            style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "",
+            title: `Use ${ctxLabel(C.ctx[i])} context with a ${t.type} cache (${num(v, 2)} GiB)`, onclick: () => useContext(C.ctx[i], t.type, e) }, num(v, 2)))))))));
+  }
+  let rope = null;
+  if (e.rope_ctx && e.train_ctx) {
+    const on = ropeOn();
+    const box = h("input", { type: "checkbox", checked: on, onchange: (ev) => ev.target.checked
+      ? useContext(e.rope_ctx, null, e) : edit({ ...ROPE_OFF, "ctx-size": e.train_ctx }) });
+    rope = h("label", { class: "check", style: "margin-top:8px", title: `--rope-scaling yarn --rope-scale ${Number((e.rope_ctx / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx} -c ${e.rope_ctx}` },
+      box, ` RoPE (YaRN) to ${ctxLabel(e.rope_ctx)} context`,
+      h("span", { class: "hint", style: "margin:0 0 0 6px" }, on ? "on: unticking goes back to the trained context" : `trained on ${ctxLabel(e.train_ctx)}; this stretches it ×${num(e.rope_ctx / e.train_ctx, 1)}`));
   }
   // an unknown cache type: say its bits per value here and it is saved to Settings -> KV cache types
   const unknown = (e.notes || []).map((n) => (n.match(/unknown cache type '([^']+)'/) || [])[1]).find(Boolean);
@@ -952,7 +983,7 @@ function renderEstimate(e) {
         try { await api("PUT", "/api/settings/kv", { custom_types: [...list, `${unknown}=${v}`].join(", ") }); await loadSettings(); VE.cmd = null; scheduleEstimate(); toast(`Saved: ${unknown} = ${v} bits per value.`, "ok"); } catch (err) { fail(err); }
       }, "sm primary"));
   }
-  fill(box, measuredLine, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, table,
+  fill(box, measuredLine, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, rope, table,
     h("p", { class: "hint", style: "margin:6px 0 0" }, "Model + KV cache are close. Buffers are a rough guess, and models that keep part of themselves on the CPU (Gemma-4 E2B/E4B) come out high."));
 }
 
@@ -3037,6 +3068,10 @@ const SETTINGS_FORM = [
     { k: "jinja", label: "--jinja for chat models", type: "check" },
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
     { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
+  { group: "gpu", title: "GPUs", hint: "Which cards models may use. Set here, it is added to every model the engine starts and every launch here (with Always set's switches), so it need not be in each profile's environment. A profile that names its own cards (HIP_VISIBLE_DEVICES=1, say) keeps them.", fields: [
+    { k: "visible", label: "Visible GPUs", type: "gpus", ph: "0,1", hint: "numbered from 0 the way HIP and CUDA count them; blank = all cards" },
+    { k: "visible_var", label: "Set it as", type: "select", options: [["auto", "Auto: HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES"], ["HIP_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES (AMD)"],
+      ["ROCR_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES (AMD, in containers)"], ["CUDA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES (NVIDIA)"]] }] },
   { group: "gpu", title: "GPU tools", hint: "Where the GPU toolkits are. Blank uses whatever is on PATH inside Argos, which is all most setups need. For a custom ROCm (a TheRock build for gfx906, say) or a second CUDA: mount its folder into the Argos container (a volume in docker-compose, e.g. /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro), then put the mounted path here. Runner builds then use its compiler, and runners started by the engine use its libraries.", fields: [
     { k: "rocm_path", label: "ROCm location", ph: "/opt/rocm-gfx906" },
     { k: "cuda_path", label: "CUDA location", ph: "/usr/local/cuda-12.4" },
@@ -3064,6 +3099,22 @@ function settingsField(f, val) {
   } else if (f.type === "check") {
     input = h("input", { type: "checkbox", checked: !!val });
     return { input, el: h("label", { class: "check wide" }, input, f.label) };
+  } else if (f.type === "gpus") {
+    // the list as text, with a chip per detected card that adds or removes its number
+    input = h("input", { type: "text", value: val ?? "", placeholder: f.ph || "", spellcheck: "false" });
+    const chips = h("span", { class: "chips" });
+    const draw = (cards) => {
+      const picked = new Set(input.value.split(",").map((x) => x.trim()).filter(Boolean));
+      fill(chips, cards.map((g) => h("button", { type: "button", class: `chip${picked.has(String(g.gpu)) ? " on" : ""}`, title: g.name || "",
+        onclick: () => {
+          const now = new Set(input.value.split(",").map((x) => x.trim()).filter(Boolean));
+          now.has(String(g.gpu)) ? now.delete(String(g.gpu)) : now.add(String(g.gpu));
+          input.value = [...now].sort((a, b) => Number(a) - Number(b)).join(",");
+          draw(cards);
+        } }, `GPU${g.gpu}`)));
+    };
+    api("GET", "/api/gpu/latest").then((d) => draw((d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0))).catch(() => {});
+    return { input, el: h("label", { class: "field wide" }, h("span", {}, f.label), input, chips, f.hint ? h("span", { class: "muted mono-sm" }, f.hint) : null) };
   } else if (f.type === "textarea") {
     input = h("textarea", { rows: 3, placeholder: f.ph || "", spellcheck: "false" }, val || "");
   } else {
@@ -3089,7 +3140,7 @@ function renderSettings() {
         if (g.group === "paths") loadLibrary();
       } catch (e) { fail(e); }
     };
-    const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;
+    const tools = g.title === "GPU tools" ? h("div", { id: "sToolsLine" }) : null;
     if (tools) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; fill(tools, toolsLine()); }).catch(() => {});
     return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, g.title), h("span", { class: "spacer" }), btn("Save", save, "sm primary", "save")),
       g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)), tools);
