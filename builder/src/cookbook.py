@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from .always import apply_always
 from .command import parse_command, swap_model_id, to_odysseus
+from .gpu_pick import resolve as resolve_gpus
 
 
 def _label_key(label: str) -> str:
@@ -47,7 +48,7 @@ def profile_presets(profiles: list[dict], taken: Optional[dict] = None,
     presets, warnings = [], []
     for p in profiles:
         try:
-            cmd = to_odysseus(parse_command(apply_always(p["launch_command"], always or {})[0]))
+            cmd = to_odysseus(resolve_gpus(parse_command(apply_always(p["launch_command"], always or {})[0])))
         except ValueError as exc:
             warnings.append(f"profile {p['name']!r}: {exc}")
             continue

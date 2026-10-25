@@ -591,44 +591,52 @@ function buildField(f) {
 }
 
 // ── Builder: which GPUs this command may use ─────────────────
-// Written as an env var on the command (HIP_VISIBLE_DEVICES=0,1 and the like), so it is saved with the
-// profile. Chips for the cards Argos sees, a box for typing the list, and which variable to set.
-const GPU_VARS = ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"];
+// Only the card numbers are picked here, saved as ARGOS_GPUS=0,1 on the command. Which variable the GPU
+// runtime reads (HIP_VISIBLE_DEVICES, CUDA_VISIBLE_DEVICES, both) depends on where the model runs, so the
+// server works that out at launch: a remote launcher's backend, or what this machine has.
+const GPU_PICK = "ARGOS_GPUS";
+const GPU_SELECTORS = ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "GGML_VK_VISIBLE_DEVICES"];
 const BG = { cards: [], el: null };
-const gpuVarIn = (env) => GPU_VARS.find((k) => k in (env || {}));
-const gpuDefaultVar = () => (BG.cards.some((g) => /nvidia|geforce|rtx|quadro|tesla/i.test(g.name || "")) ? "CUDA_VISIBLE_DEVICES" : "HIP_VISIBLE_DEVICES");
-function setGpus(list, variable) {
+const splitCards = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
+/** The cards this command is pinned to: its ARGOS_GPUS, else a variable it sets by hand. */
+function gpuPick(env) {
+  if (env && GPU_PICK in env) return { cards: splitCards(env[GPU_PICK]), from: GPU_PICK };
+  const own = GPU_SELECTORS.find((k) => k in (env || {}));
+  return { cards: own ? splitCards(env[own]) : [], from: own || "" };
+}
+function setGpus(list) {
   const env = { ...((B.parsed && B.parsed.env) || {}) };
-  const keep = variable || gpuVarIn(env) || gpuDefaultVar();
-  for (const k of GPU_VARS) delete env[k];
+  for (const k of [GPU_PICK, ...GPU_SELECTORS]) delete env[k];
   const cards = list.map((x) => String(x).trim()).filter(Boolean);
-  if (cards.length) env[keep] = cards.join(",");
+  if (cards.length) env[GPU_PICK] = cards.join(",");
   edit({}, env);
 }
 function buildGpuField() {
-  const text = h("input", { type: "text", placeholder: "all", spellcheck: "false", style: "width:90px" });
-  const which = h("select", {}, GPU_VARS.map((k) => h("option", { value: k }, k)));
+  const text = h("input", { type: "text", placeholder: "all", spellcheck: "false", style: "width:80px" });
   const chips = h("span", { class: "chips", style: "align-items:center" });
-  const parse = () => text.value.split(",").map((x) => x.trim()).filter(Boolean);
-  text.addEventListener("change", () => setGpus(parse(), which.value));
-  text.addEventListener("keydown", (e) => { if (e.key === "Enter") setGpus(parse(), which.value); });
-  which.addEventListener("change", () => setGpus(parse(), which.value));
-  BG.el = { text, which, chips, parse };
+  const note = h("span", { class: "muted mono-sm" });
+  text.addEventListener("change", () => setGpus(splitCards(text.value)));
+  text.addEventListener("keydown", (e) => { if (e.key === "Enter") setGpus(splitCards(text.value)); });
+  BG.el = { text, chips, note };
   api("GET", "/api/gpu/latest").then((d) => { BG.cards = (d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0); syncGpuField(); }).catch(() => {});
   return h("label", { class: "field span2", title: "Which cards this model may use. Blank = all of them." },
-    h("span", {}, "GPUs", h("code", {}, "VISIBLE_DEVICES")), h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" }, chips, text, which));
+    h("span", {}, "GPUs"), h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" }, chips, text), note);
 }
 function syncGpuField() {
   if (!BG.el) return;
-  const env = (B.parsed && B.parsed.env) || {};
-  const v = gpuVarIn(env);
-  const picked = v ? String(env[v]).split(",").map((x) => x.trim()).filter(Boolean) : [];
-  if (BG.el.text !== document.activeElement) BG.el.text.value = picked.join(",");
-  BG.el.which.value = v || gpuDefaultVar();
-  const toggle = (id) => setGpus(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id].sort((a, b) => Number(a) - Number(b)), BG.el.which.value);
-  fill(BG.el.chips, h("button", { type: "button", class: `chip${picked.length ? "" : " on"}`, title: "No pin: every card", onclick: () => setGpus([], BG.el.which.value) }, "All"),
-    BG.cards.map((g) => h("button", { type: "button", class: `chip${picked.includes(String(g.gpu)) ? " on" : ""}`,
-      title: `${g.name || "GPU " + g.gpu}${g.mem_total_mb ? ` · ${(g.mem_total_mb / 1024).toFixed(0)} GiB` : ""}`, onclick: () => toggle(String(g.gpu)) }, `GPU${g.gpu}`)));
+  const pick = gpuPick((B.parsed && B.parsed.env) || {});
+  const ids = pick.cards;
+  if (BG.el.text !== document.activeElement) BG.el.text.value = ids.join(",");
+  const toggle = (id) => setGpus(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].sort((a, b) => Number(a) - Number(b)));
+  const known = new Set(BG.cards.map((g) => String(g.gpu)));
+  fill(BG.el.chips, h("button", { type: "button", class: `chip${ids.length ? "" : " on"}`, title: "No pin: every card", onclick: () => setGpus([]) }, "All"),
+    BG.cards.map((g) => h("button", { type: "button", class: `chip${ids.includes(String(g.gpu)) ? " on" : ""}`,
+      title: `${g.name || "GPU " + g.gpu}${g.mem_total_mb ? ` · ${(g.mem_total_mb / 1024).toFixed(0)} GiB` : ""}`, onclick: () => toggle(String(g.gpu)) }, `GPU${g.gpu}`)),
+    ids.filter((x) => !known.has(x)).map((x) => h("button", { type: "button", class: "chip on", title: "Not seen on this machine", onclick: () => toggle(x) }, `GPU${x}`)));
+  const vars = (B.parsed && B.parsed.gpu_vars) || [];
+  BG.el.note.textContent = !ids.length ? "every card"
+    : pick.from === GPU_PICK ? `launches as ${vars.map((v) => `${v}=${ids.join(",")}`).join(" ") || "the runtime's variable"}`
+    : `set by hand as ${pick.from}; pick here to let the server choose the variable`;
 }
 
 function setSeg(f, v) {
@@ -1030,7 +1038,7 @@ function renderEstimate(e) {
 }
 
 function renderEnv(env) {
-  const entries = Object.entries(env);
+  const entries = Object.entries(env).filter(([k]) => k !== GPU_PICK);  // the GPUs field shows that one
   const rowFor = (k, v, i) => h("div", { class: "row", style: "flex-wrap:nowrap" },
     h("input", { type: "text", value: k, placeholder: "NAME", dataset: { fk: `env-k-${i}` }, style: "flex:1", onchange: commitEnv, spellcheck: "false" }),
     h("input", { type: "text", value: v, placeholder: "value", dataset: { fk: `env-v-${i}` }, style: "flex:1.4", onchange: commitEnv, spellcheck: "false" }),
@@ -1039,6 +1047,8 @@ function renderEnv(env) {
 }
 function commitEnv() {
   const env = {};
+  const pick = ((B.parsed && B.parsed.env) || {})[GPU_PICK];
+  if (pick) env[GPU_PICK] = pick;  // kept: the GPUs field owns it, not these rows
   $$("#bEnv .row").forEach((r) => {
     const [k, v] = $$("input", r).map((i) => i.value.trim());
     if (k) env[k] = v;
