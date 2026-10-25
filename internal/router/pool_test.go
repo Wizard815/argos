@@ -31,6 +31,7 @@ func newTestPool(budget float64, sizes map[string]float64) (*poolSwapper, *time.
 		persistent: map[string]bool{},
 		sizes:      sizes,
 		pins:       map[string][]string{},
+		spread:     map[string]bool{},
 		placed:     map[string][]string{},
 		busy:       map[string]int{},
 		lastUsed:   map[string]time.Time{},
@@ -499,4 +500,39 @@ func TestPool_PlacementSurvivesReload(t *testing.T) {
 	// the second card is still free for another 24 GiB model
 	ok, cards := next.fits("other", []string{"big"})
 	assert.False(t, ok && len(cards) == 0)
+}
+
+func TestPool_TensorSplitUsesEveryCard(t *testing.T) {
+	p, _ := newTestCardPool([]float64{31, 31}, map[string]float64{"small": 7, "other": 4})
+	p.spread["small"] = true
+
+	assert.Equal(t, []string{"0", "1"}, start(p, "small"), "7 GiB fits one card, but a tensor split wants both")
+	assert.Equal(t, []string{"0"}, start(p, "other", "small"), "a plain model still takes one card")
+}
+
+func TestPool_SpreadModelEvictsUntilEveryCardHasItsShare(t *testing.T) {
+	p, now := newTestCardPool([]float64{31, 31}, map[string]float64{"a": 28, "wide": 20})
+	start(p, "a")
+	p.lastUsed["a"] = now.Add(-time.Hour)
+	p.spread["wide"] = true
+
+	assert.Equal(t, []string{"a"}, p.EvictionFor("wide", []string{"a"}), "card 1 has room for all of it, but half goes on card 0")
+}
+
+func TestPool_SpreadFromTheModelConfig(t *testing.T) {
+	conf := config.Config{Models: map[string]config.ModelConfig{
+		"tensor": {VRAM: 7, Cmd: "llama-server -m /m/a.gguf --split-mode tensor -ngl 99"},
+		"row":    {VRAM: 7, Cmd: "llama-server -m /m/a.gguf -sm row"},
+		"layer":  {VRAM: 7, Cmd: "llama-server -m /m/a.gguf --split-mode layer"},
+		"pinned": {VRAM: 7, Cmd: "llama-server -m /m/a.gguf", Env: []string{"HIP_VISIBLE_DEVICES=0,1"}},
+		"one":    {VRAM: 7, Cmd: "llama-server -m /m/a.gguf", Env: []string{"HIP_VISIBLE_DEVICES=1"}},
+	}}
+	conf.Routing.Router.Settings.Pool = config.PoolConfig{Cards: []float64{32, 32}, Placement: "auto"}
+	p := newPoolSwapper(conf, logmon.NewWriter(io.Discard), func() ([]gpumem.Card, string) { return nil, "" })
+
+	assert.True(t, p.spread["tensor"])
+	assert.True(t, p.spread["row"])
+	assert.False(t, p.spread["layer"], "layer is llama-server's default; one card is still fine")
+	assert.True(t, p.spread["pinned"], "a pin to two cards means both")
+	assert.False(t, p.spread["one"])
 }

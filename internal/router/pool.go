@@ -136,6 +136,7 @@ type poolSwapper struct {
 	persistent map[string]bool
 	sizes      map[string]float64 // GiB; 0 means unknown
 	pins       map[string][]string
+	spread     map[string]bool // placed on every allowed card, not on the one with room
 
 	// cards is empty when per-card sizes are unknown; the pool then plans by
 	// budget alone and never places.
@@ -194,6 +195,7 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		persistent: make(map[string]bool, len(pc.Persistent)),
 		sizes:      make(map[string]float64, len(conf.Models)),
 		pins:       make(map[string][]string),
+		spread:     make(map[string]bool),
 		placed:     make(map[string][]string),
 		busy:       make(map[string]int),
 		lastUsed:   make(map[string]time.Time),
@@ -216,11 +218,26 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		if p.sizes[id] == 0 {
 			logger.Warnf("pool: unknown VRAM size for %s; set its vram to let it share the GPUs", id)
 		}
-		if pin := hipPin(mc.Env); len(pin) > 0 {
+		pin := hipPin(mc.Env)
+		if len(pin) > 0 {
 			p.pins[id] = pin
+		}
+		// Pinned to several cards, or told to split a tensor or row across GPUs: the
+		// model is meant to use more than one card, so one with room is not enough.
+		if len(pin) > 1 || splitsAcrossCards(mc.Cmd) {
+			p.spread[id] = true
 		}
 	}
 	return p
+}
+
+// splitAcross matches -sm / --split-mode tensor or row: the modes that share
+// each layer across GPUs. layer (llama-server's default) and none do not ask
+// for more than one card, so the pool may still fit those on one.
+var splitAcross = regexp.MustCompile(`(?:^|\s)(?:-sm|--split-mode)(?:\s+|=)(?:tensor|row)(?:\s|$)`)
+
+func splitsAcrossCards(cmd string) bool {
+	return splitAcross.MatchString(cmd)
 }
 
 // hipPin returns the card ids a model's env pins with HIP_VISIBLE_DEVICES.
@@ -340,6 +357,19 @@ func (p *poolSwapper) fits(target string, others []string) (bool, []string) {
 	}
 	free := func(c poolCard) float64 { return c.cap - used[c.id] }
 	need := p.sizes[target]
+
+	// Meant for several cards: all the cards it may use, an equal share on each.
+	if p.spread[target] && len(allowed) > 1 {
+		share := need / float64(len(allowed))
+		for _, c := range allowed {
+			if free(c) < share {
+				return false, nil
+			}
+		}
+		ids := cardIDs(allowed)
+		sortIDs(ids)
+		return true, ids
+	}
 
 	// One card: the one with the fewest models already on it, so the cards
 	// share the load, then the most free room.

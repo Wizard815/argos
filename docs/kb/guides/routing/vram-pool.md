@@ -4,7 +4,7 @@ summary: Put every model in one pool so models load side by side while VRAM fits
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
 config_keys: [routing, models.*.vram]
-updated: 2026-10-21
+updated: 2026-10-25
 ---
 
 # VRAM-aware pool router
@@ -58,7 +58,12 @@ the model starts:
 - A model bigger than a card is split over the cards with the most room.
 - Fragmentation counts: 22 GiB free in total is no use for a 28 GiB model when
   neither card has 28 free, so the pool evicts until one card does.
-- A `HIP_VISIBLE_DEVICES` in a model's `env` limits the cards it may use.
+- A `HIP_VISIBLE_DEVICES` in a model's `env` limits the cards it may use. A
+  pin to more than one card (`HIP_VISIBLE_DEVICES=0,1`) means use all of them:
+  the model gets an equal share on each pinned card, even when one would hold it.
+- A `cmd` with `--split-mode tensor` or `row` (`-sm`) is spread the same way over
+  every card it may use, since those modes exist to share each layer across
+  GPUs. `layer` (llama-server's default) and `none` still fit on one card.
 - Card ids come from `rocm-smi`, the numbering `HIP_VISIBLE_DEVICES` uses. If
   `rocm-smi` is missing the pool falls back to `/sys/class/drm`, numbers the
   cards that have VRAM 0, 1, ... in that order (HIP's usual order, whatever
