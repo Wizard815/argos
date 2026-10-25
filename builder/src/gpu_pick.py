@@ -6,8 +6,10 @@ command is launched or handed to the engine:
 
 - a remote launcher names its backend (``/app/bin/remote-llama rocm``): that one
 - this machine: ROCm when it is here (``/dev/kfd`` or ``rocm-smi``), NVIDIA when it
-  is (``/dev/nvidiactl`` or ``nvidia-smi``), both when both are, both when neither
-  is found (each runtime ignores the other's variable)
+  is (``/dev/nvidiactl`` or ``nvidia-smi``), both when both are. A container that
+  runs llama.cpp elsewhere has neither, so then the cards' names from the GPU
+  telemetry decide (AMD / Radeon / Instinct, NVIDIA / GeForce / RTX), and with
+  nothing to go on it is both (each runtime ignores the other's variable)
 
 A variable the command sets itself is left alone, and ``ARGOS_GPUS`` never reaches
 the process.
@@ -15,6 +17,7 @@ the process.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from typing import Optional
 
@@ -26,11 +29,23 @@ SELECTORS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICE
              "GGML_VK_VISIBLE_DEVICES")
 VARS_FOR = {"rocm": "HIP_VISIBLE_DEVICES", "cuda": "CUDA_VISIBLE_DEVICES", "vulkan": "GGML_VK_VISIBLE_DEVICES"}
 
+AMD = re.compile(r"(?i)\b(amd|radeon|instinct|gfx\d)")
+NVIDIA = re.compile(r"(?i)\b(nvidia|geforce|rtx|quadro|tesla)\b")
+
 _local: Optional[tuple[str, ...]] = None
+_names: tuple[str, ...] = ()
+
+
+def note_cards(names) -> None:
+    """The card names the GPU telemetry saw; they decide the runtime when no device file does."""
+    global _names, _local
+    seen = tuple(sorted({str(n) for n in names or () if n}))
+    if seen and seen != _names:
+        _names, _local = seen, None
 
 
 def local_backends() -> tuple[str, ...]:
-    """The GPU runtimes this machine has: ("rocm",), ("cuda",), both, or both when none is found."""
+    """The GPU runtimes this machine has: ("rocm",), ("cuda",), both, or both when nothing says."""
     global _local
     if _local is None:
         found = []
@@ -38,6 +53,11 @@ def local_backends() -> tuple[str, ...]:
             found.append("rocm")
         if os.path.exists("/dev/nvidiactl") or shutil.which("nvidia-smi"):
             found.append("cuda")
+        if not found:
+            if any(AMD.search(n) for n in _names):
+                found.append("rocm")
+            if any(NVIDIA.search(n) for n in _names):
+                found.append("cuda")
         _local = tuple(found) or ("rocm", "cuda")
     return _local
 
@@ -75,4 +95,4 @@ def resolve_command(command: str) -> str:
         return command
 
 
-__all__ = ["PICK_VAR", "SELECTORS", "VARS_FOR", "backends_for", "local_backends", "resolve", "resolve_command", "vars_for"]
+__all__ = ["PICK_VAR", "note_cards", "SELECTORS", "VARS_FOR", "backends_for", "local_backends", "resolve", "resolve_command", "vars_for"]

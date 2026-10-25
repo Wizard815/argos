@@ -54,3 +54,31 @@ def test_GpuPick_a_launch_here_gets_the_runtime_variable(app, client, machine):
     launched = r["launch"]["command"]
     client.post(f"/api/launches/{r['launch']['launch_id']}/stop")
     assert launched.startswith("CUDA_VISIBLE_DEVICES=0 ") and "ARGOS_GPUS" not in launched
+
+
+@pytest.mark.parametrize("names, expect", [
+    (["AMD Instinct MI50", "AMD Instinct MI50"], ("rocm",)),
+    (["NVIDIA GeForce RTX 3060"], ("cuda",)),
+    (["AMD Instinct MI50", "NVIDIA GeForce RTX 3060"], ("rocm", "cuda")),
+    ([], ("rocm", "cuda")),
+])
+def test_GpuPick_with_no_device_files_the_card_names_decide(monkeypatch, names, expect):
+    monkeypatch.setattr(gpu_pick.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(gpu_pick.shutil, "which", lambda p: None)
+    monkeypatch.setattr(gpu_pick, "_local", None)
+    monkeypatch.setattr(gpu_pick, "_names", ())
+    gpu_pick.note_cards(names)
+    assert gpu_pick.local_backends() == expect
+
+
+def test_GpuPick_telemetry_teaches_it_the_cards(app, client, monkeypatch):
+    monkeypatch.setattr(gpu_pick.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(gpu_pick.shutil, "which", lambda p: None)
+    monkeypatch.setattr(gpu_pick, "_local", None)
+    monkeypatch.setattr(gpu_pick, "_names", ())
+    store = app.extensions["pb"].store
+    store.add_gpu_samples([{"ts": 1.0, "gpu": 0, "name": "AMD Instinct MI50", "util": 0, "mem_used_mb": 0, "mem_total_mb": 32768,
+                            "temp_c": 30, "power_w": 20, "source": "test"}])
+    client.get("/api/gpu/latest")
+    j = client.post("/api/command/parse", json={"command": "ARGOS_GPUS=0,1 llama-server -m /m/a.gguf", "format": "plain"}).get_json()
+    assert j["gpu_vars"] == ["HIP_VISIBLE_DEVICES"]
