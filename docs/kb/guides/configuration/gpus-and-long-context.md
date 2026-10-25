@@ -1,35 +1,28 @@
 ---
-title: Choosing GPUs for every model, and stretching context with RoPE
-summary: Settings -> GPUs pins every model to chosen cards without a per-profile env var; the Builder's VRAM card sets context from its table and can stretch a model to 1M with YaRN.
+title: Choosing GPUs and context in the Builder, and stretching it with RoPE
+summary: The Builder's GPUs field pins a profile to chosen cards; its VRAM card sets context from the KV table and can stretch a model to 1M with YaRN.
 category: guides
-tags: [gpu, hip_visible_devices, cuda_visible_devices, context, rope, yarn, vram, builder, settings]
+tags: [gpu, hip_visible_devices, cuda_visible_devices, context, rope, yarn, vram, builder]
 updated: 2026-10-25
 ---
 
-# Choosing GPUs for every model
+# Choosing GPUs in the Builder
 
-**Settings -> GPUs -> Visible GPUs** takes the cards models may use, numbered from
-0 the way HIP and CUDA count them (`0,1`). Blank means all cards. The chips under
-the field are the cards Argos sees; click one to add or remove it.
+The Builder's settings have a **GPUs** field next to Context and GPU layers. The
+chips are the cards Argos sees: **All** (no pin) and one per card. Click cards to
+pick them, or type the list (`0,1`, numbered from 0 the way HIP and CUDA count
+them) in the box beside them.
 
-It is added to every model the engine starts and every launch from the Builder,
-so a profile no longer needs `HIP_VISIBLE_DEVICES` in its environment. It follows
-**Always set**'s two switches (launches here, models the engine starts).
+It is written into the command's environment, so it is saved with the profile:
 
-**Set it as** picks the variable:
+```
+HIP_VISIBLE_DEVICES=0,1 llama-server --model ...
+```
 
-| choice | sets |
-| --- | --- |
-| Auto | `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES` |
-| HIP_VISIBLE_DEVICES | AMD |
-| ROCR_VISIBLE_DEVICES | AMD inside containers |
-| CUDA_VISIBLE_DEVICES | NVIDIA |
-
-A command that already picks its cards keeps them: if a profile (or **Always
-set**'s environment) sets any of `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`,
-`CUDA_VISIBLE_DEVICES`, `GPU_DEVICE_ORDINAL` or `GGML_VK_VISIBLE_DEVICES`, this
-setting adds nothing to it. So pin one model to card 1 in its profile and leave
-the rest to Settings.
+The select beside it picks the variable: `HIP_VISIBLE_DEVICES` (AMD),
+`ROCR_VISIBLE_DEVICES` (AMD inside containers) or `CUDA_VISIBLE_DEVICES`
+(NVIDIA). It starts on the one the command already uses, else CUDA when Argos
+sees an NVIDIA card and HIP otherwise. Picking **All** removes the variable.
 
 # Context from the VRAM card
 

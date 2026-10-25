@@ -6,7 +6,7 @@ from typing import Optional
 
 from flask import Blueprint, request
 
-from ..always import always_for, apply_always
+from ..always import apply_always
 from ..command import parse_command
 from ..integrations import engine_api
 from ..library import scan_models
@@ -182,7 +182,7 @@ def measure_start():
         return err(str(exc))
     if any(j["state"] in ("queued", "baseline", "loading", "settling") for j in c.measurer.jobs.values()):
         return err("a measurement is already running; wait for it or cancel it", 409)
-    always = always_for(c.settings)
+    always = c.settings.get("always")
     if always["on_launch"]:
         command = apply_always(command, always)[0]
     job = c.measurer.start(command, row_id, label=row_id, timeout_s=timeout,
