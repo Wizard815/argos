@@ -10,6 +10,26 @@ import copy
 
 from .command import LaunchCommand, parse_command
 
+# A command that names any of these has picked its own cards, and the GPU setting leaves it alone.
+GPU_SELECT = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL",
+              "GGML_VK_VISIBLE_DEVICES")
+GPU_VARS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
+def always_for(settings) -> dict:
+    """The "always" group with the GPU setting folded in, the way apply_always wants it."""
+    return {**settings.get("always"), "gpu": settings.get("gpu")}
+
+
+def gpu_env(gpu: dict) -> dict[str, str]:
+    """The env vars that pin a model to the cards chosen in Settings -> GPUs; empty when none are chosen."""
+    cards = [c.strip() for c in str((gpu or {}).get("visible") or "").replace(";", ",").split(",") if c.strip()]
+    if not cards:
+        return {}
+    var = str((gpu or {}).get("visible_var") or "auto")
+    names = (var,) if var in GPU_VARS else ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    return {n: ",".join(cards) for n in names}
+
 
 def parse_always(always: dict) -> tuple[dict[str, str], list]:
     """(env, flag args) from the Settings group. Bad lines are skipped, never fatal."""
@@ -33,7 +53,7 @@ def parse_always(always: dict) -> tuple[dict[str, str], list]:
 def apply_always(command: str, always: dict) -> tuple[str, list[str]]:
     """The command with the always-set env vars and flags it lacks, and what was added."""
     env, args = parse_always(always or {})
-    if not env and not args:
+    if not env and not args and not gpu_env((always or {}).get("gpu") or {}):
         return command, []
     try:
         cmd: LaunchCommand = parse_command(command)
@@ -44,6 +64,10 @@ def apply_always(command: str, always: dict) -> tuple[str, list[str]]:
         if k not in cmd.env:
             cmd.env[k] = v
             added.append(f"{k}={v}")
+    if not any(k in cmd.env for k in GPU_SELECT):
+        for k, v in gpu_env((always or {}).get("gpu") or {}).items():
+            cmd.env[k] = v
+            added.append(f"{k}={v}")
     for a in args:
         if a.name and not cmd.has(a.name):
             cmd.args.append(copy.copy(a))
@@ -51,4 +75,4 @@ def apply_always(command: str, always: dict) -> tuple[str, list[str]]:
     return (cmd.to_string() if added else command), added
 
 
-__all__ = ["apply_always", "parse_always"]
+__all__ = ["apply_always", "parse_always", "always_for", "gpu_env", "GPU_SELECT"]
