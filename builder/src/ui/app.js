@@ -629,12 +629,16 @@ function syncGpuField() {
   if (BG.el.text !== document.activeElement) BG.el.text.value = ids.join(",");
   const toggle = (id) => setGpus(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].sort((a, b) => Number(a) - Number(b)));
   const known = new Set(BG.cards.map((g) => String(g.gpu)));
-  fill(BG.el.chips, h("button", { type: "button", class: `chip${ids.length ? "" : " on"}`, title: "No pin: every card", onclick: () => setGpus([]) }, "All"),
+  const every = [...known].sort((a, b) => Number(a) - Number(b));
+  const isAll = every.length > 1 && every.every((x) => ids.includes(x)) && ids.length === every.length;
+  fill(BG.el.chips,
+    h("button", { type: "button", class: `chip${ids.length ? "" : " on"}`, title: "No pin: the engine puts it on the card, or cards, with room", onclick: () => setGpus([]) }, "Auto"),
+    every.length > 1 ? h("button", { type: "button", class: `chip${isAll ? " on" : ""}`, title: `Every card: ${every.join(",")}. The model is spread across all of them.`, onclick: () => setGpus(every) }, "All") : null,
     BG.cards.map((g) => h("button", { type: "button", class: `chip${ids.includes(String(g.gpu)) ? " on" : ""}`,
       title: `${g.name || "GPU " + g.gpu}${g.mem_total_mb ? ` · ${(g.mem_total_mb / 1024).toFixed(0)} GiB` : ""}`, onclick: () => toggle(String(g.gpu)) }, `GPU${g.gpu}`)),
     ids.filter((x) => !known.has(x)).map((x) => h("button", { type: "button", class: "chip on", title: "Not seen on this machine", onclick: () => toggle(x) }, `GPU${x}`)));
   const vars = (B.parsed && B.parsed.gpu_vars) || [];
-  BG.el.note.textContent = !ids.length ? "every card"
+  BG.el.note.textContent = !ids.length ? "Auto: the engine places it where it fits; --split-mode tensor or row gets every card"
     : pick.from === GPU_PICK ? `launches as ${vars.map((v) => `${v}=${ids.join(",")}`).join(" ") || "the runtime's variable"}`
     : `set by hand as ${pick.from}; pick here to let the server choose the variable`;
 }

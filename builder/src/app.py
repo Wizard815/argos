@@ -49,6 +49,7 @@ from .runners import Runners  # noqa: E402
 from .library import scan_media  # noqa: E402
 from .servers import Servers, gguf_index, load_seed  # noqa: E402
 from .integrations import engine_api  # noqa: E402
+from .gpu_pick import note_cards  # noqa: E402
 from .inventory import Inventory  # noqa: E402
 from .library import scan_media, scan_models  # noqa: E402
 from .memory import Memory  # noqa: E402
@@ -152,6 +153,10 @@ def create_app(config: dict | None = None) -> Flask:
                 log.warning("runners apply failed: %s", exc)
 
     inventory = Inventory(store, event)
+    try:  # the last cards the telemetry saw: AMD or NVIDIA, before the first new reading
+        note_cards(g.get("name") for g in store.gpu_latest())
+    except Exception:  # noqa: BLE001 - a hint, never a reason not to start
+        pass
     memory = Memory(store, settings.all, event)
     memory.extra_sources.append(odysseus_hub.brain_source(settings.all))
 

@@ -31,6 +31,7 @@ import urllib.request
 from datetime import datetime
 from typing import Callable, Optional
 
+from .gpu_pick import note_cards
 from .db import Store
 
 DRM = "/sys/class/drm"
@@ -218,6 +219,7 @@ class Collector:
         for r in rows:
             r["ts"] = now
         self.store.add_gpu_samples(rows)
+        note_cards(r.get("name") for r in rows)  # AMD or NVIDIA, for the Builder's GPU pick
         self.sync_activity()
         if now - self._last_rollup > 600:
             days = self.settings()["telemetry"].get("raw_days") or 14

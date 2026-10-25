@@ -9,8 +9,13 @@ updated: 2026-10-25
 # Choosing GPUs in the Builder
 
 The Builder's settings have a **GPUs** field next to Context and GPU layers:
-**All** (no pin) and a chip per card Argos sees. Click cards to pick them, or type
-the list (`0,1`, numbered from 0 the way HIP and CUDA count them).
+
+- **Auto**: no pin. The engine's pool puts the model on the card, or cards, with
+  room; a `--split-mode tensor` or `row` model gets every card.
+- **All**: every card Argos sees, written out (`0,1`). The pool spreads the model
+  over all of them, even when one card would hold it.
+- **GPU0, GPU1, ...**: just those cards. Or type the list (`0,1`, numbered from 0
+  the way HIP and CUDA count them).
 
 Only the card numbers are saved, as `ARGOS_GPUS=0,1` on the profile. Which
 variable the GPU runtime reads depends on where the model runs, so Argos sets it
@@ -21,7 +26,8 @@ when the model launches or is handed to the engine:
 | a remote launcher (`/app/bin/remote-llama rocm`) | that backend's variable: `HIP_VISIBLE_DEVICES`, `CUDA_VISIBLE_DEVICES` or `GGML_VK_VISIBLE_DEVICES` |
 | this machine with ROCm (`/dev/kfd` or `rocm-smi`) | `HIP_VISIBLE_DEVICES` |
 | this machine with NVIDIA (`/dev/nvidiactl` or `nvidia-smi`) | `CUDA_VISIBLE_DEVICES` |
-| both, or neither found | both |
+| no device files (llama.cpp runs in another container) | what the GPU telemetry's card names say: AMD / Instinct / Radeon -> HIP, NVIDIA / GeForce / RTX -> CUDA |
+| both, or nothing to go on | both |
 
 The line under the field shows what this command will launch as.
 `ARGOS_GPUS` itself never reaches the process.
