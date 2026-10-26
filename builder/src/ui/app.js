@@ -451,7 +451,10 @@ function renderModelDefaults() {
     if (!byModel.has(v.model)) byModel.set(v.model, []);
     byModel.get(v.model).push({ pid, ...v, p: (S.profiles || []).find((x) => x.profile_id === pid) });
   }
-  if (!byModel.size) return fill(box);
+  if (!byModel.size) {
+    return fill(box, h("div", { class: "card" }, h("div", { class: "empty" },
+      "No profiles yet. Save one in the Builder; then pick it here as its model's default.")));
+  }
   const rows = [...byModel.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([model, list]) => {
     const on = list.find((x) => x.serving);
     const sel = h("select", { "aria-label": `Default profile for ${model}`, style: "width:auto;max-width:320px",
@@ -5083,6 +5086,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "odysseus") loadOdyArea(b.dataset.pane);
     else if (bar.dataset.tabs === "schedule") { SC.pane = b.dataset.pane; if (SC.pane === "live") loadLive(); else loadSchedule(); }
     else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
+    else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
   }));
 }
 
