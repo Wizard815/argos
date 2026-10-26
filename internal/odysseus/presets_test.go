@@ -271,3 +271,20 @@ func TestOdysseus_BareLlamaServerFallsBackToTheCommonProgram(t *testing.T) {
 		t.Errorf("no program anywhere: want a warning, got %v", res.Warnings)
 	}
 }
+
+func TestOdysseus_ALauncherOrAPathIsNotWarnedAbout(t *testing.T) {
+	for _, prog := range []string{"/app/bin/remote-llama rocm_srv3", "/opt/llama/bin/llama-server"} {
+		p, err := ParseCommand(strings.Replace(cmdTurbo4, "llama-server", prog, 1), true)
+		if err != nil {
+			t.Fatalf("ParseCommand: %v", err)
+		}
+		for _, w := range p.Warnings {
+			if strings.Contains(w, "not 'llama-server'") {
+				t.Errorf("%s: unexpected warning %q", prog, w)
+			}
+		}
+	}
+	if p, _ := ParseCommand(strings.Replace(cmdTurbo4, "llama-server", "vllm", 1), true); !strings.Contains(strings.Join(p.Warnings, " "), "not 'llama-server'") {
+		t.Error("another program is still worth a warning")
+	}
+}
