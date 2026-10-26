@@ -31,6 +31,8 @@ def gpu_series():
     if rng not in RANGES:
         return err(f"range must be one of {', '.join(RANGES)}")
     span, bucket = RANGES[rng]
+    if request.args.get("live") == "1":  # the page is live: read the GPUs every 2 s while it polls
+        c.collector.watch_live()
     since = time.time() - span
     raw_days = c.settings.get("telemetry")["raw_days"]
     if span <= raw_days * 86400:
