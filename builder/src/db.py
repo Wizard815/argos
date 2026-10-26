@@ -353,8 +353,6 @@ class Store:
             return conn
         conn = sqlite3.connect(self.path, check_same_thread=False, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        with self._lock:
-            self._open.append(conn)
         # ARGOS_SQLITE_JOURNAL forces the journal when the guess is wrong (a bind mount can
         # hide what the filesystem underneath really is). Whitelisted, never raw.
         forced = (os.environ.get("ARGOS_SQLITE_JOURNAL") or "").strip().upper()
