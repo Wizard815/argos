@@ -92,6 +92,11 @@ type Options struct {
 	// the Argos container need not have llama-server on its PATH at all.
 	Programs map[string][]string
 
+	// DefaultProgram is the program most base models start with, used for a
+	// bare "llama-server" preset whose base model is not in Programs (its ID
+	// differs, or it was never scanned).
+	DefaultProgram []string
+
 	// Choices maps an Argos base model ID to the Odysseus preset label the
 	// operator picked for it. When set, Build emits a single union profile whose
 	// pins cover ONLY the chosen models, so a model without a choice keeps
@@ -556,8 +561,16 @@ func Build(state State, opts Options) (*Result, error) {
 	variantIDFor := func(modelID, suffix string) string { return modelID + "--" + suffix }
 
 	register := func(p Parsed, suffix, warnSource string) (string, bool) {
-		if prog := opts.Programs[p.ModelID]; len(p.Argv) > 0 && p.Argv[0] == "llama-server" && len(prog) > 0 {
-			p.Argv = append(slices.Clone(prog), p.Argv[1:]...)
+		if len(p.Argv) > 0 && p.Argv[0] == "llama-server" {
+			prog := opts.Programs[p.ModelID]
+			if len(prog) == 0 {
+				prog = opts.DefaultProgram
+			}
+			if len(prog) > 0 && !(len(prog) == 1 && prog[0] == "llama-server") {
+				p.Argv = append(slices.Clone(prog), p.Argv[1:]...)
+			} else if len(opts.Programs) > 0 {
+				p.Warnings = append(p.Warnings, "starts with a bare 'llama-server' and no base model shows another program to run it with; it fails if llama-server is not on Argos's PATH")
+			}
 		}
 		if seen[p.ModelID] == nil {
 			seen[p.ModelID] = map[string]string{}
@@ -718,6 +731,29 @@ func SaveChoices(path string, cs ChoiceState) error {
 // are different launches and must stay two variants.
 // ProgramOf is the program a model command starts with: the words before its
 // first flag, after any leading VAR=value assignments. Nil when there is none.
+// CommonProgram is the program most of these commands start with, ignoring a
+// bare "llama-server" (that is what a preset already has). Nil when none.
+func CommonProgram(cmds []string) []string {
+	count := map[string]int{}
+	words := map[string][]string{}
+	for _, c := range cmds {
+		prog := ProgramOf(c)
+		if len(prog) == 0 || (len(prog) == 1 && prog[0] == "llama-server") {
+			continue
+		}
+		k := strings.Join(prog, " ")
+		count[k]++
+		words[k] = prog
+	}
+	best := ""
+	for k, n := range count {
+		if n > count[best] || (n == count[best] && k < best) {
+			best = k
+		}
+	}
+	return words[best]
+}
+
 func ProgramOf(cmd string) []string {
 	var prog []string
 	for _, w := range strings.Fields(strings.ReplaceAll(cmd, "\\\n", " ")) {
