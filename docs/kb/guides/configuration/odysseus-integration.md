@@ -251,7 +251,7 @@ A client asking for a model by its own name (`"model": "ornith-1.5-9b-q6_k"`,
 from Hermes, Open WebUI, any OpenAI client) gets that model's default command.
 A profile is the variant `<model>--<label>`. Two ways to get it:
 
-- **Serve (the model's default):** the **Model defaults** card on the Profiles
+- **Serve (the model's default):** the **Defaults** tab on the Profiles
   page, **Make default** in the Builder, or **serve** on a profile makes
   requests for
   the model's plain name run that profile. One profile per model; **serving**

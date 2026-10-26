@@ -140,8 +140,15 @@
         <input type="search" id="pSearch" placeholder="Filter…" style="width:200px">
         <button class="btn primary" data-action="new"><i data-icon="plus"></i>New</button>
       </div>
-      <div id="pDefaults"></div>
-      <div class="card"><div class="table-wrap"><table id="pTable"></table></div></div>
+      <div class="tabs" data-tabs="profiles">
+        <button data-pane="list" class="on">Profiles</button><button data-pane="defaults">Defaults</button>
+      </div>
+      <div class="pane on" data-pane="list">
+        <div class="card"><div class="table-wrap"><table id="pTable"></table></div></div>
+      </div>
+      <div class="pane" data-pane="defaults">
+        <div id="pDefaults"></div>
+      </div>
     </section>
 
     <!-- PLAYGROUND -->
