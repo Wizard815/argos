@@ -108,15 +108,95 @@ def _custom_cache() -> None:
     set_custom_cache_types(ctx().settings.get("kv")["custom_types"])
 
 
+def _preset_key(preset: dict):
+    """What the engine treats as one command: the model, the env and the argv."""
+    try:
+        cmd = parse_command(preset.get("cmd") or "")
+    except ValueError:
+        return None
+    return swap_model_id(cmd.summary()["model"] or ""), tuple(cmd.env.items()), tuple(cmd.argv())
+
+
 def _profile_variants() -> dict[str, str]:
-    """profile id -> the model id the engine runs it as (what measurements are filed under)."""
+    """profile id -> the model id the engine runs it as (what measurements are filed under).
+
+    The engine makes one variant per model and command; the first preset with a command names it, so a
+    profile saved twice with the same command shares that variant, as the engine does.
+    """
     from ..cookbook import variant_id
+    first: dict = {}
     out = {}
     for p in cookbook_state()["presets"]:
+        key = _preset_key(p)
+        vid = first.setdefault(key, variant_id(p)) if key is not None else variant_id(p)
         pid = (p.get("fields") or {}).get("profile_id")
-        if pid:
-            out[pid] = variant_id(p)
+        if pid and vid:
+            out[pid] = vid
     return out
+
+
+# ----- which profile a model's own name runs (what a client like Hermes asks for) -----------------
+def _split_variant(vid: str) -> tuple[str, str]:
+    """``<model>--<label>`` -> (model, label)."""
+    model, _, label = vid.partition("--")
+    return model, label
+
+
+@bp.get("/api/profiles/served")
+def profiles_served():
+    """For each profile: the engine's name for it, and whether its model's own name runs it.
+
+    A client asking for ``ornith-1.5-9b-q6_k`` gets that model's default command; a profile is the
+    variant ``ornith-1.5-9b-q6_k--<label>``. The engine can make the plain name run a profile instead.
+    """
+    c = ctx()
+    variants = _profile_variants()
+    url = c.settings.get("integrations")["engine_url"]
+    chosen: dict[str, str] = {}
+    if url:
+        for model in {_split_variant(v)[0] for v in variants.values()}:
+            try:
+                info = engine_api.model_profile(url, model)
+            except Exception:  # noqa: BLE001 - shown as not chosen
+                continue
+            if isinstance(info, dict) and info.get("chosen"):
+                chosen[model] = info["chosen"]
+    return ok(profiles={pid: {"variant": vid, "model": _split_variant(vid)[0],
+                              "serving": chosen.get(_split_variant(vid)[0]) == _split_variant(vid)[1]}
+                        for pid, vid in variants.items()},
+              engine=bool(url))
+
+
+@bp.put("/api/profiles/<profile_id>/serve")
+def profile_serve(profile_id):
+    """Make (``on``) or stop this profile being what its model's own name runs."""
+    c, d = ctx(), body()
+    url = c.settings.get("integrations")["engine_url"]
+    if not url:
+        return err("the engine is not running")
+    vid = _profile_variants().get(profile_id)
+    if not vid:
+        return err("not a saved profile the engine can run", 404)
+    model, label = _split_variant(vid)
+    on = bool(d.get("on", True))
+    try:
+        if on:
+            known = set((engine_api.model_profile(url, model) or {}).get("labels") or [])
+            if label not in known:  # saved a moment ago: the engine re-reads the profiles, then reloads
+                engine_api.odysseus_refresh(url)
+                deadline = time.time() + PROFILE_WAIT_S
+                while label not in known and time.time() < deadline:
+                    time.sleep(0.5)
+                    known = set((engine_api.model_profile(url, model) or {}).get("labels") or [])
+            engine_api.set_model_profile(url, model, label)
+        elif (engine_api.model_profile(url, model) or {}).get("chosen") == label:
+            engine_api.set_model_profile(url, model, None)
+    except Exception as exc:  # noqa: BLE001
+        detail = exc.read().decode("utf-8", "replace")[:200] if hasattr(exc, "read") else str(exc)
+        return err(f"the engine refused: {detail}", 502)
+    c.event("profile", (f"requests for {model} now run the profile {label}" if on else f"requests for {model} run its own command again"),
+            data={"model": model, "variant": vid})
+    return ok(model=model, variant=vid, serving=on)
 
 
 @bp.get("/api/profiles/estimates")
@@ -327,23 +407,7 @@ def _profile_variant(c, profile_id: str, command: str) -> tuple[str, str]:
     if not _same_command(p["launch_command"], command):
         return "", ("This profile has unsaved changes, and the engine runs saved profiles. "
                     "Save it (or Save as new), then launch.")
-    from ..cookbook import variant_id
-    presets = cookbook_state()["presets"]
-    mine = next((x for x in presets if (x.get("fields") or {}).get("profile_id") == profile_id), None)
-    if not mine:
-        return "", ""
-
-    def key(preset: dict):
-        try:
-            cmd = parse_command(preset.get("cmd") or "")
-        except ValueError:
-            return None
-        return swap_model_id(cmd.summary()["model"] or ""), tuple(cmd.env.items()), tuple(cmd.argv())
-
-    # the engine makes one variant per model and command (env and flags); the first preset with
-    # this command names it, so a profile saved twice with the same command shares that variant
-    same = next((x for x in presets if key(x) == key(mine)), mine)
-    vid = variant_id(same)
+    vid = _profile_variants().get(profile_id, "")
     if not vid:
         return "", ""
     url = c.settings.get("integrations")["engine_url"]

@@ -420,8 +420,34 @@ async function loadProfileServer() {
   };
 }
 
+// What a client asks for: the model's own name runs its default command; a profile is the variant
+// <model>--<label>. "serve" makes the plain name run this profile, so a client like Hermes that asks for
+// the model gets it; the copy button gives the variant's own name for a client that can ask for that.
+async function loadServed() {
+  try { S.served = (await api("GET", "/api/profiles/served")).profiles; } catch (e) { S.served = {}; }
+  if (S.view === "profiles") renderProfiles();
+}
+function servedCell(p) {
+  const v = (S.served || {})[p.profile_id];
+  if (!v) return h("span", { class: "muted", title: "the engine has not got this profile yet" }, DASH);
+  const toggle = async () => {
+    try {
+      await api("PUT", `/api/profiles/${p.profile_id}/serve`, { on: !v.serving });
+      toast(v.serving ? `Requests for ${v.model} run its own command again.` : `Requests for ${v.model} now run “${p.name}”.`, "ok");
+    } catch (e) { fail(e); }
+    loadServed();
+  };
+  return h("span", { class: "row", style: "gap:6px;flex-wrap:nowrap;align-items:center" },
+    h("button", { type: "button", class: `chip${v.serving ? " on" : ""}`, onclick: toggle,
+      title: v.serving ? `Requests for ${v.model} run this profile. Click to go back to the model's own command.`
+        : `Make requests for ${v.model} run this profile (a client asking for the model gets these settings)` }, v.serving ? "serving" : "serve"),
+    h("code", { class: "mono-sm trunc", style: "max-width:240px", title: `Ask for this name to get this profile: ${v.variant}` }, v.variant),
+    iconBtn("copy", "Copy the name to ask for", () => copyText(v.variant), "ghost"));
+}
+
 async function loadProfiles() {
   loadProfileServer();
+  loadServed();
   S.profiles = (await api("GET", "/api/profiles")).profiles;
   // sizes come separately: they read model headers, and the list must not wait for that
   api("GET", "/api/profiles/estimates").then((r) => { S.profileEst = r.estimates; if (S.view === "profiles") renderProfiles(); }).catch(() => {});
@@ -1200,6 +1226,7 @@ function renderProfiles() {
       return h("td", { class: "num nowrap", title: `Estimate: ${est}\nIt is replaced by the real size the first time this profile loads.` },
         h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, `${num(e.weights_gib, 1)} + ${num(e.kv_gib, 1)} KV @ ${ctxLabel(e.ctx)}`));
     } },
+    { label: "Served as", cell: (p) => servedCell(p) },
     { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
     { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
     { label: "", cell: (p) => h("td", { class: "actions" },
@@ -4217,16 +4244,21 @@ function requestsCard(rows, inFlight, opts = {}) {
   const table = rows.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
     h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
       .map((x, i) => h("th", { class: i >= 4 && i <= 8 ? "num" : "" }, x)))),
-    h("tbody", {}, rows.map((r) => h("tr", { class: fresh(r) ? "req-new" : "" },
+    h("tbody", {}, rows.map((r) => {
+      // a failed request processed nothing: its zeros mean "none", not a measurement
+      const failed = r.status >= 400 || !!r.error;
+      const n = (v, d) => (v == null || (failed && !v) ? DASH : num(v, d));
+      return h("tr", { class: fresh(r) ? "req-new" : "" },
       h("td", { class: "muted", title: new Date(r.ts * 1000).toLocaleString() }, ago(r.ts)),
       h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
-      h("td", { class: "num" }, r.input_tokens == null ? DASH : num(r.input_tokens, 0)),
-      h("td", { class: "num" }, r.output_tokens == null ? DASH : num(r.output_tokens, 0)),
-      h("td", { class: "num" }, r.prompt_per_second == null ? DASH : num(r.prompt_per_second, 0)),
-      h("td", { class: "num" }, r.tokens_per_second == null ? DASH : num(r.tokens_per_second, 1)),
+      h("td", { class: "num" }, n(r.input_tokens, 0)),
+      h("td", { class: "num" }, n(r.output_tokens, 0)),
+      h("td", { class: "num" }, n(r.prompt_per_second, 0)),
+      h("td", { class: "num" }, n(r.tokens_per_second, 1)),
       h("td", { class: "num" }, r.duration_ms == null ? DASH : r.duration_ms < 1000 ? `${num(r.duration_ms, 0)} ms` : `${num(r.duration_ms / 1000, 1)} s`),
       h("td", {}, r.status >= 400 || r.error ? h("span", { class: "pill bad", title: r.error || "" }, String(r.status || "error"))
-        : r.status ? h("span", { class: "pill ok" }, String(r.status)) : DASH))))))
+        : r.status ? h("span", { class: "pill ok" }, String(r.status)) : DASH));
+    }))))
     : h("div", { class: "empty" }, "No requests yet. Chat, embeddings, a benchmark or a transcription through the engine shows up here as it finishes.");
   return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Requests"),
     running.length ? h("span", { class: "row", style: "gap:6px;margin-left:10px" },

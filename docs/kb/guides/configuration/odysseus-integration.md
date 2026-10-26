@@ -244,6 +244,22 @@ A profile that names its own program keeps it. Changing the server asks the
 engine to re-read the profiles; models already running stay where they are
 until they are loaded again.
 
+## Which profile a client gets
+
+A client asking for a model by its own name (`"model": "ornith-1.5-9b-q6_k"`,
+from Hermes, Open WebUI, any OpenAI client) gets that model's default command.
+A profile is the variant `<model>--<label>`. Two ways to get it:
+
+- **Serve:** on the Profiles page, **serve** on a profile makes requests for
+  the model's plain name run that profile. One profile per model; **serving**
+  marks it, and clicking it again goes back to the model's own command. This
+  is the model's choice (`PUT /api/odysseus/model/{model}/profile`), and it
+  routes requests by itself: no profile has to be activated, and it survives a
+  restart. An active profile's pin still wins where it has one.
+- **Ask for the variant:** the **Served as** column shows the name to put in
+  the client, with a copy button. Variants are unlisted in `/v1/models` but
+  answer requests.
+
 ## Launching a profile from the Builder
 
 The base model keeps its own default command, so loading it ignores every
