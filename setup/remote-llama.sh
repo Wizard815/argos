@@ -31,6 +31,8 @@ host="$(get SSH_HOST "")"
 [[ -n "$host" ]] || { echo "remote-llama: ${NAME}_SSH_HOST is not set" >&2; exit 2; }
 user="$(get SSH_USER root)"; sport="$(get SSH_PORT 22)"; bin="$(get SSH_BIN llama-server)"
 key="${REMOTE_SSH_KEY:-/run/secrets/argos_ssh_key}"
+# Without the key ssh only says "Permission denied (publickey)", which reads like the far side's fault.
+[[ -r "$key" ]] || { echo "remote-llama: no SSH key at $key. Set REMOTE_SSH_KEY_FILE in .env to the private key on the host and mount it there (docker-compose.override.yaml: \${REMOTE_SSH_KEY_FILE}:/run/secrets/argos_ssh_key:ro), then recreate the container." >&2; exit 2; }
 known="${REMOTE_KNOWN_HOSTS:-/data/ssh_known_hosts}"
 passthru="${REMOTE_ENV_PASSTHRU:-HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION LLAMA_ENABLE_MTP_OPT}"
 

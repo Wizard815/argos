@@ -146,7 +146,7 @@ func (s *Server) modelStatus() []apiModel {
 		// its variant exists, report the variant's command and name the choice.
 		// This is what the detail view renders, so what you see is what will run.
 		cmd, env := mc.Cmd, mc.Env
-		chosen := s.odysseus.choices[id]
+		chosen := s.chosenLabel(id)
 		if chosen != "" {
 			if variant, ok := s.cfg.Models[id+"--"+chosen]; ok {
 				cmd, env = variant.Cmd, variant.Env
@@ -518,6 +518,14 @@ func (s *Server) handleAPICapture(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(jsonBytes)
+}
+
+// handleAPIInflight lists the model-dispatched requests still running, oldest
+// first, each with how long it has run and how many bytes it has sent back, so
+// a dashboard can show a request while it works instead of once it finishes.
+func (s *Server) handleAPIInflight(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"requests": s.inflight.Current().Requests})
 }
 
 // handleAPICancelInflight cancels an active model-dispatched request by its

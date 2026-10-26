@@ -14,6 +14,7 @@ import (
 	"github.com/Wizard815/Argos/internal/config"
 	"github.com/Wizard815/Argos/internal/logmon"
 	"github.com/Wizard815/Argos/internal/swaputil"
+	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
 )
 
@@ -599,4 +600,18 @@ func TestServer_MetricsMiddleware_UpstreamAudioCaptureSkipsRespBody(t *testing.T
 	if len(cap.RespHeaders) == 0 {
 		t.Error("RespHeaders not stored; want captureRespHeaders mask")
 	}
+}
+
+func TestMetrics_ActivitySourceIsTheClientBehindTheBuilder(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	r.RemoteAddr = "127.0.0.1:51000"
+	r.Header.Set("X-Forwarded-For", "192.168.20.7")
+	assert.Equal(t, "ip:192.168.20.7", activitySource(r), "relayed by the builder on loopback")
+
+	r.RemoteAddr = "10.0.0.9:51000"
+	assert.Equal(t, "ip:10.0.0.9", activitySource(r), "from anywhere else the header is not believed")
+
+	r.RemoteAddr = "127.0.0.1:51000"
+	r.Header.Del("X-Forwarded-For")
+	assert.Equal(t, "ip:127.0.0.1", activitySource(r))
 }

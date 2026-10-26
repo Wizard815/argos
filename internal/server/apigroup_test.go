@@ -628,3 +628,35 @@ func TestServer_APIEvents_InitialPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestServer_APIInflightListsRunningRequests(t *testing.T) {
+	s := newTestServer(newStubRouter(nil, ""))
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	id := s.inflight.Add(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), cancel)
+
+	get := func() []swaputil.InflightRequestEntry {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/inflight", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%q", w.Code, w.Body.String())
+		}
+		var body struct {
+			Requests []swaputil.InflightRequestEntry `json:"requests"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return body.Requests
+	}
+
+	got := get()
+	if len(got) != 1 || got[0].ID != id || got[0].ReqPath != "/v1/chat/completions" {
+		t.Fatalf("requests = %+v, want the one running chat request", got)
+	}
+	s.inflight.Remove(id)
+	if got := get(); len(got) != 0 {
+		t.Fatalf("requests after it finished = %+v, want none", got)
+	}
+}

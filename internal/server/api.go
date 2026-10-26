@@ -232,7 +232,17 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if len(mc.Env) > 0 {
 			internalMetadata["env"] = mc.Env
 		}
-		data = append(data, newRecord(id, mc.Name, mc.Description, mc.Metadata, mc.Capabilities, status, internalMetadata, config.ContextSizeFromCommand(s.effectiveCommand(id, mc.Cmd))))
+		// the profile a request for this model runs: its name says so, so a
+		// client's model picker shows which default it gets
+		name := mc.Name
+		if target, pinned := s.requestPin(id); pinned && strings.HasPrefix(target, id+"--") {
+			internalMetadata["default_profile"] = target
+			if name == "" {
+				name = id
+			}
+			name = fmt.Sprintf("%s (default: %s)", name, strings.TrimPrefix(target, id+"--"))
+		}
+		data = append(data, newRecord(id, name, mc.Description, mc.Metadata, mc.Capabilities, status, internalMetadata, config.ContextSizeFromCommand(s.effectiveCommand(id, mc.Cmd))))
 
 		if s.cfg.IncludeAliasesInList {
 			for _, alias := range mc.Aliases {

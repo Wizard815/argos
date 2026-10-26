@@ -6,6 +6,7 @@ from typing import Optional
 
 from flask import Blueprint, request
 
+from ..telemetry import recent_requests
 from ..always import apply_always
 from ..command import parse_command
 from ..integrations import engine_api
@@ -231,8 +232,16 @@ def schedule_live():
             runners = {mid: e.get("metadata", {}).get("argos", {}) for mid, e in ctx().runners.entries().items()}
         except Exception:  # noqa: BLE001 - the column falls back to llama.cpp
             pass
+        try:  # the requests the GPUs are working on, newest first, straight from the engine
+            requests = recent_requests(url)
+        except Exception:  # noqa: BLE001 - the feed is empty rather than the page broken
+            requests = []
+        try:  # and the ones still running, so they show while they work, not once they finish
+            running_now = engine_api.inflight(url)
+        except Exception:  # noqa: BLE001
+            running_now = []
         return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time(), real_gib=real, activity=activity,
-                  runners=runners)
+                  runners=runners, requests=requests, running=running_now)
     except Exception as exc:  # noqa: BLE001
         return ok(connected=False, error=str(exc), pool=None)
 
