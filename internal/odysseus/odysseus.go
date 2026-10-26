@@ -38,6 +38,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -82,6 +83,19 @@ type Options struct {
 	// Generated variants inherit it, so a profile swap does not read as a
 	// different model in the UI, the activity table or the log panel.
 	Names map[string]string
+
+	// Programs maps an Argos base model ID to the program its own command
+	// starts with: everything before the first flag, e.g.
+	// ["/app/bin/remote-llama", "rocm"] or ["/opt/llama.cpp/bin/llama-server"].
+	// A preset that starts with a bare "llama-server" gets this instead, since
+	// the base model's command is how this install actually starts llama.cpp;
+	// the Argos container need not have llama-server on its PATH at all.
+	Programs map[string][]string
+
+	// DefaultProgram is the program most base models start with, used for a
+	// bare "llama-server" preset whose base model is not in Programs (its ID
+	// differs, or it was never scanned).
+	DefaultProgram []string
 
 	// Choices maps an Argos base model ID to the Odysseus preset label the
 	// operator picked for it. When set, Build emits a single union profile whose
@@ -353,7 +367,9 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 	if len(argv) == 0 {
 		return p, fmt.Errorf("command is only environment assignments")
 	}
-	if argv[0] != "llama-server" {
+	// llama-server by name or by path, or the launcher that starts it in another
+	// container (the Profiles page's server pick writes that), are all expected.
+	if prog := filepath.Base(argv[0]); prog != "llama-server" && prog != "remote-llama" {
 		p.Warnings = append(p.Warnings, fmt.Sprintf("command starts with %q, not 'llama-server'", argv[0]))
 	}
 
@@ -547,6 +563,17 @@ func Build(state State, opts Options) (*Result, error) {
 	variantIDFor := func(modelID, suffix string) string { return modelID + "--" + suffix }
 
 	register := func(p Parsed, suffix, warnSource string) (string, bool) {
+		if len(p.Argv) > 0 && p.Argv[0] == "llama-server" {
+			prog := opts.Programs[p.ModelID]
+			if len(prog) == 0 {
+				prog = opts.DefaultProgram
+			}
+			if len(prog) > 0 && !(len(prog) == 1 && prog[0] == "llama-server") {
+				p.Argv = append(slices.Clone(prog), p.Argv[1:]...)
+			} else if len(opts.Programs) > 0 {
+				p.Warnings = append(p.Warnings, "starts with a bare 'llama-server' and no base model shows another program to run it with; it fails if llama-server is not on Argos's PATH")
+			}
+		}
 		if seen[p.ModelID] == nil {
 			seen[p.ModelID] = map[string]string{}
 		}
@@ -701,7 +728,51 @@ func SaveChoices(path string, cs ChoiceState) error {
 
 // Argv0Key returns a stable identity for a parsed command, used to skip
 // duplicate tasks that re-launched the same command.
-func (p Parsed) Argv0Key() string { return strings.Join(p.Argv, "\x00") }
+// Argv0Key identifies a command for de-duplication: its env and its argv. Two
+// presets with the same flags but different env (HIP_VISIBLE_DEVICES=0 and =1)
+// are different launches and must stay two variants.
+// ProgramOf is the program a model command starts with: the words before its
+// first flag, after any leading VAR=value assignments. Nil when there is none.
+// CommonProgram is the program most of these commands start with, ignoring a
+// bare "llama-server" (that is what a preset already has). Nil when none.
+func CommonProgram(cmds []string) []string {
+	count := map[string]int{}
+	words := map[string][]string{}
+	for _, c := range cmds {
+		prog := ProgramOf(c)
+		if len(prog) == 0 || (len(prog) == 1 && prog[0] == "llama-server") {
+			continue
+		}
+		k := strings.Join(prog, " ")
+		count[k]++
+		words[k] = prog
+	}
+	best := ""
+	for k, n := range count {
+		if n > count[best] || (n == count[best] && k < best) {
+			best = k
+		}
+	}
+	return words[best]
+}
+
+func ProgramOf(cmd string) []string {
+	var prog []string
+	for _, w := range strings.Fields(strings.ReplaceAll(cmd, "\\\n", " ")) {
+		if strings.HasPrefix(w, "-") {
+			break
+		}
+		if len(prog) == 0 && reEnvKey.MatchString(w) {
+			continue
+		}
+		prog = append(prog, w)
+	}
+	return prog
+}
+
+func (p Parsed) Argv0Key() string {
+	return strings.Join(p.Env, "\x00") + "\x01" + strings.Join(p.Argv, "\x00")
+}
 
 func prefixWarnings(taskID string, in []string) []string {
 	out := make([]string, 0, len(in))

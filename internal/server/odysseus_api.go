@@ -97,23 +97,31 @@ func (s *Server) odysseusOptions() odysseus.Options {
 		return odysseus.Options{}
 	}
 	names := make(map[string]string, len(s.cfg.Models))
+	programs := make(map[string][]string, len(s.cfg.Models))
+	var cmds []string
 	for id, mc := range s.cfg.Models {
+		cmds = append(cmds, mc.Cmd)
 		if mc.Name != "" {
 			names[id] = mc.Name
 		}
+		if prog := odysseus.ProgramOf(mc.Cmd); len(prog) > 0 {
+			programs[id] = prog
+		}
 	}
 	return odysseus.Options{
-		BaseURL:       o.BaseURL,
-		Token:         o.Token,
-		TokenEnv:      o.TokenEnv,
-		TokenFile:     o.TokenFile,
-		ProfilePrefix: o.ProfilePrefix,
-		Statuses:      o.Statuses,
-		Names:         names,
-		StateFile:     o.StateFile,
-		ChoicesPath:   o.ChoicesPath,
-		EnsureDio:     o.DioEnabled(),
-		Timeout:       time.Duration(o.TimeoutSeconds) * time.Second,
+		BaseURL:        o.BaseURL,
+		Token:          o.Token,
+		TokenEnv:       o.TokenEnv,
+		TokenFile:      o.TokenFile,
+		ProfilePrefix:  o.ProfilePrefix,
+		Statuses:       o.Statuses,
+		Names:          names,
+		Programs:       programs,
+		DefaultProgram: odysseus.CommonProgram(cmds),
+		StateFile:      o.StateFile,
+		ChoicesPath:    o.ChoicesPath,
+		EnsureDio:      o.DioEnabled(),
+		Timeout:        time.Duration(o.TimeoutSeconds) * time.Second,
 	}
 }
 
