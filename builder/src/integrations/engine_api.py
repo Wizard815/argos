@@ -5,7 +5,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Optional
 
 
 def _get(url: str, timeout: float) -> Any:
@@ -51,6 +51,20 @@ def _post(url: str, timeout: float) -> Any:
 def odysseus_refresh(base_url: str, timeout: float = 30.0) -> Any:
     """Ask the engine to re-read the profiles now instead of at its next refresh."""
     return _post(base_url.rstrip("/") + "/api/odysseus/refresh", timeout)
+
+
+def model_profile(base_url: str, model_id: str, timeout: float = 3.0) -> dict:
+    """Which saved profile the engine runs for a model's own name: ``{"labels": [...], "chosen": "..."}``."""
+    return _get(base_url.rstrip("/") + f"/api/odysseus/model/{urllib.parse.quote(model_id, safe='')}/profile", timeout)
+
+
+def set_model_profile(base_url: str, model_id: str, label: Optional[str], timeout: float = 10.0) -> Any:
+    """Make requests for ``model_id`` run the variant ``label`` (None: the model's own command again)."""
+    req = urllib.request.Request(base_url.rstrip("/") + f"/api/odysseus/model/{urllib.parse.quote(model_id, safe='')}/profile",
+                                 data=json.dumps({"label": label}).encode(), method="PUT",
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
 
 
 def load_model(base_url: str, model_id: str, timeout: float = 900.0) -> None:
@@ -141,5 +155,5 @@ def model_ids(base_url: str, timeout: float = 3.0) -> set[str]:
     return {str(m["id"]) for m in (data.get("data") if isinstance(data, dict) else None) or [] if "id" in m}
 
 
-__all__ = ["pool_state", "model_ids", "running", "hardware", "version", "odysseus_refresh", "load_model", "unload_model",
+__all__ = ["model_profile", "set_model_profile", "pool_state", "model_ids", "running", "hardware", "version", "odysseus_refresh", "load_model", "unload_model",
            "model_state", "model_log"]
