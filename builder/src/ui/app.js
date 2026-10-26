@@ -1314,8 +1314,14 @@ function renderProfiles() {
       iconBtn("sliders", "Open in builder", () => openCommand(p.launch_command, { name: p.name, base_model: p.base_model, source: p.source || "profile", profileId: p.profile_id })),
       iconBtn("play", "Launch", () => launch(p.launch_command, p.base_model, p.name, p.profile_id)),
       iconBtn("trash", "Delete", async () => {
-        if (!(await confirmBox(`Delete profile “${p.name}”?`))) return;
-        try { await api("DELETE", `/api/profiles/${encodeURIComponent(p.profile_id)}`); toast("Deleted.", "ok"); loadProfiles(); } catch (e) { fail(e); }
+        const ody = p.source === "odysseus";
+        if (!(await confirmBox(ody ? `Delete profile “${p.name}”? It came from Odysseus: it is deleted there too, and kept out of later pulls.`
+          : `Delete profile “${p.name}”?`))) return;
+        try {
+          const r = await api("DELETE", `/api/profiles/${encodeURIComponent(p.profile_id)}`);
+          toast(r.odysseus ? `Deleted. ${r.odysseus.odysseus}.` : "Deleted.", "ok");
+          loadProfiles();
+        } catch (e) { fail(e); }
       }, "danger")) },
   ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."), {
     // grouped by the model's name (Qwen, Gemma, …), closed until opened; a search or a model filter shows every match
@@ -2042,8 +2048,17 @@ async function loadOdyArea(area) {
     fill(el, w.library ? odyForm([{ k: "title", label: "Title" }, { k: "content", label: "Content (markdown)", type: "textarea", wide: true }], "New document", (v) => api("POST", "/api/ody/library", v)) : null,
       list(d.items, (x) => odyRow(x.title || "untitled", [x.language, when(x.updated_at || x.created_at)].filter(Boolean).join(" · ")), "The library is empty."));
   } else if (area === "cookbook") {
+    const hidden = d.hidden || [];
     fill(el, list(d.items, (p) => odyRow(p.name || "preset", p.cmd ? p.cmd.slice(0, 160) : p.model,
-      p.cmd ? btn("Open in builder", () => openCommand(p.cmd, { name: p.name || "", source: "odysseus" }), "sm", "sliders") : null), "No cookbook presets."),
+      p.cmd ? [btn("Open in builder", () => openCommand(p.cmd, { name: p.name || "", source: "odysseus" }), "sm", "sliders"),
+        btn("Delete", () => deleteOdyPreset(p.name || "", p.cmd, () => loadOdyArea("cookbook")), "sm danger", "trash")] : null), "No cookbook presets."),
+      hidden.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, `Deleted here (${hidden.length})`), h("span", { class: "spacer" }),
+        h("span", { class: "hint" }, "kept out of pulls and the engine; Show again lets the next pull bring it back")),
+      h("div", { class: "ody-list" }, hidden.map((x) => odyRow(x.name || "preset", x.cmd.slice(0, 160),
+        btn("Show again", async () => {
+          try { await api("DELETE", "/api/ody/presets/hidden", { cmd: x.cmd }); toast(`“${x.name || "preset"}” is back in the sync.`, "ok"); } catch (e) { fail(e); }
+          loadOdyArea("cookbook");
+        }, "sm ghost"))))) : null,
       (d.servers || []).length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Servers")), h("div", { class: "chips" }, d.servers.map((x) => h("span", { class: "chip" }, x.host || x.name || JSON.stringify(x))))) : null);
   } else if (area === "tasks") {
     fill(el, list(d.items, (t) => odyRow(t.name || t.title || t.id, [t.status, t.schedule || t.cron, t.last_run_at ? `last ${when(t.last_run_at)}` : ""].filter(Boolean).join(" · "),
@@ -2055,6 +2070,17 @@ async function loadOdyArea(area) {
   } else {
     fill(el, list(d.items, (t) => odyRow(t.name || t.id, [t.category, t.description].filter(Boolean).join(" · ")), "No tools."));
   }
+}
+
+// Deleting an Odysseus preset: gone from Odysseus when it allows it, and kept out of Argos either way, so the
+// next pull or engine refresh cannot bring it back.
+async function deleteOdyPreset(name, cmd, done) {
+  if (!(await confirmBox(`Delete the Odysseus preset “${name || "preset"}”? It is deleted in Odysseus too, and kept out of later pulls.`))) return;
+  try {
+    const r = await api("POST", "/api/ody/presets/delete", { name, cmd });
+    toast(`Deleted “${name || "preset"}”: ${r.odysseus || "kept out of Argos"}.`, "ok");
+  } catch (e) { fail(e); }
+  done?.();
 }
 
 /** The builder's Odysseus button: send the saved preset as a note, a Brain fact, a document or a calendar reminder. */

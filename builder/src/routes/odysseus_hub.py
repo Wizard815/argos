@@ -31,6 +31,47 @@ PRESETS_TIMEOUT_S = 5.0
 PRESETS_TTL_S = 20.0
 
 
+HIDDEN_KEY = "_ody_hidden"  # Odysseus presets deleted in Argos: never pulled or served again
+
+
+def _cmd_key(cmd: str) -> str:
+    return " ".join((cmd or "").split())
+
+
+def hidden_presets() -> list[dict]:
+    return [h for h in ctx().store.get_settings().get(HIDDEN_KEY) or [] if isinstance(h, dict) and h.get("cmd")]
+
+
+def _visible(presets: list) -> list:
+    hidden = {_cmd_key(h["cmd"]) for h in hidden_presets()}
+    return [p for p in presets if not (isinstance(p, dict) and _cmd_key(p.get("cmd") or "") in hidden)]
+
+
+def delete_preset(name: str, cmd: str) -> dict:
+    """Delete an Odysseus preset: in Odysseus when it lets us, and in any case kept out of every later pull
+    and out of the engine, so it cannot come back on the next sync. Says what happened in Odysseus."""
+    c = ctx()
+    key = _cmd_key(cmd)
+    if not key:
+        raise ValueError("the preset has no command")
+    hidden = [h for h in hidden_presets() if _cmd_key(h["cmd"]) != key]
+    c.store.set_setting(HIDDEN_KEY, hidden + [{"name": name, "cmd": key, "at": time.time()}])
+    c.export_state.pop("_ody_presets", None)
+    result: dict = {"hidden": True}
+    o = c.settings.get("odysseus")
+    if not (o["url"] and o["token"]):
+        result["odysseus"] = "not connected: kept out of Argos only"
+        return result
+    try:
+        r = client().delete_preset(name, key)
+        result["odysseus"] = f"deleted in Odysseus ({r.get('deleted', 0) if isinstance(r, dict) else 0})"
+        result["deleted"] = r.get("deleted", 0) if isinstance(r, dict) else 0
+    except OdysseusError as exc:
+        result["odysseus"] = ("this Odysseus cannot delete presets yet (needs the preset delete endpoint): "
+                              "kept out of Argos" if exc.status in (404, 405) else f"Odysseus: {exc}; kept out of Argos")
+    return result
+
+
 def cookbook_presets() -> dict:
     """Odysseus' saved Cookbook presets, read through its API: ``{"presets": [...], "error": ""}``.
 
@@ -43,7 +84,7 @@ def cookbook_presets() -> dict:
     key = (o["url"], o["token"])
     cached = c.export_state.get("_ody_presets")
     if cached and cached["key"] == key and time.time() - cached["at"] < PRESETS_TTL_S:
-        return cached["value"]
+        return {**cached["value"], "presets": _visible(cached["value"]["presets"])}
     try:
         value = {"presets": [p for p in as_list(client(timeout=PRESETS_TIMEOUT_S).cookbook()["presets"], "presets")
                              if isinstance(p, dict)], "error": ""}
@@ -51,10 +92,10 @@ def cookbook_presets() -> dict:
         # A slow or briefly unreachable Odysseus should not empty the engine's
         # model list. Keep the last good presets and say what went wrong.
         if cached and cached["key"] == key and cached["value"].get("presets"):
-            return {**cached["value"], "error": str(exc)}
+            return {**cached["value"], "presets": _visible(cached["value"]["presets"]), "error": str(exc)}
         value = {"presets": [], "error": str(exc)}
     c.export_state["_ody_presets"] = {"at": time.time(), "key": key, "value": value}
-    return value
+    return {**value, "presets": _visible(value["presets"])}
 
 
 def _fail(exc: OdysseusError):
@@ -126,7 +167,8 @@ def area_list(area):
             return ok(items=as_list(c.documents(), "documents", "library"))
         if area == "cookbook":
             cb = c.cookbook()
-            return ok(items=cb["presets"], servers=as_list(cb["servers"], "servers"))
+            presets = as_list(cb["presets"], "presets")
+            return ok(items=_visible(presets), servers=as_list(cb["servers"], "servers"), hidden=hidden_presets())
         if area == "gallery":
             return ok(items=as_list(c.gallery(), "images"))
         if area == "tasks":
@@ -185,6 +227,31 @@ def preset_summary(profile: dict) -> tuple[str, str]:
                          f"{c['decode']['median'] or '-'} | {c['concurrency_max'] or '-'} |")
     lines += ["", f"_From Argos, {datetime.now().strftime('%Y-%m-%d %H:%M')}_"]
     return f"{profile['name']} ({mid})", "\n".join(lines)
+
+
+@bp.post("/api/ody/presets/delete")
+def preset_delete():
+    """Delete an Odysseus preset by its command (and name): ``{"name", "cmd"}``."""
+    d = body()
+    try:
+        return ok(**delete_preset((d.get("name") or "").strip(), d.get("cmd") or ""))
+    except ValueError as exc:
+        return err(str(exc))
+
+
+@bp.get("/api/ody/presets/hidden")
+def presets_hidden():
+    return ok(hidden=hidden_presets())
+
+
+@bp.delete("/api/ody/presets/hidden")
+def presets_unhide():
+    """Let deleted Odysseus presets back in: one (``cmd``) or all. The next pull brings them back."""
+    c, cmd = ctx(), _cmd_key(body().get("cmd") or "")
+    keep = [h for h in hidden_presets() if cmd and _cmd_key(h["cmd"]) != cmd]
+    c.store.set_setting(HIDDEN_KEY, keep)
+    c.export_state.pop("_ody_presets", None)
+    return ok(hidden=keep)
 
 
 @bp.post("/api/ody/pull")

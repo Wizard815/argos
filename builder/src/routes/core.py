@@ -258,9 +258,17 @@ def profiles_delete(profile_id):
     p = c.store.get_profile(check_id(profile_id))
     if not p or not c.store.delete_profile(profile_id):
         return err("not found", 404)
-    c.event("profile", f"deleted profile “{p['name']}”", data={"profile_id": profile_id})
+    extra = {}
+    if p.get("source") == "odysseus":  # pulled from Odysseus: delete it there too, so a pull cannot bring it back
+        from .odysseus_hub import delete_preset
+        try:
+            extra = {"odysseus": delete_preset(p["name"], p["launch_command"])}
+        except ValueError:
+            pass
+    c.event("profile", f"deleted profile “{p['name']}”" + (f"; {extra['odysseus']['odysseus']}" if extra else ""),
+            data={"profile_id": profile_id})
     refresh_schedule()
-    return ok()
+    return ok(**extra)
 
 
 # ----- catalog of extra files ---------------------------------------------
