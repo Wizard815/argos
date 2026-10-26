@@ -110,6 +110,13 @@ queued (with how long each has waited) and the models loading. With any other
 router it answers `{"enabled": false}`. Sizes there are the pool's plan, not live
 VRAM; the Performance page shows the real memory.
 
+The builder's **Schedule -> Live** shows this next to a **Requests** feed: the
+engine's newest requests (chat, embeddings, benchmarks, audio), who sent them,
+the context in and out, speeds and status, and how many each model is working
+on now. **Usage -> GPU** has the same feed under its charts with **Recent
+requests** ticked. Only requests through the engine appear; a client talking to
+a llama-server port directly bypasses it.
+
 ## What goes wrong
 
 - **Out of memory on load:** a `vram` value is too low, or the estimate missed

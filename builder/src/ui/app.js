@@ -2445,6 +2445,23 @@ async function loadGpu() {
   try { G.data = await api("GET", `/api/gpu/series?range=${G.range}`); } catch (e) { fail(e); }
   $("#gCharts").style.opacity = "1";
   renderGpu();
+  loadGpuRequests();
+}
+
+// the Recent requests toggle on the GPU charts: remembered per browser
+const gpuReqOn = () => { try { return localStorage.getItem("gpuRequests") === "1"; } catch (e) { return false; } };
+async function loadGpuRequests() {
+  const box = $("#gRequests"), tog = $("#gReqToggle");
+  if (!box || !tog) return;
+  if (!tog.dataset.wired) {
+    tog.dataset.wired = "1";
+    tog.checked = gpuReqOn();
+    tog.addEventListener("change", () => { try { localStorage.setItem("gpuRequests", tog.checked ? "1" : "0"); } catch (e) { /* private window */ } loadGpuRequests(); });
+  }
+  if (!tog.checked) return fill(box);
+  let r;
+  try { r = await api("GET", "/api/requests/recent?limit=25"); } catch (e) { return fill(box, h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); }
+  fill(box, requestsCard(r.requests, r.in_flight, { hint: r.source === "engine" ? "newest first · live from the engine" : "newest first · as last synced" }));
 }
 
 // ── Logs: requests + events ──────────────────────────────────
@@ -4179,6 +4196,44 @@ function renderSchedule() {
   renderSim();
 }
 
+// ----- requests: what the GPUs are working on --------------------------------------------
+// The engine's newest requests, as llama-swap's Activity page shows them: chat, embeddings, benchmarks, audio,
+// whoever sent them, with the context that went in and what came out. Shown on Schedule -> Live and, with a
+// toggle, under the GPU charts in Usage.
+const REQ_KIND = [[/chat\/completions/, "chat"], [/embeddings/, "embeddings"], [/^\/(v1\/)?completions?$/, "completion"],
+  [/transcriptions/, "transcribe"], [/speech/, "speech"], [/rerank/, "rerank"], [/responses/, "responses"], [/messages/, "messages"],
+  [/infill/, "infill"], [/images|sdapi/, "image"]];
+const reqKind = (path) => (REQ_KIND.find(([re]) => re.test(path || "")) || [null, path || DASH])[1];
+// when each request was first seen, so one that just arrived stays lit for a few refreshes
+const seenReq = { primed: false, at: new Map() };
+function requestsCard(rows, inFlight, opts = {}) {
+  rows = rows || [];
+  const now = Date.now();
+  for (const r of rows) if (!seenReq.at.has(r.source_id)) seenReq.at.set(r.source_id, seenReq.primed ? now : 0);
+  seenReq.primed = true;
+  if (seenReq.at.size > 500) seenReq.at = new Map([...seenReq.at].slice(-200));
+  const fresh = (r) => now - (seenReq.at.get(r.source_id) || 0) < 6000;
+  const running = Object.entries(inFlight || {}).filter(([, n]) => n > 0);
+  const table = rows.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+    h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
+      .map((x, i) => h("th", { class: i >= 4 && i <= 8 ? "num" : "" }, x)))),
+    h("tbody", {}, rows.map((r) => h("tr", { class: fresh(r) ? "req-new" : "" },
+      h("td", { class: "muted", title: new Date(r.ts * 1000).toLocaleString() }, ago(r.ts)),
+      h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
+      h("td", { class: "num" }, r.input_tokens == null ? DASH : num(r.input_tokens, 0)),
+      h("td", { class: "num" }, r.output_tokens == null ? DASH : num(r.output_tokens, 0)),
+      h("td", { class: "num" }, r.prompt_per_second == null ? DASH : num(r.prompt_per_second, 0)),
+      h("td", { class: "num" }, r.tokens_per_second == null ? DASH : num(r.tokens_per_second, 1)),
+      h("td", { class: "num" }, r.duration_ms == null ? DASH : r.duration_ms < 1000 ? `${num(r.duration_ms, 0)} ms` : `${num(r.duration_ms / 1000, 1)} s`),
+      h("td", {}, r.status >= 400 || r.error ? h("span", { class: "pill bad", title: r.error || "" }, String(r.status || "error"))
+        : r.status ? h("span", { class: "pill ok" }, String(r.status)) : DASH))))))
+    : h("div", { class: "empty" }, "No requests yet. Chat, embeddings, a benchmark or a transcription through the engine shows up here as it finishes.");
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Requests"),
+    running.length ? h("span", { class: "row", style: "gap:6px;margin-left:10px" },
+      running.map(([m, n]) => h("span", { class: "pill warn", title: "requests the GPU is working on now" }, `${m} · ${n} running`))) : null,
+    h("span", { class: "spacer" }), h("span", { class: "hint" }, opts.hint || "newest first · live from the engine")), table);
+}
+
 // ----- live ------------------------------------------------------------------------------
 function renderLive() {
   const el = $("#scLive"), L = SC.live;
@@ -4190,7 +4245,7 @@ function renderLive() {
   const P = L.pool;
   if (!P.enabled) {
     return fill(el, h("div", { class: "card" }, h("div", { class: "empty" }, h("b", {}, `The engine is using the “${P.router || "group"}” router.`), h("br"),
-      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")));
+      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")), requestsCard(L.requests, {}));
   }
   const byId = Object.fromEntries(P.models.map((m) => [m.id, m]));
   const running = P.models.filter((m) => m.state !== "stopped");
@@ -4234,7 +4289,9 @@ function renderLive() {
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
-    swaps, queue, activity,
+    swaps, queue,
+    requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight]))),
+    activity,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
 }
 function kvTable(rows) {

@@ -337,11 +337,14 @@
         <div class="row" style="margin-bottom:12px">
           <div class="seg" id="gRange" role="group" aria-label="Range"></div>
           <span class="hint" id="gSource" style="margin:0"></span>
+          <span class="spacer"></span>
+          <label class="check" title="The newest requests under the charts: what made the GPUs work"><input type="checkbox" id="gReqToggle"> Recent requests</label>
         </div>
         <div class="card">
           <div class="legend" id="gLegend"></div>
           <div class="charts" id="gCharts"></div>
         </div>
+        <div id="gRequests"></div>
         <div class="card"><div class="card-head"><h2>Per GPU</h2><span class="spacer"></span><span class="hint">over the selected range</span></div><div class="table-wrap"><table id="gTable"></table></div></div>
       </div>
       <div class="pane" data-pane="requests">
