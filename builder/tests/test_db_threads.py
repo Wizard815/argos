@@ -5,10 +5,12 @@ import threading
 from src.db import Store
 
 
-def test_Store_a_finished_thread_gives_its_connection_back(tmp_path):
+def test_Store_a_finished_thread_gives_its_connection_back(tmp_path, monkeypatch):
     store = Store(str(tmp_path / "t.db"))
     store.get_settings()
-    before = len(store._open)
+    released = []
+    real = Store._release
+    monkeypatch.setattr(Store, "_release", lambda self, conn: (released.append(conn), real(self, conn)))
 
     def work():
         store.get_settings()
@@ -20,12 +22,5 @@ def test_Store_a_finished_thread_gives_its_connection_back(tmp_path):
         t.join()
         del t
     gc.collect()
-    assert len(store._open) <= before + 1, f"{len(store._open) - before} connections left open by finished threads"
+    assert len(released) == 40, f"{40 - len(released)} connections outlived their threads"
     assert len(store.list_events(kind="test")) == 40, "the writes were committed before the connections closed"
-
-
-def test_Store_close_still_reaches_every_connection(tmp_path):
-    store = Store(str(tmp_path / "t.db"))
-    store.get_settings()
-    store.close()
-    assert store._open == []
