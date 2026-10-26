@@ -47,7 +47,7 @@ def gpu_latest():
     """Just the newest reading per GPU: what the header bars need, without the whole series."""
     c = ctx()
     latest = c.store.gpu_latest()
-    note_cards(g.get("name") for g in latest)
+    note_cards(latest)
     return ok(latest=latest)
 
 

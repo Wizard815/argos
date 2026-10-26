@@ -591,25 +591,19 @@ function buildField(f) {
 }
 
 // ── Builder: which GPUs this command may use ─────────────────
-// Only the card numbers are picked here, saved as ARGOS_GPUS=0,1 on the command. Which variable the GPU
-// runtime reads (HIP_VISIBLE_DEVICES, CUDA_VISIBLE_DEVICES, both) depends on where the model runs, so the
-// server works that out at launch: a remote launcher's backend, or what this machine has.
-const GPU_PICK = "ARGOS_GPUS";
+// Pick cards; the server writes them as the variable their runtime reads: HIP_VISIBLE_DEVICES for AMD
+// cards, CUDA_VISIBLE_DEVICES for NVIDIA ones (from the cards' names), or a remote launcher's backend.
+const GPU_PICK = "ARGOS_GPUS";  // how picks were saved before; the server turns it into the real variable
 const GPU_SELECTORS = ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "GGML_VK_VISIBLE_DEVICES"];
 const BG = { cards: [], el: null };
 const splitCards = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
-/** The cards this command is pinned to: its ARGOS_GPUS, else a variable it sets by hand. */
+/** The cards this command is pinned to, and the variable that says so. */
 function gpuPick(env) {
-  if (env && GPU_PICK in env) return { cards: splitCards(env[GPU_PICK]), from: GPU_PICK };
-  const own = GPU_SELECTORS.find((k) => k in (env || {}));
+  const own = [GPU_PICK, ...GPU_SELECTORS].find((k) => k in (env || {}));
   return { cards: own ? splitCards(env[own]) : [], from: own || "" };
 }
 function setGpus(list) {
-  const env = { ...((B.parsed && B.parsed.env) || {}) };
-  for (const k of [GPU_PICK, ...GPU_SELECTORS]) delete env[k];
-  const cards = list.map((x) => String(x).trim()).filter(Boolean);
-  if (cards.length) env[GPU_PICK] = cards.join(",");
-  edit({}, env);
+  edit({}, undefined, undefined, list.map((x) => String(x).trim()).filter(Boolean));
 }
 function buildGpuField() {
   const text = h("input", { type: "text", placeholder: "all", spellcheck: "false", style: "width:80px" });
@@ -638,9 +632,11 @@ function syncGpuField() {
       title: `${g.name || "GPU " + g.gpu}${g.mem_total_mb ? ` · ${(g.mem_total_mb / 1024).toFixed(0)} GiB` : ""}`, onclick: () => toggle(String(g.gpu)) }, `GPU${g.gpu}`)),
     ids.filter((x) => !known.has(x)).map((x) => h("button", { type: "button", class: "chip on", title: "Not seen on this machine", onclick: () => toggle(x) }, `GPU${x}`)));
   const vars = (B.parsed && B.parsed.gpu_vars) || [];
+  const names = [...new Set(BG.cards.filter((g) => ids.includes(String(g.gpu))).map((g) => g.name).filter(Boolean))];
+  const seen = names.length ? `${names.join(" + ")}: ` : "";
   BG.el.note.textContent = !ids.length ? "Auto: the engine places it where it fits; --split-mode tensor or row gets every card"
-    : pick.from === GPU_PICK ? `launches as ${vars.map((v) => `${v}=${ids.join(",")}`).join(" ") || "the runtime's variable"}`
-    : `set by hand as ${pick.from}; pick here to let the server choose the variable`;
+    : vars.includes(pick.from) ? `${seen}${vars.join(" and ")}`
+    : `set as ${pick.from}, but these cards read ${vars.join(" and ") || "another variable"}; pick a card to switch`;
 }
 
 function setSeg(f, v) {
@@ -734,11 +730,11 @@ async function openCommand(command, meta = {}) {
 }
 
 /** Queue an edit so rapid changes apply in order on top of each other. */
-function edit(edits, env, argEdits) {
+function edit(edits, env, argEdits, gpus) {
   B.queue = B.queue.then(async () => {
     try {
       const res = await api("POST", "/api/command/build", { command: B.cmd, edits, env, arg_edits: argEdits, format: B.format,
-        name: $("#bName").value || $("#bBase").value });
+        name: $("#bName").value || $("#bBase").value, ...(gpus ? { gpus } : {}) });
       B.cmd = res.command; B.parsed = res;
       if (!$("#bBase").value && res.base_model) $("#bBase").value = res.base_model;
     } catch (e) { fail(e); }
@@ -1042,7 +1038,7 @@ function renderEstimate(e) {
 }
 
 function renderEnv(env) {
-  const entries = Object.entries(env).filter(([k]) => k !== GPU_PICK);  // the GPUs field shows that one
+  const entries = Object.entries(env);
   const rowFor = (k, v, i) => h("div", { class: "row", style: "flex-wrap:nowrap" },
     h("input", { type: "text", value: k, placeholder: "NAME", dataset: { fk: `env-k-${i}` }, style: "flex:1", onchange: commitEnv, spellcheck: "false" }),
     h("input", { type: "text", value: v, placeholder: "value", dataset: { fk: `env-v-${i}` }, style: "flex:1.4", onchange: commitEnv, spellcheck: "false" }),
@@ -1051,8 +1047,6 @@ function renderEnv(env) {
 }
 function commitEnv() {
   const env = {};
-  const pick = ((B.parsed && B.parsed.env) || {})[GPU_PICK];
-  if (pick) env[GPU_PICK] = pick;  // kept: the GPUs field owns it, not these rows
   $$("#bEnv .row").forEach((r) => {
     const [k, v] = $$("input", r).map((i) => i.value.trim());
     if (k) env[k] = v;

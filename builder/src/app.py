@@ -154,7 +154,7 @@ def create_app(config: dict | None = None) -> Flask:
 
     inventory = Inventory(store, event)
     try:  # the last cards the telemetry saw: AMD or NVIDIA, before the first new reading
-        note_cards(g.get("name") for g in store.gpu_latest())
+        note_cards(store.gpu_latest())
     except Exception:  # noqa: BLE001 - a hint, never a reason not to start
         pass
     memory = Memory(store, settings.all, event)
