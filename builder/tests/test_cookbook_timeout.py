@@ -12,10 +12,16 @@ import src.routes.odysseus_hub as hub
 from src.integrations.odysseus_api import Odysseus, OdysseusError
 
 
+class FakeStore:
+    def get_settings(self):
+        return {}  # no Odysseus presets deleted here
+
+
 class FakeCtx:
     def __init__(self, settings):
         self.settings = settings
         self.export_state = {}
+        self.store = FakeStore()
 
 
 def _settings(**odysseus):
