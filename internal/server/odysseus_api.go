@@ -124,6 +124,7 @@ func (s *Server) odysseusOptions() odysseus.Options {
 		StateFile:      o.StateFile,
 		ChoicesPath:    o.ChoicesPath,
 		EnsureDio:      o.DioEnabled(),
+		ListVariants:   o.VariantsListed(),
 		Timeout:        time.Duration(o.TimeoutSeconds) * time.Second,
 	}
 }

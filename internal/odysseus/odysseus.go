@@ -92,6 +92,10 @@ type Options struct {
 	// the Argos container need not have llama-server on its PATH at all.
 	Programs map[string][]string
 
+	// ListVariants lists the generated variants in /v1/models, named
+	// "<base name> (<label>)"; otherwise they are unlisted.
+	ListVariants bool
+
 	// DefaultProgram is the program most base models start with, used for a
 	// bare "llama-server" preset whose base model is not in Programs (its ID
 	// differs, or it was never scanned).
@@ -585,12 +589,21 @@ func Build(state State, opts Options) (*Result, error) {
 
 		entry := map[string]any{
 			"cmd":      SplitCommand(p.Argv),
-			"unlisted": true,
+			"unlisted": !opts.ListVariants,
 		}
 		// A variant is the same model with different flags, so it carries the
 		// base model's display name: otherwise a profile swap reads as a
 		// different model in the UI, the activity table and the log panel.
-		if name := opts.Names[p.ModelID]; name != "" {
+		// Listed, it has to stand apart from the base in a client's model
+		// picker, so the profile's label goes in the name.
+		name := opts.Names[p.ModelID]
+		if opts.ListVariants {
+			if name == "" {
+				name = p.ModelID
+			}
+			name = fmt.Sprintf("%s (%s)", name, suffix)
+		}
+		if name != "" {
 			entry["name"] = name
 		}
 		if len(p.Env) > 0 {

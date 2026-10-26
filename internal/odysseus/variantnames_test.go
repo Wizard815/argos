@@ -51,3 +51,38 @@ func TestBuild_VariantWithoutABaseNameStaysUnnamed(t *testing.T) {
 		t.Error("a variant must not invent a name when the base model has none")
 	}
 }
+
+// Listed, a variant has to stand apart from its base in a client's model
+// picker (Hermes, Open WebUI), so the profile's label goes in its name.
+func TestBuild_ListedVariantNamesItsProfile(t *testing.T) {
+	st := State{Presets: []Preset{{Label: "mtp", Cmd: cmdMTP}}}
+	const id = "qwen3.6-35b-a3b-ud-q6_k_xl--mtp"
+
+	for _, tc := range []struct {
+		names map[string]string
+		want  string
+	}{
+		{map[string]string{"qwen3.6-35b-a3b-ud-q6_k_xl": "Qwen3.6 35B"}, "Qwen3.6 35B (mtp)"},
+		{nil, "qwen3.6-35b-a3b-ud-q6_k_xl (mtp)"},
+	} {
+		res, err := Build(st, Options{EnsureDio: true, ListVariants: true, Names: tc.names})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		entry := res.Models[id]
+		if entry["unlisted"] != false {
+			t.Errorf("listed variant unlisted = %v, want false", entry["unlisted"])
+		}
+		if entry["name"] != tc.want {
+			t.Errorf("listed variant name = %v, want %q", entry["name"], tc.want)
+		}
+	}
+
+	res, err := Build(st, Options{EnsureDio: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if res.Models[id]["unlisted"] != true {
+		t.Error("a variant must stay unlisted when ListVariants is off")
+	}
+}
