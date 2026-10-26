@@ -12,6 +12,7 @@ from flask import Blueprint, abort, current_app, request
 
 from ..command import guess_base_model, parse_command, swap_model_id, to_odysseus
 from ..always import apply_always
+from ..gpu_pick import apply_pick, picked, resolve as resolve_gpus, vars_for as gpu_vars_for
 from ..cookbook import build_state, normalize_preset
 from ..integrations import engine_api
 from ..library import model_id_for_command
@@ -48,25 +49,32 @@ def _format(d: dict) -> str:
 def command_parse():
     d = body()
     try:
-        cmd = parse_command(d.get("command") or "")
+        cmd = resolve_gpus(parse_command(d.get("command") or ""))  # an old ARGOS_GPUS shows as what it runs as
     except ValueError as exc:
         return err(str(exc))
-    return ok(**_render(cmd, _format(d)), always_added=apply_always(cmd.to_string(), ctx().settings.get("always"))[1])
+    return ok(**_render(cmd, _format(d)), always_added=apply_always(cmd.to_string(), ctx().settings.get("always"))[1],
+              gpu_vars=gpu_vars_for(cmd, picked(cmd)))
 
 
 @bp.post("/api/command/build")
 def command_build():
-    """Apply ``edits`` ({flag: value|true|null}), ``arg_edits`` and ``env`` to ``command``."""
+    """Apply ``edits`` ({flag: value|true|null}), ``arg_edits`` and ``env`` to ``command``.
+
+    ``gpus`` (a list of card numbers, [] for none) pins it to those cards with the variable their
+    runtime reads, decided here from the cards and where the command runs."""
     d = body()
     edits, env, arg_edits = d.get("edits") or {}, d.get("env"), d.get("arg_edits") or {}
     if not all(isinstance(x, dict) for x in (edits, arg_edits, env if env is not None else {})):
         return err("edits, arg_edits and env must be objects")
     try:
-        cmd = parse_command(d.get("command") or "").with_edits(edits, env, arg_edits)
+        cmd = resolve_gpus(parse_command(d.get("command") or "").with_edits(edits, env, arg_edits))
     except ValueError as exc:
         return err(str(exc))
+    if isinstance(d.get("gpus"), list):
+        apply_pick(cmd, d["gpus"])
     out = _render(cmd, _format(d))
     out["always_added"] = apply_always(cmd.to_string(), ctx().settings.get("always"))[1]
+    out["gpu_vars"] = gpu_vars_for(cmd, picked(cmd))
     return ok(**out)
 
 

@@ -5,6 +5,7 @@ import time
 
 from flask import Blueprint, request
 
+from ..gpu_pick import note_cards
 from ..web import ctx, err, ok
 
 bp = Blueprint("logs", __name__)
@@ -45,7 +46,9 @@ def gpu_series():
 def gpu_latest():
     """Just the newest reading per GPU: what the header bars need, without the whole series."""
     c = ctx()
-    return ok(latest=c.store.gpu_latest())
+    latest = c.store.gpu_latest()
+    note_cards(latest)
+    return ok(latest=latest)
 
 
 @bp.get("/api/debug/threads")

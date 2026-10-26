@@ -197,6 +197,8 @@ input[type=checkbox] { accent-color: var(--red); }
 .pill.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .pill.accent { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+button.chip { border: 0; cursor: pointer; font: inherit; font-size: 10.5px; padding: 2px 8px; }
+button.chip.on { background: var(--accent, #6aa); color: var(--bg); }
 .chip { font-size: 10.5px; padding: 0 6px; border-radius: 4px; background: var(--hover); color: var(--fg); white-space: nowrap; }
 
 /* ── Composer (hero) ─────────────────────────────────────── */
@@ -671,3 +673,5 @@ pre.log.logs-big { max-height: 70dvh; min-height: 320px; }
 .vram-bar i { display: block; height: 100%; }
 .vram-compare { margin-top: 8px; }
 .vram-compare tr.sel td { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.vram-compare .pick { cursor: pointer; }
+.vram-compare .pick:hover { background: color-mix(in srgb, var(--fg) 12%, transparent); color: var(--strong); }

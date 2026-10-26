@@ -9,6 +9,7 @@ from typing import Any, Optional
 from flask import Blueprint
 
 from ..integrations.odysseus_api import AREAS, Odysseus, OdysseusError, as_list
+from ..gpu_pick import resolve_command
 from ..model_perf import model_perf
 from ..web import body, ctx, err, ok
 
@@ -175,7 +176,7 @@ def run_task(task_id):
 def preset_summary(profile: dict) -> tuple[str, str]:
     """(title, markdown) describing a preset and how fast it has been."""
     mid = profile.get("model_id") or profile.get("base_model") or ""
-    lines = [f"# {profile['name']} — {mid}", "", "Launch command:", "", "```", profile["launch_command"], "```", ""]
+    lines = [f"# {profile['name']} — {mid}", "", "Launch command:", "", "```", resolve_command(profile["launch_command"]), "```", ""]
     perf = model_perf(ctx().store, mid) if mid else None
     if perf and perf["configs"]:
         lines += ["| Launch config | Requests | Prefill t/s (median) | Decode t/s (median) | Most at once |", "|---|---|---|---|---|"]
@@ -282,7 +283,7 @@ def send():
         elif what == "brain":
             perf = model_perf(c.store, profile.get("model_id") or "")
             best = max((x for x in perf["configs"] if x["decode"]["median"]), key=lambda x: x["decode"]["median"], default=None)
-            fact = f"For model {profile.get('model_id')}, the preset “{profile['name']}” launches with: {profile['launch_command']}"
+            fact = f"For model {profile.get('model_id')}, the preset “{profile['name']}” launches with: {resolve_command(profile['launch_command'])}"
             if best:
                 fact += f". Fastest measured config: {best['label']} at {best['decode']['median']} t/s decode."
             result = o.remember(fact, "fact")
