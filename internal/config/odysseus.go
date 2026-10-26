@@ -72,6 +72,12 @@ type OdysseusConfig struct {
 	// "explicitly false" are distinguishable.
 	EnsureDio *bool `yaml:"ensureDio"`
 
+	// ListVariants lists each saved profile in /v1/models as its own model,
+	// "<base>--<label>" named "<base name> (<label>)", so an OpenAI client's
+	// model picker can choose a profile. Default true; false hides them (they
+	// still answer requests, and a model's chosen profile still applies).
+	ListVariants *bool `yaml:"listVariants"`
+
 	// ChoicesPath persists per-model profile choices (model ID -> Odysseus
 	// preset label). Must live in the -config-dir so it survives reloads and
 	// restarts. Defaults to odysseus-choices.json beside OutputFile.
@@ -122,6 +128,14 @@ func (o *OdysseusConfig) SetDefaults() {
 	if len(o.Statuses) == 0 {
 		o.Statuses = []string{"running", "stopped"}
 	}
+}
+
+// VariantsListed reports whether profile variants are listed in /v1/models.
+func (o *OdysseusConfig) VariantsListed() bool {
+	if o == nil || o.ListVariants == nil {
+		return true
+	}
+	return *o.ListVariants
 }
 
 // DioEnabled reports the effective EnsureDio value.

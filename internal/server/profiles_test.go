@@ -307,3 +307,89 @@ func TestServer_Profile_ConcurrentSelectionAndListing(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A model's chosen profile (its Odysseus choice) is what a request for the
+// model runs, with no profile activated: a client asking for "base" gets the
+// variant's command. Before, the choice only changed what the UI reported.
+func TestServer_ChosenProfileServesRequestsForTheModel(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+models:
+  base:
+    cmd: llama-server --port ${PORT} -m /x.gguf -c 32768
+  base--long:
+    cmd: llama-server --port ${PORT} -m /x.gguf -c 126500
+  other:
+    cmd: llama-server --port ${PORT} -m /y.gguf
+`))
+	require.NoError(t, err)
+	stub := newStubRouter([]string{"base", "base--long", "other"}, "ok")
+	var reached []string
+	stub.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		if model == "" {
+			model = r.URL.Path
+		}
+		reached = append(reached, model)
+		w.WriteHeader(http.StatusOK)
+	}
+	s := profileTestServer(t, cfg, stub)
+	ask := func(path, body string) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		s.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	}
+
+	ask("/v1/chat/completions", `{"model":"base","messages":[]}`)
+	s.setChoices(map[string]string{"base": "long"})
+	ask("/v1/chat/completions", `{"model":"base","messages":[]}`)
+	ask("/v1/chat/completions", `{"model":"other","messages":[]}`)
+	assert.Equal(t, []string{"base", "base--long", "other"}, reached, "only the model with a choice is rewritten")
+	assert.Equal(t, "base--long", s.effectiveModelID("base"))
+
+	s.setChoices(map[string]string{"base": "gone"})
+	reached = nil
+	ask("/v1/chat/completions", `{"model":"base","messages":[]}`)
+	assert.Equal(t, []string{"base"}, reached, "a choice whose variant no longer exists is ignored")
+}
+
+// A client asking by an alias (Hermes sending the file name) gets the model's
+// default profile too, and /v1/models names the default it would get.
+func TestServer_ChosenProfileAppliesToAliasesAndIsListed(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+models:
+  base:
+    name: Base
+    aliases: [Base-File-Q6_K]
+    cmd: llama-server --port ${PORT} -m /x.gguf
+  base--long:
+    unlisted: true
+    cmd: llama-server --port ${PORT} -m /x.gguf -c 126500
+`))
+	require.NoError(t, err)
+	stub := newStubRouter([]string{"base", "base--long"}, "ok")
+	var reached []string
+	stub.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reached = append(reached, gjson.GetBytes(body, "model").String())
+		w.WriteHeader(http.StatusOK)
+	}
+	s := profileTestServer(t, cfg, stub)
+	s.setChoices(map[string]string{"base": "long"})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"Base-File-Q6_K","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, []string{"base--long"}, reached, "the alias runs the model's default profile")
+
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	base := gjson.Get(w.Body.String(), `data.#(id=="base")`)
+	assert.Equal(t, "Base (default: long)", base.Get("name").String())
+	assert.Equal(t, "base--long", base.Get("meta.argos.default_profile").String())
+}

@@ -65,6 +65,48 @@ def launcher_for(server: dict) -> str:
     return f"/app/bin/remote-llama {gpu}"
 
 
+def launch_parts(server: Optional[dict], key: str = "") -> Optional[dict]:
+    """How a command runs on this server: ``{"program": [...], "env": {...}, "name": ...}``, or None for
+    this machine.
+
+    remote-llama finds its host from ``<NAME>_SSH_HOST`` and friends for whatever backend NAME it is
+    given, so each server gets a name of its own (``rocm_srv3``) and its host, port, user, llama-server
+    path and key ride along as env. A launch then reaches exactly this server, not just "the ROCm host",
+    and the name still says which GPU runtime it has (``rocm_`` / ``cuda_``) for the GPU pick.
+    """
+    if not server or server.get("kind") == LOCAL or not server.get("host"):
+        return None
+    user, _, host = str(server["host"]).rpartition("@")
+    engines = server.get("engines") if isinstance(server.get("engines"), dict) else {}
+    gpu = str(server.get("gpu") or "auto").lower()
+    if gpu not in ("rocm", "cuda"):
+        gpu = str(engines.get("gpu") or "").lower()
+    word = f"{gpu}_srv{server['id']}" if gpu in ("rocm", "cuda") else f"srv{server['id']}"
+    name = word.upper()
+    env = {f"{name}_SSH_HOST": host, f"{name}_SSH_PORT": str(server.get("port") or 22)}
+    if user:
+        env[f"{name}_SSH_USER"] = user
+    binary = server.get("llama_server") or engines.get("llama_server") or ""
+    if binary:
+        env[f"{name}_SSH_BIN"] = binary
+    if key:
+        env["REMOTE_SSH_KEY"] = key
+    return {"program": ["/app/bin/remote-llama", word], "env": env, "name": server.get("name") or host}
+
+
+def on_server(cmd, parts: Optional[dict]):
+    """Point a plain ``llama-server`` command at a server (in place). A command that names its own
+    program, or no server (this machine), is left as it is. Returns ``cmd``."""
+    if not parts or cmd.program != "llama-server":
+        return cmd
+    from .command import Arg
+    cmd.program = parts["program"][0]
+    cmd.args = [Arg("", w) for w in parts["program"][1:]] + cmd.args
+    for k, v in parts["env"].items():
+        cmd.env.setdefault(k, v)
+    return cmd
+
+
 def env_prefix_for(kind: str, value: str) -> str:
     """The shell snippet that activates a venv / conda env before anything runs on a server."""
     value = (value or "").strip()
@@ -282,6 +324,13 @@ class Servers:
                 return launcher_for(server)
         return ""
 
+    def default_parts(self) -> Optional[dict]:
+        """``launch_parts`` for the default server (the one Profiles launches on), or None for this machine."""
+        server = next((s for s in self.store.list_servers() if s.get("is_default")), None)
+        if not server or server.get("kind") == LOCAL:
+            return None
+        return launch_parts(server, self.key_path(server["id"]) if self.has_key(server["id"]) else "")
+
     def key_path(self, server_id: int) -> str:
         return os.path.join(self.ssh_dir, f"server-{int(server_id)}")
 
@@ -439,4 +488,4 @@ def from_odysseus(raw: list) -> tuple[list[dict], list[str]]:
     return out, notes
 
 
-__all__ = ["Servers", "ServerError", "clean_server", "compare_models", "env_prefix_for", "gguf_index", "load_seed", "from_odysseus", "parse_facts", "detection_script", "LOCAL"]
+__all__ = ["Servers", "ServerError", "clean_server", "launch_parts", "on_server", "compare_models", "env_prefix_for", "gguf_index", "load_seed", "from_odysseus", "parse_facts", "detection_script", "LOCAL"]

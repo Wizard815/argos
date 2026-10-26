@@ -154,6 +154,17 @@ def fetch_activity(base_url: str, after_id: int, limit: int = 999, order: str = 
     return rows
 
 
+def recent_requests(base_url: str, limit: int = 25) -> list[dict]:
+    """The engine's newest requests, newest first, read straight from it: the Live feed cannot wait for the
+    collector's next sync. Each row is a ``requests`` row; unknown numbers come back as None, not -1."""
+    rows = fetch_activity(base_url, 0, limit=limit, order="desc")
+    for r in rows:
+        for k, v in list(r.items()):
+            if isinstance(v, (int, float)) and v < 0:
+                r[k] = None
+    return rows
+
+
 class Collector:
     """Background loop: GPU samples, activity sync, rollups and periodic hooks."""
 

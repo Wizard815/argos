@@ -308,7 +308,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	// served, so the detail view shows the effective launch on first render.
 	if s.cfg.Odysseus != nil && s.cfg.Odysseus.ChoicesPath != "" {
 		if cs, err := odysseus.LoadChoices(s.cfg.Odysseus.ChoicesPath); err == nil {
-			s.odysseus.choices = cs.Choices
+			s.setChoices(cs.Choices)
 		} else {
 			proxylog.Warnf("odysseus: loading choices: %v", err)
 		}
@@ -453,6 +453,7 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/models/modes", apiChain.ThenFunc(s.handleAPIModelModes))
 	mux.Handle("GET /api/profiles", apiChain.ThenFunc(s.handleAPIProfiles))
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
+	mux.Handle("GET /api/inflight", apiChain.ThenFunc(s.handleAPIInflight))
 	mux.Handle("POST /api/inflight/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelInflight))
 	mux.Handle("GET /api/events", apiChain.ThenFunc(s.handleAPIEvents))
 	mux.Handle("GET /api/metrics/activity", apiChain.ThenFunc(s.handleAPIActivity))

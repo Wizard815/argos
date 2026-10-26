@@ -125,6 +125,14 @@ func activitySource(r *http.Request) string {
 	if err != nil {
 		host = r.RemoteAddr
 	}
+	// The builder fronts the engine on one port, so every request arrives from
+	// loopback with the real client in X-Forwarded-For. Believe the header only
+	// from loopback: anyone else could put any address in it.
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if c := clientIP(r); c != "" {
+			host = c
+		}
+	}
 	return "ip:" + host
 }
 

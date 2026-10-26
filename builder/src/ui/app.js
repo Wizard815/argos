@@ -366,7 +366,7 @@ const ensureBuilderData = () => Promise.all([
   once("library", loadLibrary), once("catalog", loadCatalog), once("integrations", loadIntegrations), once("traits", loadSeen),
 ]).catch(() => {});
 const onShow = {
-  builder: () => { ensureBuilderData(); },
+  builder: () => { ensureBuilderData(); loadServed(); },
   models: () => { loadLibrary(); loadCatalog(); loadDownloads(); },
   profiles: () => { ensureBuilderData(); renderProfiles(); },
   perf: () => loadPerf(),
@@ -398,7 +398,101 @@ function show(view, { replace = false } = {}) {
 }
 
 // ── Shared data ──────────────────────────────────────────────
+// ── Profiles: which server they run on ──────────────────────
+// Like the server select in Odysseus' Cookbook: Local, or one of the SSH servers from Servers. It is the
+// default server, so the engine's copies of the profiles follow it too.
+async function loadProfileServer() {
+  const sel = $("#pServer");
+  if (!sel) return;
+  let list;
+  try { list = (await api("GET", "/api/servers")).servers; } catch (e) { return; }
+  const colorOf = (s, i) => s.color || (s.kind === "local" ? "#bd93f9" : svAuto(i));
+  fill(sel, list.map((s, i) => h("option", { value: String(s.id), style: `color:${colorOf(s, i)}` }, `● ${s.name}`)));
+  const cur = list.find((s) => s.is_default) || list[0];
+  if (cur) { sel.value = String(cur.id); sel.style.color = colorOf(cur, list.indexOf(cur)); }
+  sel.onchange = async () => {
+    const s = list.find((x) => String(x.id) === sel.value);
+    try {
+      await api("POST", `/api/servers/${sel.value}/default`);
+      sel.style.color = colorOf(s, list.indexOf(s));
+      toast(s.kind === "local" ? "Profiles run the way your base models do." : `Profiles now launch on ${s.name}. Models already running stay where they are.`, "ok");
+    } catch (e) { fail(e); loadProfileServer(); }
+  };
+}
+
+// What a client asks for: the model's own name runs its default command; a profile is the variant
+// <model>--<label>. "serve" makes the plain name run this profile, so a client like Hermes that asks for
+// the model gets it; the copy button gives the variant's own name for a client that can ask for that.
+async function loadServed() {
+  try { S.served = (await api("GET", "/api/profiles/served")).profiles; } catch (e) { S.served = {}; }
+  if (S.view === "profiles") renderProfiles();
+  renderBuilderDefault();
+  renderModelDefaults();
+}
+
+// One row per model that has profiles: what a client asking for the model's own name gets. The profiles
+// stay listed under their own names for one-offs; this only decides the plain name.
+async function setModelDefault(model, profileId) {
+  const list = Object.entries(S.served || {}).filter(([, v]) => v.model === model);
+  const current = list.find(([, v]) => v.serving);
+  try {
+    if (profileId) await api("PUT", `/api/profiles/${encodeURIComponent(profileId)}/serve`, { on: true });
+    else if (current) await api("PUT", `/api/profiles/${encodeURIComponent(current[0])}/serve`, { on: false });
+    const p = S.profiles.find((x) => x.profile_id === profileId);
+    toast(profileId ? `Requests for ${model} now run “${p ? p.name : profileId}”.` : `Requests for ${model} run its own command again.`, "ok");
+  } catch (e) { fail(e); }
+  loadServed();
+}
+function renderModelDefaults() {
+  const box = $("#pDefaults");
+  if (!box) return;
+  const byModel = new Map();
+  for (const [pid, v] of Object.entries(S.served || {})) {
+    if (!byModel.has(v.model)) byModel.set(v.model, []);
+    byModel.get(v.model).push({ pid, ...v, p: (S.profiles || []).find((x) => x.profile_id === pid) });
+  }
+  if (!byModel.size) {
+    return fill(box, h("div", { class: "card" }, h("div", { class: "empty" },
+      "No profiles yet. Save one in the Builder; then pick it here as its model's default.")));
+  }
+  const rows = [...byModel.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([model, list]) => {
+    const on = list.find((x) => x.serving);
+    const sel = h("select", { "aria-label": `Default profile for ${model}`, style: "width:auto;max-width:320px",
+      onchange: (e) => setModelDefault(model, e.target.value) },
+      h("option", { value: "" }, "Model's own command"),
+      list.sort((a, b) => (a.p?.name || a.pid).localeCompare(b.p?.name || b.pid))
+        .map((x) => h("option", { value: x.pid }, x.p ? x.p.name : x.variant)));
+    sel.value = on ? on.pid : "";
+    return h("tr", {}, h("td", { class: "strong mono-sm" }, model), h("td", {}, sel),
+      h("td", { class: "muted mono-sm" }, on ? `runs ${on.variant}` : "no profile: the model's own command"));
+  });
+  fill(box, h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Model defaults"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, "what a client asking for the model's own name gets · its profiles stay listed for one-offs")),
+  h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+    h("thead", {}, h("tr", {}, h("th", {}, "Model (the name clients ask for)"), h("th", {}, "Default profile"), h("th", {}, ""))),
+    h("tbody", {}, rows)))));
+}
+function servedCell(p) {
+  const v = (S.served || {})[p.profile_id];
+  if (!v) return h("span", { class: "muted", title: "the engine has not got this profile yet" }, DASH);
+  const toggle = async () => {
+    try {
+      await api("PUT", `/api/profiles/${p.profile_id}/serve`, { on: !v.serving });
+      toast(v.serving ? `Requests for ${v.model} run its own command again.` : `Requests for ${v.model} now run “${p.name}”.`, "ok");
+    } catch (e) { fail(e); }
+    loadServed();
+  };
+  return h("span", { class: "row", style: "gap:6px;flex-wrap:nowrap;align-items:center" },
+    h("button", { type: "button", class: `chip${v.serving ? " on" : ""}`, onclick: toggle,
+      title: v.serving ? `Requests for ${v.model} run this profile. Click to go back to the model's own command.`
+        : `Make requests for ${v.model} run this profile (a client asking for the model gets these settings)` }, v.serving ? "serving" : "serve"),
+    h("code", { class: "mono-sm trunc", style: "max-width:240px", title: `Ask for this name to get this profile: ${v.variant}` }, v.variant),
+    iconBtn("copy", "Copy the name to ask for", () => copyText(v.variant), "ghost"));
+}
+
 async function loadProfiles() {
+  loadProfileServer();
+  loadServed();
   S.profiles = (await api("GET", "/api/profiles")).profiles;
   // sizes come separately: they read model headers, and the list must not wait for that
   api("GET", "/api/profiles/estimates").then((r) => { S.profileEst = r.estimates; if (S.view === "profiles") renderProfiles(); }).catch(() => {});
@@ -508,7 +602,33 @@ const B = { cmd: "", parsed: null, profileId: null, source: "", layout: "multi",
 
 const isDirty = () => !!B.parsed && (B.cmd !== B.saved.cmd || $("#bName").value.trim() !== B.saved.name);
 function markSaved() { B.saved = { cmd: B.cmd, name: $("#bName").value.trim(), base: $("#bBase").value }; renderDirty(); }
-function renderDirty() { $("#bDirty").hidden = !isDirty(); $("#bDelete").disabled = !B.profileId; }
+function renderDirty() { $("#bDirty").hidden = !isDirty(); $("#bDelete").disabled = !B.profileId; renderBuilderDefault(); }
+
+// The model's default profile: what a client asking for the model's own name gets (Hermes keeps that one
+// name selected, so changing the default here needs no refresh there). Same switch as "serve" on Profiles.
+function renderBuilderDefault() {
+  const btn = $("#bDefault");
+  if (!btn) return;
+  const v = B.profileId && (S.served || {})[B.profileId];
+  btn.classList.toggle("on", !!(v && v.serving));
+  btn.textContent = v && v.serving ? "Default ✓" : "Make default";
+  btn.title = !B.profileId ? "Save this profile first; then it can be the model's default"
+    : !v ? "The engine has not got this profile yet"
+    : v.serving ? `Requests for ${v.model} run this profile. Click to go back to the model's own command.`
+    : `Make requests for ${v.model} run this profile; its other profiles stay available by their own names`;
+}
+async function toggleBuilderDefault() {
+  if (!B.profileId) return toast("Save the profile first; then it can be the model's default.", "err");
+  if (isDirty()) return toast("Save your changes first: the engine runs the saved profile.", "err");
+  const v = (S.served || {})[B.profileId];
+  const on = !(v && v.serving);
+  try {
+    const r = await api("PUT", `/api/profiles/${B.profileId}/serve`, { on });
+    toast(on ? `Requests for ${r.model} now run “${$("#bName").value.trim() || r.variant}”.` : `Requests for ${r.model} run its own command again.`, "ok");
+  } catch (e) { fail(e); }
+  await loadServed();
+  renderBuilderDefault();
+}
 async function leaveOk() { return !isDirty() || confirmBox("This preset has unsaved changes. Discard them?", "Discard"); }
 
 /** The library model the builder is on: from the command's file, else the Model box. */
@@ -685,6 +805,7 @@ function initBuilder() {
   };
   $("#bSave").onclick = () => saveProfile(false);
   $("#bSaveNew").onclick = () => saveProfile(true);
+  $("#bDefault").onclick = toggleBuilderDefault;
   $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim(), B.profileId); };
   $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? B.parsed.multiline : B.parsed.command); };
   $("#bRaw").onclick = () => { $("#bRawText").value = B.parsed.multiline; $("#bRawBox").hidden = false; $("#bPreview").hidden = true; $("#bRawText").focus(); };
@@ -1149,15 +1270,22 @@ function showProfilesFor(modelId) {
 }
 async function toggleFavorite(p) {
   try {
-    await api("POST", "/api/profiles", { ...p, favorite: !p.favorite });
+    await api("PUT", `/api/profiles/${encodeURIComponent(p.profile_id)}/favorite`, { on: !p.favorite });
     await loadProfiles();
   } catch (e) { fail(e); }
 }
+const FAV_GROUP = "\u0000fav", RECENT_GROUP = "\u0000recent";
+const RECENT_S = 14 * 86400, RECENT_N = 6;  // used in the last two weeks, at most six
 function renderProfiles() {
   fillProfileModels();
+  renderModelDefaults();
   const q = $("#pSearch").value.trim().toLowerCase(), m = $("#pModel").value;
   const rows = S.profiles.filter((p) => (!m || (p.model_id || p.base_model) === m)
     && (!q || `${p.name} ${p.base_model} ${p.model_id} ${p.launch_command} ${p.source}`.toLowerCase().includes(q)));
+  // starred profiles, then the few used last, sit open at the top; everything else is grouped by model family
+  const recent = new Set(S.profiles.filter((p) => !p.favorite && p.last_used_at && Date.now() / 1000 - p.last_used_at < RECENT_S)
+    .sort((a, b) => b.last_used_at - a.last_used_at).slice(0, RECENT_N).map((p) => p.profile_id));
+  const pinned = { [FAV_GROUP]: 0, [RECENT_GROUP]: 1 };
   renderTable($("#pTable"), [
     { label: "", cell: (p) => h("td", { style: "width:1%" }, h("button", {
       class: "icon-btn ghost", title: p.favorite ? "Unstar" : "Star", "aria-label": "Favorite",
@@ -1177,8 +1305,11 @@ function renderProfiles() {
       return h("td", { class: "num nowrap", title: `Estimate: ${est}\nIt is replaced by the real size the first time this profile loads.` },
         h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, `${num(e.weights_gib, 1)} + ${num(e.kv_gib, 1)} KV @ ${ctxLabel(e.ctx)}`));
     } },
+    { label: "Served as", cell: (p) => servedCell(p) },
     { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
     { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
+    { key: "last_used_at", label: "Last used", sort: (p) => p.last_used_at || 0,
+      cell: (p) => h("span", { class: "muted", title: "launched, or made its model's default" }, p.last_used_at ? ago(p.last_used_at) : DASH) },
     { label: "", cell: (p) => h("td", { class: "actions" },
       iconBtn("sliders", "Open in builder", () => openCommand(p.launch_command, { name: p.name, base_model: p.base_model, source: p.source || "profile", profileId: p.profile_id })),
       iconBtn("play", "Launch", () => launch(p.launch_command, p.base_model, p.name, p.profile_id)),
@@ -1188,8 +1319,14 @@ function renderProfiles() {
       }, "danger")) },
   ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."), {
     // grouped by the model's name (Qwen, Gemma, …), closed until opened; a search or a model filter shows every match
-    group: (p) => { const f = modelFamily({ name: p.base_model || p.model_id || p.name, kind: "other" }); return { key: f, label: f }; },
-    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: q || m ? ALL_OPEN : PG.collapsed,
+    group: (p) => {
+      if (!q && !m && p.favorite) return { key: FAV_GROUP, label: "★ Favorites" };
+      if (!q && !m && recent.has(p.profile_id)) return { key: RECENT_GROUP, label: "Recently used" };
+      const f = modelFamily({ name: p.base_model || p.model_id || p.name, kind: "other" }); return { key: f, label: f };
+    },
+    groupOrder: (a, b) => (pinned[a.key] ?? 2) - (pinned[b.key] ?? 2) || a.label.localeCompare(b.label),
+    // the pinned groups start open (a toggle closes them); the model families start closed
+    collapsed: q || m ? ALL_OPEN : { has: (k) => (k in pinned ? !PG.collapsed.has(k) : PG.collapsed.has(k)) },
     onToggle: (k) => { PG.toggle(k); renderProfiles(); },
   });
 }
@@ -2418,10 +2555,27 @@ function renderGpu() {
 }
 
 async function loadGpu() {
-  $("#gCharts").style.opacity = G.data ? "0.5" : "1";
+  if (!usageLive()) $("#gCharts").style.opacity = G.data ? "0.5" : "1";  // live, it would blink every refresh
   try { G.data = await api("GET", `/api/gpu/series?range=${G.range}`); } catch (e) { fail(e); }
   $("#gCharts").style.opacity = "1";
   renderGpu();
+  loadGpuRequests();
+}
+
+// the Recent requests toggle on the GPU charts: remembered per browser
+const gpuReqOn = () => { try { return localStorage.getItem("gpuRequests") === "1"; } catch (e) { return false; } };
+async function loadGpuRequests() {
+  const box = $("#gRequests"), tog = $("#gReqToggle");
+  if (!box || !tog) return;
+  if (!tog.dataset.wired) {
+    tog.dataset.wired = "1";
+    tog.checked = gpuReqOn();
+    tog.addEventListener("change", () => { try { localStorage.setItem("gpuRequests", tog.checked ? "1" : "0"); } catch (e) { /* private window */ } loadGpuRequests(); });
+  }
+  if (!tog.checked) return fill(box);
+  let r;
+  try { r = await api("GET", "/api/requests/recent?limit=25"); } catch (e) { return fill(box, h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); }
+  fill(box, requestsCard(r.requests, r.in_flight, { running: r.running, hint: r.source === "engine" ? "newest first · live from the engine" : "newest first · as last synced" }));
 }
 
 // ── Logs: requests + events ──────────────────────────────────
@@ -2517,12 +2671,29 @@ async function refreshLogsNav() {
   } catch (e) { /* ignore */ }
 }
 
+// Live: the Usage page refreshes every 2 seconds instead of only on short ranges. Remembered per browser.
+const usageLive = () => { try { return localStorage.getItem("usageLive") === "1"; } catch (e) { return false; } };
+function wireUsageControls() {
+  const live = $("#uLive"), btn = $("#uRefresh");
+  if (!live || live.dataset.wired) return;
+  live.dataset.wired = "1";
+  live.checked = usageLive();
+  live.addEventListener("change", () => {
+    try { localStorage.setItem("usageLive", live.checked ? "1" : "0"); } catch (e) { /* private window */ }
+    if (live.checked) loadLogs();  // the poll loop picks the faster pace on its next round
+  });
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try { await loadLogs(); } finally { btn.disabled = false; }
+  };
+}
 function loadLogs() {
   const pane = $(".tabs[data-tabs=logs] button.on")?.dataset.pane || "gpu";
-  if (pane === "gpu") loadGpu();
-  else if (pane === "requests") loadRequests();
-  else if (pane === "offargos") loadOffArgos();
-  else loadEvents();
+  wireUsageControls();
+  if (pane === "gpu") return loadGpu();
+  if (pane === "requests") return loadRequests();
+  if (pane === "offargos") return loadOffArgos();
+  return loadEvents();
 }
 
 // ── Usage → Off-Argos: GPU memory Argos did not start ────────
@@ -4156,6 +4327,65 @@ function renderSchedule() {
   renderSim();
 }
 
+// ----- requests: what the GPUs are working on --------------------------------------------
+// The engine's newest requests, as llama-swap's Activity page shows them: chat, embeddings, benchmarks, audio,
+// whoever sent them, with the context that went in and what came out. Shown on Schedule -> Live and, with a
+// toggle, under the GPU charts in Usage.
+const REQ_KIND = [[/chat\/completions/, "chat"], [/embeddings/, "embeddings"], [/^\/(v1\/)?completions?$/, "completion"],
+  [/transcriptions/, "transcribe"], [/speech/, "speech"], [/rerank/, "rerank"], [/responses/, "responses"], [/messages/, "messages"],
+  [/infill/, "infill"], [/images|sdapi/, "image"]];
+const reqKind = (path) => (REQ_KIND.find(([re]) => re.test(path || "")) || [null, path || DASH])[1];
+// when each request was first seen, so one that just arrived stays lit for a few refreshes
+const seenReq = { primed: false, at: new Map() };
+const runClock = (ms) => (ms < 60000 ? `${num(ms / 1000, 1)} s` : `${Math.floor(ms / 60000)}m ${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}s`);
+const bytesShort = (b) => (b < 1024 ? `${b} B` : b < 1048576 ? `${num(b / 1024, 1)} KB` : `${num(b / 1048576, 1)} MB`);
+// one clock for every running request on the page, between refreshes
+setInterval(() => {
+  for (const el of document.querySelectorAll("[data-run-start]")) el.textContent = runClock(Date.now() - Number(el.dataset.runStart));
+}, 500);
+function requestsCard(rows, inFlight, opts = {}) {
+  rows = rows || [];
+  const now = Date.now();
+  for (const r of rows) if (!seenReq.at.has(r.source_id)) seenReq.at.set(r.source_id, seenReq.primed ? now : 0);
+  seenReq.primed = true;
+  if (seenReq.at.size > 500) seenReq.at = new Map([...seenReq.at].slice(-200));
+  const fresh = (r) => now - (seenReq.at.get(r.source_id) || 0) < 6000;
+  const running = Object.entries(inFlight || {}).filter(([, n]) => n > 0);
+  // requests still running sit on top with a clock that counts up, so a long prompt shows while it works
+  const live = (opts.running || []).map((r) => h("tr", { class: "req-running" },
+    h("td", { class: "muted" }, "now"),
+    h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
+    h("td", { class: "num" }, DASH),
+    h("td", { class: "num", title: "bytes sent back so far" }, r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
+    h("td", { class: "num" }, DASH), h("td", { class: "num" }, DASH),
+    h("td", { class: "num", "data-run-start": String(Date.now() - (r.elapsed_ms || 0)) }, runClock(r.elapsed_ms || 0)),
+    h("td", {}, h("span", { class: "pill warn", title: r.resp_bytes ? "sending its answer" : "reading the prompt; nothing sent back yet" },
+      r.resp_bytes ? "generating" : "prompt"))));
+  const table = rows.length || live.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+    h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
+      .map((x, i) => h("th", { class: i >= 4 && i <= 8 ? "num" : "" }, x)))),
+    h("tbody", {}, live, rows.map((r) => {
+      // a failed request processed nothing: its zeros mean "none", not a measurement
+      const failed = r.status >= 400 || !!r.error;
+      const n = (v, d) => (v == null || (failed && !v) ? DASH : num(v, d));
+      return h("tr", { class: fresh(r) ? "req-new" : "" },
+      h("td", { class: "muted", title: new Date(r.ts * 1000).toLocaleString() }, ago(r.ts)),
+      h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
+      h("td", { class: "num" }, n(r.input_tokens, 0)),
+      h("td", { class: "num" }, n(r.output_tokens, 0)),
+      h("td", { class: "num" }, n(r.prompt_per_second, 0)),
+      h("td", { class: "num" }, n(r.tokens_per_second, 1)),
+      h("td", { class: "num" }, r.duration_ms == null ? DASH : r.duration_ms < 1000 ? `${num(r.duration_ms, 0)} ms` : `${num(r.duration_ms / 1000, 1)} s`),
+      h("td", {}, r.status >= 400 || r.error ? h("span", { class: "pill bad", title: r.error || "" }, String(r.status || "error"))
+        : r.status ? h("span", { class: "pill ok" }, String(r.status)) : DASH));
+    }))))
+    : h("div", { class: "empty" }, "No requests yet. Chat, embeddings, a benchmark or a transcription through the engine shows up here as soon as it starts.");
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Requests"),
+    running.length ? h("span", { class: "row", style: "gap:6px;margin-left:10px" },
+      running.map(([m, n]) => h("span", { class: "pill warn", title: "requests the GPU is working on now" }, `${m} · ${n} running`))) : null,
+    h("span", { class: "spacer" }), h("span", { class: "hint" }, opts.hint || "newest first · live from the engine")), table);
+}
+
 // ----- live ------------------------------------------------------------------------------
 function renderLive() {
   const el = $("#scLive"), L = SC.live;
@@ -4167,7 +4397,7 @@ function renderLive() {
   const P = L.pool;
   if (!P.enabled) {
     return fill(el, h("div", { class: "card" }, h("div", { class: "empty" }, h("b", {}, `The engine is using the “${P.router || "group"}” router.`), h("br"),
-      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")));
+      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")), requestsCard(L.requests, {}, { running: L.running }));
   }
   const byId = Object.fromEntries(P.models.map((m) => [m.id, m]));
   const running = P.models.filter((m) => m.state !== "stopped");
@@ -4211,7 +4441,9 @@ function renderLive() {
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
-    swaps, queue, activity,
+    swaps, queue,
+    requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])), { running: L.running }),
+    activity,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
 }
 function kvTable(rows) {
@@ -4828,7 +5060,7 @@ async function tick() {
     const downloading = S.downloads.some((d) => d.status === "running" || d.status === "queued");
     if (downloading || (S.view === "models" && tickCount % 4 === 0)) { await loadDownloads(); busy = busy || downloading; }
     const logsPane = $(".tabs[data-tabs=logs] button.on")?.dataset.pane;
-    if (S.view === "logs" && ((logsPane === "gpu" && SHORT_RANGES.has(G.range)) || (logsPane === "requests" && SHORT_RANGES.has($("#rRange").value)) || tickCount % 10 === 0)) loadLogs();
+    if (S.view === "logs" && (usageLive() || (logsPane === "gpu" && SHORT_RANGES.has(G.range)) || (logsPane === "requests" && SHORT_RANGES.has($("#rRange").value)) || tickCount % 10 === 0)) loadLogs();
     if (S.view === "schedule" && SC.pane === "live") loadLive();
     else if (tickCount % 20 === 3) loadLive();
     if (S.view === "inventory" && tickCount % 10 === 0) loadInventory();
@@ -4837,8 +5069,9 @@ async function tick() {
     if (S.view === "assistant" && !A.busy && tickCount % 3 === 0) loadAssistant();
   } catch (e) { /* server restarting; try again */ }
   const liveLogs = S.view === "logs" && (SHORT_RANGES.has(G.range) || SHORT_RANGES.has($("#rRange").value));
+  const usageLiveNow = S.view === "logs" && usageLive();
   if (document.hidden) { pollTimer = setTimeout(tick, 30000); return; }  // nobody is looking: poll rarely
-  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") ? 1500 : liveLogs ? 3000 : 8000);
+  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") ? 1500 : usageLiveNow ? 2000 : liveLogs ? 3000 : 8000);
 }
 
 function initTabs() {
@@ -4853,6 +5086,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "odysseus") loadOdyArea(b.dataset.pane);
     else if (bar.dataset.tabs === "schedule") { SC.pane = b.dataset.pane; if (SC.pane === "live") loadLive(); else loadSchedule(); }
     else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
+    else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
   }));
 }
 

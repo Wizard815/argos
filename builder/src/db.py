@@ -101,6 +101,7 @@ PROFILE_COLUMNS: dict[str, str] = {
     "env_json": "TEXT DEFAULT '{}'",
     "notes": "TEXT DEFAULT ''",
     "favorite": "INTEGER DEFAULT 0",
+    "last_used_at": "REAL",  # last launched or made a model's default: the Profiles page's Recently used
     "created_at": "REAL NOT NULL",
     "updated_at": "REAL NOT NULL",
 }
@@ -592,6 +593,9 @@ class Store:
         pid = d.get("profile_id") or new_id("prof")
         vals = {k: str(d.get(k) or "").strip() for k in PROFILE_FIELDS}
         now = time.time()
+        if "favorite" not in d:  # a save from the Builder does not say: the star stays as it was
+            old = self.get_profile(pid) if d.get("profile_id") else None
+            d = {**d, "favorite": bool(old and old.get("favorite"))}
         self._x(
             f"INSERT INTO profiles (profile_id, {', '.join(PROFILE_FIELDS)}, favorite, created_at, updated_at) "
             f"VALUES (?, {', '.join('?' * len(PROFILE_FIELDS))}, ?, ?, ?) ON CONFLICT(profile_id) DO UPDATE SET "
@@ -609,6 +613,14 @@ class Store:
         if model_id:
             q, args = q + " WHERE model_id=?", [model_id]
         return [_decode(r) for r in self._q(q + " ORDER BY favorite DESC, updated_at DESC", args)]
+
+    def set_profile_favorite(self, profile_id: str, on: bool) -> bool:
+        """Star or unstar a profile. Not an edit: ``updated_at`` stays."""
+        return self._x("UPDATE profiles SET favorite=? WHERE profile_id=?", (1 if on else 0, profile_id)).rowcount > 0
+
+    def touch_profile(self, profile_id: str, at: Optional[float] = None) -> None:
+        """The profile was just used (launched, or made its model's default)."""
+        self._x("UPDATE profiles SET last_used_at=? WHERE profile_id=?", (at or time.time(), profile_id))
 
     def delete_profile(self, profile_id: str) -> bool:
         return self._x("DELETE FROM profiles WHERE profile_id=?", (profile_id,)).rowcount > 0
