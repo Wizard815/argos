@@ -87,15 +87,19 @@ def requests_recent():
     c = ctx()
     limit = max(1, min(request.args.get("limit", 25, type=int), 200))
     url = c.settings.get("integrations")["engine_url"]
-    in_flight = {}
+    in_flight, running_now = {}, []
     try:
         rows, source = (recent_requests(url, limit), "engine") if url else (c.store.list_requests(limit=limit), "stored")
         if url:
             pool = engine_api.pool_state(url)
             in_flight = {m["id"]: m["in_flight"] for m in pool.get("models") or [] if m.get("in_flight")}
+            try:  # still running: shown while they work. An older engine has none to say
+                running_now = engine_api.inflight(url)
+            except Exception:  # noqa: BLE001
+                running_now = []
     except Exception:  # noqa: BLE001 - fall back to what was synced
         rows, source = c.store.list_requests(limit=limit), "stored"
-    return ok(requests=rows, in_flight=in_flight, source=source, at=time.time())
+    return ok(requests=rows, in_flight=in_flight, running=running_now, source=source, at=time.time())
 
 
 @bp.get("/api/requests")

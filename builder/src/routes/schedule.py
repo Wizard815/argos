@@ -236,8 +236,12 @@ def schedule_live():
             requests = recent_requests(url)
         except Exception:  # noqa: BLE001 - the feed is empty rather than the page broken
             requests = []
+        try:  # and the ones still running, so they show while they work, not once they finish
+            running_now = engine_api.inflight(url)
+        except Exception:  # noqa: BLE001
+            running_now = []
         return ok(connected=True, error="", pool=engine_api.pool_state(url), at=time.time(), real_gib=real, activity=activity,
-                  runners=runners, requests=requests)
+                  runners=runners, requests=requests, running=running_now)
     except Exception as exc:  # noqa: BLE001
         return ok(connected=False, error=str(exc), pool=None)
 

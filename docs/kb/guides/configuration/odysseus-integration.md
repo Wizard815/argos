@@ -251,7 +251,8 @@ A client asking for a model by its own name (`"model": "ornith-1.5-9b-q6_k"`,
 from Hermes, Open WebUI, any OpenAI client) gets that model's default command.
 A profile is the variant `<model>--<label>`. Two ways to get it:
 
-- **Serve:** on the Profiles page, **serve** on a profile makes requests for
+- **Serve (the model's default):** **Make default** in the Builder, or **serve**
+  on the Profiles page, makes requests for
   the model's plain name run that profile. One profile per model; **serving**
   marks it, and clicking it again goes back to the model's own command. This
   is the model's choice (`PUT /api/odysseus/model/{model}/profile`), and it
@@ -266,6 +267,10 @@ A profile is the variant `<model>--<label>`. Two ways to get it:
 `odysseus.listVariants: false` takes the profiles back out of `/v1/models`
 (default `true`). They still answer when asked for by name, and a served
 profile still applies.
+
+To skip refreshing a client's model list for every new profile, select the
+plain model in the client once and change its default in Argos: the client's
+name stays the same, and the next request runs the new default.
 
 What goes wrong:
 
