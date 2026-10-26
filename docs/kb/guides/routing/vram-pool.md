@@ -59,11 +59,18 @@ the model starts:
 - Fragmentation counts: 22 GiB free in total is no use for a 28 GiB model when
   neither card has 28 free, so the pool evicts until one card does.
 - A `HIP_VISIBLE_DEVICES` in a model's `env` limits the cards it may use. A
-  pin to more than one card (`HIP_VISIBLE_DEVICES=0,1`) means use all of them:
-  the model gets an equal share on each pinned card, even when one would hold it.
+  pin to more than one card (`HIP_VISIBLE_DEVICES=0,1`) means use all of them.
 - A `cmd` with `--split-mode tensor` or `row` (`-sm`) is spread the same way over
   every card it may use, since those modes exist to share each layer across
   GPUs. `layer` (llama-server's default) and `none` still fit on one card.
+- How much room that needs depends on the mode, because llama.cpp picks the cut
+  points differently: with no `--tensor-split`, `tensor` divides the model
+  evenly, so every card it uses has to hold its exact share, while `layer` and
+  `row` split in proportion to each card's free memory, so what has to cover the
+  model is the cards' free space together.
+- A model too big for one card is placed on the cards with the most room, and
+  again together they have to cover it - not half each, which turns away a model
+  they can hold as soon as one card is a little tighter than the other.
 - Card ids come from `rocm-smi`, the numbering `HIP_VISIBLE_DEVICES` uses. If
   `rocm-smi` is missing the pool falls back to `/sys/class/drm`, numbers the
   cards that have VRAM 0, 1, ... in that order (HIP's usual order, whatever
