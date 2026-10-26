@@ -97,9 +97,13 @@ func (s *Server) odysseusOptions() odysseus.Options {
 		return odysseus.Options{}
 	}
 	names := make(map[string]string, len(s.cfg.Models))
+	programs := make(map[string][]string, len(s.cfg.Models))
 	for id, mc := range s.cfg.Models {
 		if mc.Name != "" {
 			names[id] = mc.Name
+		}
+		if prog := odysseus.ProgramOf(mc.Cmd); len(prog) > 0 {
+			programs[id] = prog
 		}
 	}
 	return odysseus.Options{
@@ -110,6 +114,7 @@ func (s *Server) odysseusOptions() odysseus.Options {
 		ProfilePrefix: o.ProfilePrefix,
 		Statuses:      o.Statuses,
 		Names:         names,
+		Programs:      programs,
 		StateFile:     o.StateFile,
 		ChoicesPath:   o.ChoicesPath,
 		EnsureDio:     o.DioEnabled(),

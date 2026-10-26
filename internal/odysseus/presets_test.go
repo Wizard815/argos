@@ -198,3 +198,39 @@ func TestOdysseus_SameFlagsDifferentCardsStayTwoVariants(t *testing.T) {
 		}
 	}
 }
+
+func TestOdysseus_ProgramOf(t *testing.T) {
+	for cmd, want := range map[string][]string{
+		"/app/bin/remote-llama rocm --host 0.0.0.0 --port ${PORT} -m /m/a.gguf": {"/app/bin/remote-llama", "rocm"},
+		"/opt/llama/bin/llama-server \\\n  --model /m/a.gguf":                   {"/opt/llama/bin/llama-server"},
+		"HIP_VISIBLE_DEVICES=0 llama-server -m /m/a.gguf":                       {"llama-server"},
+		"--port 8080": nil,
+	} {
+		if got := ProgramOf(cmd); strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("ProgramOf(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}
+
+// The Argos container may have no llama-server at all (llama.cpp runs in
+// another container, started through a launcher). A preset written as plain
+// "llama-server ..." then takes the program its base model starts with.
+func TestOdysseus_BareLlamaServerTakesTheBaseModelsProgram(t *testing.T) {
+	base := "qwen3.8-27b-ud-q6_k_xl"
+	res, err := Build(State{Presets: []Preset{
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "fast", Cmd: cmdTurbo4},
+	}}, Options{ProfilePrefix: "ody", EnsureDio: true, Programs: map[string][]string{base: {"/app/bin/remote-llama", "rocm"}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	cmd, _ := res.Models[base+"--fast"]["cmd"].(string)
+	if !strings.HasPrefix(cmd, "/app/bin/remote-llama rocm ") || strings.Contains(cmd, " llama-server ") {
+		t.Errorf("variant cmd = %q, want it to start with the base model's launcher", cmd)
+	}
+
+	res, _ = Build(State{Presets: []Preset{{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "fast", Cmd: cmdTurbo4}}},
+		Options{ProfilePrefix: "ody", EnsureDio: true})
+	if cmd, _ := res.Models[base+"--fast"]["cmd"].(string); !strings.HasPrefix(cmd, "llama-server ") {
+		t.Errorf("with no base program the preset's own stays: %q", cmd)
+	}
+}

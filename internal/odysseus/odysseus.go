@@ -38,6 +38,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -82,6 +83,14 @@ type Options struct {
 	// Generated variants inherit it, so a profile swap does not read as a
 	// different model in the UI, the activity table or the log panel.
 	Names map[string]string
+
+	// Programs maps an Argos base model ID to the program its own command
+	// starts with: everything before the first flag, e.g.
+	// ["/app/bin/remote-llama", "rocm"] or ["/opt/llama.cpp/bin/llama-server"].
+	// A preset that starts with a bare "llama-server" gets this instead, since
+	// the base model's command is how this install actually starts llama.cpp;
+	// the Argos container need not have llama-server on its PATH at all.
+	Programs map[string][]string
 
 	// Choices maps an Argos base model ID to the Odysseus preset label the
 	// operator picked for it. When set, Build emits a single union profile whose
@@ -547,6 +556,9 @@ func Build(state State, opts Options) (*Result, error) {
 	variantIDFor := func(modelID, suffix string) string { return modelID + "--" + suffix }
 
 	register := func(p Parsed, suffix, warnSource string) (string, bool) {
+		if prog := opts.Programs[p.ModelID]; len(p.Argv) > 0 && p.Argv[0] == "llama-server" && len(prog) > 0 {
+			p.Argv = append(slices.Clone(prog), p.Argv[1:]...)
+		}
 		if seen[p.ModelID] == nil {
 			seen[p.ModelID] = map[string]string{}
 		}
@@ -704,6 +716,22 @@ func SaveChoices(path string, cs ChoiceState) error {
 // Argv0Key identifies a command for de-duplication: its env and its argv. Two
 // presets with the same flags but different env (HIP_VISIBLE_DEVICES=0 and =1)
 // are different launches and must stay two variants.
+// ProgramOf is the program a model command starts with: the words before its
+// first flag, after any leading VAR=value assignments. Nil when there is none.
+func ProgramOf(cmd string) []string {
+	var prog []string
+	for _, w := range strings.Fields(strings.ReplaceAll(cmd, "\\\n", " ")) {
+		if strings.HasPrefix(w, "-") {
+			break
+		}
+		if len(prog) == 0 && reEnvKey.MatchString(w) {
+			continue
+		}
+		prog = append(prog, w)
+	}
+	return prog
+}
+
 func (p Parsed) Argv0Key() string {
 	return strings.Join(p.Env, "\x00") + "\x01" + strings.Join(p.Argv, "\x00")
 }

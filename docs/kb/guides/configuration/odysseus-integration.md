@@ -211,6 +211,15 @@ container's and wins for the same key.
 Tasks that are not llama.cpp (a vLLM command, say) have no `.gguf` path to map, so
 they are skipped with a warning rather than guessed at.
 
+## The program a variant runs
+
+A preset that starts with a bare `llama-server` runs with the program its base
+model starts with: whatever the model's own `cmd` has before its first flag, such
+as `/app/bin/remote-llama rocm` from a `${bk-rocm}` macro, or a full path to a
+llama-server binary. So the Argos container needs no `llama-server` of its own
+when llama.cpp runs elsewhere; the variant goes the same way the base model does.
+A preset that names another program keeps it.
+
 ## Launching a profile from the Builder
 
 The base model keeps its own default command, so loading it ignores every
