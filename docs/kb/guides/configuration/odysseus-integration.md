@@ -282,6 +282,22 @@ What goes wrong:
 - **A profile is missing:** only saved profiles are exported. Save it; the
   engine picks it up on its next refresh (`refreshSeconds`).
 
+## Deleting a preset
+
+Deleting a profile pulled from Odysseus (the trash button on Profiles), or
+**Delete** on a preset under Odysseus → Cookbook, deletes the preset in
+Odysseus too and keeps its command out of every later pull and out of what the
+engine is served, so it cannot come back. Odysseus → Cookbook lists what was
+deleted here, with **Show again** to let it back in.
+
+What goes wrong:
+
+- **"this Odysseus cannot delete presets yet":** Odysseus lacks the preset
+  delete endpoint. The preset stays in Odysseus but is still kept out of Argos.
+- **"missing required scope":** the Odysseus token needs `cookbook:launch`.
+- **It comes back in Odysseus:** an Odysseus page left open saves its whole
+  cookbook state; reload it after deleting.
+
 ## Launching a profile from the Builder
 
 The base model keeps its own default command, so loading it ignores every
