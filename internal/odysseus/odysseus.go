@@ -367,7 +367,9 @@ func ParseCommand(cmd string, ensureDio bool) (Parsed, error) {
 	if len(argv) == 0 {
 		return p, fmt.Errorf("command is only environment assignments")
 	}
-	if argv[0] != "llama-server" {
+	// llama-server by name or by path, or the launcher that starts it in another
+	// container (the Profiles page's server pick writes that), are all expected.
+	if prog := filepath.Base(argv[0]); prog != "llama-server" && prog != "remote-llama" {
 		p.Warnings = append(p.Warnings, fmt.Sprintf("command starts with %q, not 'llama-server'", argv[0]))
 	}
 
