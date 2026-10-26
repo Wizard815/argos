@@ -136,6 +136,8 @@ type poolSwapper struct {
 	persistent map[string]bool
 	sizes      map[string]float64 // GiB; 0 means unknown
 	pins       map[string][]string
+	spread     map[string]bool // placed on every allowed card, not on the one with room
+	even       map[string]bool // ...and divided into equal shares, as --split-mode tensor does
 
 	// cards is empty when per-card sizes are unknown; the pool then plans by
 	// budget alone and never places.
@@ -194,6 +196,8 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		persistent: make(map[string]bool, len(pc.Persistent)),
 		sizes:      make(map[string]float64, len(conf.Models)),
 		pins:       make(map[string][]string),
+		spread:     make(map[string]bool),
+		even:       make(map[string]bool),
 		placed:     make(map[string][]string),
 		busy:       make(map[string]int),
 		lastUsed:   make(map[string]time.Time),
@@ -216,11 +220,50 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		if p.sizes[id] == 0 {
 			logger.Warnf("pool: unknown VRAM size for %s; set its vram to let it share the GPUs", id)
 		}
-		if pin := hipPin(mc.Env); len(pin) > 0 {
+		pin := hipPin(mc.Env)
+		if len(pin) > 0 {
 			p.pins[id] = pin
+		}
+		// Pinned to several cards, or told to split a tensor or row across GPUs: the
+		// model is meant to use more than one card, so one with room is not enough.
+		if len(pin) > 1 || splitsAcrossCards(mc.Cmd) {
+			p.spread[id] = true
+			if splitsEvenly(mc.Cmd) {
+				p.even[id] = true
+			}
 		}
 	}
 	return p
+}
+
+// splitAcross matches -sm / --split-mode tensor or row: the modes that share
+// each layer across GPUs. layer (llama-server's default) and none do not ask
+// for more than one card, so the pool may still fit those on one.
+var splitAcross = regexp.MustCompile(`(?:^|\s)(?:-sm|--split-mode)(?:\s+|=)(?:tensor|row)(?:\s|$)`)
+
+func splitsAcrossCards(cmd string) bool {
+	return splitAcross.MatchString(cmd)
+}
+
+// splitEven matches --split-mode tensor, the one mode that divides the model
+// into equal shares whatever memory each card has. llama.cpp's docs: with no
+// --tensor-split, "layer/row use automatic splitting proportional to memory,
+// while tensor splits tensor segments evenly". So tensor needs an equal share
+// free on every card; layer and row need the cards' free space together to
+// cover the model, and llama.cpp weighs them when it picks the cut points.
+var splitEven = regexp.MustCompile(`(?:^|\s)(?:-sm|--split-mode)(?:\s+|=)tensor(?:\s|$)`)
+
+func splitsEvenly(cmd string) bool {
+	return splitEven.MatchString(cmd)
+}
+
+// totalFree is the free space the cards have together.
+func totalFree(cards []poolCard, free func(poolCard) float64) float64 {
+	total := 0.0
+	for _, c := range cards {
+		total += free(c)
+	}
+	return total
 }
 
 // hipPin returns the card ids a model's env pins with HIP_VISIBLE_DEVICES.
@@ -341,6 +384,29 @@ func (p *poolSwapper) fits(target string, others []string) (bool, []string) {
 	free := func(c poolCard) float64 { return c.cap - used[c.id] }
 	need := p.sizes[target]
 
+	// Meant for several cards: all the cards it may use.
+	if p.spread[target] && len(allowed) > 1 {
+		if p.even[target] {
+			// --split-mode tensor divides the model evenly, so every card has
+			// to hold its exact share. Nothing to weigh: it is a hard number.
+			share := need / float64(len(allowed))
+			for _, c := range allowed {
+				if free(c) < share {
+					return false, nil
+				}
+			}
+		} else if totalFree(allowed, free) < need {
+			// layer and row split in proportion to each card's free memory, so
+			// what has to cover the model is the cards together - not an equal
+			// share each, which refuses a model the cards have room for as soon
+			// as one of them is a little tighter than the other.
+			return false, nil
+		}
+		ids := cardIDs(allowed)
+		sortIDs(ids)
+		return true, ids
+	}
+
 	// One card: the one with the fewest models already on it, so the cards
 	// share the load, then the most free room.
 	var best *poolCard
@@ -358,18 +424,32 @@ func (p *poolSwapper) fits(target string, others []string) (bool, []string) {
 		return true, []string{best.id}
 	}
 
-	// Too big for one card: spread over the k cards with the most room.
+	// Too big for one card: fill the cards with the most room until their
+	// combined free space covers the model.
+	//
+	// This asked for an equal share on each card instead, and that refused
+	// models the cards had room for whenever one of them held less than half.
+	// A 44.61 GiB model over cards with 21.94 and 31 GiB free needs 22.31 on
+	// the first by that rule - a third of a GiB short - and was turned away
+	// with 52.94 GiB free between them. Worse, the pool then evicted a running
+	// model to try to make room it did not need.
+	//
+	// Across cards the total is what matters: llama.cpp decides the layer split
+	// when it starts, and it weighs the free memory on each card when it does.
 	byFree := slices.Clone(allowed)
 	sort.SliceStable(byFree, func(i, j int) bool { return free(byFree[i]) > free(byFree[j]) })
-	for k := 2; k <= len(byFree); k++ {
-		share := need / float64(k)
-		if free(byFree[k-1]) >= share {
-			ids := make([]string, k)
-			for i := range ids {
-				ids[i] = byFree[i].id
+	if len(byFree) > 1 {
+		total := free(byFree[0])
+		for k := 2; k <= len(byFree); k++ {
+			total += free(byFree[k-1])
+			if total >= need {
+				ids := make([]string, k)
+				for i := range ids {
+					ids[i] = byFree[i].id
+				}
+				sortIDs(ids)
+				return true, ids
 			}
-			sortIDs(ids)
-			return true, ids
 		}
 	}
 	return false, nil

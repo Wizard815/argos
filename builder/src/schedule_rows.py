@@ -49,6 +49,7 @@ def arch_of(path: str) -> Optional[dict]:
 
 
 CTX_COMPARE = (8192, 32768, 65536, 131072, 262144)
+ROPE_CTX = 1048576  # the context the Builder's RoPE (YaRN) switch stretches a model to
 
 
 def estimate_command(command: str, compare: bool = False, measured: Optional[dict] = None) -> dict:
@@ -73,7 +74,12 @@ def estimate_command(command: str, compare: bool = False, measured: Optional[dic
            "train_ctx": (arch or {}).get("train_ctx"), "extra_gib": round(extra / GIB, 2),
            **estimate_gib(weights, arch, ctx, ck, cv, extra)}
     if compare and arch:
-        ctxs = sorted({*(c for c in CTX_COMPARE if c <= max(ctx, (arch or {}).get("train_ctx") or ctx)), ctx})
+        train = (arch or {}).get("train_ctx") or 0
+        ctxs = sorted({*(c for c in CTX_COMPARE if c <= max(ctx, train or ctx)), ctx})
+        if train and train < ROPE_CTX:
+            # one column past what the model was trained on: the cost of stretching it with RoPE
+            ctxs = sorted({*ctxs, ROPE_CTX})
+            out["rope_ctx"] = ROPE_CTX
         types = list(dict.fromkeys([*KV_COMPARE, *CUSTOM_CACHE, *(t for t in (ck, cv) if t)]))
         out["compare"] = {"ctx": ctxs, "types": [{"type": t, "kv_gib": [kv_gib(arch, c, t, t) for c in ctxs]} for t in types]}
     # a load that really happened replaces the guess: the plan records what the GPU gained each time this

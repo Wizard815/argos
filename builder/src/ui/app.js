@@ -590,6 +590,55 @@ function buildField(f) {
   return h("label", { class: `field${f.seg ? " span2" : ""}${f.wide ? " wide" : ""}` }, h("span", {}, f.label, h("code", {}, f.flag)), shown);
 }
 
+// ── Builder: which GPUs this command may use ─────────────────
+// Pick cards; the server writes them as the variable their runtime reads: HIP_VISIBLE_DEVICES for AMD
+// cards, CUDA_VISIBLE_DEVICES for NVIDIA ones (from the cards' names), or a remote launcher's backend.
+const GPU_PICK = "ARGOS_GPUS";  // how picks were saved before; the server turns it into the real variable
+const GPU_SELECTORS = ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "GGML_VK_VISIBLE_DEVICES"];
+const BG = { cards: [], el: null };
+const splitCards = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
+/** The cards this command is pinned to, and the variable that says so. */
+function gpuPick(env) {
+  const own = [GPU_PICK, ...GPU_SELECTORS].find((k) => k in (env || {}));
+  return { cards: own ? splitCards(env[own]) : [], from: own || "" };
+}
+function setGpus(list) {
+  edit({}, undefined, undefined, list.map((x) => String(x).trim()).filter(Boolean));
+}
+function buildGpuField() {
+  const text = h("input", { type: "text", placeholder: "all", spellcheck: "false", style: "width:80px" });
+  const chips = h("span", { class: "chips", style: "align-items:center" });
+  const note = h("span", { class: "muted mono-sm" });
+  text.addEventListener("change", () => setGpus(splitCards(text.value)));
+  text.addEventListener("keydown", (e) => { if (e.key === "Enter") setGpus(splitCards(text.value)); });
+  BG.el = { text, chips, note };
+  api("GET", "/api/gpu/latest").then((d) => { BG.cards = (d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0); syncGpuField(); }).catch(() => {});
+  return h("label", { class: "field span2", title: "Which cards this model may use. Blank = all of them." },
+    h("span", {}, "GPUs"), h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" }, chips, text), note);
+}
+function syncGpuField() {
+  if (!BG.el) return;
+  const pick = gpuPick((B.parsed && B.parsed.env) || {});
+  const ids = pick.cards;
+  if (BG.el.text !== document.activeElement) BG.el.text.value = ids.join(",");
+  const toggle = (id) => setGpus(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].sort((a, b) => Number(a) - Number(b)));
+  const known = new Set(BG.cards.map((g) => String(g.gpu)));
+  const every = [...known].sort((a, b) => Number(a) - Number(b));
+  const isAll = every.length > 1 && every.every((x) => ids.includes(x)) && ids.length === every.length;
+  fill(BG.el.chips,
+    h("button", { type: "button", class: `chip${ids.length ? "" : " on"}`, title: "No pin: the engine puts it on the card, or cards, with room", onclick: () => setGpus([]) }, "Auto"),
+    every.length > 1 ? h("button", { type: "button", class: `chip${isAll ? " on" : ""}`, title: `Every card: ${every.join(",")}. The model is spread across all of them.`, onclick: () => setGpus(every) }, "All") : null,
+    BG.cards.map((g) => h("button", { type: "button", class: `chip${ids.includes(String(g.gpu)) ? " on" : ""}`,
+      title: `${g.name || "GPU " + g.gpu}${g.mem_total_mb ? ` · ${(g.mem_total_mb / 1024).toFixed(0)} GiB` : ""}`, onclick: () => toggle(String(g.gpu)) }, `GPU${g.gpu}`)),
+    ids.filter((x) => !known.has(x)).map((x) => h("button", { type: "button", class: "chip on", title: "Not seen on this machine", onclick: () => toggle(x) }, `GPU${x}`)));
+  const vars = (B.parsed && B.parsed.gpu_vars) || [];
+  const names = [...new Set(BG.cards.filter((g) => ids.includes(String(g.gpu))).map((g) => g.name).filter(Boolean))];
+  const seen = names.length ? `${names.join(" + ")}: ` : "";
+  BG.el.note.textContent = !ids.length ? "Auto: the engine places it where it fits; --split-mode tensor or row gets every card"
+    : vars.includes(pick.from) ? `${seen}${vars.join(" and ")}`
+    : `set as ${pick.from}, but these cards read ${vars.join(" and ") || "another variable"}; pick a card to switch`;
+}
+
 function setSeg(f, v) {
   if (f.name === "mmap") edit({ mmap: v === "mmap" ? true : null, "no-mmap": v === "no-mmap" ? true : null });
   else edit({ [f.name]: v || null });
@@ -623,7 +672,7 @@ function initBuilder() {
     } catch (e) { fail(e); }
   };
   $("#bAlwaysEdit").onclick = editAlways;
-  fill($("#bFields"), SETTINGS.map(buildField));
+  fill($("#bFields"), SETTINGS.map(buildField), buildGpuField());
   fill($("#bFiles"), FILES.map(buildField));
   document.body.append(h("datalist", { id: "list-spectype" }, h("option", { value: "draft-mtp" })));
   $("#parseBtn").onclick = () => openCommand($("#composerInput").value, { source: "pasted" });
@@ -681,11 +730,11 @@ async function openCommand(command, meta = {}) {
 }
 
 /** Queue an edit so rapid changes apply in order on top of each other. */
-function edit(edits, env, argEdits) {
+function edit(edits, env, argEdits, gpus) {
   B.queue = B.queue.then(async () => {
     try {
       const res = await api("POST", "/api/command/build", { command: B.cmd, edits, env, arg_edits: argEdits, format: B.format,
-        name: $("#bName").value || $("#bBase").value });
+        name: $("#bName").value || $("#bBase").value, ...(gpus ? { gpus } : {}) });
       B.cmd = res.command; B.parsed = res;
       if (!$("#bBase").value && res.base_model) $("#bBase").value = res.base_model;
     } catch (e) { fail(e); }
@@ -888,6 +937,7 @@ function renderBuilder() {
     renderEnv(p.env || {});
     renderOther(p.args || []);
   });
+  syncGpuField();
   fill($("#bPreview"), renderCommand(p, B.layout === "multi"));
   $$("#bLayout button").forEach((b) => b.classList.toggle("on", b.dataset.v === B.layout));
   $$("#bFormat button").forEach((b) => b.classList.toggle("on", b.dataset.v === B.format));
@@ -910,7 +960,21 @@ function scheduleEstimate() {
     catch (e) { fill($("#bVram"), h("p", { class: "hint" }, e.message)); }
   }, 350);
 }
-const ctxLabel = (c) => (c >= 1024 ? `${num(c / 1024, 0)}K` : String(c));
+const ctxLabel = (c) => (c >= 1048576 && c % 1048576 === 0 ? `${c / 1048576}M` : c >= 1024 ? `${num(c / 1024, 0)}K` : String(c));
+
+// Past the trained context the model needs RoPE stretched to cope: YaRN, scaled by how far past it goes,
+// from the context it was trained on. Back inside it, those flags come off again.
+const ROPE_OFF = { "rope-scaling": null, "rope-scale": null, "yarn-orig-ctx": null };
+const ropeOn = () => argValue("rope-scaling") === "yarn";
+const ropeEdits = (c, train) => ({ "rope-scaling": "yarn", "rope-scale": String(Number((c / train).toFixed(3))), "yarn-orig-ctx": train });
+/** A click in the VRAM card's KV table: that context, and that cache type when a row was picked. */
+function useContext(c, type, e) {
+  const edits = { "ctx-size": c };
+  if (type) Object.assign(edits, { "cache-type-k": type, "cache-type-v": type });
+  if (e.train_ctx && c > e.train_ctx) Object.assign(edits, ropeEdits(c, e.train_ctx));
+  else if (ropeOn()) Object.assign(edits, ROPE_OFF);
+  edit(edits);
+}
 function renderEstimate(e) {
   const box = $("#bVram");
   if (!e || !e.ok) return fill(box, h("p", { class: "hint", style: "margin:0" }, (e && e.error) || "Pick a model to see its size."));
@@ -927,15 +991,32 @@ function renderEstimate(e) {
     M ? "Estimate: " : null, h("b", {}, `${num(total, 1)} GiB`), " = ",
     `${num(e.weights_gib, 1)} model`, e.extra_gib ? ` (incl. ${num(e.extra_gib, 1)} mmproj/draft)` : "",
     ` + ${num(e.kv_gib, 1)} KV cache (${ctxLabel(e.ctx)} context, ${cache}) + ${num(e.overhead_gib, 1)} buffers`);
-  const notes = [...(e.notes || []), e.train_ctx && e.ctx > e.train_ctx ? `context is above the model's trained ${ctxLabel(e.train_ctx)}` : null].filter(Boolean);
+  const stretched = e.train_ctx && e.ctx > e.train_ctx;
+  const notes = [...(e.notes || []), stretched ? (ropeOn()
+    ? `RoPE stretched with YaRN ×${argValue("rope-scale") || "?"} from the trained ${ctxLabel(e.train_ctx)}: answers can get worse at long range`
+    : `context is above the model's trained ${ctxLabel(e.train_ctx)}: turn on RoPE below, or the model will not cope`) : null].filter(Boolean);
   let table = null;
   if (e.compare) {
     const C = e.compare;
-    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB)"),
+    const ropeCol = (c) => e.train_ctx && c > e.train_ctx;
+    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB) · click to use it"),
       h("div", { class: "table-wrap" }, h("table", { class: "dense" },
-        h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num", style: c === e.ctx ? "color:var(--strong)" : "" }, ctxLabel(c))))),
+        h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num pick", style: c === e.ctx ? "color:var(--strong)" : "",
+          title: `Use ${ctxLabel(c)} context${ropeCol(c) ? " (stretched with RoPE)" : ""}`, onclick: () => useContext(c, null, e) },
+          ctxLabel(c), ropeCol(c) ? h("span", { class: "muted", style: "font-weight:400" }, " RoPE") : null)))),
         h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
-          t.kv_gib.map((v, i) => h("td", { class: "num", style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "" }, v == null ? DASH : num(v, 2)))))))));
+          t.kv_gib.map((v, i) => v == null ? h("td", { class: "num" }, DASH) : h("td", { class: "num pick",
+            style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "",
+            title: `Use ${ctxLabel(C.ctx[i])} context with a ${t.type} cache (${num(v, 2)} GiB)`, onclick: () => useContext(C.ctx[i], t.type, e) }, num(v, 2)))))))));
+  }
+  let rope = null;
+  if (e.rope_ctx && e.train_ctx) {
+    const on = ropeOn();
+    const box = h("input", { type: "checkbox", checked: on, onchange: (ev) => ev.target.checked
+      ? useContext(e.rope_ctx, null, e) : edit({ ...ROPE_OFF, "ctx-size": e.train_ctx }) });
+    rope = h("label", { class: "check", style: "margin-top:8px", title: `--rope-scaling yarn --rope-scale ${Number((e.rope_ctx / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx} -c ${e.rope_ctx}` },
+      box, ` RoPE (YaRN) to ${ctxLabel(e.rope_ctx)} context`,
+      h("span", { class: "hint", style: "margin:0 0 0 6px" }, on ? "on: unticking goes back to the trained context" : `trained on ${ctxLabel(e.train_ctx)}; this stretches it ×${num(e.rope_ctx / e.train_ctx, 1)}`));
   }
   // an unknown cache type: say its bits per value here and it is saved to Settings -> KV cache types
   const unknown = (e.notes || []).map((n) => (n.match(/unknown cache type '([^']+)'/) || [])[1]).find(Boolean);
@@ -952,7 +1033,7 @@ function renderEstimate(e) {
         try { await api("PUT", "/api/settings/kv", { custom_types: [...list, `${unknown}=${v}`].join(", ") }); await loadSettings(); VE.cmd = null; scheduleEstimate(); toast(`Saved: ${unknown} = ${v} bits per value.`, "ok"); } catch (err) { fail(err); }
       }, "sm primary"));
   }
-  fill(box, measuredLine, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, table,
+  fill(box, measuredLine, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, rope, table,
     h("p", { class: "hint", style: "margin:6px 0 0" }, "Model + KV cache are close. Buffers are a rough guess, and models that keep part of themselves on the CPU (Gemma-4 E2B/E4B) come out high."));
 }
 

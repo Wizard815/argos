@@ -34,7 +34,7 @@ VOLATILE_FLAGS = {"port", "host", "alias", "api-key", "api-key-file", "log-file"
 SHORT = {"ctx-size": "ctx", "cache-type-k": "ctk", "cache-type-v": "ctv", "n-gpu-layers": "ngl", "split-mode": "sm",
          "parallel": "np", "flash-attn": "fa", "spec-type": "spec", "batch-size": "b", "ubatch-size": "ub",
          "model": "file", "load-mode": "lm", "tensor-split": "ts", "n-cpu-moe": "ncmoe", "spec-draft-n-max": "draft-n",
-         "HIP_VISIBLE_DEVICES": "gpu", "CUDA_VISIBLE_DEVICES": "gpu", "LLAMA_ENABLE_MTP_OPT": "mtp-opt"}
+         "HIP_VISIBLE_DEVICES": "gpu", "CUDA_VISIBLE_DEVICES": "gpu", "ARGOS_GPUS": "gpu", "LLAMA_ENABLE_MTP_OPT": "mtp-opt"}
 UNTRACKED = "untracked"
 MIN_PROMPT_TOKENS = 128   # shorter prompts give noisy prefill speeds (and cache hits)
 MIN_OUTPUT_TOKENS = 16
@@ -63,7 +63,7 @@ def signature(command: str) -> tuple[str, dict[str, Any]]:
 
 
 # shown first, and whenever they differ anywhere; other settings only where a config departs from the usual value
-PRIORITY = ("ctx-size", "parallel", "kv", "split-mode", "spec-type", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+PRIORITY = ("ctx-size", "parallel", "kv", "split-mode", "spec-type", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "ARGOS_GPUS")
 
 
 def _display(settings: dict) -> dict:

@@ -31,6 +31,8 @@ func newTestPool(budget float64, sizes map[string]float64) (*poolSwapper, *time.
 		persistent: map[string]bool{},
 		sizes:      sizes,
 		pins:       map[string][]string{},
+		spread:     map[string]bool{},
+		even:       map[string]bool{},
 		placed:     map[string][]string{},
 		busy:       map[string]int{},
 		lastUsed:   map[string]time.Time{},
@@ -499,4 +501,77 @@ func TestPool_PlacementSurvivesReload(t *testing.T) {
 	// the second card is still free for another 24 GiB model
 	ok, cards := next.fits("other", []string{"big"})
 	assert.False(t, ok && len(cards) == 0)
+}
+
+// The live failure, with the live numbers: two 31 GiB cards, 9.06 GiB already
+// on card 0, and a 44.61 GiB model. It fits in neither card alone but 52.94 GiB
+// is free across the two, so it must be placed on both and start.
+func TestPool_AModelTooBigForOneCardFitsAcrossTwo(t *testing.T) {
+	p, _ := newTestCardPool([]float64{31, 31}, map[string]float64{"small": 9.06, "hermes": 44.61})
+	assert.Equal(t, []string{"0"}, start(p, "small"))
+
+	ok, cards := p.fits("hermes", []string{"small"})
+	assert.True(t, ok, "44.61 GiB fits in the 52.94 GiB free across both cards")
+	assert.Equal(t, []string{"0", "1"}, cards)
+}
+
+// The same rule seen from the eviction side: the pool must not report that it
+// needs to free a card to fit a model that already fits across both.
+func TestPool_NoEvictionForAModelThatFitsAcrossTwo(t *testing.T) {
+	p, _ := newTestCardPool([]float64{31, 31}, map[string]float64{"small": 9.06, "hermes": 44.61})
+	start(p, "small")
+
+	assert.Empty(t, p.EvictionFor("hermes", []string{"small"}))
+}
+
+func TestPool_TensorSplitUsesEveryCard(t *testing.T) {
+	p, _ := newTestCardPool([]float64{31, 31}, map[string]float64{"small": 7, "other": 4})
+	p.spread["small"] = true
+
+	assert.Equal(t, []string{"0", "1"}, start(p, "small"), "7 GiB fits one card, but a tensor split wants both")
+	assert.Equal(t, []string{"0"}, start(p, "other", "small"), "a plain model still takes one card")
+}
+
+// --split-mode tensor divides the model evenly, so every card it uses has to
+// hold its exact share - whatever the others have free.
+func TestPool_TensorSpreadEvictsUntilEveryCardHasItsShare(t *testing.T) {
+	p, now := newTestCardPool([]float64{31, 31}, map[string]float64{"a": 28, "wide": 20})
+	start(p, "a")
+	p.lastUsed["a"] = now.Add(-time.Hour)
+	p.spread["wide"] = true
+	p.even["wide"] = true
+
+	assert.Equal(t, []string{"a"}, p.EvictionFor("wide", []string{"a"}), "card 1 has room for all of it, but tensor takes half on card 0")
+}
+
+// layer and row split in proportion to each card's free memory, so the same
+// model needs the two cards together to hold it - and card 1 can carry most of
+// it while card 0 keeps its few free GiB. Refusing this evicted a running model
+// for room that was not needed.
+func TestPool_LayerSpreadFitsOnBothIfTogetherTheyHoldIt(t *testing.T) {
+	p, now := newTestCardPool([]float64{31, 31}, map[string]float64{"a": 28, "wide": 20})
+	start(p, "a")
+	p.lastUsed["a"] = now.Add(-time.Hour)
+	p.spread["wide"] = true // not even: layer or row
+
+	assert.Empty(t, p.EvictionFor("wide", []string{"a"}),
+		"3 GiB free on card 0 and 31 on card 1 holds a 20 GiB model between them")
+}
+
+func TestPool_SpreadFromTheModelConfig(t *testing.T) {
+	conf := config.Config{Models: map[string]config.ModelConfig{
+		"tensor": {VRAM: 7, Cmd: "llama-server -m /m/a.gguf --split-mode tensor -ngl 99"},
+		"row":    {VRAM: 7, Cmd: "llama-server -m /m/a.gguf -sm row"},
+		"layer":  {VRAM: 7, Cmd: "llama-server -m /m/a.gguf --split-mode layer"},
+		"pinned": {VRAM: 7, Cmd: "llama-server -m /m/a.gguf", Env: []string{"HIP_VISIBLE_DEVICES=0,1"}},
+		"one":    {VRAM: 7, Cmd: "llama-server -m /m/a.gguf", Env: []string{"HIP_VISIBLE_DEVICES=1"}},
+	}}
+	conf.Routing.Router.Settings.Pool = config.PoolConfig{Cards: []float64{32, 32}, Placement: "auto"}
+	p := newPoolSwapper(conf, logmon.NewWriter(io.Discard), func() ([]gpumem.Card, string) { return nil, "" })
+
+	assert.True(t, p.spread["tensor"])
+	assert.True(t, p.spread["row"])
+	assert.False(t, p.spread["layer"], "layer is llama-server's default; one card is still fine")
+	assert.True(t, p.spread["pinned"], "a pin to two cards means both")
+	assert.False(t, p.spread["one"])
 }
