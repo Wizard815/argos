@@ -31,9 +31,12 @@ type odysseusState struct {
 	lastWrote   bool
 
 	// choices is the per-model override state (model ID -> Odysseus preset
-	// label), loaded at construction and kept current by refreshes. modelStatus
-	// reads it to report each model's effective launch configuration.
-	choices map[string]string
+	// label), loaded at construction and kept current by refreshes. Requests
+	// for a model with a choice run that variant (requestPin), and modelStatus
+	// reports it. choicesMu guards it alone: mu is held across a whole refresh,
+	// which a request must never wait for.
+	choicesMu sync.RWMutex
+	choices   map[string]string
 
 	// lastWarnings is the warning set the previous refresh produced, so the log
 	// only carries what changed: refreshes run on a timer and on every
@@ -170,7 +173,7 @@ func (s *Server) runOdysseusRefresh(ctx context.Context) (odysseus.RefreshResult
 	s.odysseus.lastRun = time.Now()
 	if s.cfg.Odysseus.ChoicesPath != "" {
 		if cs, cerr := odysseus.LoadChoices(s.cfg.Odysseus.ChoicesPath); cerr == nil {
-			s.odysseus.choices = cs.Choices
+			s.setChoices(cs.Choices)
 		}
 	}
 	s.odysseus.lastModels = rr.Models
@@ -484,13 +487,36 @@ func (s *Server) handleAPIOdysseusModelProfiles(w http.ResponseWriter, r *http.R
 	sort.Strings(labels)
 
 	chosen := ""
-	if s.odysseus.choices != nil {
-		chosen = s.odysseus.choices[modelID]
-	}
+	chosen = s.chosenLabel(modelID)
 	json.NewEncoder(w).Encode(map[string]any{
 		"model":   modelID,
 		"labels":  labels,
 		"chosen":  chosen,
 		"enabled": true,
 	})
+}
+
+// setChoices replaces the per-model choices.
+func (s *Server) setChoices(c map[string]string) {
+	s.odysseus.choicesMu.Lock()
+	s.odysseus.choices = c
+	s.odysseus.choicesMu.Unlock()
+}
+
+// chosenLabel is the saved profile label picked for a model, or "".
+func (s *Server) chosenLabel(id string) string {
+	s.odysseus.choicesMu.RLock()
+	defer s.odysseus.choicesMu.RUnlock()
+	return s.odysseus.choices[id]
+}
+
+// allChoices is a copy of every model's choice.
+func (s *Server) allChoices() map[string]string {
+	s.odysseus.choicesMu.RLock()
+	defer s.odysseus.choicesMu.RUnlock()
+	out := make(map[string]string, len(s.odysseus.choices))
+	for k, v := range s.odysseus.choices {
+		out[k] = v
+	}
+	return out
 }
