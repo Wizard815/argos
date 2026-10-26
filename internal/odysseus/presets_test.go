@@ -234,3 +234,40 @@ func TestOdysseus_BareLlamaServerTakesTheBaseModelsProgram(t *testing.T) {
 		t.Errorf("with no base program the preset's own stays: %q", cmd)
 	}
 }
+
+func TestOdysseus_CommonProgram(t *testing.T) {
+	got := CommonProgram([]string{
+		"/app/bin/remote-llama rocm --port ${PORT} -m /m/a.gguf",
+		"/app/bin/remote-llama rocm --port ${PORT} -m /m/b.gguf",
+		"/app/bin/remote-llama cuda --port ${PORT} -m /m/c.gguf",
+		"llama-server --model /m/d.gguf",
+	})
+	if strings.Join(got, " ") != "/app/bin/remote-llama rocm" {
+		t.Errorf("CommonProgram = %q, want the launcher most models use", got)
+	}
+	if CommonProgram([]string{"llama-server -m /m/a.gguf"}) != nil {
+		t.Error("a bare llama-server is not a program to hand out")
+	}
+}
+
+// The preset's base model ID is not among the configured models (named
+// differently, or never scanned): the program most models use stands in, and
+// with none at all the variant says why it may not start.
+func TestOdysseus_BareLlamaServerFallsBackToTheCommonProgram(t *testing.T) {
+	base := "qwen3.8-27b-ud-q6_k_xl"
+	presets := State{Presets: []Preset{{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "fast", Cmd: cmdTurbo4}}}
+
+	res, err := Build(presets, Options{ProfilePrefix: "ody", EnsureDio: true,
+		Programs: map[string][]string{"some-other-model": {"/app/bin/remote-llama", "cuda"}}, DefaultProgram: []string{"/app/bin/remote-llama", "rocm"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if cmd, _ := res.Models[base+"--fast"]["cmd"].(string); !strings.HasPrefix(cmd, "/app/bin/remote-llama rocm ") {
+		t.Errorf("variant cmd = %q, want the common launcher", cmd)
+	}
+
+	res, _ = Build(presets, Options{ProfilePrefix: "ody", EnsureDio: true, Programs: map[string][]string{"some-other-model": {"llama-server"}}})
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), "bare 'llama-server'") {
+		t.Errorf("no program anywhere: want a warning, got %v", res.Warnings)
+	}
+}
