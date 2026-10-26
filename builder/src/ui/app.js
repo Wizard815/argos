@@ -685,7 +685,7 @@ function initBuilder() {
   };
   $("#bSave").onclick = () => saveProfile(false);
   $("#bSaveNew").onclick = () => saveProfile(true);
-  $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim()); };
+  $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim(), B.profileId); };
   $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? B.parsed.multiline : B.parsed.command); };
   $("#bRaw").onclick = () => { $("#bRawText").value = B.parsed.multiline; $("#bRawBox").hidden = false; $("#bPreview").hidden = true; $("#bRawText").focus(); };
   $("#bRawCancel").onclick = () => { $("#bRawBox").hidden = true; $("#bPreview").hidden = false; };
@@ -1181,7 +1181,7 @@ function renderProfiles() {
     { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
     { label: "", cell: (p) => h("td", { class: "actions" },
       iconBtn("sliders", "Open in builder", () => openCommand(p.launch_command, { name: p.name, base_model: p.base_model, source: p.source || "profile", profileId: p.profile_id })),
-      iconBtn("play", "Launch", () => launch(p.launch_command, p.base_model, p.name)),
+      iconBtn("play", "Launch", () => launch(p.launch_command, p.base_model, p.name, p.profile_id)),
       iconBtn("trash", "Delete", async () => {
         if (!(await confirmBox(`Delete profile “${p.name}”?`))) return;
         try { await api("DELETE", `/api/profiles/${encodeURIComponent(p.profile_id)}`); toast("Deleted.", "ok"); loadProfiles(); } catch (e) { fail(e); }
@@ -1209,14 +1209,15 @@ const pgMine = new Set((() => { try { return JSON.parse(sessionStorage.getItem(m
 const rememberMine = (id) => { pgMine.add(id); try { sessionStorage.setItem(mineKey, JSON.stringify([...pgMine])); } catch { /* private window */ } };
 const playgroundLaunches = () => S.launches.filter((l) => !l.engine || pgMine.has(l.base_model));
 
-async function launch(command, base_model, profile_name) {
+async function launch(command, base_model, profile_name, profile_id) {
   if (!command || !command.trim()) { toast("Nothing to launch.", "err"); return; }
   try {
-    const res = await api("POST", "/api/launches", { command, base_model, profile_name });
+    const res = await api("POST", "/api/launches", { command, base_model, profile_name, profile_id: profile_id || "" });
     if (res.engine) {
       // The engine already serves this model, so nothing runs here: it loads on
       // whichever host the engine launches on, and Schedule → Live shows it.
-      toast(`Asked the engine to load ${res.model}. It shows under Launches once it starts; benchmark it when it is ready.`, "ok");
+      if (res.warning) toast(res.warning, "err");
+      else toast(`Asked the engine to load ${res.model}. It shows under Launches once it starts; benchmark it when it is ready.`, "ok");
       rememberMine(res.model);
       S.sel = `engine:${res.model}`;
       show("playground");
