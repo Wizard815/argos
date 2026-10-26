@@ -19,6 +19,7 @@ from typing import Any, Optional
 from .always import apply_always
 from .command import parse_command, swap_model_id, to_odysseus
 from .gpu_pick import resolve as resolve_gpus
+from .servers import on_server
 
 
 def _label_key(label: str) -> str:
@@ -42,13 +43,14 @@ def _numbered(name: str, n: int) -> str:
 
 
 def profile_presets(profiles: list[dict], taken: Optional[dict] = None,
-                    always: Optional[dict] = None) -> tuple[list[dict], list[str]]:
-    """Profiles -> Odysseus presets. ``taken`` maps model ID -> labels already used; ``always`` adds the global env and flags."""
+                    always: Optional[dict] = None, server: Optional[dict] = None) -> tuple[list[dict], list[str]]:
+    """Profiles -> Odysseus presets. ``taken`` maps model ID -> labels already used; ``always`` adds the global env and
+    flags; ``server`` (``launch_parts`` of the server Profiles launches on) runs plain llama-server commands there."""
     taken = {k: set(v) for k, v in (taken or {}).items()}
     presets, warnings = [], []
     for p in profiles:
         try:
-            cmd = to_odysseus(resolve_gpus(parse_command(apply_always(p["launch_command"], always or {})[0])))
+            cmd = to_odysseus(resolve_gpus(on_server(parse_command(apply_always(p["launch_command"], always or {})[0]), server)))
         except ValueError as exc:
             warnings.append(f"profile {p['name']!r}: {exc}")
             continue
@@ -120,7 +122,7 @@ def normalize_preset(p: dict) -> dict:
 
 
 def build_state(profiles: list[dict], launches: list, odysseus: Optional[dict] = None,
-                always: Optional[dict] = None, include_tasks: bool = False) -> dict:
+                always: Optional[dict] = None, include_tasks: bool = False, server: Optional[dict] = None) -> dict:
     """The full state document. Odysseus' own presets (``odysseus = {"presets": [...], "error": ""}``) pass through first."""
     state: dict[str, Any] = {"tasks": [], "presets": [], "warnings": []}
     taken: dict[str, set] = {}
@@ -140,7 +142,7 @@ def build_state(profiles: list[dict], launches: list, odysseus: Optional[dict] =
             except ValueError:
                 pass
     # oldest first, so a profile keeps its label (and the engine its variant ID) when others are added
-    presets, warnings = profile_presets(sorted(profiles, key=lambda p: p.get("created_at") or 0), taken, always)
+    presets, warnings = profile_presets(sorted(profiles, key=lambda p: p.get("created_at") or 0), taken, always, server)
     state["presets"] += presets
     state["warnings"] += warnings
     if include_tasks:

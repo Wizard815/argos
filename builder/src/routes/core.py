@@ -13,6 +13,7 @@ from flask import Blueprint, abort, current_app, request
 
 from ..command import guess_base_model, parse_command, swap_model_id, to_odysseus
 from ..always import apply_always
+from ..servers import on_server
 from ..gpu_pick import apply_pick, picked, resolve as resolve_gpus, vars_for as gpu_vars_for
 from ..cookbook import build_state, normalize_preset
 from ..integrations import engine_api
@@ -419,6 +420,10 @@ def launch():
             f"The engine started {served} with its own command, not this one. "
             "Save this as a profile to launch with these settings."))
     try:
+        command = on_server(parse_command(command), c.servers.default_parts()).to_string()
+    except ValueError:
+        pass  # the runner reports a command it cannot parse
+    try:
         run = c.runner.launch(command, base_model=(d.get("base_model") or "").strip(), profile_name=name)
     except LaunchError as exc:
         c.event("launch", f"launch failed: {exc}", level="error", data={"command": command[:500]})
@@ -667,7 +672,8 @@ def cookbook_state() -> dict:
 
     c = ctx()
     always = c.settings.get("always")
-    return build_state(c.store.list_profiles(), c.runner.list(), cookbook_presets(), always if always["on_export"] else None)
+    return build_state(c.store.list_profiles(), c.runner.list(), cookbook_presets(), always if always["on_export"] else None,
+                       server=c.servers.default_parts())
 
 
 @bp.get("/api/cookbook/state")

@@ -133,6 +133,8 @@
       <div class="view-head">
         <div><h1>Profiles</h1><p class="sub">Your saved launch commands — as many per model as you like. Every one is served to the engine in Odysseus' format.</p></div>
         <span class="spacer"></span>
+        <label class="row" style="gap:6px;align-items:center" title="Where profiles run: a profile whose command starts with llama-server is launched on this server, here and by the engine. One that names its own program keeps it.">
+          <span class="muted mono-sm">Server</span><select id="pServer" class="server-select" style="width:auto; max-width:220px" aria-label="Server profiles run on"></select></label>
         <select id="pModel" style="width:auto; max-width:260px" aria-label="Model"></select>
         <input type="search" id="pSearch" placeholder="Filter…" style="width:200px">
         <button class="btn primary" data-action="new"><i data-icon="plus"></i>New</button>

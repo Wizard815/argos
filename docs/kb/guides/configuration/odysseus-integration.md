@@ -220,6 +220,30 @@ llama-server binary. So the Argos container needs no `llama-server` of its own
 when llama.cpp runs elsewhere; the variant goes the same way the base model does.
 A preset that names another program keeps it.
 
+## Which server profiles run on
+
+The **Server** select at the top of the Profiles page lists Local and the SSH
+servers from Servers, like the server select in Odysseus' Cookbook. It is the
+default server.
+
+- **Local:** a plain `llama-server` profile runs the way the base models do
+  (the section above).
+- **An SSH server:** a plain `llama-server` profile runs there, through the
+  launcher with that server's own settings:
+
+  ```
+  ROCM_SRV3_SSH_HOST=mx-llamacpp-ssh ROCM_SRV3_SSH_USER=root ... /app/bin/remote-llama rocm_srv3 --model ...
+  ```
+
+  The name carries the server's GPU runtime (its GPU setting, or what Check
+  found), so the GPUs field writes `HIP_VISIBLE_DEVICES` or
+  `CUDA_VISIBLE_DEVICES` to match. Its llama-server path and its key (when
+  Servers made one) go along too.
+
+A profile that names its own program keeps it. Changing the server asks the
+engine to re-read the profiles; models already running stay where they are
+until they are loaded again.
+
 ## Launching a profile from the Builder
 
 The base model keeps its own default command, so loading it ignores every

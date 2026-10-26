@@ -398,7 +398,30 @@ function show(view, { replace = false } = {}) {
 }
 
 // ── Shared data ──────────────────────────────────────────────
+// ── Profiles: which server they run on ──────────────────────
+// Like the server select in Odysseus' Cookbook: Local, or one of the SSH servers from Servers. It is the
+// default server, so the engine's copies of the profiles follow it too.
+async function loadProfileServer() {
+  const sel = $("#pServer");
+  if (!sel) return;
+  let list;
+  try { list = (await api("GET", "/api/servers")).servers; } catch (e) { return; }
+  const colorOf = (s, i) => s.color || (s.kind === "local" ? "#bd93f9" : svAuto(i));
+  fill(sel, list.map((s, i) => h("option", { value: String(s.id), style: `color:${colorOf(s, i)}` }, `● ${s.name}`)));
+  const cur = list.find((s) => s.is_default) || list[0];
+  if (cur) { sel.value = String(cur.id); sel.style.color = colorOf(cur, list.indexOf(cur)); }
+  sel.onchange = async () => {
+    const s = list.find((x) => String(x.id) === sel.value);
+    try {
+      await api("POST", `/api/servers/${sel.value}/default`);
+      sel.style.color = colorOf(s, list.indexOf(s));
+      toast(s.kind === "local" ? "Profiles run the way your base models do." : `Profiles now launch on ${s.name}. Models already running stay where they are.`, "ok");
+    } catch (e) { fail(e); loadProfileServer(); }
+  };
+}
+
 async function loadProfiles() {
+  loadProfileServer();
   S.profiles = (await api("GET", "/api/profiles")).profiles;
   // sizes come separately: they read model headers, and the list must not wait for that
   api("GET", "/api/profiles/estimates").then((r) => { S.profileEst = r.estimates; if (S.view === "profiles") renderProfiles(); }).catch(() => {});
