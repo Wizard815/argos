@@ -36,6 +36,7 @@ import logging
 import os
 import sqlite3
 import threading
+import weakref
 
 from . import dialect
 import time
@@ -352,6 +353,8 @@ class Store:
             return conn
         conn = sqlite3.connect(self.path, check_same_thread=False, timeout=5.0)
         conn.row_factory = sqlite3.Row
+        with self._lock:
+            self._open.append(conn)
         # ARGOS_SQLITE_JOURNAL forces the journal when the guess is wrong (a bind mount can
         # hide what the filesystem underneath really is). Whitelisted, never raw.
         forced = (os.environ.get("ARGOS_SQLITE_JOURNAL") or "").strip().upper()
@@ -373,7 +376,21 @@ class Store:
         if conn is None:
             conn = self._connect()
             self._local.conn = conn
+            # A connection per thread, and many threads are short-lived (a launch, a warm-up, a
+            # refresh). Nothing closed theirs, so on Postgres they piled up until the server
+            # refused new clients ("too many clients already"). Close it when the thread goes.
+            weakref.finalize(threading.current_thread(), self._release, conn)
         return conn
+
+    def _release(self, conn) -> None:
+        """A thread that had a connection has ended: close it and forget it."""
+        with self._lock:
+            if conn in self._open:
+                self._open.remove(conn)
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     @staticmethod
     def _journal_for(path: str) -> str:
