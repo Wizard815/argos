@@ -4,7 +4,7 @@ summary: Let Odysseus own a model's launch command and switch to it with a profi
 category: guides
 tags: [odysseus, profiles, integration, launch, commands, cookbook]
 config_keys: [odysseus, odysseus.enabled, odysseus.stateFile, odysseus.baseURL, odysseus.token, odysseus.tokenEnv, odysseus.tokenFile, odysseus.refreshSeconds, odysseus.profilePrefix, odysseus.statuses, odysseus.outputFile, odysseus.ensureDio, odysseus.timeoutSeconds]
-updated: 2026-09-26
+updated: 2026-10-26
 ---
 
 # Odysseus integration
@@ -74,7 +74,9 @@ entry moves to `removedTasks`, which records only an id and a timestamp — the
 command is gone. Those become `<prefix>` (newest first) and `<prefix>-N`.
 
 When a preset and a live task describe the same command, the preset's name wins
-and only one variant is generated.
+and only one variant is generated. "The same command" means the same flags and
+the same environment: two presets with identical flags but `HIP_VISIBLE_DEVICES=0`
+and `=1` are two variants, each on its own card.
 
 Practical consequence: if `models` comes back `0`, check the file has presets or
 live tasks. An empty `tasks` with only `removedTasks` maps to nothing, which is
@@ -208,6 +210,23 @@ container's and wins for the same key.
 
 Tasks that are not llama.cpp (a vLLM command, say) have no `.gguf` path to map, so
 they are skipped with a warning rather than guessed at.
+
+## Launching a profile from the Builder
+
+The base model keeps its own default command, so loading it ignores every
+profile. **Launch** in the Builder (and on the Profiles page) loads the profile's
+variant instead, so the engine runs exactly the saved command: its context, cache
+types, split mode and GPU pin. If the profile was saved a moment ago, Launch asks
+the engine to refresh and waits up to 10 seconds for the variant.
+
+What goes wrong:
+
+- **Unsaved changes:** Launch refuses and says so. Save (or Save as new) first;
+  the engine only runs saved profiles.
+- **"The engine does not have this profile":** the engine never picked it up.
+  Check `odysseus.baseURL` points at the builder.
+- **A pasted command that is not a profile:** the engine loads the base model with
+  its own command and the Builder warns that your settings were not used.
 
 ## Related
 
