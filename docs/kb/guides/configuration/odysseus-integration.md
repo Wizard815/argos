@@ -251,13 +251,16 @@ A client asking for a model by its own name (`"model": "ornith-1.5-9b-q6_k"`,
 from Hermes, Open WebUI, any OpenAI client) gets that model's default command.
 A profile is the variant `<model>--<label>`. Two ways to get it:
 
-- **Serve (the model's default):** **Make default** in the Builder, or **serve**
-  on the Profiles page, makes requests for
+- **Serve (the model's default):** the **Model defaults** card on the Profiles
+  page, **Make default** in the Builder, or **serve** on a profile makes
+  requests for
   the model's plain name run that profile. One profile per model; **serving**
   marks it, and clicking it again goes back to the model's own command. This
   is the model's choice (`PUT /api/odysseus/model/{model}/profile`), and it
   routes requests by itself: no profile has to be activated, and it survives a
   restart. An active profile's pin still wins where it has one.
+  It applies to the model's aliases too, and `/v1/models` names the plain model
+  `<name> (default: <label>)` so a client's picker shows what it gets.
 - **Pick the profile in the client:** every saved profile is listed in
   `/v1/models` as `<model>--<label>`, named `<model name> (<label>)`, so
   Hermes' "Set Session Model" (or any model picker) shows it next to the plain
