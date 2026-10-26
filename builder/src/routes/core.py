@@ -167,6 +167,15 @@ def profiles_served():
               engine=bool(url))
 
 
+@bp.put("/api/profiles/<profile_id>/favorite")
+def profile_favorite(profile_id):
+    """Star (``on``) or unstar a profile."""
+    check_id(profile_id)
+    if not ctx().store.set_profile_favorite(profile_id, bool(body().get("on", True))):
+        return err("no such profile", 404)
+    return ok(profile=ctx().store.get_profile(profile_id))
+
+
 @bp.put("/api/profiles/<profile_id>/serve")
 def profile_serve(profile_id):
     """Make (``on``) or stop this profile being what its model's own name runs."""
@@ -189,6 +198,7 @@ def profile_serve(profile_id):
                     time.sleep(0.5)
                     known = set((engine_api.model_profile(url, model) or {}).get("labels") or [])
             engine_api.set_model_profile(url, model, label)
+            c.store.touch_profile(profile_id)
         elif (engine_api.model_profile(url, model) or {}).get("chosen") == label:
             engine_api.set_model_profile(url, model, None)
     except Exception as exc:  # noqa: BLE001
@@ -468,6 +478,8 @@ def launch():
         return err("command is required")
     name = (d.get("profile_name") or "").strip()
     profile_id = (d.get("profile_id") or "").strip()
+    if profile_id:
+        c.store.touch_profile(profile_id)
     if profile_id and c.settings.get("integrations").get("engine_url"):
         variant, problem = _profile_variant(c, profile_id, command)
         if variant:

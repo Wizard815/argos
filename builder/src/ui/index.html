@@ -319,6 +319,10 @@
     <section class="view" id="view-logs">
       <div class="view-head">
         <div><h1>Usage</h1><p class="sub">Long-term history in the embedded database: GPU readings, request speeds, and everything this app did.</p></div>
+        <div class="row">
+          <label class="check" title="Refresh this page every 2 seconds while it is open"><input type="checkbox" id="uLive"> Live</label>
+          <button class="btn sm" id="uRefresh" title="Reload this tab now"><i data-icon="refresh"></i>Refresh</button>
+        </div>
       </div>
       <div class="tabs" data-tabs="logs">
         <button data-pane="gpu" class="on">GPU</button><button data-pane="requests">Requests</button><button data-pane="events">Events</button><button data-pane="offargos">Off-Argos</button>

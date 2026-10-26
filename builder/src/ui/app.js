@@ -1226,15 +1226,21 @@ function showProfilesFor(modelId) {
 }
 async function toggleFavorite(p) {
   try {
-    await api("POST", "/api/profiles", { ...p, favorite: !p.favorite });
+    await api("PUT", `/api/profiles/${encodeURIComponent(p.profile_id)}/favorite`, { on: !p.favorite });
     await loadProfiles();
   } catch (e) { fail(e); }
 }
+const FAV_GROUP = "\u0000fav", RECENT_GROUP = "\u0000recent";
+const RECENT_S = 14 * 86400, RECENT_N = 6;  // used in the last two weeks, at most six
 function renderProfiles() {
   fillProfileModels();
   const q = $("#pSearch").value.trim().toLowerCase(), m = $("#pModel").value;
   const rows = S.profiles.filter((p) => (!m || (p.model_id || p.base_model) === m)
     && (!q || `${p.name} ${p.base_model} ${p.model_id} ${p.launch_command} ${p.source}`.toLowerCase().includes(q)));
+  // starred profiles, then the few used last, sit open at the top; everything else is grouped by model family
+  const recent = new Set(S.profiles.filter((p) => !p.favorite && p.last_used_at && Date.now() / 1000 - p.last_used_at < RECENT_S)
+    .sort((a, b) => b.last_used_at - a.last_used_at).slice(0, RECENT_N).map((p) => p.profile_id));
+  const pinned = { [FAV_GROUP]: 0, [RECENT_GROUP]: 1 };
   renderTable($("#pTable"), [
     { label: "", cell: (p) => h("td", { style: "width:1%" }, h("button", {
       class: "icon-btn ghost", title: p.favorite ? "Unstar" : "Star", "aria-label": "Favorite",
@@ -1257,6 +1263,8 @@ function renderProfiles() {
     { label: "Served as", cell: (p) => servedCell(p) },
     { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
     { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
+    { key: "last_used_at", label: "Last used", sort: (p) => p.last_used_at || 0,
+      cell: (p) => h("span", { class: "muted", title: "launched, or made its model's default" }, p.last_used_at ? ago(p.last_used_at) : DASH) },
     { label: "", cell: (p) => h("td", { class: "actions" },
       iconBtn("sliders", "Open in builder", () => openCommand(p.launch_command, { name: p.name, base_model: p.base_model, source: p.source || "profile", profileId: p.profile_id })),
       iconBtn("play", "Launch", () => launch(p.launch_command, p.base_model, p.name, p.profile_id)),
@@ -1266,8 +1274,14 @@ function renderProfiles() {
       }, "danger")) },
   ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."), {
     // grouped by the model's name (Qwen, Gemma, …), closed until opened; a search or a model filter shows every match
-    group: (p) => { const f = modelFamily({ name: p.base_model || p.model_id || p.name, kind: "other" }); return { key: f, label: f }; },
-    groupOrder: (a, b) => a.label.localeCompare(b.label), collapsed: q || m ? ALL_OPEN : PG.collapsed,
+    group: (p) => {
+      if (!q && !m && p.favorite) return { key: FAV_GROUP, label: "★ Favorites" };
+      if (!q && !m && recent.has(p.profile_id)) return { key: RECENT_GROUP, label: "Recently used" };
+      const f = modelFamily({ name: p.base_model || p.model_id || p.name, kind: "other" }); return { key: f, label: f };
+    },
+    groupOrder: (a, b) => (pinned[a.key] ?? 2) - (pinned[b.key] ?? 2) || a.label.localeCompare(b.label),
+    // the pinned groups start open (a toggle closes them); the model families start closed
+    collapsed: q || m ? ALL_OPEN : { has: (k) => (k in pinned ? !PG.collapsed.has(k) : PG.collapsed.has(k)) },
     onToggle: (k) => { PG.toggle(k); renderProfiles(); },
   });
 }
@@ -2496,7 +2510,7 @@ function renderGpu() {
 }
 
 async function loadGpu() {
-  $("#gCharts").style.opacity = G.data ? "0.5" : "1";
+  if (!usageLive()) $("#gCharts").style.opacity = G.data ? "0.5" : "1";  // live, it would blink every refresh
   try { G.data = await api("GET", `/api/gpu/series?range=${G.range}`); } catch (e) { fail(e); }
   $("#gCharts").style.opacity = "1";
   renderGpu();
@@ -2612,12 +2626,29 @@ async function refreshLogsNav() {
   } catch (e) { /* ignore */ }
 }
 
+// Live: the Usage page refreshes every 2 seconds instead of only on short ranges. Remembered per browser.
+const usageLive = () => { try { return localStorage.getItem("usageLive") === "1"; } catch (e) { return false; } };
+function wireUsageControls() {
+  const live = $("#uLive"), btn = $("#uRefresh");
+  if (!live || live.dataset.wired) return;
+  live.dataset.wired = "1";
+  live.checked = usageLive();
+  live.addEventListener("change", () => {
+    try { localStorage.setItem("usageLive", live.checked ? "1" : "0"); } catch (e) { /* private window */ }
+    if (live.checked) loadLogs();  // the poll loop picks the faster pace on its next round
+  });
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try { await loadLogs(); } finally { btn.disabled = false; }
+  };
+}
 function loadLogs() {
   const pane = $(".tabs[data-tabs=logs] button.on")?.dataset.pane || "gpu";
-  if (pane === "gpu") loadGpu();
-  else if (pane === "requests") loadRequests();
-  else if (pane === "offargos") loadOffArgos();
-  else loadEvents();
+  wireUsageControls();
+  if (pane === "gpu") return loadGpu();
+  if (pane === "requests") return loadRequests();
+  if (pane === "offargos") return loadOffArgos();
+  return loadEvents();
 }
 
 // ── Usage → Off-Argos: GPU memory Argos did not start ────────
@@ -4984,7 +5015,7 @@ async function tick() {
     const downloading = S.downloads.some((d) => d.status === "running" || d.status === "queued");
     if (downloading || (S.view === "models" && tickCount % 4 === 0)) { await loadDownloads(); busy = busy || downloading; }
     const logsPane = $(".tabs[data-tabs=logs] button.on")?.dataset.pane;
-    if (S.view === "logs" && ((logsPane === "gpu" && SHORT_RANGES.has(G.range)) || (logsPane === "requests" && SHORT_RANGES.has($("#rRange").value)) || tickCount % 10 === 0)) loadLogs();
+    if (S.view === "logs" && (usageLive() || (logsPane === "gpu" && SHORT_RANGES.has(G.range)) || (logsPane === "requests" && SHORT_RANGES.has($("#rRange").value)) || tickCount % 10 === 0)) loadLogs();
     if (S.view === "schedule" && SC.pane === "live") loadLive();
     else if (tickCount % 20 === 3) loadLive();
     if (S.view === "inventory" && tickCount % 10 === 0) loadInventory();
@@ -4993,8 +5024,9 @@ async function tick() {
     if (S.view === "assistant" && !A.busy && tickCount % 3 === 0) loadAssistant();
   } catch (e) { /* server restarting; try again */ }
   const liveLogs = S.view === "logs" && (SHORT_RANGES.has(G.range) || SHORT_RANGES.has($("#rRange").value));
+  const usageLiveNow = S.view === "logs" && usageLive();
   if (document.hidden) { pollTimer = setTimeout(tick, 30000); return; }  // nobody is looking: poll rarely
-  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") ? 1500 : liveLogs ? 3000 : 8000);
+  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") ? 1500 : usageLiveNow ? 2000 : liveLogs ? 3000 : 8000);
 }
 
 function initTabs() {
