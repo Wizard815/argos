@@ -3,7 +3,7 @@ title: Odysseus integration
 summary: Let Odysseus own a model's launch command and switch to it with a profile, without changing Argos's defaults.
 category: guides
 tags: [odysseus, profiles, integration, launch, commands, cookbook]
-config_keys: [odysseus, odysseus.enabled, odysseus.stateFile, odysseus.baseURL, odysseus.token, odysseus.tokenEnv, odysseus.tokenFile, odysseus.refreshSeconds, odysseus.profilePrefix, odysseus.statuses, odysseus.outputFile, odysseus.ensureDio, odysseus.timeoutSeconds]
+config_keys: [odysseus, odysseus.enabled, odysseus.stateFile, odysseus.baseURL, odysseus.token, odysseus.tokenEnv, odysseus.tokenFile, odysseus.refreshSeconds, odysseus.profilePrefix, odysseus.statuses, odysseus.outputFile, odysseus.ensureDio, odysseus.listVariants, odysseus.timeoutSeconds]
 updated: 2026-10-26
 ---
 
@@ -44,6 +44,7 @@ odysseus:
   profilePrefix: "ody"
   outputFile: "/app/config.d/odysseus.generated.yaml"
   ensureDio: true
+  listVariants: true                         # profiles show up in /v1/models
 ```
 
 `outputFile` must live in the `-config-dir` so Argos's merge and the
@@ -256,9 +257,22 @@ A profile is the variant `<model>--<label>`. Two ways to get it:
   is the model's choice (`PUT /api/odysseus/model/{model}/profile`), and it
   routes requests by itself: no profile has to be activated, and it survives a
   restart. An active profile's pin still wins where it has one.
-- **Ask for the variant:** the **Served as** column shows the name to put in
-  the client, with a copy button. Variants are unlisted in `/v1/models` but
-  answer requests.
+- **Pick the profile in the client:** every saved profile is listed in
+  `/v1/models` as `<model>--<label>`, named `<model name> (<label>)`, so
+  Hermes' "Set Session Model" (or any model picker) shows it next to the plain
+  model. Choosing it runs that profile, whatever the model serves by default.
+  The **Served as** column shows the same name, with a copy button.
+
+`odysseus.listVariants: false` takes the profiles back out of `/v1/models`
+(default `true`). They still answer when asked for by name, and a served
+profile still applies.
+
+What goes wrong:
+
+- **The client shows only plain models:** the engine predates this setting, or
+  `listVariants` is `false`. Some clients cache the model list; refresh it.
+- **A profile is missing:** only saved profiles are exported. Save it; the
+  engine picks it up on its next refresh (`refreshSeconds`).
 
 ## Launching a profile from the Builder
 
