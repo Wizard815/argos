@@ -50,6 +50,9 @@ type PoolModelStatus struct {
 	Protected   bool       `json:"protected"` // used within protectSeconds
 	LastUsed    *time.Time `json:"last_used,omitempty"`
 	LoadSeconds float64    `json:"load_seconds,omitempty"` // measured; 0 until loaded once
+	// Prefill is the prompt the model is processing, read from its log; nil
+	// when it is not prefilling (generating, idle or stopped).
+	Prefill *Prefill `json:"prefill,omitempty"`
 }
 
 // PoolQueueStatus is one request waiting for room or for a busy model.
@@ -111,6 +114,9 @@ func (p *poolSwapper) status(running map[string]process.ProcessState, sched sche
 		if st, ok := running[id]; ok {
 			m.State = string(st)
 			m.Cards = append(m.Cards, p.placed[id]...)
+			if pf, ok := Prefills.Get(id); ok {
+				m.Prefill = &pf
+			}
 		}
 		if t, ok := p.lastUsed[id]; ok {
 			t := t

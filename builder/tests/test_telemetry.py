@@ -114,3 +114,31 @@ def test_log_routes(client, app):
     assert client.get("/api/events?q=nothing").get_json()["events"] == []
     r = client.get("/api/requests?range=24h").get_json()
     assert r["requests"][0]["model"] == "m" and r["stats"][0]["requests"] == 1
+
+
+def test_Collector_live_page_samples_every_two_seconds(tmp_path, monkeypatch):
+    """Usage Live polls with live=1: the GPUs are read every 2 s while it does, not every 15 s, and the
+    background hooks keep their own pace."""
+    from src import telemetry
+    store = Store(str(tmp_path / "t.db"))
+    col = Collector(store, settings_for("", source="local"), lambda *a, **k: None, hooks=[lambda: hooks.append(1)])
+    hooks, ticks = [], []
+    monkeypatch.setattr(col, "tick", lambda: ticks.append(time.time()))
+    monkeypatch.setattr(telemetry, "LIVE_INTERVAL_S", 0.05)
+    col.start()
+    time.sleep(0.3)
+    assert len(ticks) == 1, "15 s apart when nobody is watching live"
+    col.watch_live(seconds=0.5)
+    time.sleep(0.4)
+    col.stop()
+    assert len(ticks) >= 4, "a live page wakes the loop and it samples fast"
+    assert len(hooks) == 1, "the hooks do not speed up with it"
+
+
+def test_Collector_series_with_live_turns_it_on(client, app):
+    col = app.extensions["pb"].collector
+    assert not col.live
+    client.get("/api/gpu/series?range=5m")
+    assert not col.live
+    client.get("/api/gpu/series?range=5m&live=1")
+    assert col.live

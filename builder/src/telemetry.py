@@ -165,6 +165,10 @@ def recent_requests(base_url: str, limit: int = 25) -> list[dict]:
     return rows
 
 
+LIVE_INTERVAL_S = 2  # how often the GPUs are read while a Usage page is live
+LIVE_HOLD_S = 10  # live sampling stops this long after the page's last poll
+
+
 class Collector:
     """Background loop: GPU samples, activity sync, rollups and periodic hooks."""
 
@@ -175,6 +179,9 @@ class Collector:
         self.on_event = on_event
         self.hooks = hooks or []
         self._stop = threading.Event()
+        self._nudge = threading.Event()  # wakes the loop early: a Live page just opened
+        self._live_until = 0.0
+        self._last_hooks = 0.0
         self._thread: Optional[threading.Thread] = None
         self._last_rollup = 0.0
         self._reported: dict[str, float] = {}
@@ -187,6 +194,19 @@ class Collector:
 
     def stop(self) -> None:
         self._stop.set()
+        self._nudge.set()
+
+    def watch_live(self, seconds: float = LIVE_HOLD_S) -> None:
+        """Someone is watching Usage live: sample every LIVE_INTERVAL_S for the next ``seconds``, not every
+        telemetry interval (15 s by default), so the charts move while they look. Each poll renews it."""
+        was = self.live
+        self._live_until = time.time() + seconds
+        if not was:
+            self._nudge.set()
+
+    @property
+    def live(self) -> bool:
+        return time.time() < self._live_until
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -194,12 +214,15 @@ class Collector:
             interval = max(2, int(t.get("interval_s") or 15))
             if t.get("enabled") and t.get("source") != "off":
                 self.tick()
-            for hook in self.hooks:
-                try:
-                    hook()
-                except Exception as exc:  # noqa: BLE001
-                    self._report(f"background task failed: {exc}")
-            self._stop.wait(interval)
+            if time.time() - self._last_hooks >= interval:  # the hooks keep their own pace while live
+                self._last_hooks = time.time()
+                for hook in self.hooks:
+                    try:
+                        hook()
+                    except Exception as exc:  # noqa: BLE001
+                        self._report(f"background task failed: {exc}")
+            self._nudge.wait(min(interval, LIVE_INTERVAL_S) if self.live else interval)
+            self._nudge.clear()
 
     def sample(self) -> list[dict]:
         s = self.settings()
