@@ -149,6 +149,21 @@ def pool_state(base_url: str, timeout: float = 3.0) -> dict:
     return state
 
 
+def inflight(base_url: str, timeout: float = 3.0) -> list[dict]:
+    """The engine's ``GET /api/inflight``: requests still running, oldest first, each with ``elapsed_ms``.
+    An engine without the endpoint has none to show."""
+    try:
+        data = _get(base_url.rstrip("/") + "/api/inflight", timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return []
+        raise
+    rows = data.get("requests") if isinstance(data, dict) else None
+    return [{"id": r.get("id"), "model": r.get("model") or "", "path": r.get("req_path") or "", "src": r.get("remote_ip") or "",
+             "elapsed_ms": r.get("elapsed_ms") or 0, "resp_bytes": r.get("resp_bytes") or 0}
+            for r in rows or [] if isinstance(r, dict)]
+
+
 def model_ids(base_url: str, timeout: float = 3.0) -> set[str]:
     """Ids the engine lists at ``/v1/models`` (variants included, unlisted models not)."""
     data = _get(base_url.rstrip("/") + "/v1/models", timeout)

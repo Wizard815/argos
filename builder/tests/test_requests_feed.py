@@ -44,3 +44,27 @@ def test_RequestsFeed_without_the_engine_shows_what_was_synced(app, client):
                                               "input_tokens": 5, "output_tokens": 2}])
     j = client.get("/api/requests/recent").get_json()
     assert j["source"] == "stored" and j["requests"][0]["model"] == "m"
+
+
+def test_RequestsFeed_shows_requests_while_they_run(app, client, monkeypatch):
+    client.put("/api/settings/integrations", json={"engine_url": "http://engine.test"})
+    fake_engine(monkeypatch)
+    from src.integrations import engine_api
+    monkeypatch.setattr(engine_api, "_get", lambda url, timeout: {"requests": [
+        {"id": "3", "model": "chat", "req_path": "/v1/chat/completions", "remote_ip": "192.168.20.7",
+         "elapsed_ms": 50260, "resp_bytes": 0}]} if url.endswith("/api/inflight") else {})
+    want = [{"id": "3", "model": "chat", "path": "/v1/chat/completions", "src": "192.168.20.7", "elapsed_ms": 50260, "resp_bytes": 0}]
+    assert client.get("/api/schedule/live").get_json()["running"] == want
+    assert client.get("/api/requests/recent").get_json()["running"] == want
+
+
+def test_RequestsFeed_an_engine_without_inflight_still_shows_finished_requests(app, client, monkeypatch):
+    client.put("/api/settings/integrations", json={"engine_url": "http://engine.test"})
+    fake_engine(monkeypatch)
+    from src.integrations import engine_api
+
+    def gone(url, timeout):
+        raise OSError("no such endpoint")
+    monkeypatch.setattr(engine_api, "_get", gone)
+    j = client.get("/api/requests/recent").get_json()
+    assert j["source"] == "engine" and len(j["requests"]) == 2 and j["running"] == []

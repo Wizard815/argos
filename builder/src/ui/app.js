@@ -366,7 +366,7 @@ const ensureBuilderData = () => Promise.all([
   once("library", loadLibrary), once("catalog", loadCatalog), once("integrations", loadIntegrations), once("traits", loadSeen),
 ]).catch(() => {});
 const onShow = {
-  builder: () => { ensureBuilderData(); },
+  builder: () => { ensureBuilderData(); loadServed(); },
   models: () => { loadLibrary(); loadCatalog(); loadDownloads(); },
   profiles: () => { ensureBuilderData(); renderProfiles(); },
   perf: () => loadPerf(),
@@ -426,6 +426,7 @@ async function loadProfileServer() {
 async function loadServed() {
   try { S.served = (await api("GET", "/api/profiles/served")).profiles; } catch (e) { S.served = {}; }
   if (S.view === "profiles") renderProfiles();
+  renderBuilderDefault();
 }
 function servedCell(p) {
   const v = (S.served || {})[p.profile_id];
@@ -557,7 +558,33 @@ const B = { cmd: "", parsed: null, profileId: null, source: "", layout: "multi",
 
 const isDirty = () => !!B.parsed && (B.cmd !== B.saved.cmd || $("#bName").value.trim() !== B.saved.name);
 function markSaved() { B.saved = { cmd: B.cmd, name: $("#bName").value.trim(), base: $("#bBase").value }; renderDirty(); }
-function renderDirty() { $("#bDirty").hidden = !isDirty(); $("#bDelete").disabled = !B.profileId; }
+function renderDirty() { $("#bDirty").hidden = !isDirty(); $("#bDelete").disabled = !B.profileId; renderBuilderDefault(); }
+
+// The model's default profile: what a client asking for the model's own name gets (Hermes keeps that one
+// name selected, so changing the default here needs no refresh there). Same switch as "serve" on Profiles.
+function renderBuilderDefault() {
+  const btn = $("#bDefault");
+  if (!btn) return;
+  const v = B.profileId && (S.served || {})[B.profileId];
+  btn.classList.toggle("on", !!(v && v.serving));
+  btn.textContent = v && v.serving ? "Default ✓" : "Make default";
+  btn.title = !B.profileId ? "Save this profile first; then it can be the model's default"
+    : !v ? "The engine has not got this profile yet"
+    : v.serving ? `Requests for ${v.model} run this profile. Click to go back to the model's own command.`
+    : `Make requests for ${v.model} run this profile; its other profiles stay available by their own names`;
+}
+async function toggleBuilderDefault() {
+  if (!B.profileId) return toast("Save the profile first; then it can be the model's default.", "err");
+  if (isDirty()) return toast("Save your changes first: the engine runs the saved profile.", "err");
+  const v = (S.served || {})[B.profileId];
+  const on = !(v && v.serving);
+  try {
+    const r = await api("PUT", `/api/profiles/${B.profileId}/serve`, { on });
+    toast(on ? `Requests for ${r.model} now run “${$("#bName").value.trim() || r.variant}”.` : `Requests for ${r.model} run its own command again.`, "ok");
+  } catch (e) { fail(e); }
+  await loadServed();
+  renderBuilderDefault();
+}
 async function leaveOk() { return !isDirty() || confirmBox("This preset has unsaved changes. Discard them?", "Discard"); }
 
 /** The library model the builder is on: from the command's file, else the Model box. */
@@ -734,6 +761,7 @@ function initBuilder() {
   };
   $("#bSave").onclick = () => saveProfile(false);
   $("#bSaveNew").onclick = () => saveProfile(true);
+  $("#bDefault").onclick = toggleBuilderDefault;
   $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim(), B.profileId); };
   $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? B.parsed.multiline : B.parsed.command); };
   $("#bRaw").onclick = () => { $("#bRawText").value = B.parsed.multiline; $("#bRawBox").hidden = false; $("#bPreview").hidden = true; $("#bRawText").focus(); };
@@ -2488,7 +2516,7 @@ async function loadGpuRequests() {
   if (!tog.checked) return fill(box);
   let r;
   try { r = await api("GET", "/api/requests/recent?limit=25"); } catch (e) { return fill(box, h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); }
-  fill(box, requestsCard(r.requests, r.in_flight, { hint: r.source === "engine" ? "newest first · live from the engine" : "newest first · as last synced" }));
+  fill(box, requestsCard(r.requests, r.in_flight, { running: r.running, hint: r.source === "engine" ? "newest first · live from the engine" : "newest first · as last synced" }));
 }
 
 // ── Logs: requests + events ──────────────────────────────────
@@ -4233,6 +4261,12 @@ const REQ_KIND = [[/chat\/completions/, "chat"], [/embeddings/, "embeddings"], [
 const reqKind = (path) => (REQ_KIND.find(([re]) => re.test(path || "")) || [null, path || DASH])[1];
 // when each request was first seen, so one that just arrived stays lit for a few refreshes
 const seenReq = { primed: false, at: new Map() };
+const runClock = (ms) => (ms < 60000 ? `${num(ms / 1000, 1)} s` : `${Math.floor(ms / 60000)}m ${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}s`);
+const bytesShort = (b) => (b < 1024 ? `${b} B` : b < 1048576 ? `${num(b / 1024, 1)} KB` : `${num(b / 1048576, 1)} MB`);
+// one clock for every running request on the page, between refreshes
+setInterval(() => {
+  for (const el of document.querySelectorAll("[data-run-start]")) el.textContent = runClock(Date.now() - Number(el.dataset.runStart));
+}, 500);
 function requestsCard(rows, inFlight, opts = {}) {
   rows = rows || [];
   const now = Date.now();
@@ -4241,10 +4275,20 @@ function requestsCard(rows, inFlight, opts = {}) {
   if (seenReq.at.size > 500) seenReq.at = new Map([...seenReq.at].slice(-200));
   const fresh = (r) => now - (seenReq.at.get(r.source_id) || 0) < 6000;
   const running = Object.entries(inFlight || {}).filter(([, n]) => n > 0);
-  const table = rows.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+  // requests still running sit on top with a clock that counts up, so a long prompt shows while it works
+  const live = (opts.running || []).map((r) => h("tr", { class: "req-running" },
+    h("td", { class: "muted" }, "now"),
+    h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
+    h("td", { class: "num" }, DASH),
+    h("td", { class: "num", title: "bytes sent back so far" }, r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
+    h("td", { class: "num" }, DASH), h("td", { class: "num" }, DASH),
+    h("td", { class: "num", "data-run-start": String(Date.now() - (r.elapsed_ms || 0)) }, runClock(r.elapsed_ms || 0)),
+    h("td", {}, h("span", { class: "pill warn", title: r.resp_bytes ? "sending its answer" : "reading the prompt; nothing sent back yet" },
+      r.resp_bytes ? "generating" : "prompt"))));
+  const table = rows.length || live.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
     h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
       .map((x, i) => h("th", { class: i >= 4 && i <= 8 ? "num" : "" }, x)))),
-    h("tbody", {}, rows.map((r) => {
+    h("tbody", {}, live, rows.map((r) => {
       // a failed request processed nothing: its zeros mean "none", not a measurement
       const failed = r.status >= 400 || !!r.error;
       const n = (v, d) => (v == null || (failed && !v) ? DASH : num(v, d));
@@ -4259,7 +4303,7 @@ function requestsCard(rows, inFlight, opts = {}) {
       h("td", {}, r.status >= 400 || r.error ? h("span", { class: "pill bad", title: r.error || "" }, String(r.status || "error"))
         : r.status ? h("span", { class: "pill ok" }, String(r.status)) : DASH));
     }))))
-    : h("div", { class: "empty" }, "No requests yet. Chat, embeddings, a benchmark or a transcription through the engine shows up here as it finishes.");
+    : h("div", { class: "empty" }, "No requests yet. Chat, embeddings, a benchmark or a transcription through the engine shows up here as soon as it starts.");
   return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Requests"),
     running.length ? h("span", { class: "row", style: "gap:6px;margin-left:10px" },
       running.map(([m, n]) => h("span", { class: "pill warn", title: "requests the GPU is working on now" }, `${m} · ${n} running`))) : null,
@@ -4277,7 +4321,7 @@ function renderLive() {
   const P = L.pool;
   if (!P.enabled) {
     return fill(el, h("div", { class: "card" }, h("div", { class: "empty" }, h("b", {}, `The engine is using the “${P.router || "group"}” router.`), h("br"),
-      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")), requestsCard(L.requests, {}));
+      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")), requestsCard(L.requests, {}, { running: L.running }));
   }
   const byId = Object.fromEntries(P.models.map((m) => [m.id, m]));
   const running = P.models.filter((m) => m.state !== "stopped");
@@ -4322,7 +4366,7 @@ function renderLive() {
     cardBars(cards, usage, L.real_gib),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
     swaps, queue,
-    requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight]))),
+    requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])), { running: L.running }),
     activity,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
 }

@@ -520,6 +520,14 @@ func (s *Server) handleAPICapture(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonBytes)
 }
 
+// handleAPIInflight lists the model-dispatched requests still running, oldest
+// first, each with how long it has run and how many bytes it has sent back, so
+// a dashboard can show a request while it works instead of once it finishes.
+func (s *Server) handleAPIInflight(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"requests": s.inflight.Current().Requests})
+}
+
 // handleAPICancelInflight cancels an active model-dispatched request by its
 // inflight ID. Normal request cleanup removes the row and emits the update.
 func (s *Server) handleAPICancelInflight(w http.ResponseWriter, r *http.Request) {
