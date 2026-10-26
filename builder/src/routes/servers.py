@@ -79,7 +79,22 @@ def servers_delete(server_id):
 
 @bp.post("/api/servers/<int:server_id>/default")
 def servers_default(server_id):
-    return ok() if ctx().store.set_default_server(server_id) else err("not found", 404)
+    c = ctx()
+    if not c.store.set_default_server(server_id):
+        return err("not found", 404)
+    # profiles now run on another server: the engine re-reads them so its variants follow
+    url = c.settings.get("integrations").get("engine_url")
+    if url:
+        import threading
+        from ..integrations import engine_api
+
+        def refresh():
+            try:
+                engine_api.odysseus_refresh(url)
+            except Exception:  # noqa: BLE001 - it refreshes on its own schedule anyway
+                pass
+        threading.Thread(target=refresh, name="engine-refresh", daemon=True).start()
+    return ok()
 
 
 @bp.get("/api/servers/<int:server_id>/key")
