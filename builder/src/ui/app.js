@@ -427,6 +427,47 @@ async function loadServed() {
   try { S.served = (await api("GET", "/api/profiles/served")).profiles; } catch (e) { S.served = {}; }
   if (S.view === "profiles") renderProfiles();
   renderBuilderDefault();
+  renderModelDefaults();
+}
+
+// One row per model that has profiles: what a client asking for the model's own name gets. The profiles
+// stay listed under their own names for one-offs; this only decides the plain name.
+async function setModelDefault(model, profileId) {
+  const list = Object.entries(S.served || {}).filter(([, v]) => v.model === model);
+  const current = list.find(([, v]) => v.serving);
+  try {
+    if (profileId) await api("PUT", `/api/profiles/${encodeURIComponent(profileId)}/serve`, { on: true });
+    else if (current) await api("PUT", `/api/profiles/${encodeURIComponent(current[0])}/serve`, { on: false });
+    const p = S.profiles.find((x) => x.profile_id === profileId);
+    toast(profileId ? `Requests for ${model} now run “${p ? p.name : profileId}”.` : `Requests for ${model} run its own command again.`, "ok");
+  } catch (e) { fail(e); }
+  loadServed();
+}
+function renderModelDefaults() {
+  const box = $("#pDefaults");
+  if (!box) return;
+  const byModel = new Map();
+  for (const [pid, v] of Object.entries(S.served || {})) {
+    if (!byModel.has(v.model)) byModel.set(v.model, []);
+    byModel.get(v.model).push({ pid, ...v, p: (S.profiles || []).find((x) => x.profile_id === pid) });
+  }
+  if (!byModel.size) return fill(box);
+  const rows = [...byModel.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([model, list]) => {
+    const on = list.find((x) => x.serving);
+    const sel = h("select", { "aria-label": `Default profile for ${model}`, style: "width:auto;max-width:320px",
+      onchange: (e) => setModelDefault(model, e.target.value) },
+      h("option", { value: "" }, "Model's own command"),
+      list.sort((a, b) => (a.p?.name || a.pid).localeCompare(b.p?.name || b.pid))
+        .map((x) => h("option", { value: x.pid }, x.p ? x.p.name : x.variant)));
+    sel.value = on ? on.pid : "";
+    return h("tr", {}, h("td", { class: "strong mono-sm" }, model), h("td", {}, sel),
+      h("td", { class: "muted mono-sm" }, on ? `runs ${on.variant}` : "no profile: the model's own command"));
+  });
+  fill(box, h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Model defaults"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, "what a client asking for the model's own name gets · its profiles stay listed for one-offs")),
+  h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+    h("thead", {}, h("tr", {}, h("th", {}, "Model (the name clients ask for)"), h("th", {}, "Default profile"), h("th", {}, ""))),
+    h("tbody", {}, rows)))));
 }
 function servedCell(p) {
   const v = (S.served || {})[p.profile_id];
@@ -1234,6 +1275,7 @@ const FAV_GROUP = "\u0000fav", RECENT_GROUP = "\u0000recent";
 const RECENT_S = 14 * 86400, RECENT_N = 6;  // used in the last two weeks, at most six
 function renderProfiles() {
   fillProfileModels();
+  renderModelDefaults();
   const q = $("#pSearch").value.trim().toLowerCase(), m = $("#pModel").value;
   const rows = S.profiles.filter((p) => (!m || (p.model_id || p.base_model) === m)
     && (!q || `${p.name} ${p.base_model} ${p.model_id} ${p.launch_command} ${p.source}`.toLowerCase().includes(q)));

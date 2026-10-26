@@ -75,6 +75,11 @@ func (s *Server) effectiveModelID(id string) string {
 // model's own command unless the generated union profile was also activated,
 // and that activation does not survive a restart.
 func (s *Server) requestPin(model string) (string, bool) {
+	// a client may ask by an alias (a file name, another spelling): the pins
+	// and choices are kept by model ID
+	if id, ok := s.cfg.RealModelName(model); ok {
+		model = id
+	}
 	if target, pinned := s.profilePin(model); pinned {
 		return target, true
 	}

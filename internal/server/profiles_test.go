@@ -354,3 +354,42 @@ models:
 	ask("/v1/chat/completions", `{"model":"base","messages":[]}`)
 	assert.Equal(t, []string{"base"}, reached, "a choice whose variant no longer exists is ignored")
 }
+
+// A client asking by an alias (Hermes sending the file name) gets the model's
+// default profile too, and /v1/models names the default it would get.
+func TestServer_ChosenProfileAppliesToAliasesAndIsListed(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+models:
+  base:
+    name: Base
+    aliases: [Base-File-Q6_K]
+    cmd: llama-server --port ${PORT} -m /x.gguf
+  base--long:
+    unlisted: true
+    cmd: llama-server --port ${PORT} -m /x.gguf -c 126500
+`))
+	require.NoError(t, err)
+	stub := newStubRouter([]string{"base", "base--long"}, "ok")
+	var reached []string
+	stub.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reached = append(reached, gjson.GetBytes(body, "model").String())
+		w.WriteHeader(http.StatusOK)
+	}
+	s := profileTestServer(t, cfg, stub)
+	s.setChoices(map[string]string{"base": "long"})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"Base-File-Q6_K","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, []string{"base--long"}, reached, "the alias runs the model's default profile")
+
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	base := gjson.Get(w.Body.String(), `data.#(id=="base")`)
+	assert.Equal(t, "Base (default: long)", base.Get("name").String())
+	assert.Equal(t, "base--long", base.Get("meta.argos.default_profile").String())
+}
