@@ -36,6 +36,7 @@ import logging
 import os
 import sqlite3
 import threading
+import weakref
 
 from . import dialect
 import time
@@ -373,7 +374,21 @@ class Store:
         if conn is None:
             conn = self._connect()
             self._local.conn = conn
+            # A connection per thread, and many threads are short-lived (a launch, a warm-up, a
+            # refresh). Nothing closed theirs, so on Postgres they piled up until the server
+            # refused new clients ("too many clients already"). Close it when the thread goes.
+            weakref.finalize(threading.current_thread(), self._release, conn)
         return conn
+
+    def _release(self, conn) -> None:
+        """A thread that had a connection has ended: close it and forget it."""
+        with self._lock:
+            if conn in self._open:
+                self._open.remove(conn)
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     @staticmethod
     def _journal_for(path: str) -> str:

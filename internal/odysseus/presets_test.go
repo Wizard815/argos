@@ -172,3 +172,119 @@ func TestOdysseus_BuildPresetSkipsNonLlamaCpp(t *testing.T) {
 		t.Errorf("expected a warning naming the preset, got %v", res.Warnings)
 	}
 }
+
+// Two presets with the same flags pinned to different cards are two launches.
+// Before, the de-duplication key was argv alone, so the second collapsed into
+// the first and ran on the first one's card.
+func TestOdysseus_SameFlagsDifferentCardsStayTwoVariants(t *testing.T) {
+	res, err := Build(State{Presets: []Preset{
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "gpu0", Cmd: "HIP_VISIBLE_DEVICES=0 " + cmdTurbo4},
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "gpu1", Cmd: "HIP_VISIBLE_DEVICES=1 " + cmdTurbo4},
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "again", Cmd: "HIP_VISIBLE_DEVICES=1 " + cmdTurbo4},
+	}}, Options{ProfilePrefix: "ody", EnsureDio: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(res.Models) != 2 {
+		t.Fatalf("got %d variants, want 2 (gpu0, gpu1; again is gpu1's command): %v", len(res.Models), keys(res.Models))
+	}
+	for id, want := range map[string]string{"qwen3.8-27b-ud-q6_k_xl--gpu0": "HIP_VISIBLE_DEVICES=0", "qwen3.8-27b-ud-q6_k_xl--gpu1": "HIP_VISIBLE_DEVICES=1"} {
+		m, ok := res.Models[id]
+		if !ok {
+			t.Fatalf("variant %q missing; have %v", id, keys(res.Models))
+		}
+		if env, _ := m["env"].([]string); len(env) == 0 || env[0] != want {
+			t.Errorf("%s env = %v, want %s", id, m["env"], want)
+		}
+	}
+}
+
+func TestOdysseus_ProgramOf(t *testing.T) {
+	for cmd, want := range map[string][]string{
+		"/app/bin/remote-llama rocm --host 0.0.0.0 --port ${PORT} -m /m/a.gguf": {"/app/bin/remote-llama", "rocm"},
+		"/opt/llama/bin/llama-server \\\n  --model /m/a.gguf":                   {"/opt/llama/bin/llama-server"},
+		"HIP_VISIBLE_DEVICES=0 llama-server -m /m/a.gguf":                       {"llama-server"},
+		"--port 8080": nil,
+	} {
+		if got := ProgramOf(cmd); strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("ProgramOf(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}
+
+// The Argos container may have no llama-server at all (llama.cpp runs in
+// another container, started through a launcher). A preset written as plain
+// "llama-server ..." then takes the program its base model starts with.
+func TestOdysseus_BareLlamaServerTakesTheBaseModelsProgram(t *testing.T) {
+	base := "qwen3.8-27b-ud-q6_k_xl"
+	res, err := Build(State{Presets: []Preset{
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "fast", Cmd: cmdTurbo4},
+	}}, Options{ProfilePrefix: "ody", EnsureDio: true, Programs: map[string][]string{base: {"/app/bin/remote-llama", "rocm"}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	cmd, _ := res.Models[base+"--fast"]["cmd"].(string)
+	if !strings.HasPrefix(cmd, "/app/bin/remote-llama rocm ") || strings.Contains(cmd, " llama-server ") {
+		t.Errorf("variant cmd = %q, want it to start with the base model's launcher", cmd)
+	}
+
+	res, _ = Build(State{Presets: []Preset{{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "fast", Cmd: cmdTurbo4}}},
+		Options{ProfilePrefix: "ody", EnsureDio: true})
+	if cmd, _ := res.Models[base+"--fast"]["cmd"].(string); !strings.HasPrefix(cmd, "llama-server ") {
+		t.Errorf("with no base program the preset's own stays: %q", cmd)
+	}
+}
+
+func TestOdysseus_CommonProgram(t *testing.T) {
+	got := CommonProgram([]string{
+		"/app/bin/remote-llama rocm --port ${PORT} -m /m/a.gguf",
+		"/app/bin/remote-llama rocm --port ${PORT} -m /m/b.gguf",
+		"/app/bin/remote-llama cuda --port ${PORT} -m /m/c.gguf",
+		"llama-server --model /m/d.gguf",
+	})
+	if strings.Join(got, " ") != "/app/bin/remote-llama rocm" {
+		t.Errorf("CommonProgram = %q, want the launcher most models use", got)
+	}
+	if CommonProgram([]string{"llama-server -m /m/a.gguf"}) != nil {
+		t.Error("a bare llama-server is not a program to hand out")
+	}
+}
+
+// The preset's base model ID is not among the configured models (named
+// differently, or never scanned): the program most models use stands in, and
+// with none at all the variant says why it may not start.
+func TestOdysseus_BareLlamaServerFallsBackToTheCommonProgram(t *testing.T) {
+	base := "qwen3.8-27b-ud-q6_k_xl"
+	presets := State{Presets: []Preset{{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "fast", Cmd: cmdTurbo4}}}
+
+	res, err := Build(presets, Options{ProfilePrefix: "ody", EnsureDio: true,
+		Programs: map[string][]string{"some-other-model": {"/app/bin/remote-llama", "cuda"}}, DefaultProgram: []string{"/app/bin/remote-llama", "rocm"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if cmd, _ := res.Models[base+"--fast"]["cmd"].(string); !strings.HasPrefix(cmd, "/app/bin/remote-llama rocm ") {
+		t.Errorf("variant cmd = %q, want the common launcher", cmd)
+	}
+
+	res, _ = Build(presets, Options{ProfilePrefix: "ody", EnsureDio: true, Programs: map[string][]string{"some-other-model": {"llama-server"}}})
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), "bare 'llama-server'") {
+		t.Errorf("no program anywhere: want a warning, got %v", res.Warnings)
+	}
+}
+
+func TestOdysseus_ALauncherOrAPathIsNotWarnedAbout(t *testing.T) {
+	for _, prog := range []string{"/app/bin/remote-llama rocm_srv3", "/opt/llama/bin/llama-server"} {
+		p, err := ParseCommand(strings.Replace(cmdTurbo4, "llama-server", prog, 1), true)
+		if err != nil {
+			t.Fatalf("ParseCommand: %v", err)
+		}
+		for _, w := range p.Warnings {
+			if strings.Contains(w, "not 'llama-server'") {
+				t.Errorf("%s: unexpected warning %q", prog, w)
+			}
+		}
+	}
+	if p, _ := ParseCommand(strings.Replace(cmdTurbo4, "llama-server", "vllm", 1), true); !strings.Contains(strings.Join(p.Warnings, " "), "not 'llama-server'") {
+		t.Error("another program is still worth a warning")
+	}
+}

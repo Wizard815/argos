@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from typing import Optional
 from urllib.parse import quote
 
 from flask import Blueprint, abort, current_app, request
@@ -302,7 +303,78 @@ def _engine_model(c, command: str) -> str:
         return ""
 
 
-def _start_in_engine(c, model_id: str, name: str, command: str):
+PROFILE_WAIT_S = 10.0  # how long a launch waits for the engine to take up a just-saved profile
+
+
+def _same_command(a: str, b: str) -> bool:
+    try:
+        return parse_command(a).to_string() == parse_command(b).to_string()
+    except ValueError:
+        return a.strip() == b.strip()
+
+
+def _profile_variant(c, profile_id: str, command: str) -> tuple[str, str]:
+    """(the engine's id for this profile's own command, why it cannot be used).
+
+    The engine runs a base model with its own default command; a profile's command is a
+    separate variant, ``<model>--<label>``. Loading the base model for a profile is how a
+    Builder launch ended up at the prefab's context on one card.
+    """
+    p = c.store.get_profile(profile_id)
+    if not p:
+        return "", ""
+    if not _same_command(p["launch_command"], command):
+        return "", ("This profile has unsaved changes, and the engine runs saved profiles. "
+                    "Save it (or Save as new), then launch.")
+    from ..cookbook import variant_id
+    presets = cookbook_state()["presets"]
+    mine = next((x for x in presets if (x.get("fields") or {}).get("profile_id") == profile_id), None)
+    if not mine:
+        return "", ""
+
+    def key(preset: dict):
+        try:
+            cmd = parse_command(preset.get("cmd") or "")
+        except ValueError:
+            return None
+        return swap_model_id(cmd.summary()["model"] or ""), tuple(cmd.env.items()), tuple(cmd.argv())
+
+    # the engine makes one variant per model and command (env and flags); the first preset with
+    # this command names it, so a profile saved twice with the same command shares that variant
+    same = next((x for x in presets if key(x) == key(mine)), mine)
+    vid = variant_id(same)
+    if not vid:
+        return "", ""
+    url = c.settings.get("integrations")["engine_url"]
+
+    def known() -> Optional[bool]:
+        """Whether the engine has the variant; None when it cannot say (variants are unlisted, and only
+        the pool router lists every model)."""
+        if vid in engine_api.model_ids(url):
+            return True
+        pool = engine_api.pool_state(url)
+        if not pool.get("enabled"):
+            return None
+        return vid in {m.get("id") for m in pool.get("models") or []}
+
+    try:
+        if known() is not False:
+            return vid, ""
+        # saved a moment ago: the engine re-reads the profiles now, then picks the variant up on its
+        # next config reload (it checks the file every couple of seconds)
+        engine_api.odysseus_refresh(url)
+        deadline = time.time() + PROFILE_WAIT_S
+        while time.time() < deadline:
+            if known() is not False:
+                return vid, ""
+            time.sleep(0.5)
+    except Exception:  # noqa: BLE001 - an unreachable engine is reported below
+        pass
+    return "", (f"The engine does not have this profile ({vid}) yet. Check that its odysseus.baseURL points at "
+                "this builder, then try again.")
+
+
+def _start_in_engine(c, model_id: str, name: str, command: str, warning: str = ""):
     """Hand the load to the engine. A large model takes minutes, and its progress and
     log live on the Schedule page, so this only starts it and reports that it did."""
     import threading
@@ -320,7 +392,7 @@ def _start_in_engine(c, model_id: str, name: str, command: str):
     threading.Thread(target=load, daemon=True).start()
     c.event("launch", f"asked the engine to load {name or model_id}",
             data={"model": model_id, "command": command[:500]})
-    return ok(engine=True, model=model_id, name=name or model_id)
+    return ok(engine=True, model=model_id, name=name or model_id, **({"warning": warning} if warning else {}))
 
 
 @bp.post("/api/launches")
@@ -330,12 +402,22 @@ def launch():
     if not command:
         return err("command is required")
     name = (d.get("profile_name") or "").strip()
+    profile_id = (d.get("profile_id") or "").strip()
+    if profile_id and c.settings.get("integrations").get("engine_url"):
+        variant, problem = _profile_variant(c, profile_id, command)
+        if variant:
+            return _start_in_engine(c, variant, name, command)
+        if problem:
+            return err(problem, 409)
     always = c.settings.get("always")
     if always["on_launch"]:
         command = apply_always(command, always)[0]
     served = _engine_model(c, command)
     if served:
-        return _start_in_engine(c, served, name, command)
+        # not a saved profile: the engine loads the model with its own command, not this one
+        return _start_in_engine(c, served, name, command, warning=(
+            f"The engine started {served} with its own command, not this one. "
+            "Save this as a profile to launch with these settings."))
     try:
         run = c.runner.launch(command, base_model=(d.get("base_model") or "").strip(), profile_name=name)
     except LaunchError as exc:
