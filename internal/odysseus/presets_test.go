@@ -172,3 +172,29 @@ func TestOdysseus_BuildPresetSkipsNonLlamaCpp(t *testing.T) {
 		t.Errorf("expected a warning naming the preset, got %v", res.Warnings)
 	}
 }
+
+// Two presets with the same flags pinned to different cards are two launches.
+// Before, the de-duplication key was argv alone, so the second collapsed into
+// the first and ran on the first one's card.
+func TestOdysseus_SameFlagsDifferentCardsStayTwoVariants(t *testing.T) {
+	res, err := Build(State{Presets: []Preset{
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "gpu0", Cmd: "HIP_VISIBLE_DEVICES=0 " + cmdTurbo4},
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "gpu1", Cmd: "HIP_VISIBLE_DEVICES=1 " + cmdTurbo4},
+		{Name: "Qwen3.8-27B", Model: "unsloth/Qwen3.8-27B-GGUF", Label: "again", Cmd: "HIP_VISIBLE_DEVICES=1 " + cmdTurbo4},
+	}}, Options{ProfilePrefix: "ody", EnsureDio: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(res.Models) != 2 {
+		t.Fatalf("got %d variants, want 2 (gpu0, gpu1; again is gpu1's command): %v", len(res.Models), keys(res.Models))
+	}
+	for id, want := range map[string]string{"qwen3.8-27b-ud-q6_k_xl--gpu0": "HIP_VISIBLE_DEVICES=0", "qwen3.8-27b-ud-q6_k_xl--gpu1": "HIP_VISIBLE_DEVICES=1"} {
+		m, ok := res.Models[id]
+		if !ok {
+			t.Fatalf("variant %q missing; have %v", id, keys(res.Models))
+		}
+		if env, _ := m["env"].([]string); len(env) == 0 || env[0] != want {
+			t.Errorf("%s env = %v, want %s", id, m["env"], want)
+		}
+	}
+}

@@ -701,7 +701,12 @@ func SaveChoices(path string, cs ChoiceState) error {
 
 // Argv0Key returns a stable identity for a parsed command, used to skip
 // duplicate tasks that re-launched the same command.
-func (p Parsed) Argv0Key() string { return strings.Join(p.Argv, "\x00") }
+// Argv0Key identifies a command for de-duplication: its env and its argv. Two
+// presets with the same flags but different env (HIP_VISIBLE_DEVICES=0 and =1)
+// are different launches and must stay two variants.
+func (p Parsed) Argv0Key() string {
+	return strings.Join(p.Env, "\x00") + "\x01" + strings.Join(p.Argv, "\x00")
+}
 
 func prefixWarnings(taskID string, in []string) []string {
 	out := make([]string, 0, len(in))
