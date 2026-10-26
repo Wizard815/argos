@@ -78,6 +78,26 @@ def debug_threads():
     return ok(threads=out)
 
 
+@bp.get("/api/requests/recent")
+def requests_recent():
+    """The newest requests, live from the engine (the store's copy when the engine is not there), and how
+    many each model is working on right now."""
+    from ..integrations import engine_api
+    from ..telemetry import recent_requests
+    c = ctx()
+    limit = max(1, min(request.args.get("limit", 25, type=int), 200))
+    url = c.settings.get("integrations")["engine_url"]
+    in_flight = {}
+    try:
+        rows, source = (recent_requests(url, limit), "engine") if url else (c.store.list_requests(limit=limit), "stored")
+        if url:
+            pool = engine_api.pool_state(url)
+            in_flight = {m["id"]: m["in_flight"] for m in pool.get("models") or [] if m.get("in_flight")}
+    except Exception:  # noqa: BLE001 - fall back to what was synced
+        rows, source = c.store.list_requests(limit=limit), "stored"
+    return ok(requests=rows, in_flight=in_flight, source=source, at=time.time())
+
+
 @bp.get("/api/requests")
 def requests_list():
     a = request.args

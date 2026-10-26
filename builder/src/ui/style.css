@@ -675,3 +675,6 @@ pre.log.logs-big { max-height: 70dvh; min-height: 320px; }
 .vram-compare tr.sel td { background: color-mix(in srgb, var(--fg) 6%, transparent); }
 .vram-compare .pick { cursor: pointer; }
 .vram-compare .pick:hover { background: color-mix(in srgb, var(--fg) 12%, transparent); color: var(--strong); }
+
+/* a request that arrived since the last refresh */
+.req-new td { background: color-mix(in srgb, var(--accent, #6aa) 18%, transparent); }
