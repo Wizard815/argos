@@ -219,7 +219,7 @@ class Collector:
         for r in rows:
             r["ts"] = now
         self.store.add_gpu_samples(rows)
-        note_cards(r.get("name") for r in rows)  # AMD or NVIDIA, for the Builder's GPU pick
+        note_cards(rows)  # AMD or NVIDIA, for the Builder's GPU pick
         self.sync_activity()
         if now - self._last_rollup > 600:
             days = self.settings()["telemetry"].get("raw_days") or 14

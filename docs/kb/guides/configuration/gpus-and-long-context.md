@@ -1,6 +1,6 @@
 ---
 title: Choosing GPUs and context in the Builder, and stretching it with RoPE
-summary: The Builder's GPUs field saves card numbers and Argos sets HIP or CUDA for where the model runs; its VRAM card sets context from the KV table and can stretch a model to 1M with YaRN.
+summary: The Builder's GPUs field writes HIP_VISIBLE_DEVICES or CUDA_VISIBLE_DEVICES for the picked cards; its VRAM card sets context from the KV table and can stretch a model to 1M with YaRN.
 category: guides
 tags: [gpu, hip_visible_devices, cuda_visible_devices, context, rope, yarn, vram, builder]
 updated: 2026-10-25
@@ -17,23 +17,23 @@ The Builder's settings have a **GPUs** field next to Context and GPU layers:
 - **GPU0, GPU1, ...**: just those cards. Or type the list (`0,1`, numbered from 0
   the way HIP and CUDA count them).
 
-Only the card numbers are saved, as `ARGOS_GPUS=0,1` on the profile. Which
-variable the GPU runtime reads depends on where the model runs, so Argos sets it
-when the model launches or is handed to the engine:
+The command gets the variable the picked cards' runtime reads, so it shows what
+really runs:
 
-| runs on | gets |
+```
+HIP_VISIBLE_DEVICES=0,1 llama-server --model ...
+```
+
+| decided by | gets |
 | --- | --- |
 | a remote launcher (`/app/bin/remote-llama rocm`) | that backend's variable: `HIP_VISIBLE_DEVICES`, `CUDA_VISIBLE_DEVICES` or `GGML_VK_VISIBLE_DEVICES` |
-| this machine with ROCm (`/dev/kfd` or `rocm-smi`) | `HIP_VISIBLE_DEVICES` |
-| this machine with NVIDIA (`/dev/nvidiactl` or `nvidia-smi`) | `CUDA_VISIBLE_DEVICES` |
-| no device files (llama.cpp runs in another container) | what the GPU telemetry's card names say: AMD / Instinct / Radeon -> HIP, NVIDIA / GeForce / RTX -> CUDA |
-| both, or nothing to go on | both |
+| the picked cards' names in the GPU telemetry | AMD / Instinct / Radeon -> `HIP_VISIBLE_DEVICES`, NVIDIA / GeForce / RTX -> `CUDA_VISIBLE_DEVICES` |
+| cards the telemetry has not named: what this machine has | ROCm (`/dev/kfd`, `rocm-smi`) -> HIP, NVIDIA (`/dev/nvidiactl`, `nvidia-smi`) -> CUDA, nothing to go on -> both |
 
-The line under the field shows what this command will launch as.
-`ARGOS_GPUS` itself never reaches the process.
-
-A command that sets one of those variables by hand keeps it: the field shows its
-cards and says so, and picking cards in the field replaces it with `ARGOS_GPUS`.
+The line under the field names the cards and the variable. Picking cards replaces
+whatever pin the command had. Profiles saved with the earlier `ARGOS_GPUS=0,1`
+open in the Builder with the real variable, and still launch right if never
+reopened.
 
 # Context from the VRAM card
 
