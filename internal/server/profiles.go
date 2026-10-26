@@ -13,18 +13,17 @@ import (
 func CreateProfileMiddleware(s *Server) chain.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			profile, ok := s.cfg.Profiles[s.ActiveProfile()]
-			if ok {
+			if pins := s.requestPins(); len(pins) > 0 {
 				var model, replacement string
 				var pinned bool
 				if strings.HasPrefix(r.URL.Path, "/upstream/") {
-					model, replacement, pinned = upstreamProfilePin(r.PathValue("upstreamPath"), profile.Pins)
+					model, replacement, pinned = upstreamProfilePin(r.PathValue("upstreamPath"), pins)
 					if pinned && s.ModelMode(model) == ModeMultiModel {
 						replacement, pinned = "", false
 					}
 				} else {
 					model, _ = swaputil.ExtractModel(r)
-					replacement, pinned = s.profilePin(model)
+					replacement, pinned = s.requestPin(model)
 				}
 				if pinned {
 					updated, err := swaputil.ReplaceRequestModel(r, model, replacement)
@@ -46,7 +45,7 @@ func CreateProfileMiddleware(s *Server) chain.Middleware {
 // pipeline resolves the model, so the pinned variant's command — not the base
 // model's — decides the context window the client will be given.
 func (s *Server) effectiveCommand(id, cmd string) string {
-	target, pinned := s.profilePin(id)
+	target, pinned := s.requestPin(id)
 	if !pinned {
 		return cmd
 	}
@@ -64,15 +63,50 @@ func (s *Server) effectiveCommand(id, cmd string) string {
 // running state above all, has to follow the same resolution as the effective
 // command shown on the same card.
 func (s *Server) effectiveModelID(id string) string {
-	if target, pinned := s.profilePin(id); pinned && target != "" {
+	if target, pinned := s.requestPin(id); pinned && target != "" {
 		return target
 	}
-	if chosen := s.odysseus.choices[id]; chosen != "" {
-		if _, ok := s.cfg.Models[id+"--"+chosen]; ok {
-			return id + "--" + chosen
+	return id
+}
+
+// requestPin is where a request for a model goes: the active profile's pin,
+// else the profile picked for that model (its Odysseus choice). Before, a
+// choice only changed what the UI reported; requests kept running the base
+// model's own command unless the generated union profile was also activated,
+// and that activation does not survive a restart.
+func (s *Server) requestPin(model string) (string, bool) {
+	if target, pinned := s.profilePin(model); pinned {
+		return target, true
+	}
+	if model == "" || s.ModelMode(model) == ModeMultiModel {
+		return "", false
+	}
+	if label := s.chosenLabel(model); label != "" {
+		if _, ok := s.cfg.Models[model+"--"+label]; ok {
+			return model + "--" + label, true
 		}
 	}
-	return id
+	return "", false
+}
+
+// requestPins is every rewrite requestPin would make, for the /upstream path
+// match: the active profile's pins, plus each model's chosen profile.
+func (s *Server) requestPins() map[string]string {
+	pins := map[string]string{}
+	if profile, ok := s.cfg.Profiles[s.ActiveProfile()]; ok {
+		for k, v := range profile.Pins {
+			pins[k] = v
+		}
+	}
+	for model, label := range s.allChoices() {
+		if _, taken := pins[model]; taken || label == "" || s.ModelMode(model) == ModeMultiModel {
+			continue
+		}
+		if _, ok := s.cfg.Models[model+"--"+label]; ok {
+			pins[model] = model + "--" + label
+		}
+	}
+	return pins
 }
 
 // profilePin returns the active profile's pin for a model. A multi_model model

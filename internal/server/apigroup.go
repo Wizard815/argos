@@ -146,7 +146,7 @@ func (s *Server) modelStatus() []apiModel {
 		// its variant exists, report the variant's command and name the choice.
 		// This is what the detail view renders, so what you see is what will run.
 		cmd, env := mc.Cmd, mc.Env
-		chosen := s.odysseus.choices[id]
+		chosen := s.chosenLabel(id)
 		if chosen != "" {
 			if variant, ok := s.cfg.Models[id+"--"+chosen]; ok {
 				cmd, env = variant.Cmd, variant.Env

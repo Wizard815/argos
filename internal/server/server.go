@@ -308,7 +308,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	// served, so the detail view shows the effective launch on first render.
 	if s.cfg.Odysseus != nil && s.cfg.Odysseus.ChoicesPath != "" {
 		if cs, err := odysseus.LoadChoices(s.cfg.Odysseus.ChoicesPath); err == nil {
-			s.odysseus.choices = cs.Choices
+			s.setChoices(cs.Choices)
 		} else {
 			proxylog.Warnf("odysseus: loading choices: %v", err)
 		}
