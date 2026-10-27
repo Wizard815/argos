@@ -53,6 +53,12 @@ type PoolModelStatus struct {
 	// Prefill is the prompt the model is processing, read from its log; nil
 	// when it is not prefilling (generating, idle or stopped).
 	Prefill *Prefill `json:"prefill,omitempty"`
+	// Slots is every llama-server slot busy with a request, oldest first:
+	// reading its prompt or generating. Two chats on one model are two slots.
+	Slots []Slot `json:"slots,omitempty"`
+	// Crash is the model's last crash in the last ten minutes: the line it died
+	// on, and whether it crashed often enough that requests no longer start it.
+	Crash *Crash `json:"crash,omitempty"`
 }
 
 // PoolQueueStatus is one request waiting for room or for a busy model.
@@ -117,6 +123,10 @@ func (p *poolSwapper) status(running map[string]process.ProcessState, sched sche
 			if pf, ok := Prefills.Get(id); ok {
 				m.Prefill = &pf
 			}
+			m.Slots = Prefills.Slots(id)
+		}
+		if cr, ok := Crashes.Get(id); ok {
+			m.Crash = &cr
 		}
 		if t, ok := p.lastUsed[id]; ok {
 			t := t

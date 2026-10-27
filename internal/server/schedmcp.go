@@ -95,7 +95,7 @@ func (p *scheduleProvider) poolStatus() mcptools.Result {
 		return jsonResult(map[string]any{"router": p.s.cfg.Routing.Router.Use, "enabled": false,
 			"note": "this router does not schedule; switch routing to the pool router to see placement"})
 	}
-	st := reporter.PoolStatus()
+	st := p.s.poolStatus(reporter)
 	active := st.Models[:0:0]
 	stopped := 0
 	for _, m := range st.Models {

@@ -122,7 +122,7 @@ is stopped while it is still building it.
 
 | tool | what it does |
 | --- | --- |
-| `schedule__pool_status` | each card's planned use and free GiB, every model that is not stopped with its state, cards and requests in flight, a prefill in progress (tokens done of total, speed), the queue and models loading; with another router, which one is in use |
+| `schedule__pool_status` | each card's planned use and free GiB, every model that is not stopped with its state, cards and requests in flight, each busy llama-server slot (reading a prompt or generating, with progress and speed), a recent crash with the line it died on, the queue and models loading; with another router, which one is in use |
 | `schedule__requests_in_flight` | every request still running, oldest first: model, endpoint, sender, how long it has run, bytes answered so far |
 | `schedule__recent_requests` | the newest finished requests (`limit`, default 20, at most 100) with tokens in and out, prompt and generation speed, duration and status |
 
