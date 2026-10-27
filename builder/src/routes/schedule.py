@@ -259,6 +259,22 @@ def live_action(model_id, action):
     """load (in the background; it can take minutes), unload, or keep (body {"on": bool}: never evict it)."""
     import threading
     c = ctx()
+    if action == "one_at_a_time":
+        on = bool(body().get("on", True))
+        models = [m for m in c.plans.get()["one_at_a_time"] if m != model_id] + ([model_id] if on else [])
+        c.plans.update({"one_at_a_time": models})
+        c.event("schedule", f"one at a time {'on' if on else 'off'} for {model_id}: "
+                + ("one request goes in, the rest wait in order" if on else "requests go in together again"))
+        apply_plan()
+        return ok(one_at_a_time=on)
+    if action == "answer_first":
+        on = bool(body().get("on", True))
+        models = [m for m in c.plans.get()["answer_first"] if m != model_id] + ([model_id] if on else [])
+        c.plans.update({"answer_first": models})
+        c.event("schedule", f"answer first {'on' if on else 'off'} for {model_id}: "
+                + ("a long new prompt waits while another chat on it is answering" if on else "every request goes straight in"))
+        apply_plan()
+        return ok(answer_first=on)
     if action == "keep":
         on = bool(body().get("on", True))
         persistent = [m for m in c.plans.get()["persistent"] if m != model_id] + ([model_id] if on else [])
@@ -294,6 +310,7 @@ def live_action(model_id, action):
     if action == "load":
         def run():
             try:
+                engine_api.clear_crashes(url, model_id)  # loading by hand is the retry after a crash loop
                 engine_api.load_model(url, model_id)
             except Exception as exc:  # noqa: BLE001 - reported as an event
                 c.event("schedule", f"could not load {model_id}: {exc}", level="error", data={"model": model_id})

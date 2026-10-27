@@ -67,7 +67,8 @@ def test_Launch_waits_for_a_just_saved_profile_then_says_why_it_cannot(client, e
     pid = save(client, "ornith tensor")
     r = launch(client, CMD, "ornith tensor", pid)
     assert r.status_code == 409 and "odysseus.baseURL" in r.get_json()["error"]
-    assert engine["refreshed"] == 1 and engine["loaded"] == []
+    # the save tells the engine to refresh too (in the background), so Launch's own refresh is not the only one
+    assert engine["refreshed"] >= 1 and engine["loaded"] == []
 
 
 def test_Launch_without_a_profile_warns_that_the_engine_used_its_own_command(client, engine):

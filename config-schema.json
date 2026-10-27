@@ -868,6 +868,64 @@
                                             },
                                             "description": "VRAM of each GPU in GiB, numbered from 0 like HIP_VISIBLE_DEVICES. Empty detects the cards at startup when vramGiB is 0. Set cards or vramGiB, not both."
                                         },
+                                        "shareGuard": {
+                                            "type": "object",
+                                            "description": "Hold a model's new request while another model on the same GPU is answering, when that model was seen (from its log) to slow down a lot beside it.",
+                                            "properties": {
+                                                "enabled": {
+                                                    "type": "boolean",
+                                                    "default": false,
+                                                    "description": "Turn the share guard on."
+                                                },
+                                                "maxSlowdownPercent": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 99,
+                                                    "default": 50,
+                                                    "description": "A model that answers more than this much slower beside another is protected from it. 0 uses the default of 50."
+                                                },
+                                                "maxWaitSeconds": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "default": 120,
+                                                    "description": "How long a held request waits at most. 0 uses the default of 120."
+                                                }
+                                            },
+                                            "additionalProperties": false
+                                        },
+                                        "oneAtATime": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Models that get one request at a time: the rest wait in Argos, in order, so each runs at the speed it has alone. With -np 2 each conversation still keeps its own slot's cache. Replaces answerFirst for these models."
+                                        },
+                                        "answerFirst": {
+                                            "type": "object",
+                                            "description": "Keep a chat that is answering at full speed: a long new prompt for one of these models waits while another chat on the same model is generating, instead of being read in the same batches (which drops the answer to a token or two a second).",
+                                            "properties": {
+                                                "models": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    },
+                                                    "description": "Models it applies to, by ID or alias. Empty turns it off."
+                                                },
+                                                "minPromptTokens": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "default": 4000,
+                                                    "description": "The shortest new prompt part that waits, estimated at about four bytes a token. A turn of a conversation the model already has cached counts only its new messages. 0 uses the default of 4000."
+                                                },
+                                                "maxWaitSeconds": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "default": 300,
+                                                    "description": "How long a prompt waits at most before it goes anyway. 0 uses the default of 300."
+                                                }
+                                            },
+                                            "additionalProperties": false
+                                        },
                                         "sizes": {
                                             "type": "object",
                                             "additionalProperties": {

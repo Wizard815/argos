@@ -213,11 +213,52 @@ def _commands(pids: list[int]) -> dict[int, str]:
     return out
 
 
-def listing(engine_running: list[dict], launches: list[dict]) -> dict:
+# a hidden process is taken for an engine model when its memory is within this share of the model's size
+MATCH_TOLERANCE = 0.4
+
+
+def _match_hidden(procs: list[dict], engine_running: list[dict], pool_models: list[dict]) -> None:
+    """Name the engine model behind each process this container cannot see.
+
+    A model the engine started in another container (remote-llama over SSH to a llama.cpp sidecar) runs there,
+    so here only its host PID, cards and memory are known, never its command or --port. The engine knows which
+    models it has loaded, on which cards and how big they are: a hidden process on the same cards holding about
+    that much memory is that model. Each model is given to at most one process, best fit first."""
+    owned = {p["owner"] for p in procs if p.get("owner")}
+    size = {m["id"]: m for m in pool_models or [] if m.get("id")}
+    free = [r["model"] for r in engine_running if r.get("model") and f"model {r['model']}" not in owned]
+    hidden = [p for p in procs if not p.get("visible", True) and not p.get("owner") and p.get("vram_gib")]
+    pairs = []
+    for p in hidden:
+        cards = {c for c in str(p.get("gpu") or "").split(",") if c.isdigit() and len(c) <= 2}
+        for model in free:
+            info = size.get(model) or {}
+            gib = info.get("size_gib") or 0
+            placed = {str(c) for c in info.get("cards") or []}
+            if cards and placed and cards != placed:
+                continue  # on other cards: not this model
+            err = abs(p["vram_gib"] - gib) / gib if gib else None
+            if err is not None and err > MATCH_TOLERANCE:
+                continue
+            pairs.append((err if err is not None else 1.0, p["host_pid"] if "host_pid" in p else p["pid"], model, p))
+    taken_p, taken_m = set(), set()
+    for err, _, model, p in sorted(pairs, key=lambda x: (x[0], x[1])):
+        if id(p) in taken_p or model in taken_m:
+            continue
+        taken_p.add(id(p))
+        taken_m.add(model)
+        p["owner"] = f"model {model}"
+        p["matched"] = "by cards and memory"  # not by its command, which is in another container
+        p["model"] = model
+        p["cmd"] = p.get("cmd") or next((r.get("cmd") or "" for r in engine_running if r.get("model") == model), "")
+
+
+def listing(engine_running: list[dict], launches: list[dict], pool_models: Optional[list[dict]] = None) -> dict:
     """Processes on the GPUs, each tagged with who started it when that can be told.
 
     ``engine_running``: the engine's /running rows (model, cmd); ``launches``: this app's own launches
-    (profile_name or base_model, port). A llama-server is matched to them by its --port.
+    (profile_name or base_model, port). A llama-server is matched to them by its --port; one in another
+    container (started over SSH) by its cards and memory against ``pool_models`` (the engine's /api/pool).
     """
     tool = "nvidia-smi"
     procs = _nvidia()
@@ -248,9 +289,11 @@ def listing(engine_running: list[dict], launches: list[dict]) -> dict:
         p["owner"] = by_port.get(m.group(1)) if m else None
         p["self"] = p["pid"] == os.getpid()
         p.setdefault("visible", True)
+    _match_hidden(procs, engine_running, pool_models or [])
+    for p in procs:
         p["argos"] = bool(p["owner"] or p["self"])
     note = ""
-    hidden = [p for p in procs if not p["visible"]]
+    hidden = [p for p in procs if not p["visible"] and not p.get("owner")]
     if hidden:
         note = (f"{len(hidden)} process(es) are outside this container, so only their PID and VRAM are known here. "
                 "On the host: ps -o pid,comm,args -p <PID> names it, and cat /proc/<PID>/cgroup shows the container. "

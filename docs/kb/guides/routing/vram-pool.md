@@ -3,7 +3,7 @@ title: VRAM-aware pool router
 summary: Put every model in one pool so models load side by side while VRAM fits, and only the cheapest idle model is evicted when it does not.
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
-config_keys: [routing, models.*.vram]
+config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard]
 updated: 2026-10-25
 ---
 
@@ -116,6 +116,105 @@ the context in and out, speeds and status, and how many each model is working
 on now. **Usage -> GPU** has the same feed under its charts with **Recent
 requests** ticked. Only requests through the engine appear; a client talking to
 a llama-server port directly bypasses it.
+
+Each model also reports what its llama-server slots are doing
+(`models[].slots`), read from its log: a slot reading a prompt (prefill, with
+tokens done of total and speed) or generating the answer (tokens out, speed
+now). A model run with `-np 2` serves two chats at once, so it can show one
+slot generating while the other reads a new prompt. Live lists every busy slot
+under **Working now** and gives each running request its slot's status; a
+request with no free slot shows **waiting**, and a busy slot no request through
+Argos accounts for shows **not through Argos**.
+
+A model that exits without being asked to (a crash, or a failed start) is
+reported in `models[].crash` with the first fatal line it printed
+(`GGML_ASSERT`, a segfault, out of memory, a GPU error). After three crashes in
+ten minutes, requests for it get a 503 naming that line instead of starting it
+again; **Load** from Schedule -> Live (`POST /api/crashes/clear/<model>` on the
+engine) lets it start again. `GET /api/inflight` lists every
+request still running, and the same state is on MCP as `schedule__pool_status`,
+`schedule__requests_in_flight` and `schedule__recent_requests`.
+
+## Two chats on one model: answer first
+
+A model run with `-np 2` (or more) serves several chats at once, and
+llama.cpp builds each GPU batch from all of them: one token for a chat that is
+answering, up to a whole batch of a chat reading its prompt. While one chat
+reads a long prompt, the other's answer drops from tens of tokens a second to
+one or two, until the prompt is read. Neither chat is held; they share the GPU,
+and the answer gets the small share.
+
+Argos cannot split one batch differently or pause a slot inside llama-server,
+but it can choose when a request goes in. With **answer first** on for a model
+(Schedule -> Plan, or Live -> ⋯), a long new prompt waits while another chat on
+that model is answering, then goes as soon as the answer ends (an agent's turns
+leave a gap at every tool call). Live shows it as **held**.
+
+```yaml
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        answerFirst:
+          models: ["qwen-coder--2chat"]
+          minPromptTokens: 4000   # shorter new prompts go straight in
+          maxWaitSeconds: 300     # the longest a prompt waits
+```
+
+Two answers at once can be slow too: on some builds two chats generating
+together run at a quarter of the speed each. **One at a time** (Plan, or Live
+-> ⋯) lets one request into the model and queues the rest in Argos, in order,
+so each runs at the speed it has alone. With `-np 2` that still pays: each
+conversation keeps its own slot's cache, so switching chats does not re-read
+the prompt. It replaces answer first for that model.
+
+```yaml
+        oneAtATime: ["qwen-coder--2chat"]
+```
+
+A waiting request shows **held** on Live with its place in line; **Go next**
+sends it first (to the front of the line, or past an answer-first hold).
+
+## Two models on one GPU: share guard
+
+Two different models are not held for each other by default: each gets its
+own requests. On a card they share, the GPU takes turns between the two
+processes, so one model's work slows the other's answer there, and a model
+split across both cards is as slow as its slowest card.
+
+How much depends on the pair, so Argos learns it from the logs: each model's
+answer speed (its slots' `tg_3s`) when nothing else on its cards is busy, and
+its speed while a given other model is busy. Live -> **Sharing a GPU** shows
+it ("40 t/s alone, 8 t/s beside the 10 GB model: −80%"). With the **share
+guard** on (Plan), a new request for a model waits while another model on the
+same GPU is answering, if that one was seen to slow down more than
+`maxSlowdownPercent` beside it; it goes when the answer ends, after
+`maxWaitSeconds`, or on **Go next**.
+
+```yaml
+        shareGuard:
+          enabled: true
+          maxSlowdownPercent: 50
+          maxWaitSeconds: 120
+```
+
+It learns by watching, so the first time two models overlap nothing is held;
+after three readings of a pair it acts on them. A model answering two chats of
+its own is not sampled (it slows itself), and models on different cards never
+hold each other.
+
+The size is the prompt's *new* part, estimated at four bytes a token: the next
+turn of a conversation the model already has cached counts only its new
+messages, so it is not held. What goes wrong:
+
+- **A chat waits a long time:** the other chat writes a long answer. Lower
+  `maxWaitSeconds`, or turn answer first off for that model.
+- **A short turn is held anyway:** it came from a conversation Argos has not
+  seen in its last 16 requests to the model, so all of it counted as new.
+- **It never holds:** it reads which chat is answering from the model's log;
+  a llama-server that does not log its slots (`print_timing` lines) is never
+  seen answering.
 
 ## What goes wrong
 

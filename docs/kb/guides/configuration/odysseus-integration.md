@@ -298,6 +298,16 @@ What goes wrong:
 - **It comes back in Odysseus:** an Odysseus page left open saves its whole
   cookbook state; reload it after deleting.
 
+## Changing a profile that is running
+
+Saving or deleting a profile tells the engine to refresh at once, instead of
+at its next poll (`refreshSeconds`). A running model whose command changed is
+restarted with the new one: stopped now, loaded again on its next request. One
+that is busy with a request is not stopped mid-answer: the reload waits,
+checking again every 30 seconds, and Live shows it **update waiting**. After
+ten minutes it restarts anyway. A model whose command did not change keeps
+running, with its prompt cache.
+
 ## Launching a profile from the Builder
 
 The base model keeps its own default command, so loading it ignores every

@@ -60,5 +60,46 @@ func validatePool(config *Config) error {
 		resolved = append(resolved, real)
 	}
 	pool.Persistent = resolved
+
+	af := &pool.AnswerFirst
+	if af.MinPromptTokens < 0 || af.MaxWaitSeconds < 0 {
+		return fmt.Errorf("routing.router.settings.pool.answerFirst: minPromptTokens and maxWaitSeconds must be >= 0")
+	}
+	if af.MinPromptTokens == 0 {
+		af.MinPromptTokens = AnswerFirstDefaultMinPromptTokens
+	}
+	if af.MaxWaitSeconds == 0 {
+		af.MaxWaitSeconds = AnswerFirstDefaultMaxWaitSeconds
+	}
+	models := make([]string, 0, len(af.Models))
+	for _, id := range af.Models {
+		real, found := config.RealModelName(id)
+		if !found {
+			return fmt.Errorf("routing.router.settings.pool.answerFirst.models references unknown model %q", id)
+		}
+		models = append(models, real)
+	}
+	af.Models = models
+
+	serial := make([]string, 0, len(pool.OneAtATime))
+	for _, id := range pool.OneAtATime {
+		real, found := config.RealModelName(id)
+		if !found {
+			return fmt.Errorf("routing.router.settings.pool.oneAtATime references unknown model %q", id)
+		}
+		serial = append(serial, real)
+	}
+	pool.OneAtATime = serial
+
+	sg := &pool.ShareGuard
+	if sg.MaxSlowdownPercent < 0 || sg.MaxSlowdownPercent > 99 || sg.MaxWaitSeconds < 0 {
+		return fmt.Errorf("routing.router.settings.pool.shareGuard: maxSlowdownPercent must be 0-99 and maxWaitSeconds >= 0")
+	}
+	if sg.MaxSlowdownPercent == 0 {
+		sg.MaxSlowdownPercent = ShareGuardDefaultMaxSlowdownPercent
+	}
+	if sg.MaxWaitSeconds == 0 {
+		sg.MaxWaitSeconds = ShareGuardDefaultMaxWaitSeconds
+	}
 	return nil
 }
