@@ -769,6 +769,16 @@ routing:
         persistent:
           - "whisper"
 
+        # shareGuard: two models on one GPU slow each other down. Argos learns
+        # from their logs how much each slows beside the other; with this on,
+        # a request for one waits while the other answers, if that one was
+        # seen to slow down more than maxSlowdownPercent beside it.
+        # - optional, default: off
+        # shareGuard:
+        #   enabled: true
+        #   maxSlowdownPercent: 50
+        #   maxWaitSeconds: 120
+
         # oneAtATime: models that get one request at a time; the rest wait
         # in Argos, in order. Two chats on one model each run at the speed
         # one has alone, one after the other; with -np 2 each conversation

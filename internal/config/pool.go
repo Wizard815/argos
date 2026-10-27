@@ -90,5 +90,16 @@ func validatePool(config *Config) error {
 		serial = append(serial, real)
 	}
 	pool.OneAtATime = serial
+
+	sg := &pool.ShareGuard
+	if sg.MaxSlowdownPercent < 0 || sg.MaxSlowdownPercent > 99 || sg.MaxWaitSeconds < 0 {
+		return fmt.Errorf("routing.router.settings.pool.shareGuard: maxSlowdownPercent must be 0-99 and maxWaitSeconds >= 0")
+	}
+	if sg.MaxSlowdownPercent == 0 {
+		sg.MaxSlowdownPercent = ShareGuardDefaultMaxSlowdownPercent
+	}
+	if sg.MaxWaitSeconds == 0 {
+		sg.MaxWaitSeconds = ShareGuardDefaultMaxWaitSeconds
+	}
 	return nil
 }

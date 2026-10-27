@@ -3,7 +3,7 @@ title: VRAM-aware pool router
 summary: Put every model in one pool so models load side by side while VRAM fits, and only the cheapest idle model is evicted when it does not.
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
-config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime]
+config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard]
 updated: 2026-10-25
 ---
 
@@ -176,10 +176,33 @@ the prompt. It replaces answer first for that model.
 A waiting request shows **held** on Live with its place in line; **Go next**
 sends it first (to the front of the line, or past an answer-first hold).
 
-Two different models are not held for each other: each gets its own requests.
-On a card they share, the GPU takes turns between the two processes, so one
-model's prompt reading slows the other's answer there, and a model split
-across both cards is as slow as its slowest card.
+## Two models on one GPU: share guard
+
+Two different models are not held for each other by default: each gets its
+own requests. On a card they share, the GPU takes turns between the two
+processes, so one model's work slows the other's answer there, and a model
+split across both cards is as slow as its slowest card.
+
+How much depends on the pair, so Argos learns it from the logs: each model's
+answer speed (its slots' `tg_3s`) when nothing else on its cards is busy, and
+its speed while a given other model is busy. Live -> **Sharing a GPU** shows
+it ("40 t/s alone, 8 t/s beside the 10 GB model: −80%"). With the **share
+guard** on (Plan), a new request for a model waits while another model on the
+same GPU is answering, if that one was seen to slow down more than
+`maxSlowdownPercent` beside it; it goes when the answer ends, after
+`maxWaitSeconds`, or on **Go next**.
+
+```yaml
+        shareGuard:
+          enabled: true
+          maxSlowdownPercent: 50
+          maxWaitSeconds: 120
+```
+
+It learns by watching, so the first time two models overlap nothing is held;
+after three readings of a pair it acts on them. A model answering two chats of
+its own is not sampled (it slows itself), and models on different cards never
+hold each other.
 
 The size is the prompt's *new* part, estimated at four bytes a token: the next
 turn of a conversation the model already has cached counts only its new

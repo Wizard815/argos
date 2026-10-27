@@ -781,10 +781,22 @@ def cookbook_state_route():
 
 
 def refresh_schedule() -> None:
-    """A profile was saved or deleted: that adds or removes a model in the scheduling plan."""
+    """A profile was saved or deleted: that adds or removes a model in the scheduling plan, and the engine
+    should run the new command now, not at its next poll (odysseus.refreshSeconds, five minutes by default).
+    A running model whose command changed restarts with it; one busy with a request waits until it is done."""
     from . import schedule
 
     schedule.apply_plan()
+    url = ctx().settings.get("integrations")["engine_url"]
+    if url:
+        import threading
+
+        def tell():
+            try:
+                engine_api.odysseus_refresh(url)
+            except Exception:  # noqa: BLE001 - the engine still picks it up on its own poll
+                pass
+        threading.Thread(target=tell, daemon=True, name="profile-refresh").start()
 
 
 # ----- settings -------------------------------------------------------------------

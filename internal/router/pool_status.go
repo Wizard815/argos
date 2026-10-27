@@ -65,6 +65,14 @@ type PoolModelStatus struct {
 	// OneAtATime: the model gets one request at a time, the rest wait in
 	// Argos (routing.router.settings.pool.oneAtATime).
 	OneAtATime bool `json:"one_at_a_time,omitempty"`
+	// UpdatePending: its settings changed while it was busy; it restarts with
+	// the new ones once its requests are done. Since when it waits.
+	UpdatePending *time.Time `json:"update_pending,omitempty"`
+	// SoloTokensPerSecond is its answer speed with nothing else busy on its
+	// cards, and Slowdowns how much it slows beside each other model, both
+	// learned from the logs.
+	SoloTokensPerSecond float64    `json:"solo_tps,omitempty"`
+	Slowdowns           []Slowdown `json:"slowdowns,omitempty"`
 }
 
 // PoolQueueStatus is one request waiting for room or for a busy model.
@@ -134,6 +142,10 @@ func (p *poolSwapper) status(running map[string]process.ProcessState, sched sche
 		if cr, ok := Crashes.Get(id); ok {
 			m.Crash = &cr
 		}
+		if v, ok := Sharing.Solo(id); ok {
+			m.SoloTokensPerSecond = v
+		}
+		m.Slowdowns = Sharing.Slowdowns(id)
 		if t, ok := p.lastUsed[id]; ok {
 			t := t
 			m.LastUsed = &t
