@@ -1122,11 +1122,12 @@ function renderEstimate(e) {
   if (e.compare) {
     const C = e.compare;
     const ropeCol = (c) => e.train_ctx && c > e.train_ctx;
-    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB) · click to use it"),
+    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB) · click to use it"
+      + (C.ctx.some(ropeCol) ? " · * past the trained context: stretched with RoPE" : "")),
       h("div", { class: "table-wrap" }, h("table", { class: "dense" },
         h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num pick", style: c === e.ctx ? "color:var(--strong)" : "",
           title: `Use ${ctxLabel(c)} context${ropeCol(c) ? " (stretched with RoPE)" : ""}`, onclick: () => useContext(c, null, e) },
-          ctxLabel(c), ropeCol(c) ? h("span", { class: "muted", style: "font-weight:400" }, " RoPE") : null)))),
+          ctxLabel(c), ropeCol(c) ? h("span", { class: "muted", style: "font-weight:400" }, "*") : null)))),
         h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
           t.kv_gib.map((v, i) => v == null ? h("td", { class: "num" }, DASH) : h("td", { class: "num pick",
             style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "",
@@ -1137,9 +1138,12 @@ function renderEstimate(e) {
     const on = ropeOn();
     const box = h("input", { type: "checkbox", checked: on, onchange: (ev) => ev.target.checked
       ? useContext(e.rope_ctx, null, e) : edit({ ...ROPE_OFF, "ctx-size": e.train_ctx }) });
-    rope = h("label", { class: "check", style: "margin-top:8px", title: `--rope-scaling yarn --rope-scale ${Number((e.rope_ctx / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx} -c ${e.rope_ctx}` },
-      box, ` RoPE (YaRN) to ${ctxLabel(e.rope_ctx)} context`,
-      h("span", { class: "hint", style: "margin:0 0 0 6px" }, on ? "on: unticking goes back to the trained context" : `trained on ${ctxLabel(e.train_ctx)}; this stretches it ×${num(e.rope_ctx / e.train_ctx, 1)}`));
+    // on, it names the context picked (384K, 512K, ... from the table); off, ticking it goes all the way to 1M
+    const to = on && e.ctx > e.train_ctx ? e.ctx : e.rope_ctx;
+    rope = h("label", { class: "check", style: "margin-top:8px", title: `--rope-scaling yarn --rope-scale ${Number((to / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx} -c ${to}` },
+      box, ` RoPE (YaRN) to ${ctxLabel(to)} context`,
+      h("span", { class: "hint", style: "margin:0 0 0 6px" }, on ? `on (×${num(to / e.train_ctx, 1)}): unticking goes back to the trained context; the RoPE columns above pick 384K to 1M`
+        : `trained on ${ctxLabel(e.train_ctx)}; this stretches it ×${num(e.rope_ctx / e.train_ctx, 1)}, or click a RoPE column above for less`));
   }
   // an unknown cache type: say its bits per value here and it is saved to Settings -> KV cache types
   const unknown = (e.notes || []).map((n) => (n.match(/unknown cache type '([^']+)'/) || [])[1]).find(Boolean);
@@ -1350,8 +1354,12 @@ function fillProfileSelect() {
 // Playground is for testing: it lists only what was started from it. Everything else the engine is running
 // (requests, the scheduler, the assistant) is on the Logs page.
 const mineKey = "argos.playground.engineLaunches";
-const pgMine = new Set((() => { try { return JSON.parse(sessionStorage.getItem(mineKey) || "[]"); } catch { return []; } })());
-const rememberMine = (id) => { pgMine.add(id); try { sessionStorage.setItem(mineKey, JSON.stringify([...pgMine])); } catch { /* private window */ } };
+// The engine models shown here: started from this page, or added from Schedule → Live (⋯ → Add to Playground).
+// Remembered per browser, so an added model stays after a reload; removing one only hides it here.
+const pgMine = new Set((() => { try { return JSON.parse(localStorage.getItem(mineKey) || sessionStorage.getItem(mineKey) || "[]"); } catch { return []; } })());
+const saveMine = () => { try { localStorage.setItem(mineKey, JSON.stringify([...pgMine])); } catch { /* private window */ } };
+const rememberMine = (id) => { pgMine.add(id); saveMine(); };
+const forgetMine = (id) => { pgMine.delete(id); saveMine(); };
 const playgroundLaunches = () => S.launches.filter((l) => !l.engine || pgMine.has(l.base_model));
 
 async function launch(command, base_model, profile_name, profile_id) {
@@ -1416,6 +1424,7 @@ function renderLaunches() {
   $("#gRecord").disabled = !cur;
   $("#gStop").disabled = !(cur && cur.running);
   $("#gStop").lastChild.textContent = cur && cur.engine ? "Unload" : "Stop";
+  $("#gRemove").hidden = !(cur && cur.engine);
   $("#gLogTitle").textContent = cur ? `Output · ${cur.launch_id}` : "Output";
   renderStats(S.lastBench[S.sel]);
 }
@@ -1574,6 +1583,14 @@ function initPlayground() {
       toast(res.run.success ? "Recorded from log." : "Recorded — no timing lines found in the log yet.", res.run.success ? "ok" : "");
       renderLaunches();
     } catch (e) { fail(e); }
+  };
+  $("#gRemove").onclick = () => {
+    const cur = S.launches.find((l) => l.launch_id === S.sel);
+    if (!cur || !cur.engine) return;
+    forgetMine(cur.base_model);
+    S.sel = null;
+    toast(`${cur.base_model} is off the Playground. It stays loaded: unload it from Schedule → Live.`, "ok");
+    refreshLaunches();
   };
   $("#gStop").onclick = async () => {
     const eng = (S.sel || "").startsWith("engine:");
@@ -2855,14 +2872,27 @@ async function loadGpuProcs() {
     try { const res = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { force: owned, hard }); toast(`${p.name}: ${res.result}.`, "ok"); } catch (e) { fail(e); }
     setTimeout(loadGpuProcs, 1200);
   };
+  // a model the engine started over SSH runs in the llama.cpp container: Argos names it from the cards and
+  // memory it holds, and unloads it through the engine (it cannot signal a process it cannot see)
+  const unload = async (p) => {
+    if (!(await confirmBox(`Unload ${p.model}? The engine stops it and frees its ${num(p.vram_gib || 0, 1)} GiB.`, "Unload"))) return;
+    try { await api("POST", `/api/schedule/live/${encodeURIComponent(p.model)}/unload`); toast(`Unloading ${p.model}.`, "ok"); } catch (e) { fail(e); }
+    setTimeout(loadGpuProcs, 2000);
+  };
   renderTable(table, [
-    { label: "PID", num: true, cell: (p) => p.pid },
-    { label: "Process", cell: (p) => p.name },
+    { label: "PID", num: true, cell: (p) => h("td", { class: "num", title: p.local_pid && p.host_pid && p.local_pid !== p.host_pid ? `host PID ${p.host_pid}` : "" }, String(p.host_pid || p.pid)) },
+    { label: "Process", cell: (p) => (p.visible === false
+      ? h("span", { class: "muted", title: "in another container: only its PID, cards and memory are known here" }, p.matched ? "llama-server (other container)" : "not visible from Argos")
+      : p.name) },
     { label: "GPU", cell: (p) => p.gpu },
     { label: "VRAM", num: true, cell: (p) => (p.vram_gib != null ? gib(p.vram_gib) : DASH) },
-    { label: "Started by", cell: (p) => (p.self ? "this app" : p.owner ? h("span", { class: "pill ok" }, p.owner) : h("span", { class: "pill warn", title: "Argos does not know this process: another container, a leftover, or something you started by hand." }, "unknown")) },
+    { label: "Started by", cell: (p) => (p.self ? "this app" : p.owner
+      ? h("span", { class: "pill ok", title: p.matched ? `Argos started it over SSH, in the llama.cpp container: matched ${p.matched}, since its command cannot be read from here` : "" }, p.owner, p.matched ? " · over SSH" : "")
+      : h("span", { class: "pill warn", title: "Argos does not know this process: another container, a leftover, or something you started by hand." }, "unknown")) },
     { label: "Command", cell: (p) => h("td", { class: "mono-sm", title: p.cmd, style: "max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, p.cmd || DASH) },
-    { label: "", cell: (p) => (p.self ? "" : h("td", { class: "actions nowrap" }, btn("Stop", () => kill(p, false), "sm ghost"), " ", btn("Kill", () => kill(p, true), "sm danger"))) },
+    { label: "", cell: (p) => (p.self ? "" : p.matched
+      ? h("td", { class: "actions nowrap" }, btn("Unload", () => unload(p), "sm ghost"))
+      : h("td", { class: "actions nowrap" }, btn("Stop", () => kill(p, false), "sm ghost"), " ", btn("Kill", () => kill(p, true), "sm danger"))) },
   ], r.processes || [], { key: null }, r.note || "Nothing is using the GPUs.");
 }
 
@@ -2917,8 +2947,16 @@ async function loadServerLogs(force) {
       return [cls ? h("span", { class: cls }, line) : line, "\n"];
     }) : h("span", { class: "muted" }, text ? "No line matches." : "Nothing logged yet."));
     if ($("#slFollow").checked && (atBottom || force)) pre.scrollTop = pre.scrollHeight;
-    // per-request speeds, as llama-server printed them
-    const dec = [...text.matchAll(/^\s*eval time.*?([\d.]+) tokens per second/gim)].map((m) => +m[1]);
+    // per-request speeds, as llama-server printed them. Lines can carry a timestamp and a slot prefix
+    // ("2.59.000 I slot print_timing: id 1 | task 0 | eval time = ..."), so "eval time" is matched anywhere
+    // on the line, except as part of "prompt eval time". A build that prints no timing block at the end
+    // still reports each request's speed as it goes (n_gen = N, tg = X t/s): its last value per task.
+    let dec = [...text.matchAll(/(?<!prompt )\beval time.*?([\d.]+) tokens per second/gi)].map((m) => +m[1]);
+    if (!dec.length) {
+      const byTask = new Map();
+      for (const m of text.matchAll(/task\s+(\d+)\s*\|\s*n_gen\s*=\s*\d+,\s*tg\s*=\s*([\d.]+)/g)) byTask.set(m[1], +m[2]);
+      dec = [...byTask.values()];
+    }
     const pre_ = [...text.matchAll(/prompt eval time.*?([\d.]+) tokens per second/gi)].map((m) => +m[1]);
     const errs = text.split("\n").filter((l) => SL_ERR.test(l)).length;
     const stat = (k, v, unit) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v, unit && h("small", {}, unit)));
@@ -4295,7 +4333,7 @@ function renderInvHost() {
 // The plan is made here and applied to the engine's pool router; Live shows what the router is doing.
 const SC = {
   pane: "live", data: null, live: null,
-  plan: null, sizes: {}, persistent: new Set(), dirty: false,   // the Plan form, kept until Save
+  plan: null, sizes: {}, persistent: new Set(), answerFirst: new Set(), oneAtATime: new Set(), dirty: false,   // the Plan form, kept until Save
   filter: "", onlyProfiles: false, sort: { key: null, asc: true },
   steps: [{ op: "request", model: "" }], sim: null, simAt: 0,
 };
@@ -4337,11 +4375,15 @@ async function loadSchedule() {
 function syncPlanForm() {
   const p = SC.data.plan;
   SC.plan = { enabled: p.enabled, cards: p.cards.join(", "), reserve_gib: p.reserve_gib, protect_seconds: p.protect_seconds,
-    placement: p.placement, idle_unload_min: p.idle_unload_min ?? 30 };
+    placement: p.placement, idle_unload_min: p.idle_unload_min ?? 30,
+    answer_first_min_tokens: p.answer_first_min_tokens ?? 4000, answer_first_max_wait_s: p.answer_first_max_wait_s ?? 300,
+    share_guard: !!p.share_guard, share_guard_slowdown: p.share_guard_slowdown ?? 50, share_guard_max_wait_s: p.share_guard_max_wait_s ?? 120 };
   SC.sizes = { ...p.sizes };
   SC.persistent = new Set(p.persistent);
+  SC.answerFirst = new Set(p.answer_first || []);
+  SC.oneAtATime = new Set(p.one_at_a_time || []);
 }
-const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], sizes: SC.sizes });
+const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], answer_first: [...SC.answerFirst], one_at_a_time: [...SC.oneAtATime], sizes: SC.sizes });
 
 async function loadLive() {
   try { SC.live = await api("GET", "/api/schedule/live"); } catch (e) { SC.live = { connected: false, error: e.message, pool: null }; }
@@ -4393,15 +4435,50 @@ function requestsCard(rows, inFlight, opts = {}) {
   const fresh = (r) => now - (seenReq.at.get(r.source_id) || 0) < 6000;
   const running = Object.entries(inFlight || {}).filter(([, n]) => n > 0);
   // requests still running sit on top with a clock that counts up, so a long prompt shows while it works
+  // Each request the engine is serving is matched to a llama-server slot of its model, oldest to oldest: a slot
+  // reads the request's prompt (prefill), then generates its answer. Two chats on one model are two slots. A
+  // request with no slot free waits; a busy slot with no request here came from a client that skipped Argos
+  // (or hung up while the model kept working). The engine lists running requests oldest first.
+  const slotsOf = opts.slots || {};
+  const slotFor = {}, used = {};
+  for (const r of opts.running || []) {
+    if (r.held) continue; // still in Argos, not in a slot
+    const free = (slotsOf[r.model] || []).filter((s) => !(used[r.model] || new Set()).has(s.id));
+    if (free.length) { slotFor[r.id] = free[0]; (used[r.model] = used[r.model] || new Set()).add(free[0].id); }
+  }
+  const slotLabel = (s) => (s.phase === "prefill"
+    ? [s.total ? `prefill ${pct(s.progress)}` : "prefill", `slot ${s.id} is reading this prompt${s.total ? `: ${num(s.tokens, 0)} of ${num(s.total, 0)} tokens at ${num(s.tokens_per_second, 0)} t/s` : ""}`]
+    : [`generating${s.generated ? ` ${num(s.generated, 0)}` : ""}`, `slot ${s.id} is writing the answer: ${num(s.generated || 0, 0)} tokens so far, ${num(s.gen_tokens_per_second || 0, 1)} t/s now`]);
+  const status = (r) => {
+    if (r.held) return ["held", r.held];
+    const s = slotFor[r.id];
+    if (s) return slotLabel(s);
+    if (r.resp_bytes) return ["generating", "sending its answer"];
+    if ((slotsOf[r.model] || []).length) return ["waiting", `every slot of ${r.model} is busy; this one starts when one frees up`];
+    return ["prompt", "reading the prompt; nothing sent back yet"];
+  };
+  // busy slots no request of ours accounts for
+  const orphans = Object.entries(slotsOf).flatMap(([model, list]) => list.filter((s) => !(used[model] || new Set()).has(s.id)).map((s) => ({ model, s })));
+  const orphanRows = orphans.map(({ model, s }) => h("tr", { class: "req-running" },
+    h("td", { class: "muted" }, "now"), h("td", { class: "strong" }, model), h("td", {}, DASH),
+    h("td", { class: "muted", title: "Argos is not serving a request for this slot: a client sent it straight to the llama-server port, or hung up while the model kept working on it" }, "not through Argos"),
+    h("td", { class: "num" }, s.total ? num(s.total, 0) : DASH), h("td", { class: "num" }, s.generated ? num(s.generated, 0) : DASH),
+    h("td", { class: "num" }, s.tokens_per_second ? num(s.tokens_per_second, 0) : DASH), h("td", { class: "num" }, s.gen_tokens_per_second ? num(s.gen_tokens_per_second, 1) : DASH),
+    h("td", { class: "num", "data-run-start": String(Date.parse(s.started)) }, runClock(Date.now() - Date.parse(s.started))),
+    h("td", { class: "nowrap" }, (([label, why]) => h("span", { class: "pill warn", title: why }, label))(slotLabel(s)), h("span", { class: "muted mono-sm", style: "margin-left:6px" }, `slot ${s.id}`))));
   const live = (opts.running || []).map((r) => h("tr", { class: "req-running" },
     h("td", { class: "muted" }, "now"),
     h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
-    h("td", { class: "num" }, DASH),
-    h("td", { class: "num", title: "bytes sent back so far" }, r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
-    h("td", { class: "num" }, DASH), h("td", { class: "num" }, DASH),
+    h("td", { class: "num", title: "the prompt's length, once its slot reports it" }, slotFor[r.id]?.total ? num(slotFor[r.id].total, 0) : DASH),
+    h("td", { class: "num", title: "tokens of the answer so far (or bytes sent back)" }, slotFor[r.id]?.generated ? num(slotFor[r.id].generated, 0) : r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
+    h("td", { class: "num" }, slotFor[r.id]?.tokens_per_second ? num(slotFor[r.id].tokens_per_second, 0) : DASH),
+    h("td", { class: "num" }, slotFor[r.id]?.gen_tokens_per_second ? num(slotFor[r.id].gen_tokens_per_second, 1) : DASH),
     h("td", { class: "num", "data-run-start": String(Date.now() - (r.elapsed_ms || 0)) }, runClock(r.elapsed_ms || 0)),
-    h("td", {}, h("span", { class: "pill warn", title: r.resp_bytes ? "sending its answer" : "reading the prompt; nothing sent back yet" },
-      r.resp_bytes ? "generating" : (opts.prefill || {})[r.model]?.total ? `prefill ${pct(opts.prefill[r.model].progress)}` : "prompt"))));
+    h("td", { class: "nowrap" }, (([label, why]) => h("span", { class: `pill ${label === "waiting" || label === "held" ? "" : "warn"}`, title: why }, label))(status(r)),
+      slotFor[r.id] ? h("span", { class: "muted mono-sm", style: "margin-left:6px" }, `slot ${slotFor[r.id].id}`) : null,
+      r.held ? h("button", { class: "btn sm ghost", style: "margin-left:6px", title: "send this one first: to the front of the line, or past the answer-first hold",
+        onclick: async () => { try { await api("POST", `/api/requests/${encodeURIComponent(r.id)}/next`); toast("It goes next.", "ok"); } catch (e) { fail(e); } } }, "Go next") : null)));
+  live.push(...orphanRows);
   const table = rows.length || live.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
     h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
       .map((x, i) => h("th", { class: i >= 4 && i <= 8 ? "num" : "" }, x)))),
@@ -4432,24 +4509,52 @@ function requestsCard(rows, inFlight, opts = {}) {
 // writing the answer. The scheduler holds declared decodes behind a prefill; this is where to watch it.
 const pct = (f) => `${num(Math.min(Math.max(f || 0, 0), 1) * 100, 0)}%`;
 function workPill(m) {
-  if (m.prefill) {
-    return h("span", { class: "pill warn", title: m.prefill.total ? `${num(m.prefill.tokens, 0)} of ${num(m.prefill.total, 0)} prompt tokens` : "reading the prompt" },
-      m.prefill.total ? `prefill ${pct(m.prefill.progress)}` : "prefill");
-  }
-  return m.in_flight && m.state === "ready" ? h("span", { class: "pill ok", title: "answering: the prompt is read" }, "generating") : null;
+  const pills = (m.slots || []).map((sl) => sl.phase === "prefill"
+    ? h("span", { class: "pill warn", title: `slot ${sl.id}: ${sl.total ? `${num(sl.tokens, 0)} of ${num(sl.total, 0)} prompt tokens` : "reading the prompt"}` }, sl.total ? `prefill ${pct(sl.progress)}` : "prefill")
+    : h("span", { class: "pill ok", title: `slot ${sl.id}: ${num(sl.generated || 0, 0)} tokens of the answer so far, ${num(sl.gen_tokens_per_second || 0, 1)} t/s now` }, "generating"));
+  if (!pills.length && m.prefill) pills.push(h("span", { class: "pill warn" }, m.prefill.total ? `prefill ${pct(m.prefill.progress)}` : "prefill"));
+  if (!pills.length && m.in_flight && m.state === "ready") pills.push(h("span", { class: "pill ok", title: "answering: the prompt is read" }, "generating"));
+  if (m.update_pending) pills.push(h("span", { class: "pill warn", title: `Its profile changed while it was busy (since ${new Date(m.update_pending).toLocaleTimeString()}). It restarts with the new settings once its requests are done; checked every 30 s.` }, "update waiting"));
+  if (m.crash) pills.push(h("span", { class: "pill bad", title: `${m.crash.line}\n${m.crash.recent} crash(es) in the last 10 minutes${m.crash.blocked ? ". Requests no longer start it: fix its command, or Load it from ⋯ to try again." : ""}` },
+    m.crash.blocked ? "crash loop: stopped" : `crashed${m.crash.recent > 1 ? ` ×${m.crash.recent}` : ""}`));
+  return pills.length ? pills : null;
+}
+// How much each model slows beside the others on its GPUs, as the logs showed it: what the share guard acts on.
+function sharingCard(models, plan) {
+  const rows = models.flatMap((m) => (m.slowdowns || []).map((sd) => ({ m, sd })));
+  if (!rows.length) return null;
+  const guard = plan && plan.share_guard, keep = 1 - ((plan && plan.share_guard_slowdown) || 50) / 100;
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Sharing a GPU"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, `learned from the logs: answer speed alone, and beside another busy model on the same GPU${guard ? " · share guard on" : " · share guard off (Plan)"}`)),
+  h("div", { class: "table-wrap" }, simpleTable(["Model", "Alone", "Beside", "Speed beside it", "Seen", ""], rows.map(({ m, sd }) => [
+    h("span", { class: "strong" }, m.id), m.solo_tps ? `${num(m.solo_tps, 1)} t/s` : DASH, sd.beside,
+    `${m.solo_tps ? `${num(m.solo_tps * sd.ratio, 1)} t/s · ` : ""}${pct(sd.ratio)} (−${num((1 - sd.ratio) * 100, 0)}%)`, `${sd.samples}×`,
+    sd.ratio < keep ? h("span", { class: `pill ${guard ? "warn" : ""}`, title: guard ? `a request for ${sd.beside} waits while ${m.id} answers` : "turn the share guard on in Plan to hold it" }, guard ? `holds ${sd.beside}` : "would hold") : DASH]))));
+}
+// A model that died: the line it died on, so nobody has to dig through the log for it.
+function crashCard(models) {
+  const hit = models.filter((m) => m.crash);
+  if (!hit.length) return null;
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Crashes"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, "last 10 minutes · 3 crashes and requests stop starting it; Load it from ⋯ to try again")),
+  h("div", { class: "table-wrap" }, simpleTable(["Model", "When", "Times", "Died on", ""], hit.map((m) => [
+    h("span", { class: "strong" }, m.id), ago(Date.parse(m.crash.at) / 1000), String(m.crash.recent),
+    h("code", { class: "mono-sm", style: "white-space:normal;word-break:break-all" }, m.crash.line),
+    m.crash.blocked ? h("span", { class: "pill bad", title: "requests for it get an error instead of starting it again" }, "not restarted") : h("span", { class: "pill warn" }, "restarts on the next request")]))));
 }
 function prefillCard(models) {
-  const busy = models.filter((m) => m.prefill);
+  const busy = models.flatMap((m) => (m.slots || []).map((sl) => ({ m, sl })));
   if (!busy.length) return null;
-  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Prefill"), h("span", { class: "spacer" }),
-    h("span", { class: "hint" }, "prompts being read now, from each model's log")),
-  h("div", { class: "table-wrap" }, simpleTable(["Model", "Progress", "Tokens", "Speed", "Running", "Left"], busy.map((m) => {
-    const p = m.prefill, started = Date.parse(p.started);
-    const left = p.tokens_per_second > 0 && p.total ? (p.total - p.tokens) / p.tokens_per_second : null;
-    return [h("span", { class: "strong" }, m.id),
-      h("span", { class: "meter" }, h("div", { class: "progress" }, h("i", { style: `width:${pct(p.progress)}` })), pct(p.progress)),
-      p.total ? `${num(p.tokens, 0)} / ${num(p.total, 0)}` : "starting",
-      p.tokens_per_second ? `${num(p.tokens_per_second, 0)} t/s` : DASH,
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Working now"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, "each llama-server slot busy with a request, from the model's log · two chats on one model are two slots")),
+  h("div", { class: "table-wrap" }, simpleTable(["Model", "Slot", "Doing", "Progress", "Tokens", "Speed", "Running", "Left"], busy.map(({ m, sl }) => {
+    const started = Date.parse(sl.started), pre = sl.phase === "prefill";
+    const left = pre && sl.tokens_per_second > 0 && sl.total ? (sl.total - sl.tokens) / sl.tokens_per_second : null;
+    return [h("span", { class: "strong" }, m.id), String(sl.id),
+      h("span", { class: `pill ${pre ? "warn" : "ok"}` }, pre ? "reading the prompt" : "generating"),
+      pre ? h("span", { class: "meter" }, h("div", { class: "progress" }, h("i", { style: `width:${pct(sl.progress)}` })), pct(sl.progress)) : DASH,
+      pre ? (sl.total ? `${num(sl.tokens, 0)} / ${num(sl.total, 0)}` : "starting") : `${num(sl.generated || 0, 0)} out`,
+      pre ? (sl.tokens_per_second ? `${num(sl.tokens_per_second, 0)} t/s` : DASH) : `${num(sl.gen_tokens_per_second || 0, 1)} t/s`,
       h("span", { "data-run-start": String(started) }, runClock(Date.now() - started)),
       left == null ? DASH : `~${runClock(left * 1000)}`];
   }))));
@@ -4481,10 +4586,13 @@ function renderLive() {
         : h("span", { class: "chip", title: "llama-server, on the default server" }, "llama.cpp"); } },
     { label: "GPU", cell: (m) => m.cards.length ? m.cards.join(", ") : DASH },
     { label: "Size", num: true, cell: (m) => m.size_known ? gib(m.size_gib) : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
-    { label: "In flight", num: true, cell: (m) => m.in_flight || DASH },
+    { label: "In flight", num: true, cell: (m) => h("td", { class: "num nowrap", title: (m.slots || []).map((sl) => `slot ${sl.id}: ${sl.phase}`).join("\n") },
+      m.in_flight || DASH, (m.slots || []).length ? h("div", { class: "cell-sub" }, `slot${m.slots.length > 1 ? "s" : ""} ${m.slots.map((sl) => sl.id).join(", ")}`) : null) },
     { label: "Last used", cell: (m) => (m.last_used ? ago(Date.parse(m.last_used) / 1000) : DASH) },
     { label: "Load time", num: true, cell: (m) => (m.load_seconds ? `${num(m.load_seconds, 0)}s` : DASH) },
-    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"), m.protected && h("span", { class: "chip", title: `Used in the last ${span(P.protect_seconds)}, so it is evicted last when another model needs room. Not a setting: it ends on its own once the model sits idle.` }, "recently used")) },
+    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"),
+      m.one_at_a_time && h("span", { class: "chip", title: "one request at a time; the rest wait in Argos, in order" }, "one at a time"),
+      m.answer_first && h("span", { class: "chip", title: "a long new prompt waits while another chat on this model is answering" }, "answer first"), m.protected && h("span", { class: "chip", title: `Used in the last ${span(P.protect_seconds)}, so it is evicted last when another model needs room. Not a setting: it ends on its own once the model sits idle.` }, "recently used")) },
     { label: "", cell: (m) => { const b = h("button", { class: "icon-btn ghost", title: "Load, unload, keep loaded, logs, edit", "aria-label": `Actions for ${m.id}` }, "⋯");
       b.addEventListener("click", () => liveMenu(b, m)); return h("td", { class: "actions" }, b); } },
   ], rows, { key: null }, "No models.");
@@ -4508,9 +4616,9 @@ function renderLive() {
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
-    swaps, queue, prefillCard(P.models),
+    swaps, queue, crashCard(P.models), prefillCard(P.models), sharingCard(P.models, SC.data && SC.data.plan),
     requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])),
-      { running: L.running, prefill: Object.fromEntries(P.models.filter((m) => m.prefill).map((m) => [m.id, m.prefill])) }),
+      { running: L.running, slots: Object.fromEntries(P.models.filter((m) => (m.slots || []).length).map((m) => [m.id, m.slots])) }),
     activity,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
 }
@@ -4569,6 +4677,12 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
       : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
     { label: "Keep loaded", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.persistent.has(r.id), title: "never evicted to make room for another model" });
       c.addEventListener("change", () => { c.checked ? SC.persistent.add(r.id) : SC.persistent.delete(r.id); touch(); }); return h("td", {}, c); } },
+    { label: "One at a time", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.oneAtATime.has(r.id),
+      title: "One request goes into the model at a time; the rest wait in Argos, in order. Each runs at the speed it has alone. With -np 2 each conversation still keeps its own cache slot." });
+      c.addEventListener("change", () => { c.checked ? SC.oneAtATime.add(r.id) : SC.oneAtATime.delete(r.id); touch(); }); return h("td", {}, c); } },
+    { label: "Answer first", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.answerFirst.has(r.id),
+      title: "With two chats on this model (-np 2 or more): a long new prompt waits while the other chat is answering, so that answer keeps its speed instead of dropping to a token or two a second" });
+      c.addEventListener("change", () => { c.checked ? SC.answerFirst.add(r.id) : SC.answerFirst.delete(r.id); touch(); }); return h("td", {}, c); } },
     { label: "", cell: (r) => h("td", {}, h("div", { class: "row end" },
       r.measured && r.measured.gib !== SC.sizes[r.id] ? btn("Use measured", async () => { try { SC.data = await api("POST", `/api/schedule/measured/${encodeURIComponent(r.id)}/use`); syncPlanForm(); SC.dirty = false; renderSchedule(); } catch (e) { fail(e); } }, "sm ghost") : null,
       btn("Measure", () => startMeasure(r), "sm", "gauge"))) },
@@ -4588,6 +4702,14 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
         h("label", { class: "check wide" }, enable, "Use the pool router (when off, the engine keeps its own router)"),
         cardsInput,
         field("Reserve (GiB)", "reserve_gib", { type: "number", step: "0.5", min: "0" }, "left free for KV growth and buffers"),
+        (() => { const c = h("input", { type: "checkbox", checked: P.share_guard });
+          c.addEventListener("change", () => { P.share_guard = c.checked; touch(); });
+          return h("label", { class: "check wide", title: "Learned from the logs: each model's answer speed alone, and beside each other model on the same GPU (Live → Sharing a GPU)" },
+            c, "Share guard: hold a model's request while another model on the same GPU answers, if that model slows down a lot beside it"); })(),
+        field("Share guard: slowdown from (%)", "share_guard_slowdown", { type: "number", step: "5", min: "1", max: "99" }, "a model answering this much slower beside another is protected"),
+        field("Share guard: longest wait (s)", "share_guard_max_wait_s", { type: "number", step: "30", min: "1" }, "then the request goes anyway"),
+        field("Answer first: prompts from (tokens)", "answer_first_min_tokens", { type: "number", step: "500", min: "1" }, "a shorter new prompt goes straight in"),
+        field("Answer first: longest wait (s)", "answer_first_max_wait_s", { type: "number", step: "30", min: "1" }, "then it goes anyway"),
         field("Protect (seconds)", "protect_seconds", { type: "number", step: "30", min: "0" }, "a model used this recently is evicted last"),
         field("Unload after (min)", "idle_unload_min", { type: "number", step: "5", min: "0" }, "a model unused this long is unloaded; 0 = never"),
         h("label", { class: "field wide" }, h("span", {}, "Placement"), placement)),
@@ -4732,13 +4854,28 @@ function liveMenu(anchor, m) {
       if (action === "load" && !r.already) watchLoad(m.id);
     } catch (e) { fail(e); }
     setTimeout(loadLive, action === "load" ? 1500 : 300);
-    if (action === "keep") loadSchedule();
+    if (["keep", "answer_first", "one_at_a_time"].includes(action)) loadSchedule();
   };
+  // what each llama-server slot is doing right now (two chats on one model are two slots)
+  const slotRows = (m.slots || []).map((sl) => ({ label: `Slot ${sl.id}: ${sl.phase === "prefill"
+    ? `reading a prompt${sl.total ? ` ${pct(sl.progress)} of ${num(sl.total, 0)}` : ""}` : `generating${sl.generated ? `, ${num(sl.generated, 0)} out at ${num(sl.gen_tokens_per_second || 0, 1)} t/s` : ""}`}`, icon: "activity", run: () => {} }));
   popMenu(anchor, [
+    ...slotRows,
     loaded ? { label: "Unload model", icon: "square", run: () => act("unload", undefined, `Unloaded ${m.id}.`) }
       : { label: "Load now", icon: "play", run: () => act("load", undefined, `Loading ${m.id}…`) },
     m.persistent ? { label: "Keep loaded: off (may be unloaded for others)", icon: "x", run: () => act("keep", { on: false }, `${m.id} can be unloaded again.`) }
       : { label: "Keep loaded: on (never unload it for others)", icon: "check", run: () => act("keep", { on: true }, `${m.id} stays loaded.`) },
+    m.one_at_a_time ? { label: "One at a time: off (requests go in together)", icon: "x", run: () => act("one_at_a_time", { on: false }, `${m.id}: requests go in together again.`) }
+      : { label: "One at a time: on (the rest wait, in order)", icon: "check", run: () => act("one_at_a_time", { on: true }, `${m.id}: one request at a time now.`) },
+    m.answer_first ? { label: "Answer first: off (every request goes straight in)", icon: "x", run: () => act("answer_first", { on: false }, `${m.id}: every request goes straight in.`) }
+      : { label: "Answer first: on (a long prompt waits while another chat answers)", icon: "check", run: () => act("answer_first", { on: true }, `${m.id}: a long new prompt now waits while another chat is answering.`) },
+    { label: pgMine.has(m.id) ? "Open in Playground" : "Add to Playground", icon: "play", run: async () => {
+      rememberMine(m.id);
+      if (!loaded) await act("load", undefined, `Loading ${m.id} for the Playground…`);
+      S.sel = `engine:${m.id}`;
+      show("playground");
+      await refreshLaunches();
+    } },
     { label: "Check logs", icon: "file-text", run: () => liveLog(m.id) },
     { label: "Edit launch command", icon: "pencil", run: () => liveEdit(m.id) },
   ]);

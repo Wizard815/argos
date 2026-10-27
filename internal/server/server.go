@@ -38,10 +38,19 @@ type Server struct {
 
 	perf     *perf.Monitor
 	inflight *inflightTracker
-	metrics  *metricsMonitor
-	store    *store.Store
-	build    BuildInfo
-	hardware *hw.HardwareSnapshot
+	// answerFirst holds long new prompts while another chat on the model answers
+	answerFirst *answerFirstState
+	// gate is the waiting room in front of each model (one at a time, answer first)
+	gate *slotGate
+
+	// updatePending: models whose new settings wait for them to go idle (a
+	// reload put off), since when
+	pendingMu     sync.Mutex
+	updatePending map[string]time.Time
+	metrics       *metricsMonitor
+	store         *store.Store
+	build         BuildInfo
+	hardware      *hw.HardwareSnapshot
 
 	// reference is Argos's own embedded documentation, served to the
 	// Playground's agentic chat and to external MCP clients through /api/mcp.
@@ -276,6 +285,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		upstreamlog:   upstreamlog,
 		perf:          perfMon,
 		inflight:      newInflightTracker(),
+		answerFirst:   newAnswerFirst(),
 		metrics:       newMetricsMonitor(proxylog, cfg.MetricsMaxInMemory, cfg.CaptureBuffer, st),
 		store:         st,
 		build:         build,
@@ -288,7 +298,11 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	}
 	// Bring back the profile the operator last selected. Without this, a restart
 	// or a container recreate silently falls back to "no profile".
+	s.gate = newSlotGate(s.inflight.SetHeld)
+	go s.watchSharing()
 	s.restoreProfileState()
+	// crashes: a model that dies on every request is stopped from reloading forever
+	router.WatchExits()
 	// SysProvider is constructed here because this is where perf and hardware
 	// are in scope; wiring those in later is a change to internal/mcptools.
 	tools, err := mcptools.New(
@@ -298,6 +312,8 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		// s, not a snapshot: the provider reports which models are loaded and
 		// which profile is active, and both change while the server runs.
 		modelctl.NewProvider(s),
+		// the scheduler's live view: cards, prefill, queue, running requests
+		&scheduleProvider{s: s},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("building the MCP tool registry: %w", err)
@@ -342,6 +358,12 @@ func (s *Server) modelHandler(w http.ResponseWriter, r *http.Request) {
 		swaputil.SendError(w, r, router.ErrNoRouterFound)
 		return
 	}
+	if cr, blocked := router.Crashes.Blocked(data.ModelID); blocked {
+		swaputil.SendResponse(w, r, http.StatusServiceUnavailable, fmt.Sprintf(
+			"%s crashed %d times in the last 10 minutes and is not started again on a request. Last crash: %s. "+
+				"Fix its command, or load it by hand from Schedule -> Live to try again.", data.ModelID, cr.Recent, cr.Line))
+		return
+	}
 	s.proxylog.Debugf("dispatch: using local process for model: %s", data.ModelID)
 	s.local.ServeHTTP(w, r)
 }
@@ -378,6 +400,7 @@ func (s *Server) routes() {
 		CreateSelectorMiddleware(s),
 		CreateRequestContextMiddleware(s.cfg),
 		CreateInflightMiddleware(s.inflight, s.cfg),
+		CreateAnswerFirstMiddleware(s),
 		CreateFilterMiddleware(s.cfg),
 		CreateFormFilterMiddleware(s.cfg),
 		CreateMetricsMiddleware(s.metrics, s.cfg),
@@ -442,6 +465,7 @@ func (s *Server) routes() {
 
 	// API group (API-key protected) consumed by the UI.
 	mux.Handle("GET /api/pool", apiChain.ThenFunc(s.handleAPIPool))
+	mux.Handle("POST /api/crashes/clear/{model...}", apiChain.ThenFunc(s.handleAPIClearCrashes))
 	mux.Handle("POST /api/models/unload", apiChain.ThenFunc(s.handleAPIUnloadAll))
 	mux.Handle("POST /api/models/unload/{model...}", apiChain.ThenFunc(s.handleAPIUnloadModel))
 	mux.Handle("POST /api/models/rescan", apiChain.ThenFunc(s.handleAPIRescanModels))
@@ -455,6 +479,7 @@ func (s *Server) routes() {
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
 	mux.Handle("GET /api/inflight", apiChain.ThenFunc(s.handleAPIInflight))
 	mux.Handle("POST /api/inflight/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelInflight))
+	mux.Handle("POST /api/inflight/{id}/next", apiChain.ThenFunc(s.handleAPIInflightNext))
 	mux.Handle("GET /api/events", apiChain.ThenFunc(s.handleAPIEvents))
 	mux.Handle("GET /api/metrics/activity", apiChain.ThenFunc(s.handleAPIActivity))
 	mux.Handle("GET /api/metrics/stats", apiChain.ThenFunc(s.handleAPIActivityStats))

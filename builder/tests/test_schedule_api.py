@@ -369,3 +369,55 @@ def test_profile_variants_the_pool_lists_count_as_known(app, client):
             app.extensions["pb"].schedule_state.pop("_known", None)
             known, src = sched.known_ids()
     assert src == "live" and {"base", "base--fast"} <= known
+
+
+def test_answer_first_reaches_the_engine_and_toggles_from_live(app, client, tmp_path, monkeypatch):
+    """A model marked answer first goes into the pool block with its two numbers; ids the engine lacks stay out."""
+    make_models(app, big=10)
+    client.put("/api/settings/integrations", json={"engine_url": ""})
+    out = tmp_path / "s.yaml"
+    monkeypatch.setenv("ARGOS_SCHEDULE_FILE", str(out))
+    client.put("/api/schedule", json={"enabled": True, "answer_first": ["big"], "answer_first_min_tokens": 8000,
+                                      "answer_first_max_wait_s": "120"})
+    pool = yaml.safe_load(out.read_text())["routing"]["router"]["settings"]["pool"]
+    assert pool["answerFirst"] == {"models": ["big"], "minPromptTokens": 8000, "maxWaitSeconds": 120}
+    client.put("/api/schedule", json={"answer_first": [], "one_at_a_time": ["big", "ghost"]})
+    pool = yaml.safe_load(out.read_text())["routing"]["router"]["settings"]["pool"]
+    assert "answerFirst" not in pool and pool["oneAtATime"] == ["big", "ghost"]
+
+    with serve(make_engine([], [], model_ids=["big"])) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
+        assert client.post("/api/schedule/live/big/answer_first", json={"on": True}).get_json()["answer_first"] is True
+        assert client.get("/api/schedule").get_json()["plan"]["answer_first"] == ["big"]
+        client.post("/api/schedule/live/big/answer_first", json={"on": False})
+        assert client.get("/api/schedule").get_json()["plan"]["answer_first"] == []
+        assert client.post("/api/schedule/live/big/one_at_a_time", json={"on": False}).get_json()["one_at_a_time"] is False
+        assert client.get("/api/schedule").get_json()["plan"]["one_at_a_time"] == ["ghost"]
+
+
+def test_share_guard_reaches_the_engine(app, client, tmp_path, monkeypatch):
+    make_models(app, big=10)
+    client.put("/api/settings/integrations", json={"engine_url": ""})
+    out = tmp_path / "s.yaml"
+    monkeypatch.setenv("ARGOS_SCHEDULE_FILE", str(out))
+    client.put("/api/schedule", json={"enabled": True, "share_guard": True, "share_guard_slowdown": 60})
+    pool = yaml.safe_load(out.read_text())["routing"]["router"]["settings"]["pool"]
+    assert pool["shareGuard"] == {"enabled": True, "maxSlowdownPercent": 60, "maxWaitSeconds": 120}
+    assert client.put("/api/schedule", json={"share_guard_slowdown": 120}).status_code == 400
+    client.put("/api/schedule", json={"share_guard": False})
+    assert "shareGuard" not in yaml.safe_load(out.read_text())["routing"]["router"]["settings"]["pool"]
+
+
+def test_saving_a_profile_tells_the_engine_now(app, client):
+    """Not at its next poll: a running model restarts with the new command (or once it is idle)."""
+    import time
+    paths = make_models(app, big=1)
+    calls = []
+    with serve(make_engine([], [], model_ids=["big"], calls=calls)) as url:
+        client.put("/api/settings/integrations", json={"engine_url": url})
+        save_profile(client, "Fast", paths["big"], "-c 8192")
+        for _ in range(50):
+            if ("POST", "/api/odysseus/refresh") in calls:
+                break
+            time.sleep(0.05)
+    assert ("POST", "/api/odysseus/refresh") in calls

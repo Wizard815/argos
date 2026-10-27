@@ -33,6 +33,18 @@ DEFAULT_PLAN: dict[str, Any] = {
     "protect_seconds": 600,  # a model used this recently is evicted last
     "placement": "auto",     # auto | off
     "persistent": [],        # model ids that are never evicted to make room
+    # model ids where a long new prompt waits while another chat on the model is answering, so the answer keeps
+    # its speed; prompts under answer_first_min_tokens go straight in, and none waits past answer_first_max_wait_s
+    # model ids that get one request at a time: the rest wait in Argos, in order (each runs at its own full speed)
+    "one_at_a_time": [],
+    # share guard: hold a model's new request while another model on the same GPU is answering, when that model was
+    # seen (in its log) to answer more than share_guard_slowdown % slower beside it; for share_guard_max_wait_s at most
+    "share_guard": False,
+    "share_guard_slowdown": 50,
+    "share_guard_max_wait_s": 120,
+    "answer_first": [],
+    "answer_first_min_tokens": 4000,
+    "answer_first_max_wait_s": 300,
     # Unload a model this schedule loaded once nothing has asked for it for this
     # long. 0 = never. This is the schedule's counterpart to the assistant's
     # idle_unload_min: the timing lives here, not as a per-model ttl in the config.
@@ -141,7 +153,7 @@ def clean_plan(values: dict) -> dict:
     for key, v in values.items():
         if key not in DEFAULT_PLAN:
             raise PlanError(f"unknown schedule setting {key!r}")
-        if key == "enabled":
+        if key in ("enabled", "share_guard"):
             out[key] = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes", "on")
         elif key == "cards":
             if isinstance(v, str):
@@ -157,8 +169,14 @@ def clean_plan(values: dict) -> dict:
             if v not in ("auto", "off"):
                 raise PlanError("placement must be auto or off")
             out[key] = v
-        elif key == "persistent":
-            out[key] = _ids(v, "persistent")
+        elif key in ("persistent", "answer_first", "one_at_a_time"):
+            out[key] = _ids(v, key)
+        elif key in ("answer_first_min_tokens", "answer_first_max_wait_s", "share_guard_max_wait_s"):
+            out[key] = int(_num(v, key, 1))
+        elif key == "share_guard_slowdown":
+            out[key] = int(_num(v, key, 1))
+            if out[key] > 99:
+                raise PlanError("share_guard_slowdown must be at most 99 (%)")
         elif key == "sizes":
             if not isinstance(v, dict):
                 raise PlanError("sizes must be an object of model id -> GiB")
@@ -342,6 +360,16 @@ def render_fragment(plan: dict, sizes: Optional[dict[str, float]] = None,
     persistent = [m for m in plan["persistent"] if keep(m)]
     if persistent:
         pool["persistent"] = persistent
+    if plan.get("share_guard"):
+        pool["shareGuard"] = {"enabled": True, "maxSlowdownPercent": plan.get("share_guard_slowdown") or 50,
+                              "maxWaitSeconds": plan.get("share_guard_max_wait_s") or 120}
+    serial = [m for m in plan.get("one_at_a_time") or [] if keep(m)]
+    if serial:
+        pool["oneAtATime"] = serial
+    answer_first = [m for m in plan.get("answer_first") or [] if keep(m)]
+    if answer_first:
+        pool["answerFirst"] = {"models": answer_first, "minPromptTokens": plan.get("answer_first_min_tokens") or 4000,
+                               "maxWaitSeconds": plan.get("answer_first_max_wait_s") or 300}
     known_sizes = {m: round(g, 2) for m, g in sorted((sizes or {}).items()) if g and keep(m)}
     if known_sizes:
         pool["sizes"] = known_sizes

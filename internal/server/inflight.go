@@ -134,6 +134,26 @@ func (t *inflightTracker) SetResponseHeaders(id string, headers http.Header) {
 	t.mu.Unlock()
 }
 
+// SetHeld marks a request held before it reaches its model (why, or "" when
+// it goes on), in its metadata as "held", so the UI can say why it waits.
+func (t *inflightTracker) SetHeld(id, why string) {
+	t.mu.Lock()
+	req, ok := t.requests[id]
+	if ok {
+		if req.entry.Metadata == nil {
+			req.entry.Metadata = map[string]string{}
+		}
+		if why == "" {
+			delete(req.entry.Metadata, "held")
+		} else {
+			req.entry.Metadata["held"] = why
+		}
+		req.lastEmitted = time.Now()
+		t.enqueueLocked(upsertInflightEvent(req.entry))
+	}
+	t.mu.Unlock()
+}
+
 func (t *inflightTracker) AddResponseBytes(id string, total int) {
 	if total <= 0 {
 		return

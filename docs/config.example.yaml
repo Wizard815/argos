@@ -769,6 +769,38 @@ routing:
         persistent:
           - "whisper"
 
+        # shareGuard: two models on one GPU slow each other down. Argos learns
+        # from their logs how much each slows beside the other; with this on,
+        # a request for one waits while the other answers, if that one was
+        # seen to slow down more than maxSlowdownPercent beside it.
+        # - optional, default: off
+        # shareGuard:
+        #   enabled: true
+        #   maxSlowdownPercent: 50
+        #   maxWaitSeconds: 120
+
+        # oneAtATime: models that get one request at a time; the rest wait
+        # in Argos, in order. Two chats on one model each run at the speed
+        # one has alone, one after the other; with -np 2 each conversation
+        # still keeps its own slot's cache. Replaces answerFirst for them.
+        # - optional, default: empty list
+        # oneAtATime: ["qwen-coder--2chat"]
+
+        # answerFirst: keep a chat that is answering at full speed. With two
+        # chats on one model (llama-server -np 2), a long prompt read beside
+        # an answer drops that answer to a token or two a second: llama.cpp
+        # reads the prompt in the same batches. A long new prompt for these
+        # models waits while another chat on the model is answering.
+        # - optional, default: off (no models)
+        # - minPromptTokens: shorter new prompt parts go straight in; a turn
+        #   of a conversation the model has cached counts only its new
+        #   messages (about four bytes a token). Default 4000
+        # - maxWaitSeconds: the longest a prompt waits. Default 300
+        # answerFirst:
+        #   models: ["qwen-coder--2chat"]
+        #   minPromptTokens: 4000
+        #   maxWaitSeconds: 300
+
   # scheduler: how queued requests are ordered.
   # The default and only valid scheduler is "fifo"
   scheduler:

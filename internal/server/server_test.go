@@ -99,12 +99,15 @@ func newTestServerWithConfig(cfg config.Config, local router.LocalRouter) *Serve
 		proxylog:    proxylog,
 		upstreamlog: logmon.NewWriter(io.Discard),
 		inflight:    newInflightTracker(),
+		answerFirst: newAnswerFirst(),
 		metrics:     newMetricsMonitor(proxylog, 0, 0, st),
 		store:       st,
 		local:       local,
 		shutdownCtx: ctx,
 		shutdownFn:  cancel,
 	}
+	s.gate = newSlotGate(s.inflight.SetHeld)
+
 	s.routes()
 	return s
 }

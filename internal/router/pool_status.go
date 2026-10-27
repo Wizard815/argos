@@ -53,6 +53,26 @@ type PoolModelStatus struct {
 	// Prefill is the prompt the model is processing, read from its log; nil
 	// when it is not prefilling (generating, idle or stopped).
 	Prefill *Prefill `json:"prefill,omitempty"`
+	// Slots is every llama-server slot busy with a request, oldest first:
+	// reading its prompt or generating. Two chats on one model are two slots.
+	Slots []Slot `json:"slots,omitempty"`
+	// Crash is the model's last crash in the last ten minutes: the line it died
+	// on, and whether it crashed often enough that requests no longer start it.
+	Crash *Crash `json:"crash,omitempty"`
+	// AnswerFirst: a long new prompt waits while another chat on this model
+	// is answering (routing.router.settings.pool.answerFirst).
+	AnswerFirst bool `json:"answer_first,omitempty"`
+	// OneAtATime: the model gets one request at a time, the rest wait in
+	// Argos (routing.router.settings.pool.oneAtATime).
+	OneAtATime bool `json:"one_at_a_time,omitempty"`
+	// UpdatePending: its settings changed while it was busy; it restarts with
+	// the new ones once its requests are done. Since when it waits.
+	UpdatePending *time.Time `json:"update_pending,omitempty"`
+	// SoloTokensPerSecond is its answer speed with nothing else busy on its
+	// cards, and Slowdowns how much it slows beside each other model, both
+	// learned from the logs.
+	SoloTokensPerSecond float64    `json:"solo_tps,omitempty"`
+	Slowdowns           []Slowdown `json:"slowdowns,omitempty"`
 }
 
 // PoolQueueStatus is one request waiting for room or for a busy model.
@@ -117,7 +137,15 @@ func (p *poolSwapper) status(running map[string]process.ProcessState, sched sche
 			if pf, ok := Prefills.Get(id); ok {
 				m.Prefill = &pf
 			}
+			m.Slots = Prefills.Slots(id)
 		}
+		if cr, ok := Crashes.Get(id); ok {
+			m.Crash = &cr
+		}
+		if v, ok := Sharing.Solo(id); ok {
+			m.SoloTokensPerSecond = v
+		}
+		m.Slowdowns = Sharing.Slowdowns(id)
 		if t, ok := p.lastUsed[id]; ok {
 			t := t
 			m.LastUsed = &t

@@ -52,8 +52,8 @@ def test_RequestsFeed_shows_requests_while_they_run(app, client, monkeypatch):
     from src.integrations import engine_api
     monkeypatch.setattr(engine_api, "_get", lambda url, timeout: {"requests": [
         {"id": "3", "model": "chat", "req_path": "/v1/chat/completions", "remote_ip": "192.168.20.7",
-         "elapsed_ms": 50260, "resp_bytes": 0}]} if url.endswith("/api/inflight") else {})
-    want = [{"id": "3", "model": "chat", "path": "/v1/chat/completions", "src": "192.168.20.7", "elapsed_ms": 50260, "resp_bytes": 0}]
+         "elapsed_ms": 50260, "resp_bytes": 0, "held": ""}]} if url.endswith("/api/inflight") else {})
+    want = [{"id": "3", "model": "chat", "path": "/v1/chat/completions", "src": "192.168.20.7", "elapsed_ms": 50260, "resp_bytes": 0, "held": ""}]
     assert client.get("/api/schedule/live").get_json()["running"] == want
     assert client.get("/api/requests/recent").get_json()["running"] == want
 

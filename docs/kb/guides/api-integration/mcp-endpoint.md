@@ -118,6 +118,18 @@ is stopped while it is still building it.
 | `models__running_models` | only the models loaded right now, with the address each is reachable at |
 | `models__unload_models` | unload every loaded model immediately, freeing GPU memory |
 
+**`schedule__*` — what the GPUs are doing**
+
+| tool | what it does |
+| --- | --- |
+| `schedule__pool_status` | each card's planned use and free GiB, every model that is not stopped with its state, cards and requests in flight, each busy llama-server slot (reading a prompt or generating, with progress and speed), a recent crash with the line it died on, the queue and models loading; with another router, which one is in use |
+| `schedule__requests_in_flight` | every request still running, oldest first: model, endpoint, sender, how long it has run, bytes answered so far |
+| `schedule__recent_requests` | the newest finished requests (`limit`, default 20, at most 100) with tokens in and out, prompt and generation speed, duration and status |
+
+They read the same state as `GET /api/pool`, `GET /api/inflight` and
+`GET /api/metrics/activity`, which a dashboard can poll directly with the same
+API key.
+
 A profile pins model ids to preconfigured variants, so activating one changes which
 launch command serves each model without editing any configuration. The change applies
 to launches that start afterwards: a model already loaded keeps the command it was
@@ -132,7 +144,7 @@ asks before running tools will prompt for exactly those two and no others.
 Every tool that only reads is annotated `readOnlyHint`, so clients that ask before
 running tools can safely auto-approve them. `models__set_active_profile` and
 `models__unload_models` change the running server and carry no such hint. Only
-`sys__now`, `models__list_models` and `models__running_models` are *not*
+`sys__now`, `models__list_models`, `models__running_models` and the `schedule__*` tools are *not*
 `idempotentHint` — their answers are supposed to change between calls.
 
 A good first request is `docs__list_docs` — it is the map of everything available.
