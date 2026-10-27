@@ -1425,6 +1425,7 @@ function renderLaunches() {
   $("#gStop").disabled = !(cur && cur.running);
   $("#gStop").lastChild.textContent = cur && cur.engine ? "Unload" : "Stop";
   $("#gRemove").hidden = !(cur && cur.engine);
+  $("#gToBuilder").disabled = !cur;
   $("#gLogTitle").textContent = cur ? `Output · ${cur.launch_id}` : "Output";
   renderStats(S.lastBench[S.sel]);
 }
@@ -1583,6 +1584,24 @@ function initPlayground() {
       toast(res.run.success ? "Recorded from log." : "Recorded — no timing lines found in the log yet.", res.run.success ? "ok" : "");
       renderLaunches();
     } catch (e) { fail(e); }
+  };
+  // The selected model in the Builder: as its saved profile when it has one (an engine variant is found through
+  // the name the engine serves it as), so Save updates that profile; otherwise as the command it runs.
+  $("#gToBuilder").onclick = async () => {
+    const cur = S.launches.find((l) => l.launch_id === S.sel);
+    if (!cur) return toast("Pick a model on the left first.", "err");
+    if (!S.served || !Object.keys(S.served).length) await loadServed();
+    const pid = cur.engine ? (Object.entries(S.served || {}).find(([, v]) => v.variant === cur.base_model) || [])[0] : cur.profile_id;
+    const prof = (S.profiles || []).find((p) => p.profile_id === pid)
+      || (!cur.engine && cur.profile_name ? (S.profiles || []).find((p) => p.name === cur.profile_name) : null);
+    if (prof) {
+      await openCommand(prof.launch_command, { name: prof.name, base_model: prof.base_model, source: prof.source || "profile", profileId: prof.profile_id });
+      return;
+    }
+    // no saved profile: the command it runs, with Argos's port macro put back so it saves as a profile
+    const cmd = (cur.command || "").replace(/(--port[ =])\d+/, "$1${PORT}");
+    if (!cmd.trim()) return toast("The engine did not say what command it runs.", "err");
+    await openCommand(cmd, { name: cur.profile_name || "", base_model: cur.base_model, source: cur.engine ? "engine" : "playground" });
   };
   $("#gRemove").onclick = () => {
     const cur = S.launches.find((l) => l.launch_id === S.sel);
