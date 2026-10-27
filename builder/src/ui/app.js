@@ -4599,8 +4599,10 @@ function cardBars(cards, usage, real = {}) {
   return h("div", { class: "gpu-cards" }, cards.map((c) => {
     const parts = c.models.map((m) => ({ id: m, gib: usage(m, c) })).filter((p) => p.gib > 0);
     // VRAM held by something other than Argos's models (another app), read live by the engine; the pool plans around it
-    const other = c.other_gib >= 0.25 ? c.other_gib : 0;
     const live = c.live_used_gib ?? (real && real[c.id]);
+    // an engine that does not read the cards itself: what the GPU reports beyond the models Argos placed
+    const otherGib = c.other_gib ?? (live != null && c.id !== "pool" ? Math.max(live - c.used_gib, 0) : 0);
+    const other = otherGib >= 0.25 ? otherGib : 0;
     const OTHER = "repeating-linear-gradient(45deg, var(--muted, #888) 0 4px, transparent 4px 8px)";
     return h("div", { class: "gpu-card" },
       h("div", { class: "head" }, h("b", {}, c.id === "pool" ? "Pool" : `GPU ${c.id}`),

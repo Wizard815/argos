@@ -82,3 +82,16 @@ func TestPool_OutsideVRAMIgnoresAModelStillUnloading(t *testing.T) {
 	q := newPoolSwapper(conf, logmon.NewWriter(io.Discard), nil)
 	assert.Equal(t, 6.0, q.outside["0"])
 }
+
+func TestPool_OutsideVRAMReadsTheEnginesOwnGPUReadingFirst(t *testing.T) {
+	SetCardUsedSource(func() map[string]float64 { return map[string]float64{"0": 19.8, "1": 16.6} })
+	t.Cleanup(func() { SetCardUsedSource(nil) })
+	assert.Equal(t, map[string]float64{"0": 19.8, "1": 16.6}, cardUsed())
+
+	p := outsideSwapper(t)
+	p.sampleOutside(cardUsed(), nil)
+	st := p.status(nil, scheduler.Status{})
+	require.NotNil(t, st.Cards[0].OtherGiB)
+	assert.InDelta(t, 19.8, *st.Cards[0].OtherGiB, 0.001)
+	assert.InDelta(t, 12.2, st.Cards[0].FreeGiB, 0.001, "31 less the 18.8 the reserve does not cover")
+}

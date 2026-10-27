@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wizard815/Argos/internal/perf"
 	"github.com/Wizard815/Argos/internal/router"
 )
 
@@ -304,4 +305,26 @@ func (s *Server) placedEnv(modelID string, env []string) []string {
 	}
 	s.proxylog.Infof("gpu placement: binding %s to GPU %s (pool)", modelID, strings.Join(cards, ","))
 	return setEnvValue(env, "HIP_VISIBLE_DEVICES", strings.Join(cards, ","))
+}
+
+// liveCardUsed is the VRAM in use on each GPU (GiB, by card id) from the
+// performance monitor's newest reading: the same numbers the Performance
+// page shows, read however this machine allows (LACT, rocm-smi, sysfs). A
+// reading older than 30 seconds is not live and gives nil.
+func (s *Server) liveCardUsed() map[string]float64 {
+	_, gpus := s.perf.Current()
+	newest := map[int]perf.GpuStat{}
+	for _, g := range gpus {
+		if cur, ok := newest[g.ID]; !ok || g.Timestamp.After(cur.Timestamp) {
+			newest[g.ID] = g
+		}
+	}
+	out := make(map[string]float64, len(newest))
+	for id, g := range newest {
+		if time.Since(g.Timestamp) > 30*time.Second || g.MemTotalMB <= 0 {
+			continue
+		}
+		out[strconv.Itoa(id)] = float64(g.MemUsedMB) / 1024
+	}
+	return out
 }
