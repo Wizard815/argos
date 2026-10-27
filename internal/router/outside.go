@@ -27,7 +27,35 @@ const (
 )
 
 // readCardUsed reads live VRAM in use per card. A var for tests.
-var readCardUsed = gpumem.Used
+var readCardUsed = cardUsed
+
+// cardUsedFrom is a reading the engine already takes (its performance
+// monitor, which can read LACT where rocm-smi and sysfs are not available);
+// set by SetCardUsedSource.
+var (
+	cardUsedMu   sync.RWMutex
+	cardUsedFrom func() map[string]float64
+)
+
+// SetCardUsedSource gives the pool a live VRAM reading per card (GiB, keyed
+// by card id), tried before rocm-smi and sysfs.
+func SetCardUsedSource(f func() map[string]float64) {
+	cardUsedMu.Lock()
+	cardUsedFrom = f
+	cardUsedMu.Unlock()
+}
+
+func cardUsed() map[string]float64 {
+	cardUsedMu.RLock()
+	f := cardUsedFrom
+	cardUsedMu.RUnlock()
+	if f != nil {
+		if used := f(); len(used) > 0 {
+			return used
+		}
+	}
+	return gpumem.Used()
+}
 
 // lastOutside carries the last reading over a config reload, so a new pool
 // does not plan with the other apps' memory forgotten until it reads again.
@@ -84,9 +112,12 @@ func (r *Pool) watchOutside(ctx context.Context) {
 	}
 	t := time.NewTicker(outsideEvery)
 	defer t.Stop()
+	misses := 0
 	for {
 		if live := readCardUsed(); len(live) > 0 {
 			r.swapper.sampleOutside(live, r.RunningModels())
+		} else if misses++; misses == 3 { // the performance monitor may not have read yet
+			r.swapper.logger.Warnf("pool: cannot read the VRAM in use on each card (no performance reading, rocm-smi or sysfs here), so memory other apps hold on the GPUs is not planned around")
 		}
 		select {
 		case <-ctx.Done():

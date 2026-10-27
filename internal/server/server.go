@@ -303,6 +303,9 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	s.restoreProfileState()
 	// crashes: a model that dies on every request is stopped from reloading forever
 	router.WatchExits()
+	if s.perf != nil {
+		router.SetCardUsedSource(s.liveCardUsed)
+	}
 	// SysProvider is constructed here because this is where perf and hardware
 	// are in scope; wiring those in later is a change to internal/mcptools.
 	tools, err := mcptools.New(

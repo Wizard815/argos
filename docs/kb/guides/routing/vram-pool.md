@@ -83,7 +83,7 @@ Do not hard-code a card split such as `-ts 1,1` or `--device` in a model's
 ## Other apps on the GPUs
 
 Every 5 seconds the pool reads how much VRAM each card really has in use
-(`rocm-smi`, else `/sys/class/drm`) and takes away what its own running models
+(the same reading as the Performance page: LACT, `rocm-smi` or `/sys/class/drm`) and takes away what its own running models
 account for. The rest belongs to something Argos did not start: a game,
 ComfyUI, a llama-server from another container. The pool plans around it, so a
 model is not placed on a card that only looked empty. The first `reserveGiB`
