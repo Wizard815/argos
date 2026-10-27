@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -127,4 +128,106 @@ func TestAnswerFirst_AHeldPromptGoesAfterTheLongestWait(t *testing.T) {
 	start := time.Now()
 	assert.Equal(t, http.StatusOK, post(s, chatBody("m", strings.Repeat("q", 20000))))
 	assert.Less(t, time.Since(start), time.Second)
+}
+
+// One at a time: the model gets one request, the rest wait in order; Go next
+// moves a waiting one to the front; one whose client leaves gives up its turn.
+func TestSlotGate_OneAtATimeInOrderWithGoNext(t *testing.T) {
+	held := map[string]string{}
+	var mu sync.Mutex
+	g := newSlotGate(func(id, why string) { mu.Lock(); held[id] = why; mu.Unlock() })
+	ctx := context.Background()
+	require.True(t, g.acquire(ctx, "m", "a"), "a free model takes the first at once")
+
+	order := make(chan string, 3)
+	run := func(id string) {
+		go func() {
+			if g.acquire(ctx, "m", id) {
+				order <- id
+				g.release("m")
+			}
+		}()
+	}
+	run("b")
+	time.Sleep(20 * time.Millisecond)
+	run("c")
+	time.Sleep(20 * time.Millisecond)
+	gone, leave := context.WithCancel(ctx)
+	left := make(chan bool, 1)
+	go func() { left <- g.acquire(gone, "m", "d") }()
+	time.Sleep(20 * time.Millisecond)
+
+	mu.Lock()
+	assert.Contains(t, held["c"], "2 ahead")
+	mu.Unlock()
+	assert.True(t, g.next("c"), "Go next")
+	mu.Lock()
+	assert.Contains(t, held["c"], "1 ahead", "c is first in line now")
+	mu.Unlock()
+	leave()
+	assert.False(t, <-left, "d's client left while it waited")
+
+	g.release("m") // a is done
+	assert.Equal(t, "c", <-order)
+	assert.Equal(t, "b", <-order)
+	assert.False(t, g.next("zzz"), "not waiting")
+	require.True(t, g.acquire(ctx, "m", "e"), "free again once everyone is done")
+}
+
+func TestAnswerFirst_GoNextEndsAHold(t *testing.T) {
+	var answering atomic.Bool
+	answering.Store(true)
+	s, _, _ := answerFirstServer(t, &answering)
+	done := make(chan int, 1)
+	go func() { done <- post(s, chatBody("m", strings.Repeat("q", 20000))) }()
+	time.Sleep(100 * time.Millisecond)
+	reqs := s.inflight.Current().Requests
+	require.Len(t, reqs, 1)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/inflight/"+reqs[0].ID+"/next", nil))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	select {
+	case code := <-done:
+		assert.Equal(t, http.StatusOK, code)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Go next did not send the held prompt on")
+	}
+}
+
+func TestOneAtATime_TheSecondChatWaitsForTheFirst(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        oneAtATime: [m]
+models:
+  m:
+    cmd: llama-server --port ${PORT} -m /x.gguf
+`))
+	require.NoError(t, err)
+	stub := newStubRouter([]string{"m"}, "ok")
+	release := make(chan struct{})
+	var inside atomic.Int32
+	var most atomic.Int32
+	stub.serveHTTP = func(w http.ResponseWriter, r *http.Request) {
+		n := inside.Add(1)
+		if n > most.Load() {
+			most.Store(n)
+		}
+		<-release
+		inside.Add(-1)
+		w.WriteHeader(http.StatusOK)
+	}
+	s := profileTestServer(t, cfg, stub)
+	codes := make(chan int, 2)
+	go func() { codes <- post(s, chatBody("m", "one")) }()
+	go func() { codes <- post(s, chatBody("m", "two")) }()
+	time.Sleep(150 * time.Millisecond)
+	assert.Equal(t, int32(1), inside.Load(), "only one request is in the model")
+	close(release)
+	assert.Equal(t, http.StatusOK, <-codes)
+	assert.Equal(t, http.StatusOK, <-codes)
+	assert.Equal(t, int32(1), most.Load())
 }

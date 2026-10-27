@@ -868,6 +868,13 @@
                                             },
                                             "description": "VRAM of each GPU in GiB, numbered from 0 like HIP_VISIBLE_DEVICES. Empty detects the cards at startup when vramGiB is 0. Set cards or vramGiB, not both."
                                         },
+                                        "oneAtATime": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Models that get one request at a time: the rest wait in Argos, in order, so each runs at the speed it has alone. With -np 2 each conversation still keeps its own slot's cache. Replaces answerFirst for these models."
+                                        },
                                         "answerFirst": {
                                             "type": "object",
                                             "description": "Keep a chat that is answering at full speed: a long new prompt for one of these models waits while another chat on the same model is generating, instead of being read in the same batches (which drops the answer to a token or two a second).",

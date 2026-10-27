@@ -3,7 +3,7 @@ title: VRAM-aware pool router
 summary: Put every model in one pool so models load side by side while VRAM fits, and only the cheapest idle model is evicted when it does not.
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
-config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst]
+config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime]
 updated: 2026-10-25
 ---
 
@@ -161,6 +161,25 @@ routing:
           minPromptTokens: 4000   # shorter new prompts go straight in
           maxWaitSeconds: 300     # the longest a prompt waits
 ```
+
+Two answers at once can be slow too: on some builds two chats generating
+together run at a quarter of the speed each. **One at a time** (Plan, or Live
+-> ⋯) lets one request into the model and queues the rest in Argos, in order,
+so each runs at the speed it has alone. With `-np 2` that still pays: each
+conversation keeps its own slot's cache, so switching chats does not re-read
+the prompt. It replaces answer first for that model.
+
+```yaml
+        oneAtATime: ["qwen-coder--2chat"]
+```
+
+A waiting request shows **held** on Live with its place in line; **Go next**
+sends it first (to the front of the line, or past an answer-first hold).
+
+Two different models are not held for each other: each gets its own requests.
+On a card they share, the GPU takes turns between the two processes, so one
+model's prompt reading slows the other's answer there, and a model split
+across both cards is as slow as its slowest card.
 
 The size is the prompt's *new* part, estimated at four bytes a token: the next
 turn of a conversation the model already has cached counts only its new

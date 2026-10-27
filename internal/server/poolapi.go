@@ -36,6 +36,7 @@ func (s *Server) poolStatus(reporter router.PoolReporter) router.PoolStatus {
 			st.Models[i].InFlight = n
 		}
 		st.Models[i].AnswerFirst = af.Applies(st.Models[i].ID)
+		st.Models[i].OneAtATime = s.cfg.Routing.Router.Settings.Pool.OneAtATimeFor(st.Models[i].ID)
 	}
 	return st
 }

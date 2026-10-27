@@ -40,10 +40,12 @@ type Server struct {
 	inflight *inflightTracker
 	// answerFirst holds long new prompts while another chat on the model answers
 	answerFirst *answerFirstState
-	metrics     *metricsMonitor
-	store       *store.Store
-	build       BuildInfo
-	hardware    *hw.HardwareSnapshot
+	// gate is the waiting room in front of each model (one at a time, answer first)
+	gate     *slotGate
+	metrics  *metricsMonitor
+	store    *store.Store
+	build    BuildInfo
+	hardware *hw.HardwareSnapshot
 
 	// reference is Argos's own embedded documentation, served to the
 	// Playground's agentic chat and to external MCP clients through /api/mcp.
@@ -291,6 +293,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	}
 	// Bring back the profile the operator last selected. Without this, a restart
 	// or a container recreate silently falls back to "no profile".
+	s.gate = newSlotGate(s.inflight.SetHeld)
 	s.restoreProfileState()
 	// crashes: a model that dies on every request is stopped from reloading forever
 	router.WatchExits()
@@ -470,6 +473,7 @@ func (s *Server) routes() {
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
 	mux.Handle("GET /api/inflight", apiChain.ThenFunc(s.handleAPIInflight))
 	mux.Handle("POST /api/inflight/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelInflight))
+	mux.Handle("POST /api/inflight/{id}/next", apiChain.ThenFunc(s.handleAPIInflightNext))
 	mux.Handle("GET /api/events", apiChain.ThenFunc(s.handleAPIEvents))
 	mux.Handle("GET /api/metrics/activity", apiChain.ThenFunc(s.handleAPIActivity))
 	mux.Handle("GET /api/metrics/stats", apiChain.ThenFunc(s.handleAPIActivityStats))

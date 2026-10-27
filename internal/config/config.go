@@ -321,6 +321,22 @@ type PoolConfig struct {
 	// model is generating, because llama.cpp would read that prompt in the
 	// same batches and the answer would drop to a token or two a second.
 	AnswerFirst AnswerFirstConfig `yaml:"answerFirst"`
+
+	// OneAtATime lists models that get one request at a time: the rest wait
+	// in Argos, in order. Two chats on a model each run at the speed one has
+	// alone, one after the other; with -np 2 each still keeps its own slot's
+	// cache. It replaces answer first for these models.
+	OneAtATime []string `yaml:"oneAtATime"`
+}
+
+// OneAtATimeFor reports whether a model gets one request at a time.
+func (p PoolConfig) OneAtATimeFor(model string) bool {
+	for _, m := range p.OneAtATime {
+		if m == model {
+			return true
+		}
+	}
+	return false
 }
 
 // AnswerFirstConfig is the pool's answer-first setting.
