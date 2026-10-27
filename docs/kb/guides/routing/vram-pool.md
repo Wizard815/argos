@@ -3,7 +3,7 @@ title: VRAM-aware pool router
 summary: Put every model in one pool so models load side by side while VRAM fits, and only the cheapest idle model is evicted when it does not.
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
-config_keys: [routing, models.*.vram]
+config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst]
 updated: 2026-10-25
 ---
 
@@ -134,6 +134,45 @@ again; **Load** from Schedule -> Live (`POST /api/crashes/clear/<model>` on the
 engine) lets it start again. `GET /api/inflight` lists every
 request still running, and the same state is on MCP as `schedule__pool_status`,
 `schedule__requests_in_flight` and `schedule__recent_requests`.
+
+## Two chats on one model: answer first
+
+A model run with `-np 2` (or more) serves several chats at once, and
+llama.cpp builds each GPU batch from all of them: one token for a chat that is
+answering, up to a whole batch of a chat reading its prompt. While one chat
+reads a long prompt, the other's answer drops from tens of tokens a second to
+one or two, until the prompt is read. Neither chat is held; they share the GPU,
+and the answer gets the small share.
+
+Argos cannot split one batch differently or pause a slot inside llama-server,
+but it can choose when a request goes in. With **answer first** on for a model
+(Schedule -> Plan, or Live -> ⋯), a long new prompt waits while another chat on
+that model is answering, then goes as soon as the answer ends (an agent's turns
+leave a gap at every tool call). Live shows it as **held**.
+
+```yaml
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        answerFirst:
+          models: ["qwen-coder--2chat"]
+          minPromptTokens: 4000   # shorter new prompts go straight in
+          maxWaitSeconds: 300     # the longest a prompt waits
+```
+
+The size is the prompt's *new* part, estimated at four bytes a token: the next
+turn of a conversation the model already has cached counts only its new
+messages, so it is not held. What goes wrong:
+
+- **A chat waits a long time:** the other chat writes a long answer. Lower
+  `maxWaitSeconds`, or turn answer first off for that model.
+- **A short turn is held anyway:** it came from a conversation Argos has not
+  seen in its last 16 requests to the model, so all of it counted as new.
+- **It never holds:** it reads which chat is answering from the model's log;
+  a llama-server that does not log its slots (`print_timing` lines) is never
+  seen answering.
 
 ## What goes wrong
 

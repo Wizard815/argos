@@ -169,7 +169,8 @@ def inflight(base_url: str, timeout: float = 3.0) -> list[dict]:
         raise
     rows = data.get("requests") if isinstance(data, dict) else None
     return [{"id": r.get("id"), "model": r.get("model") or "", "path": r.get("req_path") or "", "src": r.get("remote_ip") or "",
-             "elapsed_ms": r.get("elapsed_ms") or 0, "resp_bytes": r.get("resp_bytes") or 0}
+             "elapsed_ms": r.get("elapsed_ms") or 0, "resp_bytes": r.get("resp_bytes") or 0,
+             "held": (r.get("metadata") or {}).get("held") or ""}
             for r in rows or [] if isinstance(r, dict)]
 
 

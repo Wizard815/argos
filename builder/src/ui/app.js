@@ -4320,7 +4320,7 @@ function renderInvHost() {
 // The plan is made here and applied to the engine's pool router; Live shows what the router is doing.
 const SC = {
   pane: "live", data: null, live: null,
-  plan: null, sizes: {}, persistent: new Set(), dirty: false,   // the Plan form, kept until Save
+  plan: null, sizes: {}, persistent: new Set(), answerFirst: new Set(), dirty: false,   // the Plan form, kept until Save
   filter: "", onlyProfiles: false, sort: { key: null, asc: true },
   steps: [{ op: "request", model: "" }], sim: null, simAt: 0,
 };
@@ -4362,11 +4362,13 @@ async function loadSchedule() {
 function syncPlanForm() {
   const p = SC.data.plan;
   SC.plan = { enabled: p.enabled, cards: p.cards.join(", "), reserve_gib: p.reserve_gib, protect_seconds: p.protect_seconds,
-    placement: p.placement, idle_unload_min: p.idle_unload_min ?? 30 };
+    placement: p.placement, idle_unload_min: p.idle_unload_min ?? 30,
+    answer_first_min_tokens: p.answer_first_min_tokens ?? 4000, answer_first_max_wait_s: p.answer_first_max_wait_s ?? 300 };
   SC.sizes = { ...p.sizes };
   SC.persistent = new Set(p.persistent);
+  SC.answerFirst = new Set(p.answer_first || []);
 }
-const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], sizes: SC.sizes });
+const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], answer_first: [...SC.answerFirst], sizes: SC.sizes });
 
 async function loadLive() {
   try { SC.live = await api("GET", "/api/schedule/live"); } catch (e) { SC.live = { connected: false, error: e.message, pool: null }; }
@@ -4425,6 +4427,7 @@ function requestsCard(rows, inFlight, opts = {}) {
   const slotsOf = opts.slots || {};
   const slotFor = {}, used = {};
   for (const r of opts.running || []) {
+    if (r.held) continue; // still in Argos, not in a slot
     const free = (slotsOf[r.model] || []).filter((s) => !(used[r.model] || new Set()).has(s.id));
     if (free.length) { slotFor[r.id] = free[0]; (used[r.model] = used[r.model] || new Set()).add(free[0].id); }
   }
@@ -4432,6 +4435,7 @@ function requestsCard(rows, inFlight, opts = {}) {
     ? [s.total ? `prefill ${pct(s.progress)}` : "prefill", `slot ${s.id} is reading this prompt${s.total ? `: ${num(s.tokens, 0)} of ${num(s.total, 0)} tokens at ${num(s.tokens_per_second, 0)} t/s` : ""}`]
     : [`generating${s.generated ? ` ${num(s.generated, 0)}` : ""}`, `slot ${s.id} is writing the answer: ${num(s.generated || 0, 0)} tokens so far, ${num(s.gen_tokens_per_second || 0, 1)} t/s now`]);
   const status = (r) => {
+    if (r.held) return ["held", r.held];
     const s = slotFor[r.id];
     if (s) return slotLabel(s);
     if (r.resp_bytes) return ["generating", "sending its answer"];
@@ -4554,7 +4558,8 @@ function renderLive() {
     { label: "In flight", num: true, cell: (m) => m.in_flight || DASH },
     { label: "Last used", cell: (m) => (m.last_used ? ago(Date.parse(m.last_used) / 1000) : DASH) },
     { label: "Load time", num: true, cell: (m) => (m.load_seconds ? `${num(m.load_seconds, 0)}s` : DASH) },
-    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"), m.protected && h("span", { class: "chip", title: `Used in the last ${span(P.protect_seconds)}, so it is evicted last when another model needs room. Not a setting: it ends on its own once the model sits idle.` }, "recently used")) },
+    { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"),
+      m.answer_first && h("span", { class: "chip", title: "a long new prompt waits while another chat on this model is answering" }, "answer first"), m.protected && h("span", { class: "chip", title: `Used in the last ${span(P.protect_seconds)}, so it is evicted last when another model needs room. Not a setting: it ends on its own once the model sits idle.` }, "recently used")) },
     { label: "", cell: (m) => { const b = h("button", { class: "icon-btn ghost", title: "Load, unload, keep loaded, logs, edit", "aria-label": `Actions for ${m.id}` }, "⋯");
       b.addEventListener("click", () => liveMenu(b, m)); return h("td", { class: "actions" }, b); } },
   ], rows, { key: null }, "No models.");
@@ -4639,6 +4644,9 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
       : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
     { label: "Keep loaded", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.persistent.has(r.id), title: "never evicted to make room for another model" });
       c.addEventListener("change", () => { c.checked ? SC.persistent.add(r.id) : SC.persistent.delete(r.id); touch(); }); return h("td", {}, c); } },
+    { label: "Answer first", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.answerFirst.has(r.id),
+      title: "With two chats on this model (-np 2 or more): a long new prompt waits while the other chat is answering, so that answer keeps its speed instead of dropping to a token or two a second" });
+      c.addEventListener("change", () => { c.checked ? SC.answerFirst.add(r.id) : SC.answerFirst.delete(r.id); touch(); }); return h("td", {}, c); } },
     { label: "", cell: (r) => h("td", {}, h("div", { class: "row end" },
       r.measured && r.measured.gib !== SC.sizes[r.id] ? btn("Use measured", async () => { try { SC.data = await api("POST", `/api/schedule/measured/${encodeURIComponent(r.id)}/use`); syncPlanForm(); SC.dirty = false; renderSchedule(); } catch (e) { fail(e); } }, "sm ghost") : null,
       btn("Measure", () => startMeasure(r), "sm", "gauge"))) },
@@ -4658,6 +4666,8 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
         h("label", { class: "check wide" }, enable, "Use the pool router (when off, the engine keeps its own router)"),
         cardsInput,
         field("Reserve (GiB)", "reserve_gib", { type: "number", step: "0.5", min: "0" }, "left free for KV growth and buffers"),
+        field("Answer first: prompts from (tokens)", "answer_first_min_tokens", { type: "number", step: "500", min: "1" }, "a shorter new prompt goes straight in"),
+        field("Answer first: longest wait (s)", "answer_first_max_wait_s", { type: "number", step: "30", min: "1" }, "then it goes anyway"),
         field("Protect (seconds)", "protect_seconds", { type: "number", step: "30", min: "0" }, "a model used this recently is evicted last"),
         field("Unload after (min)", "idle_unload_min", { type: "number", step: "5", min: "0" }, "a model unused this long is unloaded; 0 = never"),
         h("label", { class: "field wide" }, h("span", {}, "Placement"), placement)),
@@ -4802,13 +4812,15 @@ function liveMenu(anchor, m) {
       if (action === "load" && !r.already) watchLoad(m.id);
     } catch (e) { fail(e); }
     setTimeout(loadLive, action === "load" ? 1500 : 300);
-    if (action === "keep") loadSchedule();
+    if (action === "keep" || action === "answer_first") loadSchedule();
   };
   popMenu(anchor, [
     loaded ? { label: "Unload model", icon: "square", run: () => act("unload", undefined, `Unloaded ${m.id}.`) }
       : { label: "Load now", icon: "play", run: () => act("load", undefined, `Loading ${m.id}…`) },
     m.persistent ? { label: "Keep loaded: off (may be unloaded for others)", icon: "x", run: () => act("keep", { on: false }, `${m.id} can be unloaded again.`) }
       : { label: "Keep loaded: on (never unload it for others)", icon: "check", run: () => act("keep", { on: true }, `${m.id} stays loaded.`) },
+    m.answer_first ? { label: "Answer first: off (every request goes straight in)", icon: "x", run: () => act("answer_first", { on: false }, `${m.id}: every request goes straight in.`) }
+      : { label: "Answer first: on (a long prompt waits while another chat answers)", icon: "check", run: () => act("answer_first", { on: true }, `${m.id}: a long new prompt now waits while another chat is answering.`) },
     { label: "Check logs", icon: "file-text", run: () => liveLog(m.id) },
     { label: "Edit launch command", icon: "pencil", run: () => liveEdit(m.id) },
   ]);

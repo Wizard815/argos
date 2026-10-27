@@ -30,10 +30,12 @@ func (s *Server) poolStatus(reporter router.PoolReporter) router.PoolStatus {
 	for _, r := range s.inflight.Current().Requests {
 		counts[r.Model]++
 	}
+	af := s.cfg.Routing.Router.Settings.Pool.AnswerFirst
 	for i := range st.Models {
 		if n := counts[st.Models[i].ID]; n > st.Models[i].InFlight {
 			st.Models[i].InFlight = n
 		}
+		st.Models[i].AnswerFirst = af.Applies(st.Models[i].ID)
 	}
 	return st
 }

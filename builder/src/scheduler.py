@@ -33,6 +33,11 @@ DEFAULT_PLAN: dict[str, Any] = {
     "protect_seconds": 600,  # a model used this recently is evicted last
     "placement": "auto",     # auto | off
     "persistent": [],        # model ids that are never evicted to make room
+    # model ids where a long new prompt waits while another chat on the model is answering, so the answer keeps
+    # its speed; prompts under answer_first_min_tokens go straight in, and none waits past answer_first_max_wait_s
+    "answer_first": [],
+    "answer_first_min_tokens": 4000,
+    "answer_first_max_wait_s": 300,
     # Unload a model this schedule loaded once nothing has asked for it for this
     # long. 0 = never. This is the schedule's counterpart to the assistant's
     # idle_unload_min: the timing lives here, not as a per-model ttl in the config.
@@ -157,8 +162,10 @@ def clean_plan(values: dict) -> dict:
             if v not in ("auto", "off"):
                 raise PlanError("placement must be auto or off")
             out[key] = v
-        elif key == "persistent":
-            out[key] = _ids(v, "persistent")
+        elif key in ("persistent", "answer_first"):
+            out[key] = _ids(v, key)
+        elif key in ("answer_first_min_tokens", "answer_first_max_wait_s"):
+            out[key] = int(_num(v, key, 1))
         elif key == "sizes":
             if not isinstance(v, dict):
                 raise PlanError("sizes must be an object of model id -> GiB")
@@ -342,6 +349,10 @@ def render_fragment(plan: dict, sizes: Optional[dict[str, float]] = None,
     persistent = [m for m in plan["persistent"] if keep(m)]
     if persistent:
         pool["persistent"] = persistent
+    answer_first = [m for m in plan.get("answer_first") or [] if keep(m)]
+    if answer_first:
+        pool["answerFirst"] = {"models": answer_first, "minPromptTokens": plan.get("answer_first_min_tokens") or 4000,
+                               "maxWaitSeconds": plan.get("answer_first_max_wait_s") or 300}
     known_sizes = {m: round(g, 2) for m, g in sorted((sizes or {}).items()) if g and keep(m)}
     if known_sizes:
         pool["sizes"] = known_sizes
