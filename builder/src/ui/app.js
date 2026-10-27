@@ -379,7 +379,11 @@ const onShow = {
   servers: () => { loadServers(); if (lsGet("argos.tab.servers") === "local") loadLocal(); },
   integrations: () => loadIntegrations(),
   settings: () => loadSettings().then(renderSettings).then(loadIntegrations),
-  playground: () => { if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect(); renderLaunches(); pollSelected(true); },
+  playground: () => {
+    if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect();
+    renderLaunches(); pollSelected(true);
+    if ($(".tabs[data-tabs=playground] button.on")?.dataset.pane === "bench") loadBenchTab();
+  },
 };
 
 // Every page switch is a browser history entry, so Back and Forward move between the pages you visited.
@@ -1349,6 +1353,159 @@ function fillProfileSelect() {
   fill($("#gProfile"), h("option", { value: "" }, "Load a profile or a model…"),
     S.profiles.length ? h("optgroup", { label: "Profiles" }, S.profiles.map((p) => h("option", { value: p.profile_id }, p.name))) : null,
     lib.length ? h("optgroup", { label: "Models (default launch)" }, lib.map((m) => h("option", { value: `model:${m.path}` }, m.name))) : null);
+}
+
+// ── Playground → llama-bench ─────────────────────────────────
+// llama.cpp's own benchmark: prompt reading (pp) and generation (tg) at the sizes asked for, at a depth of
+// context already in the cache, across sweeps of settings (every field takes a comma list). It runs where the
+// model runs: beside llama-server here, or in the llama.cpp container over SSH. Results go to Benchmarks.
+const BN = { params: { n_prompt: "512", n_gen: "128", depth: "0", repetitions: "3" }, env: {}, source: "", server: "", run: null, servers: null, built: false };
+const BN_FIELDS = [
+  ["model", "Model file (-m)", "/app/models/…/model.gguf", "wide"],
+  ["n_prompt", "Prompt sizes (-p)", "512", "comma list: 512,4096"],
+  ["n_gen", "Generate (-n)", "128", ""],
+  ["pg", "Prompt + generate (-pg)", "4096,128", "one test reading N then writing M"],
+  ["depth", "Context already in (-d)", "0,16384,65536", "speed once this much is in the chat"],
+  ["repetitions", "Repetitions (-r)", "3", ""],
+  ["n_gpu_layers", "GPU layers (-ngl)", "99", ""],
+  ["flash_attn", "Flash attention (-fa)", "1", "1, 0, or 0,1 to compare"],
+  ["cache_type_k", "KV cache K (-ctk)", "f16", "f16,q8_0,turbo3 to compare"],
+  ["cache_type_v", "KV cache V (-ctv)", "f16", ""],
+  ["split_mode", "Split (-sm)", "layer", "none, layer, row"],
+  ["tensor_split", "Tensor split (-ts)", "1/1", ""],
+  ["batch_size", "Batch (-b)", "2048", ""],
+  ["ubatch_size", "Micro-batch (-ub)", "512", "256,512,1024 to find the best"],
+  ["threads", "Threads (-t)", "", ""],
+  ["mmap", "mmap (-mmp)", "", "0 or 1"],
+  ["gpus", "GPUs (HIP/CUDA_VISIBLE_DEVICES)", "0,1", "which cards it may use"],
+  ["extra", "Extra arguments", "", "anything else llama-bench takes", "wide"],
+];
+const bnGpuVar = () => Object.keys(BN.env).find((k) => /VISIBLE_DEVICES$/.test(k)) || "HIP_VISIBLE_DEVICES";
+function bnBody() {
+  const params = { ...BN.params, env: { ...BN.env } };
+  const gpus = (BN.params.gpus || "").trim();
+  delete params.gpus;
+  for (const k of Object.keys(params.env)) if (/VISIBLE_DEVICES$/.test(k)) delete params.env[k];
+  if (gpus) params.env[bnGpuVar()] = gpus;
+  return { profile_id: BN.source && BN.source !== "custom" ? BN.source : "", params, server_id: BN.server, unload_first: $("#bnUnload").checked };
+}
+const bnPreview = debounce(async () => {
+  try {
+    const r = await api("POST", "/api/bench/preview", bnBody());
+    const env = Object.entries(r.env || {}).filter(([k]) => !/_SSH_/.test(k)).map(([k, v]) => `${k}=${v}`).join(" ");
+    $("#bnCmd").textContent = (env ? env + " " : "") + r.argv.join(" ");
+  } catch (e) { $("#bnCmd").textContent = e.message; }
+}, 300);
+async function bnFrom(source) {
+  BN.source = source;
+  if (!source || source === "custom") { renderBenchForm(); bnPreview(); return; }
+  try {
+    const r = await api("GET", `/api/bench/defaults?profile_id=${encodeURIComponent(source)}`);
+    // the profile's settings; the test sizes stay as they were
+    const keep = Object.fromEntries(["n_prompt", "n_gen", "pg", "depth", "repetitions", "extra"].map((k) => [k, BN.params[k]]));
+    BN.env = r.params.env || {};
+    BN.params = { ...Object.fromEntries(Object.entries(r.params).filter(([k]) => k !== "env")), ...keep };
+    const v = Object.entries(BN.env).find(([k]) => /VISIBLE_DEVICES$/.test(k));
+    BN.params.gpus = v ? v[1] : "";
+  } catch (e) { fail(e); }
+  renderBenchForm();
+  bnPreview();
+}
+function renderBenchForm() {
+  const src = h("select", { "aria-label": "Start from" }, h("option", { value: "custom" }, "A model file (type it below)"),
+    h("optgroup", { label: "Profiles: their settings" }, (S.profiles || []).map((p) => h("option", { value: p.profile_id }, p.name))));
+  src.value = BN.source || "custom";
+  src.onchange = () => bnFrom(src.value);
+  const srv = h("select", { "aria-label": "Run on" }, h("option", { value: "" }, "Where profiles run"), h("option", { value: "local" }, "This container"),
+    (BN.servers || []).filter((x) => x.kind !== "local").map((x) => h("option", { value: String(x.id) }, x.name)));
+  srv.value = BN.server;
+  srv.onchange = () => { BN.server = srv.value; bnPreview(); };
+  fill($("#bnFields"),
+    h("label", { class: "field" }, h("span", {}, "Start from"), src),
+    h("label", { class: "field" }, h("span", {}, "Run on"), srv),
+    BN_FIELDS.map(([k, label, ph, hint, wide]) => {
+      const input = h("input", { type: "text", value: BN.params[k] ?? "", placeholder: ph, spellcheck: "false" });
+      input.addEventListener("input", () => { BN.params[k] = input.value; bnPreview(); });
+      return h("label", { class: `field${wide === "wide" || hint === "wide" ? " wide" : ""}` }, h("span", {}, label), input,
+        hint && hint !== "wide" ? h("span", { class: "muted mono-sm" }, hint) : null);
+    }));
+}
+async function loadBenchTab() {
+  if (!BN.built) {
+    BN.built = true;
+    try { BN.servers = (await api("GET", "/api/servers")).servers; } catch (e) { BN.servers = []; }
+    if (!S.profiles || !S.profiles.length) await loadProfiles();
+    renderBenchForm();
+    bnPreview();
+    $("#bnRun").onclick = async () => {
+      try {
+        const r = await api("POST", "/api/bench", bnBody());
+        BN.run = r.bench;
+        toast("llama-bench started.", "ok");
+      } catch (e) { fail(e); }
+      renderBench();
+      loadBenchRuns();
+    };
+    $("#bnStop").onclick = async () => {
+      if (!BN.run) return;
+      try { await api("POST", `/api/bench/${BN.run.bench_id}/stop`); toast("Stopping llama-bench.", "ok"); } catch (e) { fail(e); }
+      pollBench();
+    };
+  }
+  await loadBenchRuns();
+  if (!BN.run) {
+    const runs = BN.runs || [];
+    if (runs.length) { await showBenchRun(runs[0].bench_id); return; }
+  }
+  renderBench();
+}
+async function loadBenchRuns() {
+  try { BN.runs = (await api("GET", "/api/bench")).benches; } catch (e) { BN.runs = []; }
+  fill($("#bnRuns"), BN.runs.length ? h("div", { class: "ody-list" }, BN.runs.map((r) => h("div", {
+    class: `launch${BN.run && BN.run.bench_id === r.bench_id ? " sel" : ""}`, onclick: () => showBenchRun(r.bench_id) },
+    h("span", { class: `dot ${r.running ? "warn" : r.exit_code ? "bad" : "on"}` }),
+    h("div", { class: "who" }, h("div", { class: "t" }, r.meta.profile_name || (r.meta.params || {}).model?.split("/").pop() || r.bench_id),
+      h("div", { class: "s" }, `${ago(r.started_at)} · ${r.results.length} result(s) · ${r.running ? "running" : r.stopped ? "stopped" : r.exit_code ? `failed (${r.exit_code})` : "done"}`)))))
+    : h("div", { class: "empty" }, "No runs yet."));
+}
+async function showBenchRun(id) {
+  try { BN.run = (await api("GET", `/api/bench/${encodeURIComponent(id)}`)).bench; } catch (e) { fail(e); }
+  renderBench();
+  loadBenchRuns();
+}
+async function pollBench() {
+  if (!BN.run) return;
+  const was = BN.run.running;
+  try { BN.run = (await api("GET", `/api/bench/${BN.run.bench_id}`)).bench; } catch (e) { return; }
+  renderBench();
+  if (was && !BN.run.running) { loadBenchRuns(); toast(`llama-bench ${BN.run.stopped ? "stopped" : "finished"}: ${BN.run.results.length} result(s) saved to Benchmarks.`, BN.run.results.length ? "ok" : "err"); }
+}
+setInterval(() => {
+  const onTab = S.view === "playground" && $(".tabs[data-tabs=playground] button.on")?.dataset.pane === "bench";
+  if (onTab && BN.run && BN.run.running) pollBench();
+}, 1500);
+function renderBench() {
+  const r = BN.run;
+  $("#bnStop").disabled = !(r && r.running);
+  $("#bnRun").disabled = !!(r && r.running);
+  $("#bnState").textContent = r ? (r.running ? `running · ${r.results.length} result(s) so far` : `${r.stopped ? "stopped" : r.exit_code ? `exited with ${r.exit_code}` : "done"} · ${r.results.length} result(s)${r.saved ? " · saved to Benchmarks" : ""}`) : "";
+  const pre = $("#bnOut");
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.textContent = r ? (r.output || (r.running ? "Loading the model…" : "")) : "Run a benchmark to see llama-bench's output here.";
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+  const rows = r ? r.results : [];
+  // the settings that differ between tests are the ones worth a column
+  const knobs = [["n_ubatch", "ub"], ["n_batch", "b"], ["type_k", "K"], ["type_v", "V"], ["flash_attn", "fa"], ["n_gpu_layers", "ngl"], ["split_mode", "sm"], ["tensor_split", "ts"], ["n_threads", "t"], ["use_mmap", "mmap"]]
+    .filter(([k]) => new Set(rows.map((x) => JSON.stringify(x[k]))).size > 1);
+  const best = {};
+  for (const x of rows) best[x.kind] = Math.max(best[x.kind] || 0, x.avg_ts);
+  renderTable($("#bnResults"), [
+    { label: "Test", cell: (x) => h("span", { class: "strong", title: x.kind === "pp" ? "reading the prompt" : x.kind === "tg" ? "generating" : "reading, then generating" }, x.test) },
+    { label: "t/s", num: true, cell: (x) => h("td", { class: "num nowrap" }, h("b", {}, num(x.avg_ts, 1)), " ",
+      h("span", { class: "muted mono-sm" }, `± ${num(x.stddev_ts || 0, 1)}`)) },
+    { label: "", cell: (x) => h("td", { class: "bar-cell" }, h("div", { class: "bar", style: "width:120px" }, h("i", { style: `width:${Math.round((x.avg_ts / (best[x.kind] || 1)) * 100)}%;background:${x.kind === "tg" ? "var(--green)" : "var(--red)"}` }))) },
+    ...knobs.map(([k, l]) => ({ label: l, cell: (x) => String(x[k] ?? DASH) })),
+  ], rows, { key: null }, r && r.running ? "Waiting for the first result… (llama-bench loads the model first)" : "No results.");
 }
 
 // Playground is for testing: it lists only what was started from it. Everything else the engine is running
@@ -5311,6 +5468,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "schedule") { SC.pane = b.dataset.pane; if (SC.pane === "live") loadLive(); else loadSchedule(); }
     else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
+    else if (bar.dataset.tabs === "playground" && b.dataset.pane === "bench") loadBenchTab();
   }));
 }
 
