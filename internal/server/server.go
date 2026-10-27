@@ -289,6 +289,8 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	// Bring back the profile the operator last selected. Without this, a restart
 	// or a container recreate silently falls back to "no profile".
 	s.restoreProfileState()
+	// crashes: a model that dies on every request is stopped from reloading forever
+	router.WatchExits()
 	// SysProvider is constructed here because this is where perf and hardware
 	// are in scope; wiring those in later is a change to internal/mcptools.
 	tools, err := mcptools.New(
@@ -342,6 +344,12 @@ func (s *Server) modelHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !s.local.Handles(data.ModelID) {
 		swaputil.SendError(w, r, router.ErrNoRouterFound)
+		return
+	}
+	if cr, blocked := router.Crashes.Blocked(data.ModelID); blocked {
+		swaputil.SendResponse(w, r, http.StatusServiceUnavailable, fmt.Sprintf(
+			"%s crashed %d times in the last 10 minutes and is not started again on a request. Last crash: %s. "+
+				"Fix its command, or load it by hand from Schedule -> Live to try again.", data.ModelID, cr.Recent, cr.Line))
 		return
 	}
 	s.proxylog.Debugf("dispatch: using local process for model: %s", data.ModelID)
@@ -444,6 +452,7 @@ func (s *Server) routes() {
 
 	// API group (API-key protected) consumed by the UI.
 	mux.Handle("GET /api/pool", apiChain.ThenFunc(s.handleAPIPool))
+	mux.Handle("POST /api/crashes/clear/{model...}", apiChain.ThenFunc(s.handleAPIClearCrashes))
 	mux.Handle("POST /api/models/unload", apiChain.ThenFunc(s.handleAPIUnloadAll))
 	mux.Handle("POST /api/models/unload/{model...}", apiChain.ThenFunc(s.handleAPIUnloadModel))
 	mux.Handle("POST /api/models/rescan", apiChain.ThenFunc(s.handleAPIRescanModels))

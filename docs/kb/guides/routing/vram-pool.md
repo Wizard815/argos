@@ -117,10 +117,21 @@ on now. **Usage -> GPU** has the same feed under its charts with **Recent
 requests** ticked. Only requests through the engine appear; a client talking to
 a llama-server port directly bypasses it.
 
-A model reading a long prompt shows its prefill there too (`models[].prefill`:
-tokens done of total, speed, when it started), read from its llama-server log.
-A question sent to that model meanwhile waits behind it: Live marks it
-**waiting** and the Prefill card counts it. `GET /api/inflight` lists every
+Each model also reports what its llama-server slots are doing
+(`models[].slots`), read from its log: a slot reading a prompt (prefill, with
+tokens done of total and speed) or generating the answer (tokens out, speed
+now). A model run with `-np 2` serves two chats at once, so it can show one
+slot generating while the other reads a new prompt. Live lists every busy slot
+under **Working now** and gives each running request its slot's status; a
+request with no free slot shows **waiting**, and a busy slot no request through
+Argos accounts for shows **not through Argos**.
+
+A model that exits without being asked to (a crash, or a failed start) is
+reported in `models[].crash` with the first fatal line it printed
+(`GGML_ASSERT`, a segfault, out of memory, a GPU error). After three crashes in
+ten minutes, requests for it get a 503 naming that line instead of starting it
+again; **Load** from Schedule -> Live (`POST /api/crashes/clear/<model>` on the
+engine) lets it start again. `GET /api/inflight` lists every
 request still running, and the same state is on MCP as `schedule__pool_status`,
 `schedule__requests_in_flight` and `schedule__recent_requests`.
 

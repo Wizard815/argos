@@ -294,6 +294,7 @@ def live_action(model_id, action):
     if action == "load":
         def run():
             try:
+                engine_api.clear_crashes(url, model_id)  # loading by hand is the retry after a crash loop
                 engine_api.load_model(url, model_id)
             except Exception as exc:  # noqa: BLE001 - reported as an event
                 c.event("schedule", f"could not load {model_id}: {exc}", level="error", data={"model": model_id})

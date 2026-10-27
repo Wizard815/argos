@@ -4410,25 +4410,45 @@ function requestsCard(rows, inFlight, opts = {}) {
   const fresh = (r) => now - (seenReq.at.get(r.source_id) || 0) < 6000;
   const running = Object.entries(inFlight || {}).filter(([, n]) => n > 0);
   // requests still running sit on top with a clock that counts up, so a long prompt shows while it works
-  // A model reads one prompt at a time: its oldest request still sending nothing is the one prefilling; a
-  // question sent while it does waits behind it. The engine lists running requests oldest first.
-  const reading = {};
-  for (const r of opts.running || []) if (!r.resp_bytes && (opts.prefill || {})[r.model] && !(r.model in reading)) reading[r.model] = r.id;
+  // Each request the engine is serving is matched to a llama-server slot of its model, oldest to oldest: a slot
+  // reads the request's prompt (prefill), then generates its answer. Two chats on one model are two slots. A
+  // request with no slot free waits; a busy slot with no request here came from a client that skipped Argos
+  // (or hung up while the model kept working). The engine lists running requests oldest first.
+  const slotsOf = opts.slots || {};
+  const slotFor = {}, used = {};
+  for (const r of opts.running || []) {
+    const free = (slotsOf[r.model] || []).filter((s) => !(used[r.model] || new Set()).has(s.id));
+    if (free.length) { slotFor[r.id] = free[0]; (used[r.model] = used[r.model] || new Set()).add(free[0].id); }
+  }
+  const slotLabel = (s) => (s.phase === "prefill"
+    ? [s.total ? `prefill ${pct(s.progress)}` : "prefill", `slot ${s.id} is reading this prompt${s.total ? `: ${num(s.tokens, 0)} of ${num(s.total, 0)} tokens at ${num(s.tokens_per_second, 0)} t/s` : ""}`]
+    : [`generating${s.generated ? ` ${num(s.generated, 0)}` : ""}`, `slot ${s.id} is writing the answer: ${num(s.generated || 0, 0)} tokens so far, ${num(s.gen_tokens_per_second || 0, 1)} t/s now`]);
   const status = (r) => {
+    const s = slotFor[r.id];
+    if (s) return slotLabel(s);
     if (r.resp_bytes) return ["generating", "sending its answer"];
-    const pf = (opts.prefill || {})[r.model];
-    if (pf && reading[r.model] === r.id) return [pf.total ? `prefill ${pct(pf.progress)}` : "prefill", "reading this prompt"];
-    if (pf) return ["waiting", `${r.model} is reading another prompt; this one starts after it`];
+    if ((slotsOf[r.model] || []).length) return ["waiting", `every slot of ${r.model} is busy; this one starts when one frees up`];
     return ["prompt", "reading the prompt; nothing sent back yet"];
   };
+  // busy slots no request of ours accounts for
+  const orphans = Object.entries(slotsOf).flatMap(([model, list]) => list.filter((s) => !(used[model] || new Set()).has(s.id)).map((s) => ({ model, s })));
+  const orphanRows = orphans.map(({ model, s }) => h("tr", { class: "req-running" },
+    h("td", { class: "muted" }, "now"), h("td", { class: "strong" }, model), h("td", {}, DASH),
+    h("td", { class: "muted", title: "Argos is not serving a request for this slot: a client sent it straight to the llama-server port, or hung up while the model kept working on it" }, "not through Argos"),
+    h("td", { class: "num" }, s.total ? num(s.total, 0) : DASH), h("td", { class: "num" }, s.generated ? num(s.generated, 0) : DASH),
+    h("td", { class: "num" }, s.tokens_per_second ? num(s.tokens_per_second, 0) : DASH), h("td", { class: "num" }, s.gen_tokens_per_second ? num(s.gen_tokens_per_second, 1) : DASH),
+    h("td", { class: "num", "data-run-start": String(Date.parse(s.started)) }, runClock(Date.now() - Date.parse(s.started))),
+    h("td", {}, (([label, why]) => h("span", { class: "pill warn", title: why }, label))(slotLabel(s)))));
   const live = (opts.running || []).map((r) => h("tr", { class: "req-running" },
     h("td", { class: "muted" }, "now"),
     h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
-    h("td", { class: "num" }, DASH),
-    h("td", { class: "num", title: "bytes sent back so far" }, r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
-    h("td", { class: "num" }, DASH), h("td", { class: "num" }, DASH),
+    h("td", { class: "num", title: "the prompt's length, once its slot reports it" }, slotFor[r.id]?.total ? num(slotFor[r.id].total, 0) : DASH),
+    h("td", { class: "num", title: "tokens of the answer so far (or bytes sent back)" }, slotFor[r.id]?.generated ? num(slotFor[r.id].generated, 0) : r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
+    h("td", { class: "num" }, slotFor[r.id]?.tokens_per_second ? num(slotFor[r.id].tokens_per_second, 0) : DASH),
+    h("td", { class: "num" }, slotFor[r.id]?.gen_tokens_per_second ? num(slotFor[r.id].gen_tokens_per_second, 1) : DASH),
     h("td", { class: "num", "data-run-start": String(Date.now() - (r.elapsed_ms || 0)) }, runClock(r.elapsed_ms || 0)),
     h("td", {}, (([label, why]) => h("span", { class: `pill ${label === "waiting" ? "" : "warn"}`, title: why }, label))(status(r)))));
+  live.push(...orphanRows);
   const table = rows.length || live.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
     h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
       .map((x, i) => h("th", { class: i >= 4 && i <= 8 ? "num" : "" }, x)))),
@@ -4459,28 +4479,41 @@ function requestsCard(rows, inFlight, opts = {}) {
 // writing the answer. The scheduler holds declared decodes behind a prefill; this is where to watch it.
 const pct = (f) => `${num(Math.min(Math.max(f || 0, 0), 1) * 100, 0)}%`;
 function workPill(m) {
-  if (m.prefill) {
-    return h("span", { class: "pill warn", title: m.prefill.total ? `${num(m.prefill.tokens, 0)} of ${num(m.prefill.total, 0)} prompt tokens` : "reading the prompt" },
-      m.prefill.total ? `prefill ${pct(m.prefill.progress)}` : "prefill");
-  }
-  return m.in_flight && m.state === "ready" ? h("span", { class: "pill ok", title: "answering: the prompt is read" }, "generating") : null;
+  const pills = (m.slots || []).map((sl) => sl.phase === "prefill"
+    ? h("span", { class: "pill warn", title: `slot ${sl.id}: ${sl.total ? `${num(sl.tokens, 0)} of ${num(sl.total, 0)} prompt tokens` : "reading the prompt"}` }, sl.total ? `prefill ${pct(sl.progress)}` : "prefill")
+    : h("span", { class: "pill ok", title: `slot ${sl.id}: ${num(sl.generated || 0, 0)} tokens of the answer so far, ${num(sl.gen_tokens_per_second || 0, 1)} t/s now` }, "generating"));
+  if (!pills.length && m.prefill) pills.push(h("span", { class: "pill warn" }, m.prefill.total ? `prefill ${pct(m.prefill.progress)}` : "prefill"));
+  if (!pills.length && m.in_flight && m.state === "ready") pills.push(h("span", { class: "pill ok", title: "answering: the prompt is read" }, "generating"));
+  if (m.crash) pills.push(h("span", { class: "pill bad", title: `${m.crash.line}\n${m.crash.recent} crash(es) in the last 10 minutes${m.crash.blocked ? ". Requests no longer start it: fix its command, or Load it from ⋯ to try again." : ""}` },
+    m.crash.blocked ? "crash loop: stopped" : `crashed${m.crash.recent > 1 ? ` ×${m.crash.recent}` : ""}`));
+  return pills.length ? pills : null;
+}
+// A model that died: the line it died on, so nobody has to dig through the log for it.
+function crashCard(models) {
+  const hit = models.filter((m) => m.crash);
+  if (!hit.length) return null;
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Crashes"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, "last 10 minutes · 3 crashes and requests stop starting it; Load it from ⋯ to try again")),
+  h("div", { class: "table-wrap" }, simpleTable(["Model", "When", "Times", "Died on", ""], hit.map((m) => [
+    h("span", { class: "strong" }, m.id), ago(Date.parse(m.crash.at) / 1000), String(m.crash.recent),
+    h("code", { class: "mono-sm", style: "white-space:normal;word-break:break-all" }, m.crash.line),
+    m.crash.blocked ? h("span", { class: "pill bad", title: "requests for it get an error instead of starting it again" }, "not restarted") : h("span", { class: "pill warn" }, "restarts on the next request")]))));
 }
 function prefillCard(models) {
-  const busy = models.filter((m) => m.prefill);
+  const busy = models.flatMap((m) => (m.slots || []).map((sl) => ({ m, sl })));
   if (!busy.length) return null;
-  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Prefill"), h("span", { class: "spacer" }),
-    h("span", { class: "hint" }, "prompts being read now, from each model's log")),
-  h("div", { class: "table-wrap" }, simpleTable(["Model", "Progress", "Tokens", "Speed", "Running", "Left", "Waiting behind it"], busy.map((m) => {
-    const p = m.prefill, started = Date.parse(p.started);
-    const left = p.tokens_per_second > 0 && p.total ? (p.total - p.tokens) / p.tokens_per_second : null;
-    return [h("span", { class: "strong" }, m.id),
-      h("span", { class: "meter" }, h("div", { class: "progress" }, h("i", { style: `width:${pct(p.progress)}` })), pct(p.progress)),
-      p.total ? `${num(p.tokens, 0)} / ${num(p.total, 0)}` : "starting",
-      p.tokens_per_second ? `${num(p.tokens_per_second, 0)} t/s` : DASH,
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Working now"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, "each llama-server slot busy with a request, from the model's log · two chats on one model are two slots")),
+  h("div", { class: "table-wrap" }, simpleTable(["Model", "Slot", "Doing", "Progress", "Tokens", "Speed", "Running", "Left"], busy.map(({ m, sl }) => {
+    const started = Date.parse(sl.started), pre = sl.phase === "prefill";
+    const left = pre && sl.tokens_per_second > 0 && sl.total ? (sl.total - sl.tokens) / sl.tokens_per_second : null;
+    return [h("span", { class: "strong" }, m.id), String(sl.id),
+      h("span", { class: `pill ${pre ? "warn" : "ok"}` }, pre ? "reading the prompt" : "generating"),
+      pre ? h("span", { class: "meter" }, h("div", { class: "progress" }, h("i", { style: `width:${pct(sl.progress)}` })), pct(sl.progress)) : DASH,
+      pre ? (sl.total ? `${num(sl.tokens, 0)} / ${num(sl.total, 0)}` : "starting") : `${num(sl.generated || 0, 0)} out`,
+      pre ? (sl.tokens_per_second ? `${num(sl.tokens_per_second, 0)} t/s` : DASH) : `${num(sl.gen_tokens_per_second || 0, 1)} t/s`,
       h("span", { "data-run-start": String(started) }, runClock(Date.now() - started)),
-      left == null ? DASH : `~${runClock(left * 1000)}`,
-      // the other requests the model has: new questions sent while it reads this prompt
-      m.in_flight > 1 ? h("span", { class: "pill", title: "requests to this model that start once this prompt is read" }, `${m.in_flight - 1} waiting`) : DASH];
+      left == null ? DASH : `~${runClock(left * 1000)}`];
   }))));
 }
 function renderLive() {
@@ -4537,9 +4570,9 @@ function renderLive() {
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
-    swaps, queue, prefillCard(P.models),
+    swaps, queue, crashCard(P.models), prefillCard(P.models),
     requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])),
-      { running: L.running, prefill: Object.fromEntries(P.models.filter((m) => m.prefill).map((m) => [m.id, m.prefill])) }),
+      { running: L.running, slots: Object.fromEntries(P.models.filter((m) => (m.slots || []).length).map((m) => [m.id, m.slots])) }),
     activity,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
 }

@@ -72,6 +72,15 @@ def load_model(base_url: str, model_id: str, timeout: float = 900.0) -> None:
     _get(base_url.rstrip("/") + f"/upstream/{urllib.parse.quote(model_id, safe='')}/health", timeout)
 
 
+def clear_crashes(base_url: str, model_id: str, timeout: float = 5.0) -> None:
+    """Forget a model's crashes, so the engine starts it again on a request. An older engine has none to forget."""
+    try:
+        _post(base_url.rstrip("/") + f"/api/crashes/clear/{urllib.parse.quote(model_id, safe='')}", timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (404, 405):
+            raise
+
+
 def unload_model(base_url: str, model_id: str, timeout: float = 60.0) -> None:
     """Make the engine stop one model; other models are not touched."""
     _post(base_url.rstrip("/") + f"/api/models/unload/{urllib.parse.quote(model_id, safe='')}", timeout)
