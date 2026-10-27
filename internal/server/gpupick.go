@@ -285,6 +285,12 @@ func (s *Server) launchEnv(modelID string, argv, env []string) []string {
 // placedEnv applies the cards a placing router (the pool) chose for a model. A
 // router with no opinion, or no recorded placement, leaves env untouched.
 func (s *Server) placedEnv(modelID string, env []string) []string {
+	if cpu, ok := s.local.(interface{ OnCPU(string) bool }); ok && cpu.OnCPU(modelID) {
+		// no GPU visible: llama.cpp finds none and runs on the CPU, whatever -ngl says
+		s.proxylog.Infof("gpu placement: %s runs on the CPU (it does not fit on the GPUs, and falls back to the CPU)", modelID)
+		env = setEnvValue(env, "HIP_VISIBLE_DEVICES", "-1")
+		return setEnvValue(env, "CUDA_VISIBLE_DEVICES", "-1")
+	}
 	placer, ok := s.local.(router.Placer)
 	if !ok {
 		return env

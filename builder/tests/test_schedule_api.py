@@ -421,3 +421,17 @@ def test_saving_a_profile_tells_the_engine_now(app, client):
                 break
             time.sleep(0.05)
     assert ("POST", "/api/odysseus/refresh") in calls
+
+
+def test_the_assistants_models_fall_back_to_the_cpu_by_default(app, client, tmp_path, monkeypatch):
+    make_models(app, big=10)
+    client.put("/api/settings/integrations", json={"engine_url": ""})
+    out = tmp_path / "s.yaml"
+    monkeypatch.setenv("ARGOS_SCHEDULE_FILE", str(out))
+    client.put("/api/schedule", json={"enabled": True})
+    client.put("/api/settings/assistant", json={"mode": "engine", "model": "qwen3-0.6b"})
+    client.put("/api/settings/memory", json={"enabled": True, "model": "nomic-embed", "endpoint": ""})
+    pool = yaml.safe_load(out.read_text())["routing"]["router"]["settings"]["pool"]
+    assert pool["cpuFallback"] == ["qwen3-0.6b", "nomic-embed"], "on by default, written when the settings change"
+    client.put("/api/settings/assistant", json={"cpu_fallback": False})
+    assert "cpuFallback" not in yaml.safe_load(out.read_text())["routing"]["router"]["settings"]["pool"]

@@ -65,6 +65,12 @@ func (r *Pool) Placement(modelID string) []string {
 	return r.swapper.placement(modelID)
 }
 
+// OnCPU reports whether the pool started the model on the CPU because it did
+// not fit on the GPUs (routing.router.settings.pool.cpuFallback).
+func (r *Pool) OnCPU(modelID string) bool {
+	return r.swapper.runsOnCPU(modelID)
+}
+
 // PlacementCarrier is implemented by routers whose placement has to survive a
 // hot reload. A reload builds a new router and carries the running children
 // across; without this the new pool knows nothing about where they are and
@@ -146,6 +152,11 @@ type poolSwapper struct {
 	mu     sync.RWMutex
 	placed map[string][]string // model -> card ids chosen at its last swap
 
+	// cpuFallback models run on the CPU when they do not fit beside what is
+	// loaded, instead of evicting it; onCPU is the ones running that way now.
+	cpuFallback map[string]bool
+	onCPU       map[string]bool
+
 	busy     map[string]int
 	lastUsed map[string]time.Time
 	loadTime map[string]time.Duration
@@ -190,19 +201,21 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 	}
 
 	p := &poolSwapper{
-		logger:     logger,
-		budget:     total - pc.ReserveGiB,
-		protect:    time.Duration(pc.ProtectSeconds) * time.Second,
-		persistent: make(map[string]bool, len(pc.Persistent)),
-		sizes:      make(map[string]float64, len(conf.Models)),
-		pins:       make(map[string][]string),
-		spread:     make(map[string]bool),
-		even:       make(map[string]bool),
-		placed:     make(map[string][]string),
-		busy:       make(map[string]int),
-		lastUsed:   make(map[string]time.Time),
-		loadTime:   make(map[string]time.Duration),
-		now:        time.Now,
+		logger:      logger,
+		budget:      total - pc.ReserveGiB,
+		protect:     time.Duration(pc.ProtectSeconds) * time.Second,
+		persistent:  make(map[string]bool, len(pc.Persistent)),
+		sizes:       make(map[string]float64, len(conf.Models)),
+		pins:        make(map[string][]string),
+		spread:      make(map[string]bool),
+		even:        make(map[string]bool),
+		placed:      make(map[string][]string),
+		cpuFallback: make(map[string]bool, len(pc.CPUFallback)),
+		onCPU:       make(map[string]bool),
+		busy:        make(map[string]int),
+		lastUsed:    make(map[string]time.Time),
+		loadTime:    make(map[string]time.Duration),
+		now:         time.Now,
 	}
 	if pc.Placement != "off" {
 		for _, c := range cards {
@@ -211,6 +224,9 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 	}
 	for _, id := range pc.Persistent {
 		p.persistent[id] = true
+	}
+	for _, id := range pc.CPUFallback {
+		p.cpuFallback[id] = true
 	}
 	for id, mc := range conf.Models {
 		p.sizes[id] = modelVRAMGiB(mc)
@@ -314,6 +330,9 @@ func (p *poolSwapper) evictionForLocked(target string, running []string) []strin
 	}
 	if ok, _ := p.fits(target, others); ok {
 		return nil
+	}
+	if p.cpuFallback[target] {
+		return nil // it runs on the CPU rather than push anything off the GPUs
 	}
 
 	var candidates []string
@@ -478,6 +497,9 @@ func (p *poolSwapper) allowedCards(target string) []poolCard {
 // assumed to fill every card; a model with no recorded placement (started
 // before the pool knew about it) is assumed spread over all cards.
 func (p *poolSwapper) usage(id string, c poolCard) float64 {
+	if p.onCPU[id] {
+		return 0
+	}
 	if p.sizes[id] == 0 {
 		return c.cap
 	}
@@ -489,6 +511,13 @@ func (p *poolSwapper) usage(id string, c poolCard) float64 {
 		return 0
 	}
 	return p.sizes[id] / float64(len(cards))
+}
+
+// runsOnCPU reports whether id was started on the CPU (cpu fallback).
+func (p *poolSwapper) runsOnCPU(id string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.onCPU[id]
 }
 
 // placement returns the cards chosen for id at its last swap, or nil.
@@ -516,6 +545,9 @@ func sortIDs(ids []string) {
 
 // size returns a model's VRAM in GiB. Unknown sizes count as the whole pool.
 func (p *poolSwapper) size(id string) float64 {
+	if p.onCPU[id] {
+		return 0
+	}
 	if s := p.sizes[id]; s > 0 {
 		return s
 	}
@@ -568,11 +600,26 @@ func (p *poolSwapper) reloadCost(id string) time.Duration {
 func (p *poolSwapper) OnSwapStart(target string, running []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	delete(p.onCPU, target) // a new run: GPU if it fits
 	evict := p.evictionForLocked(target, running)
 	var staying []string
 	for _, id := range running {
 		if id != target && !slices.Contains(evict, id) {
 			staying = append(staying, id)
+		}
+	}
+	for id := range p.onCPU {
+		if !slices.Contains(running, id) {
+			delete(p.onCPU, id) // stopped since
+		}
+	}
+	if p.cpuFallback[target] {
+		if ok, _ := p.fits(target, staying); !ok {
+			p.onCPU[target] = true
+			delete(p.placed, target)
+			p.logger.Infof("pool: loading %s on the CPU: its %.1f GiB do not fit beside %v, and it is set to fall back to the CPU rather than unload them",
+				target, p.sizes[target], staying)
+			return
 		}
 	}
 

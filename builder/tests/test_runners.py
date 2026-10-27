@@ -186,3 +186,18 @@ def test_a_whisper_server_you_built_is_used_without_installing(tmp_path):
     e = r.entries()
     assert list(e) == ["ggml-base.en"] and e["ggml-base.en"]["cmd"].startswith(str(exe).replace("\\", "/") if os.name == "nt" else str(exe))
     assert r.found(rec["whisper"])["detail"] == "your own build"
+
+
+def test_a_hugging_face_whisper_is_named_as_unusable_with_the_ggml_file_to_get(tmp_path):
+    """whisper-large-v3 from the HF cache is a Transformers copy: whisper.cpp cannot read it, and the card says
+    so and which ggml file is the same model, instead of "no whisper model yet"."""
+    from src.runners import whisper_ggml_for
+    _touch(str(tmp_path / "whisper" / "bin" / ("whisper-server.exe" if os.name == "nt" else "whisper-server")))
+    media = [{"id": "whisper-large-v3", "name": "whisper-large-v3", "path": "/m/HFCache/hub/models--unsloth--whisper-large-v3/x",
+              "task": "speech-to-text", "format": "safetensors"}]
+    r = Runners(_Store(), _Settings(str(tmp_path)), lambda *a, **k: None, lambda: "", lambda d: media)
+    w = next(x for x in r.view()["runners"] if x["id"] == "whisper")
+    assert w["models"] == []
+    assert [(m["name"], m["ggml"]) for m in w["skipped"]] == [("whisper-large-v3", "ggml-large-v3.bin")]
+    assert whisper_ggml_for("whisper-large-v3-turbo") == "ggml-large-v3-turbo.bin"
+    assert whisper_ggml_for("openai/whisper-small.en") == "ggml-small.en.bin"

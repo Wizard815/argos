@@ -3,7 +3,7 @@ title: VRAM-aware pool router
 summary: Put every model in one pool so models load side by side while VRAM fits, and only the cheapest idle model is evicted when it does not.
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
-config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard]
+config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard, routing.router.settings.pool.cpuFallback]
 updated: 2026-10-25
 ---
 
@@ -134,6 +134,25 @@ again; **Load** from Schedule -> Live (`POST /api/crashes/clear/<model>` on the
 engine) lets it start again. `GET /api/inflight` lists every
 request still running, and the same state is on MCP as `schedule__pool_status`,
 `schedule__requests_in_flight` and `schedule__recent_requests`.
+
+## Small helpers on the CPU: cpuFallback
+
+A model listed in `cpuFallback` that does not fit on the GPUs beside what is
+loaded is started on the CPU instead of unloading anything: with every GPU
+hidden (`HIP_VISIBLE_DEVICES=-1`, `CUDA_VISIBLE_DEVICES=-1`), so llama.cpp finds
+none and runs it on the CPU whatever its `-ngl`. It holds no VRAM there and
+never causes an eviction; Live marks it **on CPU**. Its next load goes back to
+the GPUs if they have room then.
+
+```yaml
+        cpuFallback: ["qwen3-0.6b", "nomic-embed-text-v2-q8"]
+```
+
+The builder fills it with the assistant's chat and embedding models
+(Settings -> Assistant -> "Run the chat and embedding models on the CPU when the
+GPUs are full", on by default). What goes wrong: a llama.cpp build with
+GPU-only features in the command (a KV cache type with no CPU kernels, `-sm
+tensor`) can fail on the CPU; give such a model a plain command.
 
 ## Two chats on one model: answer first
 

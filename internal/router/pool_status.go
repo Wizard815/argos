@@ -73,6 +73,9 @@ type PoolModelStatus struct {
 	// learned from the logs.
 	SoloTokensPerSecond float64    `json:"solo_tps,omitempty"`
 	Slowdowns           []Slowdown `json:"slowdowns,omitempty"`
+	// OnCPU: started on the CPU because it did not fit on the GPUs (cpu
+	// fallback); it holds no VRAM.
+	OnCPU bool `json:"on_cpu,omitempty"`
 }
 
 // PoolQueueStatus is one request waiting for room or for a busy model.
@@ -133,6 +136,7 @@ func (p *poolSwapper) status(running map[string]process.ProcessState, sched sche
 		}
 		if st, ok := running[id]; ok {
 			m.State = string(st)
+			m.OnCPU = p.onCPU[id]
 			m.Cards = append(m.Cards, p.placed[id]...)
 			if pf, ok := Prefills.Get(id); ok {
 				m.Prefill = &pf

@@ -428,7 +428,6 @@
 
     <!-- ASSISTANT -->
     <section class="view" id="view-assistant">
-      <div class="assist-settings" id="aSettings" hidden></div>
       <div class="chat-wrap">
         <div class="chat-head">
           <div id="aModels" class="assist-models"></div>
@@ -464,7 +463,11 @@
       <div class="view-head">
         <div><h1>Settings</h1><p class="sub">Saved in the database. Environment variables only set the defaults.</p></div>
       </div>
-      <div class="settings-grid" id="sGrid"></div>
+      <div class="tabs" data-tabs="settings">
+        <button data-pane="general" class="on">General</button><button data-pane="assistant">Assistant</button>
+      </div>
+      <div class="pane on" data-pane="general"><div class="settings-grid" id="sGrid"></div></div>
+      <div class="pane" data-pane="assistant"><div class="assist-settings" id="sAssistant"></div></div>
     </section>
 
     <!-- SERVERS -->

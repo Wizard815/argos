@@ -378,7 +378,9 @@ const onShow = {
   env: () => loadEnv(),
   servers: () => { loadServers(); if (lsGet("argos.tab.servers") === "local") loadLocal(); },
   integrations: () => loadIntegrations(),
-  settings: () => loadSettings().then(renderSettings).then(loadIntegrations),
+  settings: () => loadSettings().then(renderSettings).then(loadIntegrations).then(() => {
+    if ($(".tabs[data-tabs=settings] button.on")?.dataset.pane === "assistant") loadSettingsAssistant();
+  }),
   playground: () => {
     if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect();
     renderLaunches(); pollSelected(true);
@@ -3363,11 +3365,14 @@ async function sendChat() {
 // ── Assistant settings: its own page ─────────────────────────
 // The chat model and the embedding model are picked from what Argos has: your profiles, the models in the library,
 // and anything else the engine lists. Another OpenAI-compatible server is under Advanced, for the rare case.
+// The assistant's settings live on the Settings page (its Assistant tab), with everything else; the assistant's
+// own Settings button takes you there.
 async function openAssistantSettings(open = true) {
-  A.settingsOpen = open;
-  $("#aSettings").hidden = !open;
-  $(".chat-wrap").hidden = open;
-  if (!open) return loadAssistant();
+  if (!open) return show("assistant");
+  show("settings");
+  $(".tabs[data-tabs=settings] button[data-pane=assistant]").click();
+}
+async function loadSettingsAssistant() {
   try { await loadSettings(); A.choices = await api("GET", "/api/assistant/choices"); } catch (e) { A.choices = null; }
   renderAssistantSettings();
 }
@@ -3423,6 +3428,7 @@ function renderAssistantSettings() {
   const ctx = h("input", { type: "number", value: cfg.context_tokens });
   const keep = h("input", { type: "number", value: cfg.keep_recent });
   const temp = h("input", { type: "number", step: "0.1", value: cfg.temperature });
+  const cpuFallback = h("input", { type: "checkbox", checked: cfg.cpu_fallback !== false });
   const idle = h("select", {}, [[0, "Never"], [5, "5 minutes"], [10, "10 minutes"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [240, "4 hours"]]
     .map(([v, l]) => h("option", { value: v }, l)));
   idle.value = String(cfg.idle_unload_min ?? 15);
@@ -3437,7 +3443,7 @@ function renderAssistantSettings() {
   const save = async () => {
     try {
       const body = { context_tokens: ctx.value, keep_recent: keep.value, temperature: temp.value, idle_unload_min: idle.value,
-        escalate_model: escalate.value, escalate_quant: escalateQuant.value };
+        escalate_model: escalate.value, escalate_quant: escalateQuant.value, cpu_fallback: cpuFallback.checked };
       if (useOther.checked) {
         if (!endpoint.value.trim()) throw new Error("Type the other server's URL, or untick “Use another server”.");
         Object.assign(body, { mode: "endpoint", endpoint: endpoint.value.trim(), model: endpointModel.value.trim() });
@@ -3448,15 +3454,15 @@ function renderAssistantSettings() {
       await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, endpoint: memEndpoint.value.trim(), results: results.value });
       await loadSettings();
       toast("Saved the assistant settings.", "ok");
-      openAssistantSettings(false);
+      renderAssistantSettings();
     } catch (e) { fail(e); }
   };
 
   const engineNote = ch.engine_connected ? null
     : h("p", { class: "hint" }, "The engine is not answering right now, so these lists come from your library and profiles. They load once the engine is up.");
-  fill($("#aSettings"),
-    h("div", { class: "view-head" }, h("div", {}, h("h1", {}, "Assistant settings"), h("p", { class: "sub" }, "A small model that knows your GPUs, speeds and history. Pick it from the models Argos has.")),
-      h("span", { class: "spacer" }), btn("Back to chat", () => openAssistantSettings(false), "", "arrow-left"), btn("Save", save, "primary", "save")),
+  fill($("#sAssistant"),
+    h("div", { class: "row", style: "margin-bottom:12px" }, h("p", { class: "sub", style: "margin:0" }, "A small model that knows your GPUs, speeds and history. Pick it from the models Argos has."),
+      h("span", { class: "spacer" }), btn("Open the assistant", () => show("assistant"), "", "message"), btn("Save", save, "primary", "save")),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Chat model")),
       h("p", { class: "hint" }, "Any of your models or profiles. The engine loads it on the first message (or with Load on the chat page) and it shares the GPUs like any other model. A small one is plenty: Qwen3-0.6B fits in under 1 GB."),
       engineNote,
@@ -3478,7 +3484,9 @@ function renderAssistantSettings() {
         field("Context window (tokens)", ctx, "Must match the -c of the model above. At about 70% full, or when you press Compact, older turns are summarised."),
         field("Messages kept as written", keep, "The newest ones are never summarised."),
         field("Temperature", temp, "Lower is steadier for questions about numbers."),
-        field("Unload when unused for", idle, "Frees the GPU memory. Only models the assistant itself used are unloaded; Load brings one back.", true))),
+        field("Unload when unused for", idle, "Frees the GPU memory. Only models the assistant itself used are unloaded; Load brings one back.", true),
+        h("label", { class: "check wide", title: "Needs Schedule's pool router. The model starts with every GPU hidden, so llama.cpp runs it on the CPU: slower, but nothing you are using gets unloaded for it." },
+          cpuFallback, "Run the chat and embedding models on the CPU when the GPUs are full, instead of unloading a model you are using"))),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Memory"), h("span", { class: "spacer" }),
         h("span", { class: `pill ${mem.enabled && mem.model ? "ok" : ""}` }, mem.enabled && mem.model ? "searching by meaning" : "searching by words")),
       h("p", { class: "hint" }, "The assistant remembers your events, notes, profiles, benchmarks and loads. An embedding model turns each record into numbers that describe its meaning, so a question about “cache settings that were slow” also finds records that never use those words. Without one it matches words only."),
@@ -3721,10 +3729,20 @@ function runnerCard(r) {
     r.addon ? null : h("div", { class: "table-wrap" }, h("table", { class: "dense" },
       h("thead", {}, h("tr", {}, ["Model", "Does", "Also answers to", "Size", "Served by", ...(r.kind === "sdcpp" ? ["Extra arguments"] : [])].map((x) => h("th", {}, x)))),
       h("tbody", {}, models.length ? models : h("tr", {}, h("td", { colspan: 5 }, h("span", { class: "muted" },
-        r.kind === "whisper" ? "No whisper model yet. Put a ggml-*.bin file in the models folder Argos uses (the same one as your chat models)."
+        r.kind === "whisper" ? ((r.skipped || []).length ? "No whisper model it can read yet: see below."
+          : "No whisper model yet. Put a ggml-*.bin file in the models folder Argos uses (the same one as your chat models).")
           : r.kind === "sdcpp" ? "No image model yet. Put a .gguf, .safetensors or .ckpt image model in the models folder Argos uses."
           : r.kind === "custom" ? "One model: this runner's start command. Give a model-file pattern and ${MODEL_PATH} in the start command to serve one model per file."
           : r.installed ? "—" : "Install it first.")))))),
+    // whisper models it found but cannot read: a Hugging Face copy is not the ggml file whisper.cpp needs
+    (r.skipped || []).length ? h("div", { class: "card", style: "margin:10px 0 0;background:var(--bg)" },
+      h("p", { class: "hint", style: "margin-top:0" }, "Found in your models folder but not usable by whisper.cpp: these are the Hugging Face (Transformers) copies, and whisper.cpp reads only ggml-*.bin files. The same model as a ggml file comes from ggerganov/whisper.cpp; once it is downloaded it shows up above."),
+      h("div", { class: "ody-list" }, r.skipped.map((m) => h("div", { class: "ody-row" },
+        h("div", { class: "ody-main" }, h("div", { class: "cell-main" }, m.name), h("div", { class: "cell-sub mono-sm", title: m.path }, `${m.format || "?"} · ${m.why}`)),
+        btn(`Download ${m.ggml}`, async () => {
+          try { await api("POST", "/api/downloads", { repo: "ggerganov/whisper.cpp", files: [m.ggml] }); toast(`Downloading ${m.ggml} to your models folder (Models → Downloads).`, "ok"); }
+          catch (e) { fail(e); }
+        }, "sm primary", "download"))))) : null,
     details);
 }
 function toolsLine() {
@@ -4690,6 +4708,7 @@ function workPill(m) {
     : h("span", { class: "pill ok", title: `slot ${sl.id}: ${num(sl.generated || 0, 0)} tokens of the answer so far, ${num(sl.gen_tokens_per_second || 0, 1)} t/s now` }, "generating"));
   if (!pills.length && m.prefill) pills.push(h("span", { class: "pill warn" }, m.prefill.total ? `prefill ${pct(m.prefill.progress)}` : "prefill"));
   if (!pills.length && m.in_flight && m.state === "ready") pills.push(h("span", { class: "pill ok", title: "answering: the prompt is read" }, "generating"));
+  if (m.on_cpu) pills.push(h("span", { class: "pill", title: "It did not fit on the GPUs, so it runs on the CPU (cpu fallback) and holds no VRAM. Its next load goes back to the GPUs if they have room." }, "on CPU"));
   if (m.update_pending) pills.push(h("span", { class: "pill warn", title: `Its profile changed while it was busy (since ${new Date(m.update_pending).toLocaleTimeString()}). It restarts with the new settings once its requests are done; checked every 30 s.` }, "update waiting"));
   if (m.crash) pills.push(h("span", { class: "pill bad", title: `${m.crash.line}\n${m.crash.recent} crash(es) in the last 10 minutes${m.crash.blocked ? ". Requests no longer start it: fix its command, or Load it from ⋯ to try again." : ""}` },
     m.crash.blocked ? "crash loop: stopped" : `crashed${m.crash.recent > 1 ? ` ×${m.crash.recent}` : ""}`));
@@ -5469,6 +5488,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
     else if (bar.dataset.tabs === "playground" && b.dataset.pane === "bench") loadBenchTab();
+    else if (bar.dataset.tabs === "settings" && b.dataset.pane === "assistant") loadSettingsAssistant();
   }));
 }
 

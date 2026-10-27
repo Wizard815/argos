@@ -334,7 +334,7 @@ HEADER = ("# Written by Argos from the Schedule view. Edits are overwritten.\n"
 
 
 def render_fragment(plan: dict, sizes: Optional[dict[str, float]] = None,
-                    known: Optional[set[str]] = None) -> tuple[str, list[str]]:
+                    known: Optional[set[str]] = None, cpu_fallback: Optional[list[str]] = None) -> tuple[str, list[str]]:
     """The YAML the engine reads, and the model ids left out because the engine does not know them.
 
     ``sizes`` are the effective sizes to use. When ``known`` is given, ids
@@ -363,6 +363,9 @@ def render_fragment(plan: dict, sizes: Optional[dict[str, float]] = None,
     if plan.get("share_guard"):
         pool["shareGuard"] = {"enabled": True, "maxSlowdownPercent": plan.get("share_guard_slowdown") or 50,
                               "maxWaitSeconds": plan.get("share_guard_max_wait_s") or 120}
+    cpu = [m for m in dict.fromkeys(cpu_fallback or []) if m and keep(m)]
+    if cpu:
+        pool["cpuFallback"] = cpu
     serial = [m for m in plan.get("one_at_a_time") or [] if keep(m)]
     if serial:
         pool["oneAtATime"] = serial
