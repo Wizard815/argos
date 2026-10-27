@@ -731,7 +731,16 @@ function gpuPick(env) {
   return { cards: own ? splitCards(env[own]) : [], from: own || "" };
 }
 function setGpus(list) {
-  edit({}, undefined, undefined, list.map((x) => String(x).trim()).filter(Boolean));
+  const ids = list.map((x) => String(x).trim()).filter(Boolean);
+  // leaving CPU only for a card puts the layers back on the GPU
+  const wasCpu = gpuPick((B.parsed && B.parsed.env) || {}).cards.join(",") === "-1";
+  const back = wasCpu && !(ids.length === 1 && ids[0] === "-1") && String(argValue("n-gpu-layers") ?? "") === "0";
+  edit(back ? { "n-gpu-layers": "99" } : {}, undefined, undefined, ids);
+}
+// CPU only: no GPU visible (the variable set to -1) and no layer offloaded (-ngl 0); the engine then keeps it off
+// the GPUs and counts no VRAM for it
+function setCpuOnly() {
+  edit({ "n-gpu-layers": "0" }, undefined, undefined, ["-1"]);
 }
 function buildGpuField() {
   const text = h("input", { type: "text", placeholder: "all", spellcheck: "false", style: "width:80px" });
@@ -749,20 +758,23 @@ function syncGpuField() {
   const pick = gpuPick((B.parsed && B.parsed.env) || {});
   const ids = pick.cards;
   if (BG.el.text !== document.activeElement) BG.el.text.value = ids.join(",");
-  const toggle = (id) => setGpus(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].sort((a, b) => Number(a) - Number(b)));
+  const cpu = ids.length === 1 && ids[0] === "-1";
+  const toggle = (id) => setGpus(cpu ? [id] : ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].sort((a, b) => Number(a) - Number(b)));
   const known = new Set(BG.cards.map((g) => String(g.gpu)));
   const every = [...known].sort((a, b) => Number(a) - Number(b));
   const isAll = every.length > 1 && every.every((x) => ids.includes(x)) && ids.length === every.length;
   fill(BG.el.chips,
     h("button", { type: "button", class: `chip${ids.length ? "" : " on"}`, title: "No pin: the engine puts it on the card, or cards, with room", onclick: () => setGpus([]) }, "Auto"),
+    h("button", { type: "button", class: `chip${cpu ? " on" : ""}`, title: "Run it on the CPU only: no GPU visible to it and -ngl 0. Slower, holds no VRAM, and never unloads another model to fit.", onclick: setCpuOnly }, "CPU only"),
     every.length > 1 ? h("button", { type: "button", class: `chip${isAll ? " on" : ""}`, title: `Every card: ${every.join(",")}. The model is spread across all of them.`, onclick: () => setGpus(every) }, "All") : null,
     BG.cards.map((g) => h("button", { type: "button", class: `chip${ids.includes(String(g.gpu)) ? " on" : ""}`,
       title: `${g.name || "GPU " + g.gpu}${g.mem_total_mb ? ` · ${(g.mem_total_mb / 1024).toFixed(0)} GiB` : ""}`, onclick: () => toggle(String(g.gpu)) }, `GPU${g.gpu}`)),
-    ids.filter((x) => !known.has(x)).map((x) => h("button", { type: "button", class: "chip on", title: "Not seen on this machine", onclick: () => toggle(x) }, `GPU${x}`)));
+    ids.filter((x) => !known.has(x) && x !== "-1").map((x) => h("button", { type: "button", class: "chip on", title: "Not seen on this machine", onclick: () => toggle(x) }, `GPU${x}`)));
   const vars = (B.parsed && B.parsed.gpu_vars) || [];
   const names = [...new Set(BG.cards.filter((g) => ids.includes(String(g.gpu))).map((g) => g.name).filter(Boolean))];
   const seen = names.length ? `${names.join(" + ")}: ` : "";
-  BG.el.note.textContent = !ids.length ? "Auto: the engine places it where it fits; --split-mode tensor or row gets every card"
+  BG.el.note.textContent = cpu ? `CPU only: ${vars.join(" and ") || "the GPU variable"} = -1 and -ngl 0; it holds no VRAM`
+    : !ids.length ? "Auto: the engine places it where it fits; --split-mode tensor or row gets every card"
     : vars.includes(pick.from) ? `${seen}${vars.join(" and ")}`
     : `set as ${pick.from}, but these cards read ${vars.join(" and ") || "another variable"}; pick a card to switch`;
 }

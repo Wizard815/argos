@@ -136,7 +136,7 @@ func (p *poolSwapper) status(running map[string]process.ProcessState, sched sche
 		}
 		if st, ok := running[id]; ok {
 			m.State = string(st)
-			m.OnCPU = p.onCPU[id]
+			m.OnCPU = p.onCPU[id] || p.cpuOnly[id]
 			m.Cards = append(m.Cards, p.placed[id]...)
 			if pf, ok := Prefills.Get(id); ok {
 				m.Prefill = &pf
