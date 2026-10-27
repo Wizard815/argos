@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wizard815/Argos/internal/perf"
 	"github.com/Wizard815/Argos/internal/router"
 )
 
@@ -266,6 +267,9 @@ func chooseSingleGPU(env, argv []string, root string) (string, bool) {
 // launchEnv is the process.LaunchEnvPolicy installed by the server: it applies
 // a model's GPU mode to its environment just before the upstream starts.
 func (s *Server) launchEnv(modelID string, argv, env []string) []string {
+	if cpu, ok := s.local.(interface{ OnCPU(string) bool }); ok && cpu.OnCPU(modelID) {
+		return s.placedEnv(modelID, env) // on the CPU: no GPU mode applies
+	}
 	if s.ModelMode(modelID) != ModeSingleGPU {
 		return s.placedEnv(modelID, env)
 	}
@@ -285,6 +289,12 @@ func (s *Server) launchEnv(modelID string, argv, env []string) []string {
 // placedEnv applies the cards a placing router (the pool) chose for a model. A
 // router with no opinion, or no recorded placement, leaves env untouched.
 func (s *Server) placedEnv(modelID string, env []string) []string {
+	if cpu, ok := s.local.(interface{ OnCPU(string) bool }); ok && cpu.OnCPU(modelID) {
+		// no GPU visible: llama.cpp finds none and runs on the CPU, whatever -ngl says
+		s.proxylog.Infof("gpu placement: %s runs on the CPU (it does not fit on the GPUs, and falls back to the CPU)", modelID)
+		env = setEnvValue(env, "HIP_VISIBLE_DEVICES", "-1")
+		return setEnvValue(env, "CUDA_VISIBLE_DEVICES", "-1")
+	}
 	placer, ok := s.local.(router.Placer)
 	if !ok {
 		return env
@@ -295,4 +305,26 @@ func (s *Server) placedEnv(modelID string, env []string) []string {
 	}
 	s.proxylog.Infof("gpu placement: binding %s to GPU %s (pool)", modelID, strings.Join(cards, ","))
 	return setEnvValue(env, "HIP_VISIBLE_DEVICES", strings.Join(cards, ","))
+}
+
+// liveCardUsed is the VRAM in use on each GPU (GiB, by card id) from the
+// performance monitor's newest reading: the same numbers the Performance
+// page shows, read however this machine allows (LACT, rocm-smi, sysfs). A
+// reading older than 30 seconds is not live and gives nil.
+func (s *Server) liveCardUsed() map[string]float64 {
+	_, gpus := s.perf.Current()
+	newest := map[int]perf.GpuStat{}
+	for _, g := range gpus {
+		if cur, ok := newest[g.ID]; !ok || g.Timestamp.After(cur.Timestamp) {
+			newest[g.ID] = g
+		}
+	}
+	out := make(map[string]float64, len(newest))
+	for id, g := range newest {
+		if time.Since(g.Timestamp) > 30*time.Second || g.MemTotalMB <= 0 {
+			continue
+		}
+		out[strconv.Itoa(id)] = float64(g.MemUsedMB) / 1024
+	}
+	return out
 }

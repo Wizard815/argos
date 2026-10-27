@@ -31,11 +31,17 @@ type PoolStatus struct {
 // PoolCardStatus is one GPU. UsedGiB counts the running models' planned share,
 // not live VRAM, so it is the number the pool itself plans with.
 type PoolCardStatus struct {
-	ID      string   `json:"id"`
-	CapGiB  float64  `json:"cap_gib"`
-	UsedGiB float64  `json:"used_gib"`
-	FreeGiB float64  `json:"free_gib"`
-	Models  []string `json:"models"`
+	ID      string  `json:"id"`
+	CapGiB  float64 `json:"cap_gib"`
+	UsedGiB float64 `json:"used_gib"`
+	FreeGiB float64 `json:"free_gib"`
+	// OtherGiB is the VRAM in use on the card by something other than
+	// Argos's running models (another app), read live; the pool plans around
+	// what of it the reserve does not cover. LiveUsedGiB is the card's own
+	// reading. Both are absent until the card has been read.
+	OtherGiB    *float64 `json:"other_gib,omitempty"`
+	LiveUsedGiB *float64 `json:"live_used_gib,omitempty"`
+	Models      []string `json:"models"`
 }
 
 // PoolModelStatus is one configured model.
@@ -73,6 +79,9 @@ type PoolModelStatus struct {
 	// learned from the logs.
 	SoloTokensPerSecond float64    `json:"solo_tps,omitempty"`
 	Slowdowns           []Slowdown `json:"slowdowns,omitempty"`
+	// OnCPU: started on the CPU because it did not fit on the GPUs (cpu
+	// fallback); it holds no VRAM.
+	OnCPU bool `json:"on_cpu,omitempty"`
 }
 
 // PoolQueueStatus is one request waiting for room or for a busy model.
@@ -133,6 +142,7 @@ func (p *poolSwapper) status(running map[string]process.ProcessState, sched sche
 		}
 		if st, ok := running[id]; ok {
 			m.State = string(st)
+			m.OnCPU = p.onCPU[id] || p.cpuOnly[id]
 			m.Cards = append(m.Cards, p.placed[id]...)
 			if pf, ok := Prefills.Get(id); ok {
 				m.Prefill = &pf
@@ -168,7 +178,12 @@ func (p *poolSwapper) status(running map[string]process.ProcessState, sched sche
 				cs.Models = append(cs.Models, id)
 			}
 		}
-		cs.FreeGiB = max(c.cap-cs.UsedGiB, 0)
+		cs.FreeGiB = max(c.cap-cs.UsedGiB-p.outsideOn(c), 0)
+		if h := p.outsideHist[c.id]; len(h) > 0 {
+			other := p.outside[c.id]
+			live := cs.UsedGiB + h[len(h)-1]
+			cs.OtherGiB, cs.LiveUsedGiB = &other, &live
+		}
 		out.Cards = append(out.Cards, cs)
 	}
 

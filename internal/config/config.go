@@ -332,6 +332,12 @@ type PoolConfig struct {
 	// GPU is answering, when that other model was seen (in its log) to slow
 	// down a lot beside it.
 	ShareGuard ShareGuardConfig `yaml:"shareGuard"`
+
+	// CPUFallback lists models that run on the CPU when they do not fit on
+	// the GPUs beside what is loaded, instead of unloading it: small helpers
+	// such as the assistant's chat and embedding models. They are started
+	// with every GPU hidden, so llama.cpp finds none and runs on the CPU.
+	CPUFallback []string `yaml:"cpuFallback"`
 }
 
 // ShareGuardConfig is the pool's share guard.

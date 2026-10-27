@@ -125,3 +125,73 @@ func sortCards(cards []Card) {
 		return a < b
 	})
 }
+
+// Used returns the VRAM in use on each card now, in GiB, keyed like Detect's
+// IDs: rocm-smi's when it answers, else the sysfs cards numbered 0..n-1. It
+// counts everything on the card, whoever holds it. nil when nothing could be
+// read.
+func Used() map[string]float64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, ROCmSMIArgs[0], ROCmSMIArgs[1:]...).Output(); err == nil {
+		if used := ParseROCmSMIUsed(string(out)); len(used) > 0 {
+			return used
+		}
+	}
+	return UsedFromSysfs(SysfsRoot)
+}
+
+// ParseROCmSMIUsed reads the `VRAM Total Used Memory (B)` lines.
+func ParseROCmSMIUsed(text string) map[string]float64 {
+	out := map[string]float64{}
+	for _, line := range strings.Split(text, "\n") {
+		m := rocmTotalLine.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil || !strings.Contains(strings.ToLower(m[2]), "used") {
+			continue
+		}
+		if bytes, err := strconv.ParseInt(m[3], 10, 64); err == nil && bytes >= 0 {
+			out[m[1]] = float64(bytes) / gib
+		}
+	}
+	return out
+}
+
+// UsedFromSysfs reads mem_info_vram_used for the cards FromSysfs lists, in the
+// same 0..n-1 numbering.
+func UsedFromSysfs(root string) map[string]float64 {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	type card struct {
+		n    int
+		used float64
+	}
+	var cards []card
+	for _, e := range entries {
+		m := cardDir.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		dev := filepath.Join(root, e.Name(), "device")
+		if _, err := os.Stat(filepath.Join(dev, "mem_info_vram_total")); err != nil {
+			continue // no VRAM: not one of FromSysfs's cards
+		}
+		data, err := os.ReadFile(filepath.Join(dev, "mem_info_vram_used"))
+		if err != nil {
+			continue
+		}
+		bytes, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if err != nil || bytes < 0 {
+			continue
+		}
+		n, _ := strconv.Atoi(m[1])
+		cards = append(cards, card{n, float64(bytes) / gib})
+	}
+	sort.Slice(cards, func(i, j int) bool { return cards[i].n < cards[j].n })
+	out := make(map[string]float64, len(cards))
+	for i, c := range cards {
+		out[strconv.Itoa(i)] = c.used
+	}
+	return out
+}

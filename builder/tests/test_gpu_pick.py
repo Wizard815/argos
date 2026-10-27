@@ -99,3 +99,13 @@ def test_GpuPick_telemetry_teaches_it_the_cards(app, client, machine):
     client.get("/api/gpu/latest")
     j = client.post("/api/command/build", json={"command": "llama-server -m /m/a.gguf", "format": "plain", "gpus": ["1"]}).get_json()
     assert j["command"].startswith("HIP_VISIBLE_DEVICES=1 ")
+
+
+def test_GpuPick_cpu_only_hides_every_gpu_and_offloads_nothing(app, client, machine):
+    machine(MI50, MI50)
+    j = client.post("/api/command/build", json={"command": "llama-server -m /m/a.gguf -ngl 99", "format": "plain",
+                                                "gpus": ["-1"], "edits": {"n-gpu-layers": "0"}}).get_json()
+    assert j["command"] == "HIP_VISIBLE_DEVICES=-1 llama-server -m /m/a.gguf -ngl 0"
+    j = client.post("/api/command/build", json={"command": j["command"], "format": "plain", "gpus": ["1"],
+                                                "edits": {"n-gpu-layers": "99"}}).get_json()
+    assert j["command"] == "HIP_VISIBLE_DEVICES=1 llama-server -m /m/a.gguf -ngl 99", "a card again: back on the GPU"

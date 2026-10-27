@@ -91,6 +91,16 @@ func validatePool(config *Config) error {
 	}
 	pool.OneAtATime = serial
 
+	cpu := make([]string, 0, len(pool.CPUFallback))
+	for _, id := range pool.CPUFallback {
+		real, found := config.RealModelName(id)
+		if !found {
+			return fmt.Errorf("routing.router.settings.pool.cpuFallback references unknown model %q", id)
+		}
+		cpu = append(cpu, real)
+	}
+	pool.CPUFallback = cpu
+
 	sg := &pool.ShareGuard
 	if sg.MaxSlowdownPercent < 0 || sg.MaxSlowdownPercent > 99 || sg.MaxWaitSeconds < 0 {
 		return fmt.Errorf("routing.router.settings.pool.shareGuard: maxSlowdownPercent must be 0-99 and maxWaitSeconds >= 0")

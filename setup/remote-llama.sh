@@ -3,6 +3,8 @@
 #
 #   remote-llama <backend> <llama-server args...>
 #   e.g. remote-llama rocm --host 0.0.0.0 --port 5801 -ngl 99 -m /app/models/x.gguf
+#   remote-llama <backend> --bench <llama-bench args...>
+#   runs llama-bench there instead (the Playground's llama-bench tab): no port, nothing forwarded
 #
 # Argos runs this as the model's command. It:
 #   * ssh's into the llama.cpp container for that backend and runs llama-server there
@@ -36,6 +38,17 @@ key="${REMOTE_SSH_KEY:-/run/secrets/argos_ssh_key}"
 known="${REMOTE_KNOWN_HOSTS:-/data/ssh_known_hosts}"
 passthru="${REMOTE_ENV_PASSTHRU:-HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION LLAMA_ENABLE_MTP_OPT}"
 
+# llama-bench: the binary beside llama-server there (or <NAME>_SSH_BENCH_BIN), no port to forward
+bench=0
+if [[ "${1:-}" == "--bench" ]]; then
+  bench=1; shift
+  bbin="$(get SSH_BENCH_BIN "")"
+  if [[ -z "$bbin" ]]; then
+    if [[ "$bin" == */* ]]; then bbin="${bin%/*}/llama-bench"; else bbin="llama-bench"; fi
+  fi
+  bin="$bbin"
+fi
+
 # find the port llama-server will listen on
 lport=""; args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -44,7 +57,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --port=*)  lport="${args[i]#--port=}" ;;
   esac
 done
-[[ "$lport" =~ ^[0-9]+$ ]] || { echo "remote-llama: no --port <n> in the llama-server args" >&2; exit 2; }
+[[ $bench == 1 || "$lport" =~ ^[0-9]+$ ]] || { echo "remote-llama: no --port <n> in the llama-server args" >&2; exit 2; }
 
 # remote command: exec env K=V... <bin> <args...>, every word shell-quoted
 rcmd="exec env"
@@ -53,6 +66,13 @@ for v in $passthru; do
 done
 rcmd+=" $(printf '%q' "$bin")"
 for a in "${args[@]}"; do rcmd+=" $(printf '%q' "$a")"; done
+
+if [[ $bench == 1 ]]; then
+  exec ssh -tt -i "$key" -p "$sport" \
+    -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$known" \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+    "${user}@${host}" "$rcmd"
+fi
 
 exec ssh -tt -i "$key" -p "$sport" \
   -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$known" \
