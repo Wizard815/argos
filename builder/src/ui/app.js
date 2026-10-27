@@ -482,12 +482,14 @@ function servedCell(p) {
     } catch (e) { fail(e); }
     loadServed();
   };
-  return h("span", { class: "row", style: "gap:6px;flex-wrap:nowrap;align-items:center" },
-    h("button", { type: "button", class: `chip${v.serving ? " on" : ""}`, onclick: toggle,
-      title: v.serving ? `Requests for ${v.model} run this profile. Click to go back to the model's own command.`
-        : `Make requests for ${v.model} run this profile (a client asking for the model gets these settings)` }, v.serving ? "serving" : "serve"),
-    h("code", { class: "mono-sm trunc", style: "max-width:240px", title: `Ask for this name to get this profile: ${v.variant}` }, v.variant),
-    iconBtn("copy", "Copy the name to ask for", () => copyText(v.variant), "ghost"));
+  // the switch and the copy button on top, the name a client asks for under them: one narrow column
+  return h("div", { style: "max-width:160px" },
+    h("span", { class: "row", style: "gap:6px;flex-wrap:nowrap;align-items:center" },
+      h("button", { type: "button", class: `chip${v.serving ? " on" : ""}`, onclick: toggle,
+        title: v.serving ? `Requests for ${v.model} run this profile. Click to go back to the model's own command.`
+          : `Make requests for ${v.model} run this profile (a client asking for the model gets these settings)` }, v.serving ? "serving" : "serve"),
+      iconBtn("copy", "Copy the name to ask for", () => copyText(v.variant), "ghost")),
+    h("div", { class: "cell-sub mono-sm", style: "word-break:break-all;white-space:normal;overflow:visible", title: `Ask for this name to get this profile: ${v.variant}` }, v.variant));
 }
 
 async function loadProfiles() {
@@ -806,7 +808,6 @@ function initBuilder() {
   $("#bSave").onclick = () => saveProfile(false);
   $("#bSaveNew").onclick = () => saveProfile(true);
   $("#bDefault").onclick = toggleBuilderDefault;
-  $("#pDeleteSel").onclick = deleteSelectedProfiles;
   $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim(), B.profileId); };
   $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? B.parsed.multiline : B.parsed.command); };
   $("#bRaw").onclick = () => { $("#bRawText").value = B.parsed.multiline; $("#bRawBox").hidden = false; $("#bPreview").hidden = true; $("#bRawText").focus(); };
@@ -1275,26 +1276,6 @@ async function toggleFavorite(p) {
     await loadProfiles();
   } catch (e) { fail(e); }
 }
-function renderSelected() {
-  const n = (S.pSel || new Set()).size, b = $("#pDeleteSel");
-  if (!b) return;
-  b.hidden = !n;
-  b.lastChild.textContent = `Delete selected (${n})`;
-}
-async function deleteSelectedProfiles() {
-  const ids = [...(S.pSel || [])];
-  if (!ids.length) return;
-  const picked = S.profiles.filter((p) => ids.includes(p.profile_id));
-  const ody = picked.filter((p) => p.source === "odysseus").length;
-  if (!(await confirmBox(`Delete ${ids.length} profile(s)?` + (ody ? ` ${ody} came from Odysseus: they are deleted there too, and kept out of later pulls.` : "")))) return;
-  try {
-    const r = await api("POST", "/api/profiles/delete", { profile_ids: ids });
-    const odyNotes = [...new Set(Object.values(r.results).map((x) => x.odysseus?.odysseus).filter(Boolean))];
-    toast(`Deleted ${r.deleted} profile(s).` + (odyNotes.length ? ` Odysseus: ${odyNotes.join("; ")}.` : ""), "ok");
-    S.pSel.clear();
-  } catch (e) { fail(e); }
-  loadProfiles();
-}
 const FAV_GROUP = "\u0000fav", RECENT_GROUP = "\u0000recent";
 const RECENT_S = 14 * 86400, RECENT_N = 6;  // used in the last two weeks, at most six
 function renderProfiles() {
@@ -1307,20 +1288,13 @@ function renderProfiles() {
   const recent = new Set(S.profiles.filter((p) => !p.favorite && p.last_used_at && Date.now() / 1000 - p.last_used_at < RECENT_S)
     .sort((a, b) => b.last_used_at - a.last_used_at).slice(0, RECENT_N).map((p) => p.profile_id));
   const pinned = { [FAV_GROUP]: 0, [RECENT_GROUP]: 1 };
-  // ticked profiles, for Delete selected; the header box ticks every one shown
-  const sel = S.pSel || (S.pSel = new Set());
-  for (const id of [...sel]) if (!S.profiles.some((p) => p.profile_id === id)) sel.delete(id);
-  renderSelected();
   renderTable($("#pTable"), [
-    { label: h("input", { type: "checkbox", "aria-label": "Select every profile matching the filter", checked: rows.length > 0 && rows.every((p) => sel.has(p.profile_id)),
-      onchange: (e) => { rows.forEach((p) => (e.target.checked ? sel.add(p.profile_id) : sel.delete(p.profile_id))); renderProfiles(); } }),
-    cell: (p) => h("td", { style: "width:1%" }, h("input", { type: "checkbox", "aria-label": `Select ${p.name}`, checked: sel.has(p.profile_id),
-      onchange: (e) => { e.target.checked ? sel.add(p.profile_id) : sel.delete(p.profile_id); renderSelected(); } })) },
     { label: "", cell: (p) => h("td", { style: "width:1%" }, h("button", {
       class: "icon-btn ghost", title: p.favorite ? "Unstar" : "Star", "aria-label": "Favorite",
       style: p.favorite ? "color:var(--warn)" : "color:var(--muted)", onclick: () => toggleFavorite(p) }, icon("star"))) },
-    { key: "name", label: "Name", cell: (p) => h("span", { class: "strong" }, p.name) },
-    { key: "model_id", label: "Model", cell: (p) => h("td", { class: "trunc", title: p.summary?.model || "" },
+    { key: "name", label: "Name", cell: (p) => h("td", {}, h("span", { class: "strong" }, p.name),
+      p.source && p.source !== "profile" ? h("div", { class: "cell-sub" }, h("span", { class: "pill", title: "where this profile came from" }, p.source)) : null) },
+    { key: "model_id", label: "Model", cell: (p) => h("td", { class: "trunc", style: "max-width:160px;word-break:break-all", title: p.summary?.model || "" },
       // the file name once (its id is the same name in lower case); the id only shows when it really differs
       p.base_model || p.model_id || DASH, p.base_model && p.model_id && p.base_model.toLowerCase() !== p.model_id.toLowerCase() ? h("div", { class: "muted mono-sm" }, p.model_id) : null) },
     { label: "Settings", cell: (p) => h("div", { class: "chips" }, settingChips(p.summary)) },
@@ -1335,11 +1309,10 @@ function renderProfiles() {
         h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, `${num(e.weights_gib, 1)} + ${num(e.kv_gib, 1)} KV @ ${ctxLabel(e.ctx)}`));
     } },
     { label: "Served as", cell: (p) => servedCell(p) },
-    { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
-    { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
-    { key: "last_used_at", label: "Last used", sort: (p) => p.last_used_at || 0,
-      cell: (p) => h("span", { class: "muted", title: "launched, or made its model's default" }, p.last_used_at ? ago(p.last_used_at) : DASH) },
-    { label: "", cell: (p) => h("td", { class: "actions" },
+    { key: "last_used_at", label: "Used", sort: (p) => p.last_used_at || 0,
+      cell: (p) => h("td", { class: "nowrap", title: "Used: launched, or made its model's default. Edited: last saved." },
+        h("span", { class: "muted" }, p.last_used_at ? ago(p.last_used_at) : "never"), h("div", { class: "cell-sub" }, `edited ${ago(p.updated_at)}`)) },
+    { label: "", cell: (p) => h("td", { class: "actions nowrap" },
       iconBtn("sliders", "Open in builder", () => openCommand(p.launch_command, { name: p.name, base_model: p.base_model, source: p.source || "profile", profileId: p.profile_id })),
       iconBtn("play", "Launch", () => launch(p.launch_command, p.base_model, p.name, p.profile_id)),
       iconBtn("trash", "Delete", async () => {
