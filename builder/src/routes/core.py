@@ -252,15 +252,32 @@ def profiles_save():
     return ok(profile=profile)
 
 
+def _delete_profile(c, profile_id: str) -> Optional[dict]:
+    """Delete one profile; None when there is no such profile. A profile pulled from Odysseus is deleted
+    there too, and kept out of later pulls, so it cannot come back."""
+    p = c.store.get_profile(profile_id)
+    if not p or not c.store.delete_profile(profile_id):
+        return None
+    extra = {}
+    if p.get("source") == "odysseus":
+        from .odysseus_hub import delete_preset
+        try:
+            extra = {"odysseus": delete_preset(p["name"], p["launch_command"])}
+        except ValueError:
+            pass
+    c.event("profile", f"deleted profile “{p['name']}”" + (f"; {extra['odysseus']['odysseus']}" if extra else ""),
+            data={"profile_id": profile_id})
+    return extra
+
+
 @bp.delete("/api/profiles/<profile_id>")
 def profiles_delete(profile_id):
     c = ctx()
-    p = c.store.get_profile(check_id(profile_id))
-    if not p or not c.store.delete_profile(profile_id):
+    extra = _delete_profile(c, check_id(profile_id))
+    if extra is None:
         return err("not found", 404)
-    c.event("profile", f"deleted profile “{p['name']}”", data={"profile_id": profile_id})
     refresh_schedule()
-    return ok()
+    return ok(**extra)
 
 
 # ----- catalog of extra files ---------------------------------------------

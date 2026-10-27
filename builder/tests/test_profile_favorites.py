@@ -24,3 +24,4 @@ def test_ProfileFavorites_launching_marks_it_used(app, client):
     client.post(f"/api/launches/{r['launch']['launch_id']}/stop")
     used = app.extensions["pb"].store.get_profile(p["profile_id"])["last_used_at"]
     assert used and used >= p["created_at"]
+

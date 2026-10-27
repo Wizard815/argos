@@ -10,7 +10,8 @@ TOKEN = "ody_" + "x" * 43
 def make_odysseus(scopes, updated=True, calls=None, capabilities=True):
     calls = calls if calls is not None else []
     state = {"notes": [], "memories": [{"id": 1, "text": "user prefers row split for two chats", "category": "preference",
-                                        "created_at": "2026-10-01T10:00:00"}], "events": [], "docs": [{"id": "d1", "title": "Old report"}]}
+                                        "created_at": "2026-10-01T10:00:00"}], "events": [], "docs": [{"id": "d1", "title": "Old report"}],
+             "presets": [{"name": "Qwen fast", "cmd": "llama-server -m q.gguf"}]}
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -50,7 +51,7 @@ def make_odysseus(scopes, updated=True, calls=None, capabilities=True):
                 "/api/codex/memory": (["memory:read"], lambda: {"memories": state["memories"]}),
                 "/api/codex/calendar/events": (["calendar:read"], lambda: {"events": state["events"]}),
                 "/api/codex/documents": (["documents:read"], lambda: {"documents": state["docs"]}),
-                "/api/codex/cookbook/presets": (["cookbook:read"], lambda: {"presets": [{"name": "Qwen fast", "cmd": "llama-server -m q.gguf"}]}),
+                "/api/codex/cookbook/presets": (["cookbook:read"], lambda: {"presets": list(state["presets"])}),
                 "/api/codex/cookbook/servers": (["cookbook:read"], lambda: {"servers": [{"host": "local"}]}),
             }
             if updated:
@@ -83,6 +84,10 @@ def make_odysseus(scopes, updated=True, calls=None, capabilities=True):
             elif path == "/api/codex/documents" and self._auth(["documents:write"]):
                 state["docs"].append({"id": "d2", "title": body["title"]})
                 self._send({"id": "d2"})
+            elif updated and path == "/api/codex/cookbook/presets/delete" and self._auth(["cookbook:launch"]):
+                before = len(state["presets"])
+                state["presets"] = [p for p in state["presets"] if " ".join(p["cmd"].split()) != body["cmd"]]
+                self._send({"ok": True, "deleted": before - len(state["presets"])})
             elif updated and path == "/api/codex/tasks/t1/run" and self._auth(["tasks:run"]):
                 self._send({"ok": True, "message": "Task triggered"})
             elif not self.headers.get("Authorization"):
@@ -237,3 +242,49 @@ def test_an_odysseus_without_capabilities_still_works(client):
         assert not j["areas"]["gallery"] and not j["areas"]["tasks"] and not j["areas"]["tools"]
         r = client.get("/api/ody/gallery").get_json()
         assert r["ok"] and r["items"] == [] and r["unavailable"] is True, "a missing area is empty, not an error"
+
+
+def pulled(client):
+    return [p for p in client.get("/api/profiles").get_json()["profiles"] if p["source"] == "odysseus"]
+
+
+def test_OdysseusPresets_deleting_a_pulled_profile_deletes_the_preset_in_odysseus(client):
+    ody = make_odysseus(ALL + ["cookbook:launch"])
+    with serve(ody) as url:
+        connect(client, url)
+        assert len(client.post("/api/ody/pull").get_json()["imported"]) == 1
+        prof = pulled(client)[0]
+        j = client.delete(f"/api/profiles/{prof['profile_id']}").get_json()
+        assert j["odysseus"]["deleted"] == 1 and "deleted in Odysseus" in j["odysseus"]["odysseus"]
+        assert ody.state["presets"] == [], "gone from Odysseus itself"
+        assert client.post("/api/ody/pull").get_json()["imported"] == [], "and a pull does not bring it back"
+        assert pulled(client) == []
+
+
+def test_OdysseusPresets_an_odysseus_that_cannot_delete_still_never_resyncs_it(client):
+    ody = make_odysseus(ALL, updated=False)
+    with serve(ody) as url:
+        connect(client, url)
+        client.post("/api/ody/pull")
+        prof = pulled(client)[0]
+        j = client.delete(f"/api/profiles/{prof['profile_id']}").get_json()
+        assert "cannot delete presets yet" in j["odysseus"]["odysseus"]
+        assert len(ody.state["presets"]) == 1
+        assert client.post("/api/ody/pull").get_json()["imported"] == [], "kept out of the pull"
+        cmds = [p["cmd"] for p in client.get("/api/cookbook/state").get_json()["presets"]]
+        assert not any("q.gguf" in c for c in cmds), "and out of what the engine is served"
+        assert client.get("/api/ody/cookbook").get_json()["items"] == []
+        hidden = client.get("/api/ody/presets/hidden").get_json()["hidden"]
+        assert [h["cmd"] for h in hidden] == ["llama-server -m q.gguf"]
+
+        client.delete("/api/ody/presets/hidden", json={"cmd": hidden[0]["cmd"]})
+        assert len(client.post("/api/ody/pull").get_json()["imported"]) == 1, "Show again lets the next pull bring it back"
+
+
+def test_OdysseusPresets_delete_one_from_the_cookbook_list(client):
+    ody = make_odysseus(ALL + ["cookbook:launch"])
+    with serve(ody) as url:
+        connect(client, url)
+        j = client.post("/api/ody/presets/delete", json={"name": "Qwen fast", "cmd": "llama-server  -m q.gguf"}).get_json()
+        assert j["hidden"] and j["deleted"] == 1 and ody.state["presets"] == []
+        assert client.post("/api/ody/presets/delete", json={"name": "x", "cmd": ""}).status_code == 400

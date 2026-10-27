@@ -38,7 +38,7 @@ func NewMatrix(conf config.Config, proxylog, upstreamlog *logmon.Monitor) (*Matr
 	}
 
 	for mid, modelCfg := range conf.Models {
-		procLog := logmon.NewWriter(upstreamlog)
+		procLog := logmon.NewWriter(Prefills.Tap(mid, upstreamlog))
 		p, err := process.New(base.procCtx, mid, modelCfg, procLog, proxylog)
 		if err != nil {
 			base.shutdownFn()
