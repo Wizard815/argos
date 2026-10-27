@@ -55,6 +55,21 @@ def test_kfd_shows_gpu_memory_of_processes_argos_cannot_see(tmp_path, monkeypatc
     assert gpu_procs.kfd_processes(str(tmp_path / "none"), sample_s=0) is None
 
 
+def test_kfd_names_the_cards_by_memory_when_the_topology_hides_the_gpus(tmp_path, monkeypatch):
+    G = 2 ** 30
+    root = str(tmp_path / "kfd")
+    # a container without the GPU devices: KFD lists the processes, but its topology only the CPU node
+    _fake_kfd(root, {3036952: {"vram_14886": 20 * G, "vram_30964": 1 * G}, 77: {"vram_30964": 18 * G}}, gpus=("0",))
+    monkeypatch.setattr(gpu_procs, "_host_pids", lambda: {})
+    monkeypatch.setattr(gpu_procs, "_drm_used", lambda root=None: [int(19.3 * G), 21 * G])
+    procs = {p["host_pid"]: p for p in gpu_procs.kfd_processes(root, sample_s=0)}
+    assert procs[3036952]["gpu"] == "0,1" and procs[77]["gpu"] == "0"
+    assert procs[3036952]["vram_gib"] == 21.0
+    # cards that do not add up to the ids: left as the kernel names them
+    monkeypatch.setattr(gpu_procs, "_drm_used", lambda root=None: [1])
+    assert {p["gpu"] for p in gpu_procs.kfd_processes(root, sample_s=0)} == {"14886,30964", "30964"}
+
+
 def test_a_process_outside_the_container_is_never_signalled(app, client, monkeypatch):
     monkeypatch.setattr(gpu_procs, "listing", lambda running, launches, pool=None: {"tool": "kernel (KFD)", "note": "", "processes": [
         {"pid": 550406, "host_pid": 550406, "visible": False, "name": "not visible from Argos", "vram_gib": 3.2, "owner": None}]})

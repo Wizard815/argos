@@ -57,6 +57,7 @@ func NewPool(conf config.Config, proxylog, upstreamlog *logmon.Monitor) (*Pool, 
 
 	r := &Pool{baseRouter: base, swapper: swapper}
 	go base.run()
+	go r.watchOutside(base.shutdownCtx)
 	return r, nil
 }
 
@@ -158,6 +159,12 @@ type poolSwapper struct {
 	onCPU       map[string]bool
 	cpuOnly     map[string]bool // set to run on the CPU by its own command (CPU only, -ngl 0)
 
+	// outside is the VRAM per card held by something other than Argos's
+	// running models (another app), read live; see outside.go.
+	outside      map[string]float64
+	outsideHist  map[string][]float64
+	reserveShare float64 // each card's part of reserveGiB, which covers the first of it
+
 	busy     map[string]int
 	lastUsed map[string]time.Time
 	loadTime map[string]time.Duration
@@ -214,6 +221,8 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		cpuFallback: make(map[string]bool, len(pc.CPUFallback)),
 		onCPU:       make(map[string]bool),
 		cpuOnly:     make(map[string]bool),
+		outside:     make(map[string]float64),
+		outsideHist: make(map[string][]float64),
 		busy:        make(map[string]int),
 		lastUsed:    make(map[string]time.Time),
 		loadTime:    make(map[string]time.Duration),
@@ -223,6 +232,14 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		for _, c := range cards {
 			p.cards = append(p.cards, poolCard{id: c.ID, cap: max(c.TotalGiB-pc.ReserveGiB/float64(len(cards)), 0)})
 		}
+		if len(cards) > 0 {
+			p.reserveShare = pc.ReserveGiB / float64(len(cards))
+		}
+		lastOutsideMu.Lock()
+		for k, v := range lastOutside {
+			p.outside[k] = v
+		}
+		lastOutsideMu.Unlock()
 	}
 	for _, id := range pc.Persistent {
 		p.persistent[id] = true
@@ -426,7 +443,7 @@ func (p *poolSwapper) fits(target string, others []string) (bool, []string) {
 			}
 		}
 	}
-	free := func(c poolCard) float64 { return c.cap - used[c.id] }
+	free := func(c poolCard) float64 { return c.cap - used[c.id] - p.outsideOn(c) }
 	need := p.sizes[target]
 
 	// Meant for several cards: all the cards it may use.

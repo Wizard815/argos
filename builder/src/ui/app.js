@@ -4598,13 +4598,20 @@ const resultPill = (r) => h("span", { class: `pill ${["loaded", "served", "finis
 function cardBars(cards, usage, real = {}) {
   return h("div", { class: "gpu-cards" }, cards.map((c) => {
     const parts = c.models.map((m) => ({ id: m, gib: usage(m, c) })).filter((p) => p.gib > 0);
+    // VRAM held by something other than Argos's models (another app), read live by the engine; the pool plans around it
+    const other = c.other_gib >= 0.25 ? c.other_gib : 0;
+    const live = c.live_used_gib ?? (real && real[c.id]);
+    const OTHER = "repeating-linear-gradient(45deg, var(--muted, #888) 0 4px, transparent 4px 8px)";
     return h("div", { class: "gpu-card" },
       h("div", { class: "head" }, h("b", {}, c.id === "pool" ? "Pool" : `GPU ${c.id}`),
-        h("span", { title: "planned / capacity" }, `${num(c.used_gib)} / ${num(c.cap_gib)} GiB`,
-          real && real[c.id] != null ? h("small", { class: "muted", title: "VRAM the GPU reports in use now" }, ` · in use ${num(real[c.id])}`) : null)),
-      h("div", { class: "vbar", title: `${num(c.free_gib ?? Math.max(c.cap_gib - c.used_gib, 0))} GiB free` },
-        parts.map((p) => h("i", { style: `width:${Math.min(100, (p.gib / c.cap_gib) * 100)}%; background:${segColor(p.id)}`, title: `${p.id}: ${num(p.gib)} GiB` }))),
-      parts.length ? h("div", { class: "vbar-legend" }, parts.map((p) => h("span", { style: `--c:${segColor(p.id)}` }, `${p.id} ${num(p.gib)}`)))
+        h("span", { title: "planned by Argos / capacity" }, `${num(c.used_gib)} / ${num(c.cap_gib)} GiB`,
+          live != null ? h("small", { class: "muted", title: "VRAM the GPU reports in use now, by Argos and anything else" }, ` · in use ${num(live)}`) : null)),
+      h("div", { class: "vbar", title: `${num(c.free_gib ?? Math.max(c.cap_gib - c.used_gib, 0))} GiB free for Argos` },
+        parts.map((p) => h("i", { style: `width:${Math.min(100, (p.gib / c.cap_gib) * 100)}%; background:${segColor(p.id)}`, title: `${p.id}: ${num(p.gib)} GiB` })),
+        other ? h("i", { style: `width:${Math.min(100, (other / c.cap_gib) * 100)}%; background:${OTHER}`,
+          title: `other apps: ${num(other)} GiB in use on this card that is not an Argos model (see GPU processes). Argos plans around it.` }) : null),
+      parts.length || other ? h("div", { class: "vbar-legend" }, parts.map((p) => h("span", { style: `--c:${segColor(p.id)}` }, `${p.id} ${num(p.gib)}`)),
+        other ? h("span", { style: "--c:var(--muted, #888)", title: "not started by Argos: another container or app" }, `other apps ${num(other)}`) : null)
         : h("div", { class: "hint", style: "margin:8px 0 0" }, "empty"));
   }));
 }

@@ -80,6 +80,25 @@ the model starts:
 Do not hard-code a card split such as `-ts 1,1` or `--device` in a model's
 `cmd` when the pool may put it on one card; the pool decides the cards.
 
+## Other apps on the GPUs
+
+Every 5 seconds the pool reads how much VRAM each card really has in use
+(`rocm-smi`, else `/sys/class/drm`) and takes away what its own running models
+account for. The rest belongs to something Argos did not start: a game,
+ComfyUI, a llama-server from another container. The pool plans around it, so a
+model is not placed on a card that only looked empty. The first `reserveGiB`
+(split over the cards) covers the driver and a desktop; only usage beyond it
+takes room from models.
+
+- The smallest of the last four readings counts, so a model still unloading is
+  not taken for another app. New usage by another app counts within about 20
+  seconds.
+- `GET /api/pool` shows it per card as `other_gib`, with `live_used_gib` the
+  card's own reading, and `free_gib` is what is left for Argos. Schedule -> Live
+  draws it as a hatched **other apps** segment on the card.
+- If an Argos model holds more than its `vram` says, the extra shows as other
+  apps too. Raise that model's `vram` so the plan matches.
+
 ## Model sizes
 
 Set `models.*.vram` in GiB, including the KV cache for your context size.
@@ -107,8 +126,9 @@ one at startup.
 `GET /api/pool` reports what the pool is doing right now: each card's planned
 use and the models on it, every model's state, size and card, the requests
 queued (with how long each has waited) and the models loading. With any other
-router it answers `{"enabled": false}`. Sizes there are the pool's plan, not live
-VRAM; the Performance page shows the real memory.
+router it answers `{"enabled": false}`. Model sizes there are the pool's plan;
+each card's `live_used_gib` and `other_gib` are read live (see Other apps on the
+GPUs).
 
 The builder's **Schedule -> Live** shows this next to a **Requests** feed: the
 engine's newest requests (chat, embeddings, benchmarks, audio), who sent them,
