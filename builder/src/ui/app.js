@@ -2859,14 +2859,27 @@ async function loadGpuProcs() {
     try { const res = await api("POST", `/api/gpu/processes/${p.pid}/kill`, { force: owned, hard }); toast(`${p.name}: ${res.result}.`, "ok"); } catch (e) { fail(e); }
     setTimeout(loadGpuProcs, 1200);
   };
+  // a model the engine started over SSH runs in the llama.cpp container: Argos names it from the cards and
+  // memory it holds, and unloads it through the engine (it cannot signal a process it cannot see)
+  const unload = async (p) => {
+    if (!(await confirmBox(`Unload ${p.model}? The engine stops it and frees its ${num(p.vram_gib || 0, 1)} GiB.`, "Unload"))) return;
+    try { await api("POST", `/api/schedule/live/${encodeURIComponent(p.model)}/unload`); toast(`Unloading ${p.model}.`, "ok"); } catch (e) { fail(e); }
+    setTimeout(loadGpuProcs, 2000);
+  };
   renderTable(table, [
-    { label: "PID", num: true, cell: (p) => p.pid },
-    { label: "Process", cell: (p) => p.name },
+    { label: "PID", num: true, cell: (p) => h("td", { class: "num", title: p.local_pid && p.host_pid && p.local_pid !== p.host_pid ? `host PID ${p.host_pid}` : "" }, String(p.host_pid || p.pid)) },
+    { label: "Process", cell: (p) => (p.visible === false
+      ? h("span", { class: "muted", title: "in another container: only its PID, cards and memory are known here" }, p.matched ? "llama-server (other container)" : "not visible from Argos")
+      : p.name) },
     { label: "GPU", cell: (p) => p.gpu },
     { label: "VRAM", num: true, cell: (p) => (p.vram_gib != null ? gib(p.vram_gib) : DASH) },
-    { label: "Started by", cell: (p) => (p.self ? "this app" : p.owner ? h("span", { class: "pill ok" }, p.owner) : h("span", { class: "pill warn", title: "Argos does not know this process: another container, a leftover, or something you started by hand." }, "unknown")) },
+    { label: "Started by", cell: (p) => (p.self ? "this app" : p.owner
+      ? h("span", { class: "pill ok", title: p.matched ? `Argos started it over SSH, in the llama.cpp container: matched ${p.matched}, since its command cannot be read from here` : "" }, p.owner, p.matched ? " · over SSH" : "")
+      : h("span", { class: "pill warn", title: "Argos does not know this process: another container, a leftover, or something you started by hand." }, "unknown")) },
     { label: "Command", cell: (p) => h("td", { class: "mono-sm", title: p.cmd, style: "max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, p.cmd || DASH) },
-    { label: "", cell: (p) => (p.self ? "" : h("td", { class: "actions nowrap" }, btn("Stop", () => kill(p, false), "sm ghost"), " ", btn("Kill", () => kill(p, true), "sm danger"))) },
+    { label: "", cell: (p) => (p.self ? "" : p.matched
+      ? h("td", { class: "actions nowrap" }, btn("Unload", () => unload(p), "sm ghost"))
+      : h("td", { class: "actions nowrap" }, btn("Stop", () => kill(p, false), "sm ghost"), " ", btn("Kill", () => kill(p, true), "sm danger"))) },
   ], r.processes || [], { key: null }, r.note || "Nothing is using the GPUs.");
 }
 

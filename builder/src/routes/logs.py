@@ -118,16 +118,20 @@ def _gpu_listing() -> dict:
     from .. import gpu_procs
     from ..integrations import engine_api
     c = ctx()
-    running = []
+    running, pool = [], []
     url = c.settings.get("integrations")["engine_url"]
     if url:
         try:
             running = engine_api.running(url)
         except Exception:  # noqa: BLE001 - the list is still useful without owners
             pass
+        try:  # sizes and cards: what names a model the engine started in another container
+            pool = engine_api.pool_state(url).get("models") or []
+        except Exception:  # noqa: BLE001
+            pass
     launches = [{"port": r.port, "running": r.running, "profile_name": r.profile_name, "base_model": r.base_model,
                  "launch_id": r.launch_id} for r in c.runner.list()]
-    return gpu_procs.listing(running, launches)
+    return gpu_procs.listing(running, launches, pool)
 
 
 @bp.get("/api/gpu/processes")
@@ -158,6 +162,8 @@ def gpu_process_kill(pid):
     b = body()
     if b.get("dry_run"):  # say what would happen, touch nothing
         return ok(dry_run=True, **gpu_procs.kill_plan(pid, row, bool(b.get("hard"))))
+    if not row.get("visible", True) and (row.get("owner") or "").startswith("model "):
+        return err(f"{row['owner']} is loaded by the engine in another container: unload it from Schedule → Live", 409)
     if not row.get("visible", True):
         # its number is the host's; inside this container the same number can be another process entirely
         return err(f"PID {pid} is outside this container, so Argos cannot stop it. On the host: kill {row.get('host_pid', pid)} "
