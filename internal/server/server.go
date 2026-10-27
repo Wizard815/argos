@@ -298,6 +298,8 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		// s, not a snapshot: the provider reports which models are loaded and
 		// which profile is active, and both change while the server runs.
 		modelctl.NewProvider(s),
+		// the scheduler's live view: cards, prefill, queue, running requests
+		&scheduleProvider{s: s},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("building the MCP tool registry: %w", err)

@@ -117,6 +117,13 @@ on now. **Usage -> GPU** has the same feed under its charts with **Recent
 requests** ticked. Only requests through the engine appear; a client talking to
 a llama-server port directly bypasses it.
 
+A model reading a long prompt shows its prefill there too (`models[].prefill`:
+tokens done of total, speed, when it started), read from its llama-server log.
+A question sent to that model meanwhile waits behind it: Live marks it
+**waiting** and the Prefill card counts it. `GET /api/inflight` lists every
+request still running, and the same state is on MCP as `schedule__pool_status`,
+`schedule__requests_in_flight` and `schedule__recent_requests`.
+
 ## What goes wrong
 
 - **Out of memory on load:** a `vram` value is too low, or the estimate missed
