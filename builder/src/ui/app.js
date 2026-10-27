@@ -482,12 +482,14 @@ function servedCell(p) {
     } catch (e) { fail(e); }
     loadServed();
   };
-  return h("span", { class: "row", style: "gap:6px;flex-wrap:nowrap;align-items:center" },
-    h("button", { type: "button", class: `chip${v.serving ? " on" : ""}`, onclick: toggle,
-      title: v.serving ? `Requests for ${v.model} run this profile. Click to go back to the model's own command.`
-        : `Make requests for ${v.model} run this profile (a client asking for the model gets these settings)` }, v.serving ? "serving" : "serve"),
-    h("code", { class: "mono-sm trunc", style: "max-width:240px", title: `Ask for this name to get this profile: ${v.variant}` }, v.variant),
-    iconBtn("copy", "Copy the name to ask for", () => copyText(v.variant), "ghost"));
+  // the switch and the copy button on top, the name a client asks for under them: one narrow column
+  return h("div", { style: "max-width:160px" },
+    h("span", { class: "row", style: "gap:6px;flex-wrap:nowrap;align-items:center" },
+      h("button", { type: "button", class: `chip${v.serving ? " on" : ""}`, onclick: toggle,
+        title: v.serving ? `Requests for ${v.model} run this profile. Click to go back to the model's own command.`
+          : `Make requests for ${v.model} run this profile (a client asking for the model gets these settings)` }, v.serving ? "serving" : "serve"),
+      iconBtn("copy", "Copy the name to ask for", () => copyText(v.variant), "ghost")),
+    h("div", { class: "cell-sub mono-sm", style: "word-break:break-all;white-space:normal;overflow:visible", title: `Ask for this name to get this profile: ${v.variant}` }, v.variant));
 }
 
 async function loadProfiles() {
@@ -1290,8 +1292,9 @@ function renderProfiles() {
     { label: "", cell: (p) => h("td", { style: "width:1%" }, h("button", {
       class: "icon-btn ghost", title: p.favorite ? "Unstar" : "Star", "aria-label": "Favorite",
       style: p.favorite ? "color:var(--warn)" : "color:var(--muted)", onclick: () => toggleFavorite(p) }, icon("star"))) },
-    { key: "name", label: "Name", cell: (p) => h("span", { class: "strong" }, p.name) },
-    { key: "model_id", label: "Model", cell: (p) => h("td", { class: "trunc", title: p.summary?.model || "" },
+    { key: "name", label: "Name", cell: (p) => h("td", {}, h("span", { class: "strong" }, p.name),
+      p.source && p.source !== "profile" ? h("div", { class: "cell-sub" }, h("span", { class: "pill", title: "where this profile came from" }, p.source)) : null) },
+    { key: "model_id", label: "Model", cell: (p) => h("td", { class: "trunc", style: "max-width:160px;word-break:break-all", title: p.summary?.model || "" },
       // the file name once (its id is the same name in lower case); the id only shows when it really differs
       p.base_model || p.model_id || DASH, p.base_model && p.model_id && p.base_model.toLowerCase() !== p.model_id.toLowerCase() ? h("div", { class: "muted mono-sm" }, p.model_id) : null) },
     { label: "Settings", cell: (p) => h("div", { class: "chips" }, settingChips(p.summary)) },
@@ -1306,16 +1309,21 @@ function renderProfiles() {
         h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, `${num(e.weights_gib, 1)} + ${num(e.kv_gib, 1)} KV @ ${ctxLabel(e.ctx)}`));
     } },
     { label: "Served as", cell: (p) => servedCell(p) },
-    { key: "source", label: "Source", cell: (p) => (p.source ? h("span", { class: "pill" }, p.source) : DASH) },
-    { key: "updated_at", label: "Updated", cell: (p) => h("span", { class: "muted" }, ago(p.updated_at)) },
-    { key: "last_used_at", label: "Last used", sort: (p) => p.last_used_at || 0,
-      cell: (p) => h("span", { class: "muted", title: "launched, or made its model's default" }, p.last_used_at ? ago(p.last_used_at) : DASH) },
-    { label: "", cell: (p) => h("td", { class: "actions" },
+    { key: "last_used_at", label: "Used", sort: (p) => p.last_used_at || 0,
+      cell: (p) => h("td", { class: "nowrap", title: "Used: launched, or made its model's default. Edited: last saved." },
+        h("span", { class: "muted" }, p.last_used_at ? ago(p.last_used_at) : "never"), h("div", { class: "cell-sub" }, `edited ${ago(p.updated_at)}`)) },
+    { label: "", cell: (p) => h("td", { class: "actions nowrap" },
       iconBtn("sliders", "Open in builder", () => openCommand(p.launch_command, { name: p.name, base_model: p.base_model, source: p.source || "profile", profileId: p.profile_id })),
       iconBtn("play", "Launch", () => launch(p.launch_command, p.base_model, p.name, p.profile_id)),
       iconBtn("trash", "Delete", async () => {
-        if (!(await confirmBox(`Delete profile “${p.name}”?`))) return;
-        try { await api("DELETE", `/api/profiles/${encodeURIComponent(p.profile_id)}`); toast("Deleted.", "ok"); loadProfiles(); } catch (e) { fail(e); }
+        const ody = p.source === "odysseus";
+        if (!(await confirmBox(ody ? `Delete profile “${p.name}”? It came from Odysseus: it is deleted there too, and kept out of later pulls.`
+          : `Delete profile “${p.name}”?`))) return;
+        try {
+          const r = await api("DELETE", `/api/profiles/${encodeURIComponent(p.profile_id)}`);
+          toast(r.odysseus ? `Deleted. ${r.odysseus.odysseus}.` : "Deleted.", "ok");
+          loadProfiles();
+        } catch (e) { fail(e); }
       }, "danger")) },
   ], rows, profileSort, q || m ? "No profiles match." : h("span", {}, "No saved profiles yet. Load a prefab from ", h("b", {}, "Models"), " or start a ", h("b", {}, "New profile"), "."), {
     // grouped by the model's name (Qwen, Gemma, …), closed until opened; a search or a model filter shows every match
@@ -2042,8 +2050,17 @@ async function loadOdyArea(area) {
     fill(el, w.library ? odyForm([{ k: "title", label: "Title" }, { k: "content", label: "Content (markdown)", type: "textarea", wide: true }], "New document", (v) => api("POST", "/api/ody/library", v)) : null,
       list(d.items, (x) => odyRow(x.title || "untitled", [x.language, when(x.updated_at || x.created_at)].filter(Boolean).join(" · ")), "The library is empty."));
   } else if (area === "cookbook") {
+    const hidden = d.hidden || [];
     fill(el, list(d.items, (p) => odyRow(p.name || "preset", p.cmd ? p.cmd.slice(0, 160) : p.model,
-      p.cmd ? btn("Open in builder", () => openCommand(p.cmd, { name: p.name || "", source: "odysseus" }), "sm", "sliders") : null), "No cookbook presets."),
+      p.cmd ? [btn("Open in builder", () => openCommand(p.cmd, { name: p.name || "", source: "odysseus" }), "sm", "sliders"),
+        btn("Delete", () => deleteOdyPreset(p.name || "", p.cmd, () => loadOdyArea("cookbook")), "sm danger", "trash")] : null), "No cookbook presets."),
+      hidden.length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, `Deleted here (${hidden.length})`), h("span", { class: "spacer" }),
+        h("span", { class: "hint" }, "kept out of pulls and the engine; Show again lets the next pull bring it back")),
+      h("div", { class: "ody-list" }, hidden.map((x) => odyRow(x.name || "preset", x.cmd.slice(0, 160),
+        btn("Show again", async () => {
+          try { await api("DELETE", "/api/ody/presets/hidden", { cmd: x.cmd }); toast(`“${x.name || "preset"}” is back in the sync.`, "ok"); } catch (e) { fail(e); }
+          loadOdyArea("cookbook");
+        }, "sm ghost"))))) : null,
       (d.servers || []).length ? h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Servers")), h("div", { class: "chips" }, d.servers.map((x) => h("span", { class: "chip" }, x.host || x.name || JSON.stringify(x))))) : null);
   } else if (area === "tasks") {
     fill(el, list(d.items, (t) => odyRow(t.name || t.title || t.id, [t.status, t.schedule || t.cron, t.last_run_at ? `last ${when(t.last_run_at)}` : ""].filter(Boolean).join(" · "),
@@ -2055,6 +2072,17 @@ async function loadOdyArea(area) {
   } else {
     fill(el, list(d.items, (t) => odyRow(t.name || t.id, [t.category, t.description].filter(Boolean).join(" · ")), "No tools."));
   }
+}
+
+// Deleting an Odysseus preset: gone from Odysseus when it allows it, and kept out of Argos either way, so the
+// next pull or engine refresh cannot bring it back.
+async function deleteOdyPreset(name, cmd, done) {
+  if (!(await confirmBox(`Delete the Odysseus preset “${name || "preset"}”? It is deleted in Odysseus too, and kept out of later pulls.`))) return;
+  try {
+    const r = await api("POST", "/api/ody/presets/delete", { name, cmd });
+    toast(`Deleted “${name || "preset"}”: ${r.odysseus || "kept out of Argos"}.`, "ok");
+  } catch (e) { fail(e); }
+  done?.();
 }
 
 /** The builder's Odysseus button: send the saved preset as a note, a Brain fact, a document or a calendar reminder. */
@@ -2504,13 +2532,14 @@ function lineChart(box, { title, unit, xs, series, yMax, digits = 0, bucket }) {
 
 function renderGpu() {
   const d = G.data;
-  fill($("#gRange"), RANGES.map(([v, l]) => h("button", { class: G.range === v ? "on" : "", onclick: () => { G.range = v; loadGpu(); } }, l)));
+  fill($("#gRange"), RANGES.map(([v, l]) => h("button", { class: G.range === v ? "on" : "", onclick: () => { G.range = v; G.sig = null; G.loading = null; loadGpu(); } }, l)));
   if (!d) return;
   const every = S.settings?.telemetry?.interval_s;
   $("#gSource").textContent = (d.rows.length
     ? `${d.source === "hourly" ? "hourly rollups" : `${d.bucket}s buckets`} · source: ${d.collector.source || "stored"}`
-    : "") + (SHORT_RANGES.has(G.range) && every > 5 ? ` · readings come every ${every}s; set Telemetry to 2–5 s in Settings for short ranges` : "")
-    + (SHORT_RANGES.has(G.range) ? " · live" : "");
+    : "") + (usageLive() ? " · live: read every 2 s while this page is open"
+      : (SHORT_RANGES.has(G.range) && every > 5 ? ` · readings come every ${every}s; turn on Live, or set Telemetry to 2–5 s in Settings` : "")
+        + (SHORT_RANGES.has(G.range) ? " · live" : ""));
   const gpus = [...new Map(d.rows.map((r) => [r.gpu, r.name])).entries()].sort((a, b) => a[0] - b[0]);
   if (!d.rows.length) {
     fill($("#gLegend"));
@@ -2554,11 +2583,23 @@ function renderGpu() {
   { key: null, asc: false }, "");
 }
 
+// Live, this runs every couple of seconds: one fetch at a time (a slow answer must not land after a newer one),
+// and the charts are only redrawn when a reading changed, so a hover or a scroll is not thrown away for nothing.
 async function loadGpu() {
-  if (!usageLive()) $("#gCharts").style.opacity = G.data ? "0.5" : "1";  // live, it would blink every refresh
-  try { G.data = await api("GET", `/api/gpu/series?range=${G.range}`); } catch (e) { fail(e); }
-  $("#gCharts").style.opacity = "1";
-  renderGpu();
+  if (G.loading) return G.loading;
+  const live = usageLive(), range = G.range;
+  if (!live) $("#gCharts").style.opacity = G.data ? "0.5" : "1";
+  const job = (async () => {
+    try {
+      const d = await api("GET", `/api/gpu/series?range=${range}${live ? "&live=1" : ""}`);
+      if (range !== G.range) return;  // the range changed while this was loading
+      const sig = JSON.stringify([range, live, d.rows.length, d.rows[d.rows.length - 1], d.latest]);
+      if (sig !== G.sig || !live) { G.data = d; G.sig = sig; renderGpu(); }
+    } catch (e) { if (!live) fail(e); }
+    finally { $("#gCharts").style.opacity = "1"; if (G.loading === job) G.loading = null; }
+  })();
+  G.loading = job;
+  await job;
   loadGpuRequests();
 }
 
@@ -4360,7 +4401,7 @@ function requestsCard(rows, inFlight, opts = {}) {
     h("td", { class: "num" }, DASH), h("td", { class: "num" }, DASH),
     h("td", { class: "num", "data-run-start": String(Date.now() - (r.elapsed_ms || 0)) }, runClock(r.elapsed_ms || 0)),
     h("td", {}, h("span", { class: "pill warn", title: r.resp_bytes ? "sending its answer" : "reading the prompt; nothing sent back yet" },
-      r.resp_bytes ? "generating" : "prompt"))));
+      r.resp_bytes ? "generating" : (opts.prefill || {})[r.model]?.total ? `prefill ${pct(opts.prefill[r.model].progress)}` : "prompt"))));
   const table = rows.length || live.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
     h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
       .map((x, i) => h("th", { class: i >= 4 && i <= 8 ? "num" : "" }, x)))),
@@ -4387,6 +4428,32 @@ function requestsCard(rows, inFlight, opts = {}) {
 }
 
 // ----- live ------------------------------------------------------------------------------
+// What a loaded model is doing with its requests: reading the prompt (prefill, from its llama-server log) or
+// writing the answer. The scheduler holds declared decodes behind a prefill; this is where to watch it.
+const pct = (f) => `${num(Math.min(Math.max(f || 0, 0), 1) * 100, 0)}%`;
+function workPill(m) {
+  if (m.prefill) {
+    return h("span", { class: "pill warn", title: m.prefill.total ? `${num(m.prefill.tokens, 0)} of ${num(m.prefill.total, 0)} prompt tokens` : "reading the prompt" },
+      m.prefill.total ? `prefill ${pct(m.prefill.progress)}` : "prefill");
+  }
+  return m.in_flight && m.state === "ready" ? h("span", { class: "pill ok", title: "answering: the prompt is read" }, "generating") : null;
+}
+function prefillCard(models) {
+  const busy = models.filter((m) => m.prefill);
+  if (!busy.length) return null;
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Prefill"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, "prompts being read now, from each model's log")),
+  h("div", { class: "table-wrap" }, simpleTable(["Model", "Progress", "Tokens", "Speed", "Running", "Left"], busy.map((m) => {
+    const p = m.prefill, started = Date.parse(p.started);
+    const left = p.tokens_per_second > 0 && p.total ? (p.total - p.tokens) / p.tokens_per_second : null;
+    return [h("span", { class: "strong" }, m.id),
+      h("span", { class: "meter" }, h("div", { class: "progress" }, h("i", { style: `width:${pct(p.progress)}` })), pct(p.progress)),
+      p.total ? `${num(p.tokens, 0)} / ${num(p.total, 0)}` : "starting",
+      p.tokens_per_second ? `${num(p.tokens_per_second, 0)} t/s` : DASH,
+      h("span", { "data-run-start": String(started) }, runClock(Date.now() - started)),
+      left == null ? DASH : `~${runClock(left * 1000)}`];
+  }))));
+}
 function renderLive() {
   const el = $("#scLive"), L = SC.live;
   if (!L) return fill(el, h("div", { class: "empty" }, "Loading…"));
@@ -4408,7 +4475,7 @@ function renderLive() {
   const table = h("table");
   renderTable(table, [
     { label: "Model", cell: (m) => h("td", { class: "cell-model", title: m.id }, h("div", { class: "cell-main" }, h("span", { class: "swatch", style: `--c:${segColor(m.id)}` }), m.id)) },
-    { label: "State", cell: (m) => statePill(m.state) },
+    { label: "State", cell: (m) => h("div", { class: "row", style: "gap:6px;flex-wrap:nowrap" }, statePill(m.state), workPill(m)) },
     { label: "Runner", cell: (m) => { const r = (L.runners || {})[m.id];
       return r ? h("span", { class: "chip", title: `${r.task || ""} · ${(r.device || "").toUpperCase()} · Servers → Local` }, `${r.runner}${r.device ? ` · ${r.device}` : ""}`)
         : h("span", { class: "chip", title: "llama-server, on the default server" }, "llama.cpp"); } },
@@ -4441,8 +4508,9 @@ function renderLive() {
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
-    swaps, queue,
-    requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])), { running: L.running }),
+    swaps, queue, prefillCard(P.models),
+    requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])),
+      { running: L.running, prefill: Object.fromEntries(P.models.filter((m) => m.prefill).map((m) => [m.id, m.prefill])) }),
     activity,
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
 }
@@ -5071,7 +5139,7 @@ async function tick() {
   const liveLogs = S.view === "logs" && (SHORT_RANGES.has(G.range) || SHORT_RANGES.has($("#rRange").value));
   const usageLiveNow = S.view === "logs" && usageLive();
   if (document.hidden) { pollTimer = setTimeout(tick, 30000); return; }  // nobody is looking: poll rarely
-  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") ? 1500 : usageLiveNow ? 2000 : liveLogs ? 3000 : 8000);
+  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") || usageLiveNow ? 1500 : liveLogs ? 3000 : 8000);
 }
 
 function initTabs() {

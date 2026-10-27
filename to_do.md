@@ -44,6 +44,11 @@ Open items from building and testing Argos on Windows (RTX 3060) and Unraid
 
 ## Waiting on Odysseus
 
+- [ ] Deploy Odysseus from the fork's `dev` (it now has
+      `POST /api/codex/cookbook/presets/delete`) and give Argos's Odysseus
+      token the `cookbook:launch` scope. Until then a deleted preset
+      is only kept out of Argos, and stays in Odysseus.
+
 - [ ] Odysseus's `/api/codex/cookbook/presets` (`routes/codex_routes.py`,
       `codex_cookbook_presets`) does not send each preset's `label`, so
       pulled profiles are named after the model. Add

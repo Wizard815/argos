@@ -117,6 +117,11 @@ class Odysseus:
         return {"presets": self._call("GET", "/api/codex/cookbook/presets").get("presets", []),
                 "servers": self._call("GET", "/api/codex/cookbook/servers")}
 
+    def delete_preset(self, name: str, cmd: str) -> Any:
+        """Delete the saved presets with this command (and name, when given). Needs the cookbook:launch scope
+        and the Odysseus update that adds the endpoint; an older Odysseus answers 404/405."""
+        return self._call("POST", "/api/codex/cookbook/presets/delete", {"name": name, "cmd": cmd})
+
     # ----- added by the Odysseus update -----------------------------------------------------
     def gallery(self, search: str = "", limit: int = 48) -> Any:
         return self._call("GET", "/api/codex/gallery", query={"search": search, "limit": limit})
