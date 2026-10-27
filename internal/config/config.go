@@ -327,7 +327,27 @@ type PoolConfig struct {
 	// alone, one after the other; with -np 2 each still keeps its own slot's
 	// cache. It replaces answer first for these models.
 	OneAtATime []string `yaml:"oneAtATime"`
+
+	// ShareGuard holds a model's new request while another model on the same
+	// GPU is answering, when that other model was seen (in its log) to slow
+	// down a lot beside it.
+	ShareGuard ShareGuardConfig `yaml:"shareGuard"`
 }
+
+// ShareGuardConfig is the pool's share guard.
+type ShareGuardConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// MaxSlowdownPercent: a model that answers more than this much slower
+	// beside another is protected from it. Default 50.
+	MaxSlowdownPercent int `yaml:"maxSlowdownPercent"`
+	// MaxWaitSeconds is how long a request waits at most. Default 120.
+	MaxWaitSeconds int `yaml:"maxWaitSeconds"`
+}
+
+const (
+	ShareGuardDefaultMaxSlowdownPercent = 50
+	ShareGuardDefaultMaxWaitSeconds     = 120
+)
 
 // OneAtATimeFor reports whether a model gets one request at a time.
 func (p PoolConfig) OneAtATimeFor(model string) bool {

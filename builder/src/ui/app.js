@@ -4376,7 +4376,8 @@ function syncPlanForm() {
   const p = SC.data.plan;
   SC.plan = { enabled: p.enabled, cards: p.cards.join(", "), reserve_gib: p.reserve_gib, protect_seconds: p.protect_seconds,
     placement: p.placement, idle_unload_min: p.idle_unload_min ?? 30,
-    answer_first_min_tokens: p.answer_first_min_tokens ?? 4000, answer_first_max_wait_s: p.answer_first_max_wait_s ?? 300 };
+    answer_first_min_tokens: p.answer_first_min_tokens ?? 4000, answer_first_max_wait_s: p.answer_first_max_wait_s ?? 300,
+    share_guard: !!p.share_guard, share_guard_slowdown: p.share_guard_slowdown ?? 50, share_guard_max_wait_s: p.share_guard_max_wait_s ?? 120 };
   SC.sizes = { ...p.sizes };
   SC.persistent = new Set(p.persistent);
   SC.answerFirst = new Set(p.answer_first || []);
@@ -4513,9 +4514,22 @@ function workPill(m) {
     : h("span", { class: "pill ok", title: `slot ${sl.id}: ${num(sl.generated || 0, 0)} tokens of the answer so far, ${num(sl.gen_tokens_per_second || 0, 1)} t/s now` }, "generating"));
   if (!pills.length && m.prefill) pills.push(h("span", { class: "pill warn" }, m.prefill.total ? `prefill ${pct(m.prefill.progress)}` : "prefill"));
   if (!pills.length && m.in_flight && m.state === "ready") pills.push(h("span", { class: "pill ok", title: "answering: the prompt is read" }, "generating"));
+  if (m.update_pending) pills.push(h("span", { class: "pill warn", title: `Its profile changed while it was busy (since ${new Date(m.update_pending).toLocaleTimeString()}). It restarts with the new settings once its requests are done; checked every 30 s.` }, "update waiting"));
   if (m.crash) pills.push(h("span", { class: "pill bad", title: `${m.crash.line}\n${m.crash.recent} crash(es) in the last 10 minutes${m.crash.blocked ? ". Requests no longer start it: fix its command, or Load it from ⋯ to try again." : ""}` },
     m.crash.blocked ? "crash loop: stopped" : `crashed${m.crash.recent > 1 ? ` ×${m.crash.recent}` : ""}`));
   return pills.length ? pills : null;
+}
+// How much each model slows beside the others on its GPUs, as the logs showed it: what the share guard acts on.
+function sharingCard(models, plan) {
+  const rows = models.flatMap((m) => (m.slowdowns || []).map((sd) => ({ m, sd })));
+  if (!rows.length) return null;
+  const guard = plan && plan.share_guard, keep = 1 - ((plan && plan.share_guard_slowdown) || 50) / 100;
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Sharing a GPU"), h("span", { class: "spacer" }),
+    h("span", { class: "hint" }, `learned from the logs: answer speed alone, and beside another busy model on the same GPU${guard ? " · share guard on" : " · share guard off (Plan)"}`)),
+  h("div", { class: "table-wrap" }, simpleTable(["Model", "Alone", "Beside", "Speed beside it", "Seen", ""], rows.map(({ m, sd }) => [
+    h("span", { class: "strong" }, m.id), m.solo_tps ? `${num(m.solo_tps, 1)} t/s` : DASH, sd.beside,
+    `${m.solo_tps ? `${num(m.solo_tps * sd.ratio, 1)} t/s · ` : ""}${pct(sd.ratio)} (−${num((1 - sd.ratio) * 100, 0)}%)`, `${sd.samples}×`,
+    sd.ratio < keep ? h("span", { class: `pill ${guard ? "warn" : ""}`, title: guard ? `a request for ${sd.beside} waits while ${m.id} answers` : "turn the share guard on in Plan to hold it" }, guard ? `holds ${sd.beside}` : "would hold") : DASH]))));
 }
 // A model that died: the line it died on, so nobody has to dig through the log for it.
 function crashCard(models) {
@@ -4602,7 +4616,7 @@ function renderLive() {
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
-    swaps, queue, crashCard(P.models), prefillCard(P.models),
+    swaps, queue, crashCard(P.models), prefillCard(P.models), sharingCard(P.models, SC.data && SC.data.plan),
     requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])),
       { running: L.running, slots: Object.fromEntries(P.models.filter((m) => (m.slots || []).length).map((m) => [m.id, m.slots])) }),
     activity,
@@ -4688,6 +4702,12 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
         h("label", { class: "check wide" }, enable, "Use the pool router (when off, the engine keeps its own router)"),
         cardsInput,
         field("Reserve (GiB)", "reserve_gib", { type: "number", step: "0.5", min: "0" }, "left free for KV growth and buffers"),
+        (() => { const c = h("input", { type: "checkbox", checked: P.share_guard });
+          c.addEventListener("change", () => { P.share_guard = c.checked; touch(); });
+          return h("label", { class: "check wide", title: "Learned from the logs: each model's answer speed alone, and beside each other model on the same GPU (Live → Sharing a GPU)" },
+            c, "Share guard: hold a model's request while another model on the same GPU answers, if that model slows down a lot beside it"); })(),
+        field("Share guard: slowdown from (%)", "share_guard_slowdown", { type: "number", step: "5", min: "1", max: "99" }, "a model answering this much slower beside another is protected"),
+        field("Share guard: longest wait (s)", "share_guard_max_wait_s", { type: "number", step: "30", min: "1" }, "then the request goes anyway"),
         field("Answer first: prompts from (tokens)", "answer_first_min_tokens", { type: "number", step: "500", min: "1" }, "a shorter new prompt goes straight in"),
         field("Answer first: longest wait (s)", "answer_first_max_wait_s", { type: "number", step: "30", min: "1" }, "then it goes anyway"),
         field("Protect (seconds)", "protect_seconds", { type: "number", step: "30", min: "0" }, "a model used this recently is evicted last"),

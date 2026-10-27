@@ -3,6 +3,10 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
+	"time"
+
+	"github.com/Wizard815/Argos/internal/config"
 
 	"github.com/Wizard815/Argos/internal/router"
 )
@@ -37,6 +41,12 @@ func (s *Server) poolStatus(reporter router.PoolReporter) router.PoolStatus {
 		}
 		st.Models[i].AnswerFirst = af.Applies(st.Models[i].ID)
 		st.Models[i].OneAtATime = s.cfg.Routing.Router.Settings.Pool.OneAtATimeFor(st.Models[i].ID)
+		s.pendingMu.Lock()
+		if since, ok := s.updatePending[st.Models[i].ID]; ok {
+			t := since
+			st.Models[i].UpdatePending = &t
+		}
+		s.pendingMu.Unlock()
 	}
 	return st
 }
@@ -47,4 +57,39 @@ func (s *Server) handleAPIClearCrashes(w http.ResponseWriter, r *http.Request) {
 	router.Crashes.Clear(r.PathValue("model"))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"msg": "ok"})
+}
+
+// BusyChangedModels lists the running models whose settings differ in next
+// (or that next drops) and that are busy: a request in flight through Argos,
+// or a slot of theirs working according to their log. A reload would stop
+// them mid-request.
+func (s *Server) BusyChangedModels(next config.Config) []string {
+	counts := map[string]int{}
+	for _, r := range s.inflight.Current().Requests {
+		counts[r.Model]++
+	}
+	var busy []string
+	for id := range s.RunningModels() {
+		was, hadOld := s.cfg.Models[id]
+		now, hasNew := next.Models[id]
+		if hadOld && hasNew && config.ModelConfigEqual(was, now) {
+			continue
+		}
+		if counts[id] > 0 || len(router.Prefills.Slots(id)) > 0 {
+			busy = append(busy, id)
+		}
+	}
+	sort.Strings(busy)
+	return busy
+}
+
+// SetUpdatePending marks models whose new settings wait for them to finish
+// their requests, for the UI.
+func (s *Server) SetUpdatePending(ids []string, since time.Time) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.updatePending = map[string]time.Time{}
+	for _, id := range ids {
+		s.updatePending[id] = since
+	}
 }

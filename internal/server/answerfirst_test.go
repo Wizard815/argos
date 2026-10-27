@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wizard815/Argos/internal/config"
+	"github.com/Wizard815/Argos/internal/process"
 	"github.com/Wizard815/Argos/internal/router"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -230,4 +231,93 @@ models:
 	assert.Equal(t, http.StatusOK, <-codes)
 	assert.Equal(t, http.StatusOK, <-codes)
 	assert.Equal(t, int32(1), most.Load())
+}
+
+// The share guard: the 20 GB model answers at a fifth of its speed while the
+// 10 GB one works, so a request for the 10 GB one waits while it answers.
+func TestShareGuard_HoldsAModelThatSlowsAnotherWhileItAnswers(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+routing:
+  router:
+    use: pool
+    settings:
+      pool:
+        shareGuard:
+          enabled: true
+          maxWaitSeconds: 5
+models:
+  sg-big:
+    cmd: llama-server --port ${PORT} -m /x.gguf
+  sg-small:
+    cmd: llama-server --port ${PORT} -m /y.gguf
+`))
+	require.NoError(t, err)
+	stub := newStubRouter([]string{"sg-big", "sg-small"}, "ok")
+	stub.running = map[string]process.ProcessState{"sg-big": process.StateReady, "sg-small": process.StateReady}
+	s := profileTestServer(t, cfg, stub)
+	s.answerFirst.poll = 10 * time.Millisecond
+	t.Cleanup(func() { router.Prefills.Forget("sg-big"); router.Prefills.Forget("sg-small") })
+
+	// what the logs taught: 40 t/s alone, 8 beside the small one
+	now := time.Now().Add(-time.Minute)
+	slot := func(tps float64, at time.Time) []router.Slot {
+		return []router.Slot{{ID: 0, Phase: router.PhaseGenerating, Prefill: router.Prefill{Updated: at}, GenTokensPerSecond: tps}}
+	}
+	for i := 0; i < 3; i++ {
+		now = now.Add(3 * time.Second)
+		router.Sharing.Sample([]router.ShareView{{ID: "sg-big", Slots: slot(40, now)}}, now)
+	}
+	for i := 0; i < 3; i++ {
+		now = now.Add(3 * time.Second)
+		router.Sharing.Sample([]router.ShareView{{ID: "sg-big", Slots: slot(8, now)}, {ID: "sg-small", Slots: slot(30, now)}}, now)
+	}
+
+	// the big one is answering now
+	router.Prefills.Feed("sg-big", []byte("slot launch_slot_: id 0 | task 9 | processing task\nslot print_timing: id 0 | task 9 | n_gen = 10, tg = 40.0 t/s\n"))
+	done := make(chan int, 1)
+	go func() { done <- post(s, chatBody("sg-small", "hi")) }()
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the small model went in while the big one answered")
+	default:
+	}
+	held := s.inflight.Current().Requests
+	require.Len(t, held, 1)
+	assert.Contains(t, held[0].Metadata["held"], "share guard")
+
+	router.Prefills.Feed("sg-big", []byte("slot release: id 0 | task 9 | stop processing\n"))
+	select {
+	case code := <-done:
+		assert.Equal(t, http.StatusOK, code)
+	case <-time.After(2 * time.Second):
+		t.Fatal("not sent once the big model finished answering")
+	}
+	assert.Equal(t, http.StatusOK, post(s, chatBody("sg-big", "and the big one is never held for the small one")))
+}
+
+// A reload waits for a changed model that is busy; an unchanged one is
+// carried across and does not hold it up.
+func TestServer_BusyChangedModels(t *testing.T) {
+	load := func(ctx string) config.Config {
+		cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+models:
+  bc-a:
+    cmd: llama-server --port ${PORT} -m /a.gguf ` + ctx + `
+  bc-b:
+    cmd: llama-server --port ${PORT} -m /b.gguf
+`))
+		require.NoError(t, err)
+		return cfg
+	}
+	stub := newStubRouter([]string{"bc-a", "bc-b"}, "ok")
+	stub.running = map[string]process.ProcessState{"bc-a": process.StateReady, "bc-b": process.StateReady}
+	s := profileTestServer(t, load("-c 4096"), stub)
+	t.Cleanup(func() { router.Prefills.Forget("bc-a"); router.Prefills.Forget("bc-b") })
+
+	assert.Empty(t, s.BusyChangedModels(load("-c 8192")), "idle: reload now")
+	router.Prefills.Feed("bc-a", []byte("slot launch_slot_: id 0 | task 1 | processing task\n"))
+	router.Prefills.Feed("bc-b", []byte("slot launch_slot_: id 0 | task 1 | processing task\n"))
+	assert.Equal(t, []string{"bc-a"}, s.BusyChangedModels(load("-c 8192")), "a is busy and changed; b is busy but unchanged")
+	assert.Empty(t, s.BusyChangedModels(load("-c 4096")), "nothing changed")
 }

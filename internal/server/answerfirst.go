@@ -218,6 +218,67 @@ func (g *slotGate) holdUntil(id string) (<-chan struct{}, func()) {
 	}
 }
 
+// shareViews is what the share watch needs of the running models: their
+// cards (from the pool's placement) and their busy slots.
+func (s *Server) shareViews() []router.ShareView {
+	placer, _ := s.local.(router.Placer)
+	var out []router.ShareView
+	for id := range s.local.RunningModels() {
+		v := router.ShareView{ID: id, Slots: router.Prefills.Slots(id)}
+		if placer != nil {
+			v.Cards = placer.Placement(id)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// watchSharing samples the running models once a second, so the share watch
+// learns how much each slows beside the others.
+func (s *Server) watchSharing() {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.shutdownCtx.Done():
+			return
+		case now := <-tick.C:
+			router.Sharing.Sample(s.shareViews(), now)
+		}
+	}
+}
+
+// shareHolder names a model on the same GPU as model that is answering now
+// and was seen to drop under keep of its speed alone while model is busy.
+func (s *Server) shareHolder(model string, keep float64) (string, router.Slowdown, bool) {
+	views := s.shareViews()
+	var mine router.ShareView
+	for _, v := range views {
+		if v.ID == model {
+			mine = v
+		}
+	}
+	if mine.ID == "" {
+		mine.ID = model // not loaded: it may be placed anywhere, so it shares every card
+	}
+	for _, a := range views {
+		if a.ID == model {
+			continue
+		}
+		answering := false
+		for _, sl := range a.Slots {
+			answering = answering || sl.Phase == router.PhaseGenerating
+		}
+		if !answering || !router.SharesCards(a.Cards, mine.Cards) {
+			continue
+		}
+		if sd, hurts := router.Sharing.Hurts(a.ID, model, keep); hurts {
+			return a.ID, sd, true
+		}
+	}
+	return "", router.Slowdown{}, false
+}
+
 // CreateAnswerFirstMiddleware is the waiting room in front of each model: one
 // at a time for the models it is on, else answer first for those. It runs
 // after the in-flight tracker, so a waiting request is listed as running and
@@ -236,6 +297,47 @@ func CreateAnswerFirstMiddleware(s *Server) chain.Middleware {
 			id := ""
 			if iw != nil {
 				id = iw.id
+			}
+
+			// Share guard: another model on the same GPU is answering and was
+			// seen to slow down a lot beside this one; wait for its answer.
+			if sg := pool.ShareGuard; sg.Enabled {
+				keep := 1 - float64(sg.MaxSlowdownPercent)/100
+				if other, sd, hold := s.shareHolder(data.ModelID, keep); hold {
+					if iw != nil {
+						iw.tracker.SetHeld(id, fmt.Sprintf("share guard: waits while %s answers (it drops to %.0f%% of its speed beside %s)",
+							other, sd.Ratio*100, data.ModelID))
+					}
+					skip, done := s.gate.holdUntil(id)
+					start := time.Now()
+					deadline := start.Add(time.Duration(sg.MaxWaitSeconds) * time.Second)
+					tick := time.NewTicker(s.answerFirst.poll)
+				guard:
+					for {
+						if _, _, still := s.shareHolder(data.ModelID, keep); !still {
+							break
+						}
+						select {
+						case <-r.Context().Done():
+							tick.Stop()
+							done()
+							return
+						case <-skip:
+							break guard
+						case <-tick.C:
+							if time.Now().After(deadline) {
+								break guard
+							}
+						}
+					}
+					tick.Stop()
+					done()
+					if iw != nil {
+						iw.tracker.SetHeld(id, "")
+					}
+					s.proxylog.Infof("<%s> share guard: held a request for %s while %s answered",
+						data.ModelID, time.Since(start).Round(100*time.Millisecond), other)
+				}
 			}
 
 			// One at a time: the model gets this request only once the one

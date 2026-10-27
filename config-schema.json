@@ -868,6 +868,31 @@
                                             },
                                             "description": "VRAM of each GPU in GiB, numbered from 0 like HIP_VISIBLE_DEVICES. Empty detects the cards at startup when vramGiB is 0. Set cards or vramGiB, not both."
                                         },
+                                        "shareGuard": {
+                                            "type": "object",
+                                            "description": "Hold a model's new request while another model on the same GPU is answering, when that model was seen (from its log) to slow down a lot beside it.",
+                                            "properties": {
+                                                "enabled": {
+                                                    "type": "boolean",
+                                                    "default": false,
+                                                    "description": "Turn the share guard on."
+                                                },
+                                                "maxSlowdownPercent": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 99,
+                                                    "default": 50,
+                                                    "description": "A model that answers more than this much slower beside another is protected from it. 0 uses the default of 50."
+                                                },
+                                                "maxWaitSeconds": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "default": 120,
+                                                    "description": "How long a held request waits at most. 0 uses the default of 120."
+                                                }
+                                            },
+                                            "additionalProperties": false
+                                        },
                                         "oneAtATime": {
                                             "type": "array",
                                             "items": {

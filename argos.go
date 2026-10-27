@@ -41,6 +41,13 @@ var (
 
 const shutdownTimeout = 30 * time.Second
 
+// reloadIdleRetry is how often a reload put off for a busy model checks again;
+// reloadIdleCap is how long it waits at most before restarting the model anyway.
+const (
+	reloadIdleRetry = 30 * time.Second
+	reloadIdleCap   = 10 * time.Minute
+)
+
 // docsConfigSchema stays at the repository root because it is the public
 // schema URL and is also used by deployment tooling.
 //
@@ -312,8 +319,13 @@ func main() {
 	// or file-watcher callbacks.
 	var reloading bool
 	var reloadMu sync.Mutex
+	// A changed model that is busy is not stopped mid-request: the reload
+	// waits, checking again every reloadIdleRetry, for at most reloadIdleCap.
+	var pendingSince time.Time
+	var retryScheduled bool
 
-	reload := func() {
+	var reload func()
+	reload = func() {
 		reloadMu.Lock()
 		if reloading {
 			reloadMu.Unlock()
@@ -344,6 +356,42 @@ func main() {
 			proxyLog.Warnf("failed to reload config: %v", err)
 			return
 		}
+
+		// A model whose settings changed is stopped by the reload. One that is
+		// answering a request would drop it, so wait for it to finish.
+		activeMu.RLock()
+		cur := activeSrv
+		activeMu.RUnlock()
+		if busy := cur.BusyChangedModels(newCfg); len(busy) > 0 {
+			reloadMu.Lock()
+			if pendingSince.IsZero() {
+				pendingSince = time.Now()
+			}
+			waited := time.Since(pendingSince)
+			schedule := !retryScheduled && waited < reloadIdleCap
+			if schedule {
+				retryScheduled = true
+			}
+			reloadMu.Unlock()
+			if waited < reloadIdleCap {
+				cur.SetUpdatePending(busy, pendingSince)
+				if schedule {
+					proxyLog.Infof("reload: waiting for %s to finish its requests before restarting it with the new settings (checking again in %s)",
+						strings.Join(busy, ", "), reloadIdleRetry)
+					time.AfterFunc(reloadIdleRetry, func() {
+						reloadMu.Lock()
+						retryScheduled = false
+						reloadMu.Unlock()
+						reload()
+					})
+				}
+				return
+			}
+			proxyLog.Warnf("reload: %s still busy after %s; restarting it with the new settings anyway", strings.Join(busy, ", "), waited.Round(time.Second))
+		}
+		reloadMu.Lock()
+		pendingSince = time.Time{}
+		reloadMu.Unlock()
 
 		newStorePath := configStorePath(newCfg)
 		activeMu.RLock()

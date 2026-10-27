@@ -41,11 +41,16 @@ type Server struct {
 	// answerFirst holds long new prompts while another chat on the model answers
 	answerFirst *answerFirstState
 	// gate is the waiting room in front of each model (one at a time, answer first)
-	gate     *slotGate
-	metrics  *metricsMonitor
-	store    *store.Store
-	build    BuildInfo
-	hardware *hw.HardwareSnapshot
+	gate *slotGate
+
+	// updatePending: models whose new settings wait for them to go idle (a
+	// reload put off), since when
+	pendingMu     sync.Mutex
+	updatePending map[string]time.Time
+	metrics       *metricsMonitor
+	store         *store.Store
+	build         BuildInfo
+	hardware      *hw.HardwareSnapshot
 
 	// reference is Argos's own embedded documentation, served to the
 	// Playground's agentic chat and to external MCP clients through /api/mcp.
@@ -294,6 +299,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	// Bring back the profile the operator last selected. Without this, a restart
 	// or a container recreate silently falls back to "no profile".
 	s.gate = newSlotGate(s.inflight.SetHeld)
+	go s.watchSharing()
 	s.restoreProfileState()
 	// crashes: a model that dies on every request is stopped from reloading forever
 	router.WatchExits()
