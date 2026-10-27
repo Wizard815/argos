@@ -156,6 +156,7 @@ type poolSwapper struct {
 	// loaded, instead of evicting it; onCPU is the ones running that way now.
 	cpuFallback map[string]bool
 	onCPU       map[string]bool
+	cpuOnly     map[string]bool // set to run on the CPU by its own command (CPU only, -ngl 0)
 
 	busy     map[string]int
 	lastUsed map[string]time.Time
@@ -212,6 +213,7 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		placed:      make(map[string][]string),
 		cpuFallback: make(map[string]bool, len(pc.CPUFallback)),
 		onCPU:       make(map[string]bool),
+		cpuOnly:     make(map[string]bool),
 		busy:        make(map[string]int),
 		lastUsed:    make(map[string]time.Time),
 		loadTime:    make(map[string]time.Duration),
@@ -235,6 +237,10 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		}
 		if p.sizes[id] == 0 {
 			logger.Warnf("pool: unknown VRAM size for %s; set its vram to let it share the GPUs", id)
+		}
+		if cpuOnly(mc.Cmd, mc.Env) {
+			p.cpuOnly[id] = true
+			continue // no VRAM, no cards
 		}
 		pin := hipPin(mc.Env)
 		if len(pin) > 0 {
@@ -282,6 +288,26 @@ func totalFree(cards []poolCard, free func(poolCard) float64) float64 {
 	return total
 }
 
+// noGPULayers matches -ngl 0 / --n-gpu-layers 0: every layer stays on the CPU.
+var noGPULayers = regexp.MustCompile(`(?:^|\s)(?:-ngl|--n-gpu-layers|--gpu-layers)(?:\s+|=)0(?:\s|$)`)
+
+// cpuOnly reports whether a model is set to run on the CPU: no GPU visible to
+// it (HIP_ or CUDA_VISIBLE_DEVICES=-1, the Builder's "CPU only") or no layer
+// on the GPU (-ngl 0). Such a model holds no VRAM and is never placed.
+func cpuOnly(cmd string, env []string) bool {
+	if noGPULayers.MatchString(cmd) {
+		return true
+	}
+	for _, e := range env {
+		for _, k := range []string{"HIP_VISIBLE_DEVICES=", "CUDA_VISIBLE_DEVICES="} {
+			if v, ok := strings.CutPrefix(e, k); ok && strings.TrimSpace(v) == "-1" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // hipPin returns the card ids a model's env pins with HIP_VISIBLE_DEVICES.
 func hipPin(env []string) []string {
 	for _, e := range env {
@@ -325,8 +351,8 @@ func (p *poolSwapper) evictionForLocked(target string, running []string) []strin
 			others = append(others, id)
 		}
 	}
-	if len(others) == 0 {
-		return nil
+	if len(others) == 0 || p.cpuOnly[target] {
+		return nil // a CPU-only model takes no room on the GPUs
 	}
 	if ok, _ := p.fits(target, others); ok {
 		return nil
@@ -497,7 +523,7 @@ func (p *poolSwapper) allowedCards(target string) []poolCard {
 // assumed to fill every card; a model with no recorded placement (started
 // before the pool knew about it) is assumed spread over all cards.
 func (p *poolSwapper) usage(id string, c poolCard) float64 {
-	if p.onCPU[id] {
+	if p.onCPU[id] || p.cpuOnly[id] {
 		return 0
 	}
 	if p.sizes[id] == 0 {
@@ -517,7 +543,7 @@ func (p *poolSwapper) usage(id string, c poolCard) float64 {
 func (p *poolSwapper) runsOnCPU(id string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.onCPU[id]
+	return p.onCPU[id] || p.cpuOnly[id]
 }
 
 // placement returns the cards chosen for id at its last swap, or nil.
@@ -545,7 +571,7 @@ func sortIDs(ids []string) {
 
 // size returns a model's VRAM in GiB. Unknown sizes count as the whole pool.
 func (p *poolSwapper) size(id string) float64 {
-	if p.onCPU[id] {
+	if p.onCPU[id] || p.cpuOnly[id] {
 		return 0
 	}
 	if s := p.sizes[id]; s > 0 {
@@ -600,6 +626,11 @@ func (p *poolSwapper) reloadCost(id string) time.Duration {
 func (p *poolSwapper) OnSwapStart(target string, running []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.cpuOnly[target] {
+		delete(p.placed, target)
+		p.logger.Infof("pool: loading %s on the CPU (its command keeps it off the GPUs) next to %v", target, running)
+		return
+	}
 	delete(p.onCPU, target) // a new run: GPU if it fits
 	evict := p.evictionForLocked(target, running)
 	var staying []string

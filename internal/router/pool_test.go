@@ -36,6 +36,7 @@ func newTestPool(budget float64, sizes map[string]float64) (*poolSwapper, *time.
 		placed:      map[string][]string{},
 		cpuFallback: map[string]bool{},
 		onCPU:       map[string]bool{},
+		cpuOnly:     map[string]bool{},
 		busy:        map[string]int{},
 		lastUsed:    map[string]time.Time{},
 		loadTime:    map[string]time.Duration{},
@@ -595,4 +596,20 @@ func TestPool_CPUFallbackRunsOnTheCPUInsteadOfEvicting(t *testing.T) {
 	p.OnSwapStart("assistant", nil) // later, alone: it fits
 	assert.False(t, p.runsOnCPU("assistant"))
 	assert.Equal(t, 6.0, p.size("assistant"))
+}
+
+// The Builder's "CPU only" (GPU variable -1) or -ngl 0: the model holds no
+// VRAM, so it never evicts anything and never counts against the cards.
+func TestPool_CPUOnlyModelTakesNoRoom(t *testing.T) {
+	assert.True(t, cpuOnly("llama-server -m x.gguf -ngl 0", nil))
+	assert.True(t, cpuOnly("llama-server -m x.gguf --n-gpu-layers=0", nil))
+	assert.True(t, cpuOnly("llama-server -m x.gguf -ngl 99", []string{"HIP_VISIBLE_DEVICES=-1"}))
+	assert.False(t, cpuOnly("llama-server -m x.gguf -ngl 99 --port 10", []string{"HIP_VISIBLE_DEVICES=0"}))
+
+	p, _ := newTestPool(40, map[string]float64{"big": 38, "cpu": 20})
+	p.cpuOnly["cpu"] = true
+	assert.Empty(t, p.EvictionFor("cpu", []string{"big"}))
+	p.OnSwapStart("cpu", []string{"big"})
+	assert.True(t, p.runsOnCPU("cpu"))
+	assert.Zero(t, p.size("cpu"))
 }

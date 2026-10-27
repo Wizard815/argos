@@ -266,6 +266,9 @@ func chooseSingleGPU(env, argv []string, root string) (string, bool) {
 // launchEnv is the process.LaunchEnvPolicy installed by the server: it applies
 // a model's GPU mode to its environment just before the upstream starts.
 func (s *Server) launchEnv(modelID string, argv, env []string) []string {
+	if cpu, ok := s.local.(interface{ OnCPU(string) bool }); ok && cpu.OnCPU(modelID) {
+		return s.placedEnv(modelID, env) // on the CPU: no GPU mode applies
+	}
 	if s.ModelMode(modelID) != ModeSingleGPU {
 		return s.placedEnv(modelID, env)
 	}
