@@ -2934,8 +2934,16 @@ async function loadServerLogs(force) {
       return [cls ? h("span", { class: cls }, line) : line, "\n"];
     }) : h("span", { class: "muted" }, text ? "No line matches." : "Nothing logged yet."));
     if ($("#slFollow").checked && (atBottom || force)) pre.scrollTop = pre.scrollHeight;
-    // per-request speeds, as llama-server printed them
-    const dec = [...text.matchAll(/^\s*eval time.*?([\d.]+) tokens per second/gim)].map((m) => +m[1]);
+    // per-request speeds, as llama-server printed them. Lines can carry a timestamp and a slot prefix
+    // ("2.59.000 I slot print_timing: id 1 | task 0 | eval time = ..."), so "eval time" is matched anywhere
+    // on the line, except as part of "prompt eval time". A build that prints no timing block at the end
+    // still reports each request's speed as it goes (n_gen = N, tg = X t/s): its last value per task.
+    let dec = [...text.matchAll(/(?<!prompt )\beval time.*?([\d.]+) tokens per second/gi)].map((m) => +m[1]);
+    if (!dec.length) {
+      const byTask = new Map();
+      for (const m of text.matchAll(/task\s+(\d+)\s*\|\s*n_gen\s*=\s*\d+,\s*tg\s*=\s*([\d.]+)/g)) byTask.set(m[1], +m[2]);
+      dec = [...byTask.values()];
+    }
     const pre_ = [...text.matchAll(/prompt eval time.*?([\d.]+) tokens per second/gi)].map((m) => +m[1]);
     const errs = text.split("\n").filter((l) => SL_ERR.test(l)).length;
     const stat = (k, v, unit) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v, unit && h("small", {}, unit)));
