@@ -59,6 +59,9 @@ type PoolModelStatus struct {
 	// Crash is the model's last crash in the last ten minutes: the line it died
 	// on, and whether it crashed often enough that requests no longer start it.
 	Crash *Crash `json:"crash,omitempty"`
+	// AnswerFirst: a long new prompt waits while another chat on this model
+	// is answering (routing.router.settings.pool.answerFirst).
+	AnswerFirst bool `json:"answer_first,omitempty"`
 }
 
 // PoolQueueStatus is one request waiting for room or for a busy model.

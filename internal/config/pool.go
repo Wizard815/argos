@@ -60,5 +60,25 @@ func validatePool(config *Config) error {
 		resolved = append(resolved, real)
 	}
 	pool.Persistent = resolved
+
+	af := &pool.AnswerFirst
+	if af.MinPromptTokens < 0 || af.MaxWaitSeconds < 0 {
+		return fmt.Errorf("routing.router.settings.pool.answerFirst: minPromptTokens and maxWaitSeconds must be >= 0")
+	}
+	if af.MinPromptTokens == 0 {
+		af.MinPromptTokens = AnswerFirstDefaultMinPromptTokens
+	}
+	if af.MaxWaitSeconds == 0 {
+		af.MaxWaitSeconds = AnswerFirstDefaultMaxWaitSeconds
+	}
+	models := make([]string, 0, len(af.Models))
+	for _, id := range af.Models {
+		real, found := config.RealModelName(id)
+		if !found {
+			return fmt.Errorf("routing.router.settings.pool.answerFirst.models references unknown model %q", id)
+		}
+		models = append(models, real)
+	}
+	af.Models = models
 	return nil
 }

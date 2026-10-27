@@ -259,6 +259,14 @@ def live_action(model_id, action):
     """load (in the background; it can take minutes), unload, or keep (body {"on": bool}: never evict it)."""
     import threading
     c = ctx()
+    if action == "answer_first":
+        on = bool(body().get("on", True))
+        models = [m for m in c.plans.get()["answer_first"] if m != model_id] + ([model_id] if on else [])
+        c.plans.update({"answer_first": models})
+        c.event("schedule", f"answer first {'on' if on else 'off'} for {model_id}: "
+                + ("a long new prompt waits while another chat on it is answering" if on else "every request goes straight in"))
+        apply_plan()
+        return ok(answer_first=on)
     if action == "keep":
         on = bool(body().get("on", True))
         persistent = [m for m in c.plans.get()["persistent"] if m != model_id] + ([model_id] if on else [])

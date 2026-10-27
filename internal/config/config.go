@@ -315,6 +315,45 @@ type PoolConfig struct {
 	// models.*.vram wins over this when both are set; either wins over the
 	// estimate from the model file.
 	Sizes map[string]float64 `yaml:"sizes"`
+
+	// AnswerFirst keeps a chat that is answering at full speed: a long new
+	// prompt for one of these models waits while another chat on the same
+	// model is generating, because llama.cpp would read that prompt in the
+	// same batches and the answer would drop to a token or two a second.
+	AnswerFirst AnswerFirstConfig `yaml:"answerFirst"`
+}
+
+// AnswerFirstConfig is the pool's answer-first setting.
+type AnswerFirstConfig struct {
+	// Models it applies to, by ID or alias. Empty turns it off.
+	Models []string `yaml:"models"`
+
+	// MinPromptTokens is the shortest new prompt part that waits; shorter
+	// ones (a turn of a conversation the model already has cached) go
+	// straight through. Estimated from the request at about four bytes a
+	// token. Default 4000.
+	MinPromptTokens int `yaml:"minPromptTokens"`
+
+	// MaxWaitSeconds is how long a prompt waits at most before it goes
+	// anyway. Default 300.
+	MaxWaitSeconds int `yaml:"maxWaitSeconds"`
+}
+
+// AnswerFirstDefaultMinPromptTokens and AnswerFirstDefaultMaxWaitSeconds apply
+// when answerFirst leaves them unset.
+const (
+	AnswerFirstDefaultMinPromptTokens = 4000
+	AnswerFirstDefaultMaxWaitSeconds  = 300
+)
+
+// Applies reports whether answer-first holds prompts for this model ID.
+func (a AnswerFirstConfig) Applies(model string) bool {
+	for _, m := range a.Models {
+		if m == model {
+			return true
+		}
+	}
+	return false
 }
 
 // PoolDefaultReserveGiB and PoolDefaultProtectSeconds apply when the pool

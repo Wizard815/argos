@@ -38,10 +38,12 @@ type Server struct {
 
 	perf     *perf.Monitor
 	inflight *inflightTracker
-	metrics  *metricsMonitor
-	store    *store.Store
-	build    BuildInfo
-	hardware *hw.HardwareSnapshot
+	// answerFirst holds long new prompts while another chat on the model answers
+	answerFirst *answerFirstState
+	metrics     *metricsMonitor
+	store       *store.Store
+	build       BuildInfo
+	hardware    *hw.HardwareSnapshot
 
 	// reference is Argos's own embedded documentation, served to the
 	// Playground's agentic chat and to external MCP clients through /api/mcp.
@@ -276,6 +278,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		upstreamlog:   upstreamlog,
 		perf:          perfMon,
 		inflight:      newInflightTracker(),
+		answerFirst:   newAnswerFirst(),
 		metrics:       newMetricsMonitor(proxylog, cfg.MetricsMaxInMemory, cfg.CaptureBuffer, st),
 		store:         st,
 		build:         build,
@@ -388,6 +391,7 @@ func (s *Server) routes() {
 		CreateSelectorMiddleware(s),
 		CreateRequestContextMiddleware(s.cfg),
 		CreateInflightMiddleware(s.inflight, s.cfg),
+		CreateAnswerFirstMiddleware(s),
 		CreateFilterMiddleware(s.cfg),
 		CreateFormFilterMiddleware(s.cfg),
 		CreateMetricsMiddleware(s.metrics, s.cfg),
