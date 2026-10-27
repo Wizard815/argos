@@ -53,6 +53,19 @@ def known_ids() -> tuple[Optional[set[str]], str]:
     return value
 
 
+def cpu_fallback_models() -> list[str]:
+    """The assistant's chat and embedding models, when they may fall back to the CPU (Settings -> Assistant)."""
+    st = ctx().settings
+    a = st.get("assistant")
+    if not a.get("cpu_fallback", True):
+        return []
+    out = [a.get("model") or ""] if a.get("mode", "engine") == "engine" else []
+    m = st.get("memory")
+    if m.get("enabled") and not (m.get("endpoint") or "").strip():  # blank endpoint = the engine's own /v1
+        out.append(m.get("model") or "")
+    return [x for x in out if x]
+
+
 def compute(plan: Optional[dict] = None) -> dict:
     c = ctx()
     plan = plan or c.plans.get()
@@ -67,7 +80,7 @@ def compute(plan: Optional[dict] = None) -> dict:
     for mid, m in plan["measured"].items():
         if mid not in sizes and m.get("gib"):
             sizes[mid] = m["gib"]
-    text, skipped = render_fragment(plan, sizes, known)
+    text, skipped = render_fragment(plan, sizes, known, cpu_fallback_models())
     return {"plan": plan, "rows": rows, "commands": commands, "sizes": sizes, "fragment": text,
             "skipped": skipped, "known_from": known_from}
 

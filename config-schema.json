@@ -868,6 +868,13 @@
                                             },
                                             "description": "VRAM of each GPU in GiB, numbered from 0 like HIP_VISIBLE_DEVICES. Empty detects the cards at startup when vramGiB is 0. Set cards or vramGiB, not both."
                                         },
+                                        "cpuFallback": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Models that run on the CPU when they do not fit on the GPUs beside what is loaded, instead of unloading it (started with every GPU hidden). For small helpers such as the assistant's chat and embedding models."
+                                        },
                                         "shareGuard": {
                                             "type": "object",
                                             "description": "Hold a model's new request while another model on the same GPU is answering, when that model was seen (from its log) to slow down a lot beside it.",

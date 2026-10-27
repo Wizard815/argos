@@ -822,4 +822,6 @@ def settings_put(group):
             pass
     if group in ("odysseus", "always"):
         c.export_state.pop("_ody_presets", None)
+    if group in ("assistant", "memory"):
+        refresh_schedule()  # its models, and whether they fall back to the CPU, are in the plan
     return ok(settings=c.settings.public()[group], saved=bool(saved))

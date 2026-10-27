@@ -25,18 +25,20 @@ import (
 func newTestPool(budget float64, sizes map[string]float64) (*poolSwapper, *time.Time) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	p := &poolSwapper{
-		logger:     logmon.NewWriter(io.Discard),
-		budget:     budget,
-		protect:    10 * time.Minute,
-		persistent: map[string]bool{},
-		sizes:      sizes,
-		pins:       map[string][]string{},
-		spread:     map[string]bool{},
-		even:       map[string]bool{},
-		placed:     map[string][]string{},
-		busy:       map[string]int{},
-		lastUsed:   map[string]time.Time{},
-		loadTime:   map[string]time.Duration{},
+		logger:      logmon.NewWriter(io.Discard),
+		budget:      budget,
+		protect:     10 * time.Minute,
+		persistent:  map[string]bool{},
+		sizes:       sizes,
+		pins:        map[string][]string{},
+		spread:      map[string]bool{},
+		even:        map[string]bool{},
+		placed:      map[string][]string{},
+		cpuFallback: map[string]bool{},
+		onCPU:       map[string]bool{},
+		busy:        map[string]int{},
+		lastUsed:    map[string]time.Time{},
+		loadTime:    map[string]time.Duration{},
 	}
 	p.now = func() time.Time { return now }
 	return p, &now
@@ -574,4 +576,23 @@ func TestPool_SpreadFromTheModelConfig(t *testing.T) {
 	assert.False(t, p.spread["layer"], "layer is llama-server's default; one card is still fine")
 	assert.True(t, p.spread["pinned"], "a pin to two cards means both")
 	assert.False(t, p.spread["one"])
+}
+
+// The assistant's small model falls back to the CPU: with a big model filling
+// the GPUs it starts on the CPU instead of evicting it, holds no VRAM there,
+// and goes back to the GPU on a later load that fits.
+func TestPool_CPUFallbackRunsOnTheCPUInsteadOfEvicting(t *testing.T) {
+	p, _ := newTestPool(40, map[string]float64{"big": 36, "assistant": 6, "other": 30})
+	p.cpuFallback["assistant"] = true
+
+	assert.Empty(t, p.EvictionFor("assistant", []string{"big"}), "it never pushes the big model off")
+	p.OnSwapStart("assistant", []string{"big"})
+	assert.True(t, p.runsOnCPU("assistant"))
+	assert.Zero(t, p.size("assistant"), "on the CPU it holds no VRAM")
+	assert.Equal(t, []string{"big"}, p.EvictionFor("other", []string{"big", "assistant"}),
+		"another model makes room by the big one, not the CPU one that frees nothing")
+
+	p.OnSwapStart("assistant", nil) // later, alone: it fits
+	assert.False(t, p.runsOnCPU("assistant"))
+	assert.Equal(t, 6.0, p.size("assistant"))
 }

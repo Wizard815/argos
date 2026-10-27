@@ -39,6 +39,20 @@ FRAGMENT = "runners.generated.yaml"
 # task -> the runner type that serves it
 TASK_RUNNER = {"speech-to-text": "whisper", "text-to-speech": "kokoro", "image": "sdcpp"}
 
+WHISPER_GGML_REPO = "ggerganov/whisper.cpp"  # the ggml builds of every whisper model, for whisper.cpp
+
+
+def whisper_ggml_for(name: str) -> str:
+    """The ggml file in WHISPER_GGML_REPO that is the same whisper model as ``name`` (a Hugging Face copy)."""
+    n = name.lower()
+    for size in ("large-v3-turbo", "large-v3", "large-v2", "large-v1", "medium", "small", "base", "tiny"):
+        if size in n or size.replace("-", "_") in n:
+            english = size in ("medium", "small", "base", "tiny") and (".en" in n or "-en" in n)
+            return f"ggml-{size}{'.en' if english else ''}.bin"
+    if "turbo" in n:
+        return "ggml-large-v3-turbo.bin"
+    return "ggml-large-v3-turbo.bin"
+
 WHISPER_RELEASE = "b5454"
 WHISPER_ZIPS = {  # prebuilt Windows builds; elsewhere whisper.cpp is built from source
     "cpu": f"https://github.com/ggml-org/whisper.cpp/releases/download/{WHISPER_RELEASE}/whisper-bin-x64.zip",
@@ -492,7 +506,8 @@ class Runners:
     def view(self) -> dict:
         """Every runner and add-on with what is installed and which models it serves."""
         out = []
-        models = self.served()
+        skipped: list[dict] = []
+        models = self.served(skipped)
         for r in self.records().values():
             d = self.found(r) if r["kind"] != "custom" else {
                 "installed": bool((r.get("opts") or {}).get("start")), "program": "", "detail": (r.get("opts") or {}).get("task") or ""}
@@ -501,6 +516,7 @@ class Runners:
                         "task": t.get("task") or (r.get("opts") or {}).get("task", ""), "endpoint": t.get("endpoint", ""),
                         "folder": self.folder(r), "job": self.installer.status(r["id"]),
                         "models": [m for m in models if m["runner"] == r["id"]],
+                        "skipped": [m for m in skipped if m["runner"] == r["kind"]],
                         "steps": install_steps(r["kind"], self.folder(r), r.get("device", "cpu"), r.get("opts") or {})})
         out.sort(key=lambda x: (x.get("addon", False), x["kind"] == "custom", x["id"]))
         return {"root": self.root(), "runners": out, "engine_file": self.engine_path(), "devices": DEVICES,
@@ -514,8 +530,10 @@ class Runners:
         return detect("ffmpeg", self.folder(r)).get("program", "") if r.get("enabled", True) else ""
 
     # ----- models -----
-    def served(self) -> list[dict]:
-        """Every model a runner serves: {"id", "name", "runner", "kind", "task", "path", "size", "auto"}."""
+    def served(self, skipped: Optional[list] = None) -> list[dict]:
+        """Every model a runner serves: {"id", "name", "runner", "kind", "task", "path", "size", "auto"}.
+        ``skipped`` collects the models a runner would take but cannot read, with why (a Hugging Face whisper is
+        not the ggml file whisper.cpp needs)."""
         rec = self.records()
         overrides = (self.store.get_settings().get("_runner_overrides") or {})
         out = []
@@ -539,6 +557,10 @@ class Runners:
             auto = TASK_RUNNER.get(m.get("task") or "")
             if auto == "whisper" and m.get("format") != "ggml":
                 auto = None  # whisper.cpp reads ggml files only
+                if skipped is not None and m["id"] not in overrides:
+                    skipped.append({"runner": "whisper", "id": m["id"], "name": m["name"], "path": m["path"],
+                                    "format": m.get("format") or "", "ggml": whisper_ggml_for(m["name"]),
+                                    "why": "a Hugging Face (Transformers) copy; whisper.cpp reads ggml-*.bin files only"})
             if auto == "sdcpp" and m.get("format") not in ("gguf", "safetensors", "ckpt"):
                 auto = None  # sd-server loads single files; a diffusers folder is ComfyUI's
             runner = overrides.get(m["id"], auto) or ""
