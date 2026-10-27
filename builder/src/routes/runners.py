@@ -10,8 +10,17 @@ import urllib.request
 
 from flask import Blueprint
 
+from .. import runner_catalog as catalog
 from ..integrations import engine_api
-from ..runners import ADDONS, DEVICES, TYPES, install_steps, rocm_archs, scan, torch_builds
+from ..runners import (
+    ADDONS,
+    DEVICES,
+    TYPES,
+    install_steps,
+    rocm_archs,
+    scan,
+    torch_builds,
+)
 from ..web import body, ctx, err, ok
 
 bp = Blueprint("runners", __name__)
@@ -37,6 +46,82 @@ def runners_torch_builds():
     """Custom PyTorch builds Argos knows of, and the GPU architectures this machine has, for the picker."""
     from .. import gputools
     return ok(builds=torch_builds(), archs=list(rocm_archs()), tools=gputools.status())
+
+
+def _catalog(rid: str) -> tuple[dict, list[dict], str]:
+    """(runner, its download choices with where each lands and what is missing, where the list came from)."""
+    from ..downloader import DownloadError
+    c = ctx()
+    _, r = _rec(rid)
+    live, source = None, "built in"
+    repo = catalog.LIVE_REPO.get(r["kind"])
+    if repo:
+        try:
+            live = c.downloads.client().repo(repo).get("all")
+            source = f"{repo} on Hugging Face"
+        except DownloadError as exc:
+            source = f"built in (Hugging Face did not answer: {exc})"
+    kokoro = c.runners.folder(r) if r["kind"] == "kokoro" else ""
+    out = []
+    for ch in catalog.choices(r["kind"], live):
+        folder = catalog.folder_for(ch, c.runners.models_dir(), kokoro)
+        miss = catalog.missing(ch, folder)
+        out.append({**ch, "folder": folder, "missing": len(miss), "have": not miss})
+    return r, out, source
+
+
+@bp.get("/api/runners/<rid>/catalog")
+def runners_catalog(rid):
+    """The models this runner can download, for its dropdown."""
+    try:
+        r, out, source = _catalog(rid)
+    except KeyError:
+        return err("no such runner", 404)
+    return ok(runner=r["id"], kind=r["kind"], choices=out, source=source)
+
+
+@bp.post("/api/runners/<rid>/catalog/download")
+def runners_catalog_download(rid):
+    """Body: {key}. Downloads the parts of that choice not here yet, one job per Hub repo; a bundle also sets
+    the sd-server arguments that point its main file at its parts."""
+    from ..downloader import DownloadError
+    c = ctx()
+    try:
+        r, out, _ = _catalog(rid)
+    except KeyError:
+        return err("no such runner", 404)
+    ch = next((x for x in out if x["key"] == (body().get("key") or "")), None)
+    if not ch:
+        return err("not one of this runner's choices")
+    miss = catalog.missing(ch, ch["folder"])
+    if not miss:
+        return ok(jobs=[], have=True)
+    jobs = []
+    by_repo: dict[str, list[dict]] = {}
+    for p in miss:
+        by_repo.setdefault(p["repo"], []).append(p)
+    try:
+        for repo, parts in by_repo.items():
+            try:  # the real sizes, so a cut-off file is caught; without the Hub listing the server's length is used
+                sizes = {f["name"]: f["size"] for f in c.downloads.client().repo(repo).get("all") or []}
+            except DownloadError:
+                sizes = {}
+            files = [{"name": p["file"], "size": sizes.get(p["file"], 0), **({"save_as": p["save_as"]} if p.get("save_as") else {})}
+                     for p in parts]
+            if ch["dest"] == "models":
+                jobs.append(c.downloads.start(repo, files, subdir=ch.get("subdir") or ""))
+            else:
+                jobs.append(c.downloads.start(repo, files, dest=ch["folder"]))
+    except DownloadError as exc:
+        return err(str(exc), 502)
+    mid, args = catalog.model_args(ch, ch["folder"]) if r["kind"] == "sdcpp" else ("", "")
+    if mid:
+        rec, rr = _rec(rid)
+        o = rr.setdefault("opts", {})
+        o["model_args"] = {**(o.get("model_args") or {}), mid: args}
+        c.runners.save(rec)
+        c.runners.apply()
+    return ok(jobs=jobs, model=mid, args=args)
 
 
 @bp.put("/api/runners/<rid>")

@@ -3638,7 +3638,45 @@ const blankServer = () => ({ id: null, name: "", kind: "ssh", host: "", port: 22
   model_dirs: [], download_dir: "", color: "", status: "unknown", engines: {}, has_key: false, is_default: false });
 
 // ── Servers → Local: runners installed inside Argos (Mode 1) ───────────────
-const LC = { data: null, polling: {}, open: new Set() };
+const LC = { data: null, polling: {}, open: new Set(), catalog: {}, pick: {} };
+/** The models a runner can download: a dropdown of every choice (grouped) and a Download button. */
+function catalogRow(r) {
+  if (!["whisper", "kokoro", "sdcpp"].includes(r.kind)) return null;
+  const C = LC.catalog[r.id];
+  if (!C) {
+    LC.catalog[r.id] = { loading: true, choices: [] };
+    api("GET", `/api/runners/${encodeURIComponent(r.id)}/catalog`).then((x) => { LC.catalog[r.id] = x; renderLocal(); })
+      .catch((e) => { LC.catalog[r.id] = { choices: [], error: e.message }; renderLocal(); });
+    return h("p", { class: "hint" }, "Loading the models it can download…");
+  }
+  if (C.loading) return h("p", { class: "hint" }, "Loading the models it can download…");
+  if (!C.choices.length) return C.error ? h("p", { class: "hint" }, C.error) : null;
+  const groups = [];
+  for (const c of C.choices) { let g = groups.find((x) => x.name === c.group); if (!g) groups.push(g = { name: c.group, items: [] }); g.items.push(c); }
+  const cur = LC.pick[r.id] || (C.choices.find((c) => !c.have && /turbo|^model$|sd-v1-5/.test(c.key)) || C.choices[0]).key;
+  const sel = h("select", { style: "min-width:280px;flex:1" }, groups.map((g) => h("optgroup", { label: g.name },
+    g.items.map((c) => h("option", { value: c.key, selected: c.key === cur }, `${c.have ? "✓ " : ""}${c.label} · ~${size(c.approx || 0)}`)))));
+  const chosen = () => C.choices.find((c) => c.key === sel.value) || C.choices[0];
+  const note = h("small", { class: "hint", style: "display:block" });
+  const showNote = () => { const c = chosen(); note.textContent = [c.note, c.have ? "already downloaded" : c.missing < c.parts.length ? `${c.missing} of ${c.parts.length} files still to get` : "", `to ${c.folder}`].filter(Boolean).join(" · "); };
+  sel.addEventListener("change", () => { LC.pick[r.id] = sel.value; showNote(); });
+  showNote();
+  const go = btn("Download", async () => {
+    const c = chosen();
+    try {
+      const x = await api("POST", `/api/runners/${encodeURIComponent(r.id)}/catalog/download`, { key: c.key });
+      if (x.have) return toast(`${c.label} is already here.`, "ok");
+      toast(`Downloading ${c.label} (Models → Downloads shows progress).${x.model ? ` Its sd-server arguments are set on ${x.model}.` : ""} It shows up here once it is done.`, "ok");
+      delete LC.catalog[r.id];
+      loadLocal();
+    } catch (e) { fail(e); }
+  }, "sm primary", "download");
+  return h("div", { class: "field wide", style: "margin:10px 0 0" },
+    h("span", {}, r.kind === "kokoro" ? "Get the model or a voice" : "Get a model"),
+    h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, sel, go,
+      btn("Refresh", () => { delete LC.catalog[r.id]; renderLocal(); }, "sm ghost")),
+    note, h("small", { class: "hint", style: "display:block" }, `List from ${C.source}.`));
+}
 async function loadLocal() {
   if (!LC.torch) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; if (LC.data) renderLocal(); }).catch(() => {});
   try { LC.data = await api("GET", "/api/runners"); } catch (e) { fill($("#lcList"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
@@ -3746,13 +3784,14 @@ function runnerCard(r) {
           : r.kind === "sdcpp" ? "No image model yet. Put a .gguf, .safetensors or .ckpt image model in the models folder Argos uses."
           : r.kind === "custom" ? "One model: this runner's start command. Give a model-file pattern and ${MODEL_PATH} in the start command to serve one model per file."
           : r.installed ? "—" : "Install it first.")))))),
+    r.addon ? null : catalogRow(r),
     // whisper models it found but cannot read: a Hugging Face copy is not the ggml file whisper.cpp needs
     (r.skipped || []).length ? h("div", { class: "card", style: "margin:10px 0 0;background:var(--bg)" },
       h("p", { class: "hint", style: "margin-top:0" }, "Found in your models folder but not usable by whisper.cpp: these are the Hugging Face (Transformers) copies, and whisper.cpp reads only ggml-*.bin files. The same model as a ggml file comes from ggerganov/whisper.cpp; once it is downloaded it shows up above."),
       h("div", { class: "ody-list" }, r.skipped.map((m) => h("div", { class: "ody-row" },
         h("div", { class: "ody-main" }, h("div", { class: "cell-main" }, m.name), h("div", { class: "cell-sub mono-sm", title: m.path }, `${m.format || "?"} · ${m.why}`)),
         btn(`Download ${m.ggml}`, async () => {
-          try { await api("POST", "/api/downloads", { repo: "ggerganov/whisper.cpp", files: [m.ggml] }); toast(`Downloading ${m.ggml} to your models folder (Models → Downloads).`, "ok"); }
+          try { await api("POST", `/api/runners/${encodeURIComponent(r.id)}/catalog/download`, { key: m.ggml }); toast(`Downloading ${m.ggml} to your models folder (Models → Downloads).`, "ok"); }
           catch (e) { fail(e); }
         }, "sm primary", "download"))))) : null,
     details);

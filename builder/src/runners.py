@@ -633,7 +633,12 @@ class Runners:
                 if not d["installed"]:
                     continue
                 extra = ((r.get("opts") or {}).get("model_args") or {}).get(m["id"], "")
-                e = {"cmd": _join([d["program"], "--listen-ip", "127.0.0.1", "--listen-port", "${PORT}", "-m", m["path"]]) + (f" {extra}" if extra else ""),
+                # a bare --diffusion-model in its arguments: the file is a diffusion model only (Flux, SD3),
+                # loaded with --diffusion-model beside its VAE and text encoders instead of as a whole checkpoint
+                flag = "-m"
+                if re.search(r"(^|\s)--diffusion-model(?=\s|$)", extra):
+                    flag, extra = "--diffusion-model", re.sub(r"(^|\s)--diffusion-model(?=\s|$)", " ", extra).strip()
+                e = {"cmd": _join([d["program"], "--listen-ip", "127.0.0.1", "--listen-port", "${PORT}", flag, m["path"]]) + (f" {extra}" if extra else ""),
                      "cwd": os.path.dirname(d["program"]), "checkEndpoint": "/",
                      "vram": 0.1 if device == "cpu" else round(m["size"] / 2 ** 30 * 1.25 + 1.0, 2),
                      "capabilities": {"in": ["text"], "out": ["image"]}}
