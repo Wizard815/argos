@@ -74,12 +74,11 @@ class HubClient:
         if not REPO_ID.match(repo_id or ""):
             raise DownloadError("repo must look like org/name")
         info = self._json(f"/api/models/{repo_id}", {"blobs": "true"})
-        files = []
-        for s in info.get("siblings") or []:
-            name = s.get("rfilename", "")
-            if name.lower().endswith(".gguf"):
-                files.append({"name": name, "size": s.get("size") or (s.get("lfs") or {}).get("size") or 0})
-        return {"id": info.get("id", repo_id), "gated": bool(info.get("gated")), "files": files,
+        every = [{"name": s.get("rfilename", ""), "size": s.get("size") or (s.get("lfs") or {}).get("size") or 0}
+                 for s in info.get("siblings") or [] if s.get("rfilename")]
+        files = [f for f in every if f["name"].lower().endswith(".gguf")]
+        # "all" is every file, for the downloads that are not GGUF (a whisper ggml .bin, an image model, a voice)
+        return {"id": info.get("id", repo_id), "gated": bool(info.get("gated")), "files": files, "all": every,
                 "quants": group_quants(files), "mmproj": [f for f in files if is_mmproj(f["name"])]}
 
     def file_url(self, repo_id: str, name: str) -> str:
@@ -130,15 +129,18 @@ class Downloads:
         s = self.settings()
         return HubClient(s["hf_endpoint"], s["hf_token"])
 
-    def start(self, repo_id: str, files: list[dict], subdir: str = "") -> dict:
-        """``files`` = [{"name", "size"}] as returned by HubClient.repo()."""
+    def start(self, repo_id: str, files: list[dict], subdir: str = "", dest: str = "") -> dict:
+        """``files`` = [{"name", "size"}] as returned by HubClient.repo(); a file may add "save_as", the path it
+        is saved under instead of its name. ``dest`` is a folder outside the models folder (a runner's own,
+        such as Kokoro's voices), chosen by Argos, never by a request."""
         if not REPO_ID.match(repo_id or ""):
             raise DownloadError("repo must look like org/name")
         if not files:
             raise DownloadError("choose at least one file")
         for f in files:
             _safe_relpath(f["name"])
-        dest = os.path.join(self.settings()["models_dir"], _safe_relpath(subdir or repo_id.split("/")[-1]))
+            _safe_relpath(f.get("save_as") or f["name"])
+        dest = dest or os.path.join(self.settings()["models_dir"], _safe_relpath(subdir or repo_id.split("/")[-1]))
         job = {"id": new_id("dl"), "repo": repo_id, "files": files, "dest": dest, "status": "queued",
                "bytes_done": 0, "bytes_total": sum(int(f.get("size") or 0) for f in files),
                "error": "", "created_at": time.time(), "speed": 0.0, "current": ""}
@@ -174,7 +176,7 @@ class Downloads:
         done_before = 0
         try:
             for f in job["files"]:
-                rel = _safe_relpath(f["name"])
+                rel = _safe_relpath(f.get("save_as") or f["name"])
                 job["current"] = rel
                 target = os.path.join(job["dest"], rel)
                 done_before += self._fetch(client, job, f, target, done_before, cancel)
