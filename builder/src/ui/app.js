@@ -1122,11 +1122,12 @@ function renderEstimate(e) {
   if (e.compare) {
     const C = e.compare;
     const ropeCol = (c) => e.train_ctx && c > e.train_ctx;
-    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB) · click to use it"),
+    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB) · click to use it"
+      + (C.ctx.some(ropeCol) ? " · * past the trained context: stretched with RoPE" : "")),
       h("div", { class: "table-wrap" }, h("table", { class: "dense" },
         h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num pick", style: c === e.ctx ? "color:var(--strong)" : "",
           title: `Use ${ctxLabel(c)} context${ropeCol(c) ? " (stretched with RoPE)" : ""}`, onclick: () => useContext(c, null, e) },
-          ctxLabel(c), ropeCol(c) ? h("span", { class: "muted", style: "font-weight:400" }, " RoPE") : null)))),
+          ctxLabel(c), ropeCol(c) ? h("span", { class: "muted", style: "font-weight:400" }, "*") : null)))),
         h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
           t.kv_gib.map((v, i) => v == null ? h("td", { class: "num" }, DASH) : h("td", { class: "num pick",
             style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "",
@@ -1137,9 +1138,12 @@ function renderEstimate(e) {
     const on = ropeOn();
     const box = h("input", { type: "checkbox", checked: on, onchange: (ev) => ev.target.checked
       ? useContext(e.rope_ctx, null, e) : edit({ ...ROPE_OFF, "ctx-size": e.train_ctx }) });
-    rope = h("label", { class: "check", style: "margin-top:8px", title: `--rope-scaling yarn --rope-scale ${Number((e.rope_ctx / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx} -c ${e.rope_ctx}` },
-      box, ` RoPE (YaRN) to ${ctxLabel(e.rope_ctx)} context`,
-      h("span", { class: "hint", style: "margin:0 0 0 6px" }, on ? "on: unticking goes back to the trained context" : `trained on ${ctxLabel(e.train_ctx)}; this stretches it ×${num(e.rope_ctx / e.train_ctx, 1)}`));
+    // on, it names the context picked (384K, 512K, ... from the table); off, ticking it goes all the way to 1M
+    const to = on && e.ctx > e.train_ctx ? e.ctx : e.rope_ctx;
+    rope = h("label", { class: "check", style: "margin-top:8px", title: `--rope-scaling yarn --rope-scale ${Number((to / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx} -c ${to}` },
+      box, ` RoPE (YaRN) to ${ctxLabel(to)} context`,
+      h("span", { class: "hint", style: "margin:0 0 0 6px" }, on ? `on (×${num(to / e.train_ctx, 1)}): unticking goes back to the trained context; the RoPE columns above pick 384K to 1M`
+        : `trained on ${ctxLabel(e.train_ctx)}; this stretches it ×${num(e.rope_ctx / e.train_ctx, 1)}, or click a RoPE column above for less`));
   }
   // an unknown cache type: say its bits per value here and it is saved to Settings -> KV cache types
   const unknown = (e.notes || []).map((n) => (n.match(/unknown cache type '([^']+)'/) || [])[1]).find(Boolean);
