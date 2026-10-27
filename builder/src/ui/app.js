@@ -1354,8 +1354,12 @@ function fillProfileSelect() {
 // Playground is for testing: it lists only what was started from it. Everything else the engine is running
 // (requests, the scheduler, the assistant) is on the Logs page.
 const mineKey = "argos.playground.engineLaunches";
-const pgMine = new Set((() => { try { return JSON.parse(sessionStorage.getItem(mineKey) || "[]"); } catch { return []; } })());
-const rememberMine = (id) => { pgMine.add(id); try { sessionStorage.setItem(mineKey, JSON.stringify([...pgMine])); } catch { /* private window */ } };
+// The engine models shown here: started from this page, or added from Schedule → Live (⋯ → Add to Playground).
+// Remembered per browser, so an added model stays after a reload; removing one only hides it here.
+const pgMine = new Set((() => { try { return JSON.parse(localStorage.getItem(mineKey) || sessionStorage.getItem(mineKey) || "[]"); } catch { return []; } })());
+const saveMine = () => { try { localStorage.setItem(mineKey, JSON.stringify([...pgMine])); } catch { /* private window */ } };
+const rememberMine = (id) => { pgMine.add(id); saveMine(); };
+const forgetMine = (id) => { pgMine.delete(id); saveMine(); };
 const playgroundLaunches = () => S.launches.filter((l) => !l.engine || pgMine.has(l.base_model));
 
 async function launch(command, base_model, profile_name, profile_id) {
@@ -1420,6 +1424,7 @@ function renderLaunches() {
   $("#gRecord").disabled = !cur;
   $("#gStop").disabled = !(cur && cur.running);
   $("#gStop").lastChild.textContent = cur && cur.engine ? "Unload" : "Stop";
+  $("#gRemove").hidden = !(cur && cur.engine);
   $("#gLogTitle").textContent = cur ? `Output · ${cur.launch_id}` : "Output";
   renderStats(S.lastBench[S.sel]);
 }
@@ -1578,6 +1583,14 @@ function initPlayground() {
       toast(res.run.success ? "Recorded from log." : "Recorded — no timing lines found in the log yet.", res.run.success ? "ok" : "");
       renderLaunches();
     } catch (e) { fail(e); }
+  };
+  $("#gRemove").onclick = () => {
+    const cur = S.launches.find((l) => l.launch_id === S.sel);
+    if (!cur || !cur.engine) return;
+    forgetMine(cur.base_model);
+    S.sel = null;
+    toast(`${cur.base_model} is off the Playground. It stays loaded: unload it from Schedule → Live.`, "ok");
+    refreshLaunches();
   };
   $("#gStop").onclick = async () => {
     const eng = (S.sel || "").startsWith("engine:");
@@ -4320,7 +4333,7 @@ function renderInvHost() {
 // The plan is made here and applied to the engine's pool router; Live shows what the router is doing.
 const SC = {
   pane: "live", data: null, live: null,
-  plan: null, sizes: {}, persistent: new Set(), answerFirst: new Set(), dirty: false,   // the Plan form, kept until Save
+  plan: null, sizes: {}, persistent: new Set(), answerFirst: new Set(), oneAtATime: new Set(), dirty: false,   // the Plan form, kept until Save
   filter: "", onlyProfiles: false, sort: { key: null, asc: true },
   steps: [{ op: "request", model: "" }], sim: null, simAt: 0,
 };
@@ -4367,8 +4380,9 @@ function syncPlanForm() {
   SC.sizes = { ...p.sizes };
   SC.persistent = new Set(p.persistent);
   SC.answerFirst = new Set(p.answer_first || []);
+  SC.oneAtATime = new Set(p.one_at_a_time || []);
 }
-const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], answer_first: [...SC.answerFirst], sizes: SC.sizes });
+const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], answer_first: [...SC.answerFirst], one_at_a_time: [...SC.oneAtATime], sizes: SC.sizes });
 
 async function loadLive() {
   try { SC.live = await api("GET", "/api/schedule/live"); } catch (e) { SC.live = { connected: false, error: e.message, pool: null }; }
@@ -4450,7 +4464,7 @@ function requestsCard(rows, inFlight, opts = {}) {
     h("td", { class: "num" }, s.total ? num(s.total, 0) : DASH), h("td", { class: "num" }, s.generated ? num(s.generated, 0) : DASH),
     h("td", { class: "num" }, s.tokens_per_second ? num(s.tokens_per_second, 0) : DASH), h("td", { class: "num" }, s.gen_tokens_per_second ? num(s.gen_tokens_per_second, 1) : DASH),
     h("td", { class: "num", "data-run-start": String(Date.parse(s.started)) }, runClock(Date.now() - Date.parse(s.started))),
-    h("td", {}, (([label, why]) => h("span", { class: "pill warn", title: why }, label))(slotLabel(s)))));
+    h("td", { class: "nowrap" }, (([label, why]) => h("span", { class: "pill warn", title: why }, label))(slotLabel(s)), h("span", { class: "muted mono-sm", style: "margin-left:6px" }, `slot ${s.id}`))));
   const live = (opts.running || []).map((r) => h("tr", { class: "req-running" },
     h("td", { class: "muted" }, "now"),
     h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
@@ -4459,7 +4473,10 @@ function requestsCard(rows, inFlight, opts = {}) {
     h("td", { class: "num" }, slotFor[r.id]?.tokens_per_second ? num(slotFor[r.id].tokens_per_second, 0) : DASH),
     h("td", { class: "num" }, slotFor[r.id]?.gen_tokens_per_second ? num(slotFor[r.id].gen_tokens_per_second, 1) : DASH),
     h("td", { class: "num", "data-run-start": String(Date.now() - (r.elapsed_ms || 0)) }, runClock(r.elapsed_ms || 0)),
-    h("td", {}, (([label, why]) => h("span", { class: `pill ${label === "waiting" ? "" : "warn"}`, title: why }, label))(status(r)))));
+    h("td", { class: "nowrap" }, (([label, why]) => h("span", { class: `pill ${label === "waiting" || label === "held" ? "" : "warn"}`, title: why }, label))(status(r)),
+      slotFor[r.id] ? h("span", { class: "muted mono-sm", style: "margin-left:6px" }, `slot ${slotFor[r.id].id}`) : null,
+      r.held ? h("button", { class: "btn sm ghost", style: "margin-left:6px", title: "send this one first: to the front of the line, or past the answer-first hold",
+        onclick: async () => { try { await api("POST", `/api/requests/${encodeURIComponent(r.id)}/next`); toast("It goes next.", "ok"); } catch (e) { fail(e); } } }, "Go next") : null)));
   live.push(...orphanRows);
   const table = rows.length || live.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
     h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
@@ -4555,10 +4572,12 @@ function renderLive() {
         : h("span", { class: "chip", title: "llama-server, on the default server" }, "llama.cpp"); } },
     { label: "GPU", cell: (m) => m.cards.length ? m.cards.join(", ") : DASH },
     { label: "Size", num: true, cell: (m) => m.size_known ? gib(m.size_gib) : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
-    { label: "In flight", num: true, cell: (m) => m.in_flight || DASH },
+    { label: "In flight", num: true, cell: (m) => h("td", { class: "num nowrap", title: (m.slots || []).map((sl) => `slot ${sl.id}: ${sl.phase}`).join("\n") },
+      m.in_flight || DASH, (m.slots || []).length ? h("div", { class: "cell-sub" }, `slot${m.slots.length > 1 ? "s" : ""} ${m.slots.map((sl) => sl.id).join(", ")}`) : null) },
     { label: "Last used", cell: (m) => (m.last_used ? ago(Date.parse(m.last_used) / 1000) : DASH) },
     { label: "Load time", num: true, cell: (m) => (m.load_seconds ? `${num(m.load_seconds, 0)}s` : DASH) },
     { label: "", cell: (m) => h("div", { class: "chips" }, m.persistent && h("span", { class: "chip" }, "kept loaded"),
+      m.one_at_a_time && h("span", { class: "chip", title: "one request at a time; the rest wait in Argos, in order" }, "one at a time"),
       m.answer_first && h("span", { class: "chip", title: "a long new prompt waits while another chat on this model is answering" }, "answer first"), m.protected && h("span", { class: "chip", title: `Used in the last ${span(P.protect_seconds)}, so it is evicted last when another model needs room. Not a setting: it ends on its own once the model sits idle.` }, "recently used")) },
     { label: "", cell: (m) => { const b = h("button", { class: "icon-btn ghost", title: "Load, unload, keep loaded, logs, edit", "aria-label": `Actions for ${m.id}` }, "⋯");
       b.addEventListener("click", () => liveMenu(b, m)); return h("td", { class: "actions" }, b); } },
@@ -4644,6 +4663,9 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
       : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },
     { label: "Keep loaded", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.persistent.has(r.id), title: "never evicted to make room for another model" });
       c.addEventListener("change", () => { c.checked ? SC.persistent.add(r.id) : SC.persistent.delete(r.id); touch(); }); return h("td", {}, c); } },
+    { label: "One at a time", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.oneAtATime.has(r.id),
+      title: "One request goes into the model at a time; the rest wait in Argos, in order. Each runs at the speed it has alone. With -np 2 each conversation still keeps its own cache slot." });
+      c.addEventListener("change", () => { c.checked ? SC.oneAtATime.add(r.id) : SC.oneAtATime.delete(r.id); touch(); }); return h("td", {}, c); } },
     { label: "Answer first", cell: (r) => { const c = h("input", { type: "checkbox", checked: SC.answerFirst.has(r.id),
       title: "With two chats on this model (-np 2 or more): a long new prompt waits while the other chat is answering, so that answer keeps its speed instead of dropping to a token or two a second" });
       c.addEventListener("change", () => { c.checked ? SC.answerFirst.add(r.id) : SC.answerFirst.delete(r.id); touch(); }); return h("td", {}, c); } },
@@ -4812,15 +4834,28 @@ function liveMenu(anchor, m) {
       if (action === "load" && !r.already) watchLoad(m.id);
     } catch (e) { fail(e); }
     setTimeout(loadLive, action === "load" ? 1500 : 300);
-    if (action === "keep" || action === "answer_first") loadSchedule();
+    if (["keep", "answer_first", "one_at_a_time"].includes(action)) loadSchedule();
   };
+  // what each llama-server slot is doing right now (two chats on one model are two slots)
+  const slotRows = (m.slots || []).map((sl) => ({ label: `Slot ${sl.id}: ${sl.phase === "prefill"
+    ? `reading a prompt${sl.total ? ` ${pct(sl.progress)} of ${num(sl.total, 0)}` : ""}` : `generating${sl.generated ? `, ${num(sl.generated, 0)} out at ${num(sl.gen_tokens_per_second || 0, 1)} t/s` : ""}`}`, icon: "activity", run: () => {} }));
   popMenu(anchor, [
+    ...slotRows,
     loaded ? { label: "Unload model", icon: "square", run: () => act("unload", undefined, `Unloaded ${m.id}.`) }
       : { label: "Load now", icon: "play", run: () => act("load", undefined, `Loading ${m.id}…`) },
     m.persistent ? { label: "Keep loaded: off (may be unloaded for others)", icon: "x", run: () => act("keep", { on: false }, `${m.id} can be unloaded again.`) }
       : { label: "Keep loaded: on (never unload it for others)", icon: "check", run: () => act("keep", { on: true }, `${m.id} stays loaded.`) },
+    m.one_at_a_time ? { label: "One at a time: off (requests go in together)", icon: "x", run: () => act("one_at_a_time", { on: false }, `${m.id}: requests go in together again.`) }
+      : { label: "One at a time: on (the rest wait, in order)", icon: "check", run: () => act("one_at_a_time", { on: true }, `${m.id}: one request at a time now.`) },
     m.answer_first ? { label: "Answer first: off (every request goes straight in)", icon: "x", run: () => act("answer_first", { on: false }, `${m.id}: every request goes straight in.`) }
       : { label: "Answer first: on (a long prompt waits while another chat answers)", icon: "check", run: () => act("answer_first", { on: true }, `${m.id}: a long new prompt now waits while another chat is answering.`) },
+    { label: pgMine.has(m.id) ? "Open in Playground" : "Add to Playground", icon: "play", run: async () => {
+      rememberMine(m.id);
+      if (!loaded) await act("load", undefined, `Loading ${m.id} for the Playground…`);
+      S.sel = `engine:${m.id}`;
+      show("playground");
+      await refreshLaunches();
+    } },
     { label: "Check logs", icon: "file-text", run: () => liveLog(m.id) },
     { label: "Edit launch command", icon: "pencil", run: () => liveEdit(m.id) },
   ]);

@@ -104,6 +104,21 @@ def requests_recent():
     return ok(requests=rows, in_flight=in_flight, running=running_now, source=source, at=time.time())
 
 
+@bp.post("/api/requests/<inflight_id>/next")
+def request_next(inflight_id):
+    """A waiting request goes first (Schedule -> Live)."""
+    from ..integrations import engine_api
+    url = ctx().settings.get("integrations")["engine_url"]
+    if not url:
+        return err("the engine is not running")
+    try:
+        engine_api.request_next(url, inflight_id)
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "code", 0)
+        return err("that request is not waiting any more" if code == 404 else f"the engine refused: {exc}", 404 if code == 404 else 502)
+    return ok()
+
+
 @bp.get("/api/requests")
 def requests_list():
     a = request.args

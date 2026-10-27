@@ -62,6 +62,9 @@ type PoolModelStatus struct {
 	// AnswerFirst: a long new prompt waits while another chat on this model
 	// is answering (routing.router.settings.pool.answerFirst).
 	AnswerFirst bool `json:"answer_first,omitempty"`
+	// OneAtATime: the model gets one request at a time, the rest wait in
+	// Argos (routing.router.settings.pool.oneAtATime).
+	OneAtATime bool `json:"one_at_a_time,omitempty"`
 }
 
 // PoolQueueStatus is one request waiting for room or for a busy model.

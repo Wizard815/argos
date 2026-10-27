@@ -769,6 +769,13 @@ routing:
         persistent:
           - "whisper"
 
+        # oneAtATime: models that get one request at a time; the rest wait
+        # in Argos, in order. Two chats on one model each run at the speed
+        # one has alone, one after the other; with -np 2 each conversation
+        # still keeps its own slot's cache. Replaces answerFirst for them.
+        # - optional, default: empty list
+        # oneAtATime: ["qwen-coder--2chat"]
+
         # answerFirst: keep a chat that is answering at full speed. With two
         # chats on one model (llama-server -np 2), a long prompt read beside
         # an answer drops that answer to a token or two a second: llama.cpp

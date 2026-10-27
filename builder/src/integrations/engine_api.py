@@ -72,6 +72,11 @@ def load_model(base_url: str, model_id: str, timeout: float = 900.0) -> None:
     _get(base_url.rstrip("/") + f"/upstream/{urllib.parse.quote(model_id, safe='')}/health", timeout)
 
 
+def request_next(base_url: str, inflight_id: str, timeout: float = 5.0) -> None:
+    """Send a waiting request on first: to the front of its model's queue, or out of an answer-first hold."""
+    _post(base_url.rstrip("/") + f"/api/inflight/{urllib.parse.quote(inflight_id, safe='')}/next", timeout)
+
+
 def clear_crashes(base_url: str, model_id: str, timeout: float = 5.0) -> None:
     """Forget a model's crashes, so the engine starts it again on a request. An older engine has none to forget."""
     try:

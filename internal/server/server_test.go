@@ -106,6 +106,8 @@ func newTestServerWithConfig(cfg config.Config, local router.LocalRouter) *Serve
 		shutdownCtx: ctx,
 		shutdownFn:  cancel,
 	}
+	s.gate = newSlotGate(s.inflight.SetHeld)
+
 	s.routes()
 	return s
 }

@@ -35,6 +35,8 @@ DEFAULT_PLAN: dict[str, Any] = {
     "persistent": [],        # model ids that are never evicted to make room
     # model ids where a long new prompt waits while another chat on the model is answering, so the answer keeps
     # its speed; prompts under answer_first_min_tokens go straight in, and none waits past answer_first_max_wait_s
+    # model ids that get one request at a time: the rest wait in Argos, in order (each runs at its own full speed)
+    "one_at_a_time": [],
     "answer_first": [],
     "answer_first_min_tokens": 4000,
     "answer_first_max_wait_s": 300,
@@ -162,7 +164,7 @@ def clean_plan(values: dict) -> dict:
             if v not in ("auto", "off"):
                 raise PlanError("placement must be auto or off")
             out[key] = v
-        elif key in ("persistent", "answer_first"):
+        elif key in ("persistent", "answer_first", "one_at_a_time"):
             out[key] = _ids(v, key)
         elif key in ("answer_first_min_tokens", "answer_first_max_wait_s"):
             out[key] = int(_num(v, key, 1))
@@ -349,6 +351,9 @@ def render_fragment(plan: dict, sizes: Optional[dict[str, float]] = None,
     persistent = [m for m in plan["persistent"] if keep(m)]
     if persistent:
         pool["persistent"] = persistent
+    serial = [m for m in plan.get("one_at_a_time") or [] if keep(m)]
+    if serial:
+        pool["oneAtATime"] = serial
     answer_first = [m for m in plan.get("answer_first") or [] if keep(m)]
     if answer_first:
         pool["answerFirst"] = {"models": answer_first, "minPromptTokens": plan.get("answer_first_min_tokens") or 4000,

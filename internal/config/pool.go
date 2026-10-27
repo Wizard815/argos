@@ -80,5 +80,15 @@ func validatePool(config *Config) error {
 		models = append(models, real)
 	}
 	af.Models = models
+
+	serial := make([]string, 0, len(pool.OneAtATime))
+	for _, id := range pool.OneAtATime {
+		real, found := config.RealModelName(id)
+		if !found {
+			return fmt.Errorf("routing.router.settings.pool.oneAtATime references unknown model %q", id)
+		}
+		serial = append(serial, real)
+	}
+	pool.OneAtATime = serial
 	return nil
 }

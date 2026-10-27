@@ -259,6 +259,14 @@ def live_action(model_id, action):
     """load (in the background; it can take minutes), unload, or keep (body {"on": bool}: never evict it)."""
     import threading
     c = ctx()
+    if action == "one_at_a_time":
+        on = bool(body().get("on", True))
+        models = [m for m in c.plans.get()["one_at_a_time"] if m != model_id] + ([model_id] if on else [])
+        c.plans.update({"one_at_a_time": models})
+        c.event("schedule", f"one at a time {'on' if on else 'off'} for {model_id}: "
+                + ("one request goes in, the rest wait in order" if on else "requests go in together again"))
+        apply_plan()
+        return ok(one_at_a_time=on)
     if action == "answer_first":
         on = bool(body().get("on", True))
         models = [m for m in c.plans.get()["answer_first"] if m != model_id] + ([model_id] if on else [])
