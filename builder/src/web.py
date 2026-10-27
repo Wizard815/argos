@@ -39,6 +39,7 @@ class Ctx:
     memory: Memory
     servers: Servers
     runners: Any = None
+    benches: Any = None  # llama-bench runs from the Playground
     export_state: dict = field(default_factory=dict)
     schedule_state: dict = field(default_factory=dict)
 

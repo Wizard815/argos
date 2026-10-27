@@ -257,7 +257,7 @@ def downloads_start():
         return err("files must be a list of file names")
     try:
         info = c.downloads.client().repo(d.get("repo") or "")
-        sizes = {f["name"]: f["size"] for f in info["files"]}
+        sizes = {f["name"]: f["size"] for f in info.get("all") or info["files"]}
         unknown = sorted(set(names) - set(sizes))
         if unknown:
             return err(f"not in that repo: {', '.join(unknown)}")
@@ -286,8 +286,12 @@ def downloads_retry(job_id):
     if row["status"] in ("queued", "running"):
         return err("already running")
     try:
-        sub = os.path.relpath(row["dest"], models_dir())
-        job = c.downloads.start(row["repo"], row["files"], subdir=sub if not sub.startswith("..") else "")
+        try:
+            sub = os.path.relpath(row["dest"], models_dir())
+        except ValueError:  # another drive (Windows)
+            sub = row["dest"]
+        outside = sub.startswith("..") or os.path.isabs(sub)  # a runner's own folder: back to the same place
+        job = c.downloads.start(row["repo"], row["files"], subdir="" if outside else sub, dest=row["dest"] if outside else "")
     except DownloadError as exc:
         return err(str(exc))
     return ok(download=job)

@@ -3,7 +3,7 @@ title: VRAM-aware pool router
 summary: Put every model in one pool so models load side by side while VRAM fits, and only the cheapest idle model is evicted when it does not.
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
-config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard]
+config_keys: [routing, models.*.vram, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard, routing.router.settings.pool.cpuFallback]
 updated: 2026-10-25
 ---
 
@@ -80,6 +80,25 @@ the model starts:
 Do not hard-code a card split such as `-ts 1,1` or `--device` in a model's
 `cmd` when the pool may put it on one card; the pool decides the cards.
 
+## Other apps on the GPUs
+
+Every 5 seconds the pool reads how much VRAM each card really has in use
+(the same reading as the Performance page: LACT, `rocm-smi` or `/sys/class/drm`) and takes away what its own running models
+account for. The rest belongs to something Argos did not start: a game,
+ComfyUI, a llama-server from another container. The pool plans around it, so a
+model is not placed on a card that only looked empty. The first `reserveGiB`
+(split over the cards) covers the driver and a desktop; only usage beyond it
+takes room from models.
+
+- The smallest of the last four readings counts, so a model still unloading is
+  not taken for another app. New usage by another app counts within about 20
+  seconds.
+- `GET /api/pool` shows it per card as `other_gib`, with `live_used_gib` the
+  card's own reading, and `free_gib` is what is left for Argos. Schedule -> Live
+  draws it as a hatched **other apps** segment on the card.
+- If an Argos model holds more than its `vram` says, the extra shows as other
+  apps too. Raise that model's `vram` so the plan matches.
+
 ## Model sizes
 
 Set `models.*.vram` in GiB, including the KV cache for your context size.
@@ -107,8 +126,9 @@ one at startup.
 `GET /api/pool` reports what the pool is doing right now: each card's planned
 use and the models on it, every model's state, size and card, the requests
 queued (with how long each has waited) and the models loading. With any other
-router it answers `{"enabled": false}`. Sizes there are the pool's plan, not live
-VRAM; the Performance page shows the real memory.
+router it answers `{"enabled": false}`. Model sizes there are the pool's plan;
+each card's `live_used_gib` and `other_gib` are read live (see Other apps on the
+GPUs).
 
 The builder's **Schedule -> Live** shows this next to a **Requests** feed: the
 engine's newest requests (chat, embeddings, benchmarks, audio), who sent them,
@@ -134,6 +154,25 @@ again; **Load** from Schedule -> Live (`POST /api/crashes/clear/<model>` on the
 engine) lets it start again. `GET /api/inflight` lists every
 request still running, and the same state is on MCP as `schedule__pool_status`,
 `schedule__requests_in_flight` and `schedule__recent_requests`.
+
+## Small helpers on the CPU: cpuFallback
+
+A model listed in `cpuFallback` that does not fit on the GPUs beside what is
+loaded is started on the CPU instead of unloading anything: with every GPU
+hidden (`HIP_VISIBLE_DEVICES=-1`, `CUDA_VISIBLE_DEVICES=-1`), so llama.cpp finds
+none and runs it on the CPU whatever its `-ngl`. It holds no VRAM there and
+never causes an eviction; Live marks it **on CPU**. Its next load goes back to
+the GPUs if they have room then.
+
+```yaml
+        cpuFallback: ["qwen3-0.6b", "nomic-embed-text-v2-q8"]
+```
+
+The builder fills it with the assistant's chat and embedding models
+(Settings -> Assistant -> "Run the chat and embedding models on the CPU when the
+GPUs are full", on by default). What goes wrong: a llama.cpp build with
+GPU-only features in the command (a KV cache type with no CPU kernels, `-sm
+tensor`) can fail on the CPU; give such a model a plain command.
 
 ## Two chats on one model: answer first
 

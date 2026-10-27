@@ -119,6 +119,43 @@ def _kfd_gpus(root: str = KFD) -> dict[str, str]:
     return out
 
 
+DRM = os.environ.get("ARGOS_DRM_ROOT") or "/sys/class/drm"
+
+
+def _drm_used(root: str = DRM) -> list[int]:
+    """Bytes in use on each card with VRAM, in DRM order: the 0, 1, ... numbering HIP and the engine use."""
+    cards = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return []
+    for n in names:
+        m = re.fullmatch(r"card(\d+)", n)
+        if not m:
+            continue
+        used = _read(os.path.join(root, n, "device", "mem_info_vram_used"))
+        if used.isdigit() and _read(os.path.join(root, n, "device", "mem_info_vram_total")).isdigit():
+            cards.append((int(m.group(1)), int(used)))
+    return [u for _, u in sorted(cards)]
+
+
+def _guess_cards(sample: dict[int, dict], drm_used: list[int]) -> dict[str, str]:
+    """KFD gpu_id -> card index when the kernel's topology hides the GPUs (a container without the GPU devices
+    sees the processes but not the nodes): each gpu_id goes to the card whose memory in use best matches what
+    the processes hold on it. Only when there are as many cards as gpu_ids."""
+    held: dict[str, int] = {}
+    for rec in sample.values():
+        for g, b in rec["vram"].items():
+            held[g] = held.get(g, 0) + b
+    ids = sorted(held)
+    if not ids or len(ids) != len(drm_used) or len(ids) > 6:
+        return {}
+    import itertools
+    best = min(itertools.permutations(range(len(ids))),
+               key=lambda perm: sum(abs(drm_used[c] - held[g]) for g, c in zip(ids, perm)))
+    return {g: str(c) for g, c in zip(ids, best)}
+
+
 def _kfd_sample(root: str) -> dict[int, dict]:
     """host pid -> {"vram": {card: bytes}, "sdma": total bytes, "cu": occupancy} for every process using KFD."""
     gpus = _kfd_gpus(root)
@@ -177,6 +214,10 @@ def kfd_processes(root: str = KFD, sample_s: float = 0.4) -> Optional[list[dict]
     if sample_s:
         time.sleep(sample_s)
     second = _kfd_sample(root) if sample_s else first
+    if not _kfd_gpus(root):  # the GPUs' ids are raw: name the cards by the memory they hold
+        guess = _guess_cards(second, _drm_used())
+        for rec in second.values():
+            rec["vram"] = {guess.get(g, g): b for g, b in rec["vram"].items()}
     local = _host_pids()
     out = []
     for hpid, rec in second.items():

@@ -378,8 +378,14 @@ const onShow = {
   env: () => loadEnv(),
   servers: () => { loadServers(); if (lsGet("argos.tab.servers") === "local") loadLocal(); },
   integrations: () => loadIntegrations(),
-  settings: () => loadSettings().then(renderSettings).then(loadIntegrations),
-  playground: () => { if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect(); renderLaunches(); pollSelected(true); },
+  settings: () => loadSettings().then(renderSettings).then(loadIntegrations).then(() => {
+    if ($(".tabs[data-tabs=settings] button.on")?.dataset.pane === "assistant") loadSettingsAssistant();
+  }),
+  playground: () => {
+    if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect();
+    renderLaunches(); pollSelected(true);
+    if ($(".tabs[data-tabs=playground] button.on")?.dataset.pane === "bench") loadBenchTab();
+  },
 };
 
 // Every page switch is a browser history entry, so Back and Forward move between the pages you visited.
@@ -725,7 +731,16 @@ function gpuPick(env) {
   return { cards: own ? splitCards(env[own]) : [], from: own || "" };
 }
 function setGpus(list) {
-  edit({}, undefined, undefined, list.map((x) => String(x).trim()).filter(Boolean));
+  const ids = list.map((x) => String(x).trim()).filter(Boolean);
+  // leaving CPU only for a card puts the layers back on the GPU
+  const wasCpu = gpuPick((B.parsed && B.parsed.env) || {}).cards.join(",") === "-1";
+  const back = wasCpu && !(ids.length === 1 && ids[0] === "-1") && String(argValue("n-gpu-layers") ?? "") === "0";
+  edit(back ? { "n-gpu-layers": "99" } : {}, undefined, undefined, ids);
+}
+// CPU only: no GPU visible (the variable set to -1) and no layer offloaded (-ngl 0); the engine then keeps it off
+// the GPUs and counts no VRAM for it
+function setCpuOnly() {
+  edit({ "n-gpu-layers": "0" }, undefined, undefined, ["-1"]);
 }
 function buildGpuField() {
   const text = h("input", { type: "text", placeholder: "all", spellcheck: "false", style: "width:80px" });
@@ -743,20 +758,23 @@ function syncGpuField() {
   const pick = gpuPick((B.parsed && B.parsed.env) || {});
   const ids = pick.cards;
   if (BG.el.text !== document.activeElement) BG.el.text.value = ids.join(",");
-  const toggle = (id) => setGpus(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].sort((a, b) => Number(a) - Number(b)));
+  const cpu = ids.length === 1 && ids[0] === "-1";
+  const toggle = (id) => setGpus(cpu ? [id] : ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].sort((a, b) => Number(a) - Number(b)));
   const known = new Set(BG.cards.map((g) => String(g.gpu)));
   const every = [...known].sort((a, b) => Number(a) - Number(b));
   const isAll = every.length > 1 && every.every((x) => ids.includes(x)) && ids.length === every.length;
   fill(BG.el.chips,
     h("button", { type: "button", class: `chip${ids.length ? "" : " on"}`, title: "No pin: the engine puts it on the card, or cards, with room", onclick: () => setGpus([]) }, "Auto"),
+    h("button", { type: "button", class: `chip${cpu ? " on" : ""}`, title: "Run it on the CPU only: no GPU visible to it and -ngl 0. Slower, holds no VRAM, and never unloads another model to fit.", onclick: setCpuOnly }, "CPU only"),
     every.length > 1 ? h("button", { type: "button", class: `chip${isAll ? " on" : ""}`, title: `Every card: ${every.join(",")}. The model is spread across all of them.`, onclick: () => setGpus(every) }, "All") : null,
     BG.cards.map((g) => h("button", { type: "button", class: `chip${ids.includes(String(g.gpu)) ? " on" : ""}`,
       title: `${g.name || "GPU " + g.gpu}${g.mem_total_mb ? ` · ${(g.mem_total_mb / 1024).toFixed(0)} GiB` : ""}`, onclick: () => toggle(String(g.gpu)) }, `GPU${g.gpu}`)),
-    ids.filter((x) => !known.has(x)).map((x) => h("button", { type: "button", class: "chip on", title: "Not seen on this machine", onclick: () => toggle(x) }, `GPU${x}`)));
+    ids.filter((x) => !known.has(x) && x !== "-1").map((x) => h("button", { type: "button", class: "chip on", title: "Not seen on this machine", onclick: () => toggle(x) }, `GPU${x}`)));
   const vars = (B.parsed && B.parsed.gpu_vars) || [];
   const names = [...new Set(BG.cards.filter((g) => ids.includes(String(g.gpu))).map((g) => g.name).filter(Boolean))];
   const seen = names.length ? `${names.join(" + ")}: ` : "";
-  BG.el.note.textContent = !ids.length ? "Auto: the engine places it where it fits; --split-mode tensor or row gets every card"
+  BG.el.note.textContent = cpu ? `CPU only: ${vars.join(" and ") || "the GPU variable"} = -1 and -ngl 0; it holds no VRAM`
+    : !ids.length ? "Auto: the engine places it where it fits; --split-mode tensor or row gets every card"
     : vars.includes(pick.from) ? `${seen}${vars.join(" and ")}`
     : `set as ${pick.from}, but these cards read ${vars.join(" and ") || "another variable"}; pick a card to switch`;
 }
@@ -1351,6 +1369,159 @@ function fillProfileSelect() {
     lib.length ? h("optgroup", { label: "Models (default launch)" }, lib.map((m) => h("option", { value: `model:${m.path}` }, m.name))) : null);
 }
 
+// ── Playground → llama-bench ─────────────────────────────────
+// llama.cpp's own benchmark: prompt reading (pp) and generation (tg) at the sizes asked for, at a depth of
+// context already in the cache, across sweeps of settings (every field takes a comma list). It runs where the
+// model runs: beside llama-server here, or in the llama.cpp container over SSH. Results go to Benchmarks.
+const BN = { params: { n_prompt: "512", n_gen: "128", depth: "0", repetitions: "3" }, env: {}, source: "", server: "", run: null, servers: null, built: false };
+const BN_FIELDS = [
+  ["model", "Model file (-m)", "/app/models/…/model.gguf", "wide"],
+  ["n_prompt", "Prompt sizes (-p)", "512", "comma list: 512,4096"],
+  ["n_gen", "Generate (-n)", "128", ""],
+  ["pg", "Prompt + generate (-pg)", "4096,128", "one test reading N then writing M"],
+  ["depth", "Context already in (-d)", "0,16384,65536", "speed once this much is in the chat"],
+  ["repetitions", "Repetitions (-r)", "3", ""],
+  ["n_gpu_layers", "GPU layers (-ngl)", "99", ""],
+  ["flash_attn", "Flash attention (-fa)", "1", "1, 0, or 0,1 to compare"],
+  ["cache_type_k", "KV cache K (-ctk)", "f16", "f16,q8_0,turbo3 to compare"],
+  ["cache_type_v", "KV cache V (-ctv)", "f16", ""],
+  ["split_mode", "Split (-sm)", "layer", "none, layer, row"],
+  ["tensor_split", "Tensor split (-ts)", "1/1", ""],
+  ["batch_size", "Batch (-b)", "2048", ""],
+  ["ubatch_size", "Micro-batch (-ub)", "512", "256,512,1024 to find the best"],
+  ["threads", "Threads (-t)", "", ""],
+  ["mmap", "mmap (-mmp)", "", "0 or 1"],
+  ["gpus", "GPUs (HIP/CUDA_VISIBLE_DEVICES)", "0,1", "which cards it may use"],
+  ["extra", "Extra arguments", "", "anything else llama-bench takes", "wide"],
+];
+const bnGpuVar = () => Object.keys(BN.env).find((k) => /VISIBLE_DEVICES$/.test(k)) || "HIP_VISIBLE_DEVICES";
+function bnBody() {
+  const params = { ...BN.params, env: { ...BN.env } };
+  const gpus = (BN.params.gpus || "").trim();
+  delete params.gpus;
+  for (const k of Object.keys(params.env)) if (/VISIBLE_DEVICES$/.test(k)) delete params.env[k];
+  if (gpus) params.env[bnGpuVar()] = gpus;
+  return { profile_id: BN.source && BN.source !== "custom" ? BN.source : "", params, server_id: BN.server, unload_first: $("#bnUnload").checked };
+}
+const bnPreview = debounce(async () => {
+  try {
+    const r = await api("POST", "/api/bench/preview", bnBody());
+    const env = Object.entries(r.env || {}).filter(([k]) => !/_SSH_/.test(k)).map(([k, v]) => `${k}=${v}`).join(" ");
+    $("#bnCmd").textContent = (env ? env + " " : "") + r.argv.join(" ");
+  } catch (e) { $("#bnCmd").textContent = e.message; }
+}, 300);
+async function bnFrom(source) {
+  BN.source = source;
+  if (!source || source === "custom") { renderBenchForm(); bnPreview(); return; }
+  try {
+    const r = await api("GET", `/api/bench/defaults?profile_id=${encodeURIComponent(source)}`);
+    // the profile's settings; the test sizes stay as they were
+    const keep = Object.fromEntries(["n_prompt", "n_gen", "pg", "depth", "repetitions", "extra"].map((k) => [k, BN.params[k]]));
+    BN.env = r.params.env || {};
+    BN.params = { ...Object.fromEntries(Object.entries(r.params).filter(([k]) => k !== "env")), ...keep };
+    const v = Object.entries(BN.env).find(([k]) => /VISIBLE_DEVICES$/.test(k));
+    BN.params.gpus = v ? v[1] : "";
+  } catch (e) { fail(e); }
+  renderBenchForm();
+  bnPreview();
+}
+function renderBenchForm() {
+  const src = h("select", { "aria-label": "Start from" }, h("option", { value: "custom" }, "A model file (type it below)"),
+    h("optgroup", { label: "Profiles: their settings" }, (S.profiles || []).map((p) => h("option", { value: p.profile_id }, p.name))));
+  src.value = BN.source || "custom";
+  src.onchange = () => bnFrom(src.value);
+  const srv = h("select", { "aria-label": "Run on" }, h("option", { value: "" }, "Where profiles run"), h("option", { value: "local" }, "This container"),
+    (BN.servers || []).filter((x) => x.kind !== "local").map((x) => h("option", { value: String(x.id) }, x.name)));
+  srv.value = BN.server;
+  srv.onchange = () => { BN.server = srv.value; bnPreview(); };
+  fill($("#bnFields"),
+    h("label", { class: "field" }, h("span", {}, "Start from"), src),
+    h("label", { class: "field" }, h("span", {}, "Run on"), srv),
+    BN_FIELDS.map(([k, label, ph, hint, wide]) => {
+      const input = h("input", { type: "text", value: BN.params[k] ?? "", placeholder: ph, spellcheck: "false" });
+      input.addEventListener("input", () => { BN.params[k] = input.value; bnPreview(); });
+      return h("label", { class: `field${wide === "wide" || hint === "wide" ? " wide" : ""}` }, h("span", {}, label), input,
+        hint && hint !== "wide" ? h("span", { class: "muted mono-sm" }, hint) : null);
+    }));
+}
+async function loadBenchTab() {
+  if (!BN.built) {
+    BN.built = true;
+    try { BN.servers = (await api("GET", "/api/servers")).servers; } catch (e) { BN.servers = []; }
+    if (!S.profiles || !S.profiles.length) await loadProfiles();
+    renderBenchForm();
+    bnPreview();
+    $("#bnRun").onclick = async () => {
+      try {
+        const r = await api("POST", "/api/bench", bnBody());
+        BN.run = r.bench;
+        toast("llama-bench started.", "ok");
+      } catch (e) { fail(e); }
+      renderBench();
+      loadBenchRuns();
+    };
+    $("#bnStop").onclick = async () => {
+      if (!BN.run) return;
+      try { await api("POST", `/api/bench/${BN.run.bench_id}/stop`); toast("Stopping llama-bench.", "ok"); } catch (e) { fail(e); }
+      pollBench();
+    };
+  }
+  await loadBenchRuns();
+  if (!BN.run) {
+    const runs = BN.runs || [];
+    if (runs.length) { await showBenchRun(runs[0].bench_id); return; }
+  }
+  renderBench();
+}
+async function loadBenchRuns() {
+  try { BN.runs = (await api("GET", "/api/bench")).benches; } catch (e) { BN.runs = []; }
+  fill($("#bnRuns"), BN.runs.length ? h("div", { class: "ody-list" }, BN.runs.map((r) => h("div", {
+    class: `launch${BN.run && BN.run.bench_id === r.bench_id ? " sel" : ""}`, onclick: () => showBenchRun(r.bench_id) },
+    h("span", { class: `dot ${r.running ? "warn" : r.exit_code ? "bad" : "on"}` }),
+    h("div", { class: "who" }, h("div", { class: "t" }, r.meta.profile_name || (r.meta.params || {}).model?.split("/").pop() || r.bench_id),
+      h("div", { class: "s" }, `${ago(r.started_at)} · ${r.results.length} result(s) · ${r.running ? "running" : r.stopped ? "stopped" : r.exit_code ? `failed (${r.exit_code})` : "done"}`)))))
+    : h("div", { class: "empty" }, "No runs yet."));
+}
+async function showBenchRun(id) {
+  try { BN.run = (await api("GET", `/api/bench/${encodeURIComponent(id)}`)).bench; } catch (e) { fail(e); }
+  renderBench();
+  loadBenchRuns();
+}
+async function pollBench() {
+  if (!BN.run) return;
+  const was = BN.run.running;
+  try { BN.run = (await api("GET", `/api/bench/${BN.run.bench_id}`)).bench; } catch (e) { return; }
+  renderBench();
+  if (was && !BN.run.running) { loadBenchRuns(); toast(`llama-bench ${BN.run.stopped ? "stopped" : "finished"}: ${BN.run.results.length} result(s) saved to Benchmarks.`, BN.run.results.length ? "ok" : "err"); }
+}
+setInterval(() => {
+  const onTab = S.view === "playground" && $(".tabs[data-tabs=playground] button.on")?.dataset.pane === "bench";
+  if (onTab && BN.run && BN.run.running) pollBench();
+}, 1500);
+function renderBench() {
+  const r = BN.run;
+  $("#bnStop").disabled = !(r && r.running);
+  $("#bnRun").disabled = !!(r && r.running);
+  $("#bnState").textContent = r ? (r.running ? `running · ${r.results.length} result(s) so far` : `${r.stopped ? "stopped" : r.exit_code ? `exited with ${r.exit_code}` : "done"} · ${r.results.length} result(s)${r.saved ? " · saved to Benchmarks" : ""}`) : "";
+  const pre = $("#bnOut");
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.textContent = r ? (r.output || (r.running ? "Loading the model…" : "")) : "Run a benchmark to see llama-bench's output here.";
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+  const rows = r ? r.results : [];
+  // the settings that differ between tests are the ones worth a column
+  const knobs = [["n_ubatch", "ub"], ["n_batch", "b"], ["type_k", "K"], ["type_v", "V"], ["flash_attn", "fa"], ["n_gpu_layers", "ngl"], ["split_mode", "sm"], ["tensor_split", "ts"], ["n_threads", "t"], ["use_mmap", "mmap"]]
+    .filter(([k]) => new Set(rows.map((x) => JSON.stringify(x[k]))).size > 1);
+  const best = {};
+  for (const x of rows) best[x.kind] = Math.max(best[x.kind] || 0, x.avg_ts);
+  renderTable($("#bnResults"), [
+    { label: "Test", cell: (x) => h("span", { class: "strong", title: x.kind === "pp" ? "reading the prompt" : x.kind === "tg" ? "generating" : "reading, then generating" }, x.test) },
+    { label: "t/s", num: true, cell: (x) => h("td", { class: "num nowrap" }, h("b", {}, num(x.avg_ts, 1)), " ",
+      h("span", { class: "muted mono-sm" }, `± ${num(x.stddev_ts || 0, 1)}`)) },
+    { label: "", cell: (x) => h("td", { class: "bar-cell" }, h("div", { class: "bar", style: "width:120px" }, h("i", { style: `width:${Math.round((x.avg_ts / (best[x.kind] || 1)) * 100)}%;background:${x.kind === "tg" ? "var(--green)" : "var(--red)"}` }))) },
+    ...knobs.map(([k, l]) => ({ label: l, cell: (x) => String(x[k] ?? DASH) })),
+  ], rows, { key: null }, r && r.running ? "Waiting for the first result… (llama-bench loads the model first)" : "No results.");
+}
+
 // Playground is for testing: it lists only what was started from it. Everything else the engine is running
 // (requests, the scheduler, the assistant) is on the Logs page.
 const mineKey = "argos.playground.engineLaunches";
@@ -1425,6 +1596,7 @@ function renderLaunches() {
   $("#gStop").disabled = !(cur && cur.running);
   $("#gStop").lastChild.textContent = cur && cur.engine ? "Unload" : "Stop";
   $("#gRemove").hidden = !(cur && cur.engine);
+  $("#gToBuilder").disabled = !cur;
   $("#gLogTitle").textContent = cur ? `Output · ${cur.launch_id}` : "Output";
   renderStats(S.lastBench[S.sel]);
 }
@@ -1583,6 +1755,24 @@ function initPlayground() {
       toast(res.run.success ? "Recorded from log." : "Recorded — no timing lines found in the log yet.", res.run.success ? "ok" : "");
       renderLaunches();
     } catch (e) { fail(e); }
+  };
+  // The selected model in the Builder: as its saved profile when it has one (an engine variant is found through
+  // the name the engine serves it as), so Save updates that profile; otherwise as the command it runs.
+  $("#gToBuilder").onclick = async () => {
+    const cur = S.launches.find((l) => l.launch_id === S.sel);
+    if (!cur) return toast("Pick a model on the left first.", "err");
+    if (!S.served || !Object.keys(S.served).length) await loadServed();
+    const pid = cur.engine ? (Object.entries(S.served || {}).find(([, v]) => v.variant === cur.base_model) || [])[0] : cur.profile_id;
+    const prof = (S.profiles || []).find((p) => p.profile_id === pid)
+      || (!cur.engine && cur.profile_name ? (S.profiles || []).find((p) => p.name === cur.profile_name) : null);
+    if (prof) {
+      await openCommand(prof.launch_command, { name: prof.name, base_model: prof.base_model, source: prof.source || "profile", profileId: prof.profile_id });
+      return;
+    }
+    // no saved profile: the command it runs, with Argos's port macro put back so it saves as a profile
+    const cmd = (cur.command || "").replace(/(--port[ =])\d+/, "$1${PORT}");
+    if (!cmd.trim()) return toast("The engine did not say what command it runs.", "err");
+    await openCommand(cmd, { name: cur.profile_name || "", base_model: cur.base_model, source: cur.engine ? "engine" : "playground" });
   };
   $("#gRemove").onclick = () => {
     const cur = S.launches.find((l) => l.launch_id === S.sel);
@@ -3187,11 +3377,14 @@ async function sendChat() {
 // ── Assistant settings: its own page ─────────────────────────
 // The chat model and the embedding model are picked from what Argos has: your profiles, the models in the library,
 // and anything else the engine lists. Another OpenAI-compatible server is under Advanced, for the rare case.
+// The assistant's settings live on the Settings page (its Assistant tab), with everything else; the assistant's
+// own Settings button takes you there.
 async function openAssistantSettings(open = true) {
-  A.settingsOpen = open;
-  $("#aSettings").hidden = !open;
-  $(".chat-wrap").hidden = open;
-  if (!open) return loadAssistant();
+  if (!open) return show("assistant");
+  show("settings");
+  $(".tabs[data-tabs=settings] button[data-pane=assistant]").click();
+}
+async function loadSettingsAssistant() {
   try { await loadSettings(); A.choices = await api("GET", "/api/assistant/choices"); } catch (e) { A.choices = null; }
   renderAssistantSettings();
 }
@@ -3247,6 +3440,7 @@ function renderAssistantSettings() {
   const ctx = h("input", { type: "number", value: cfg.context_tokens });
   const keep = h("input", { type: "number", value: cfg.keep_recent });
   const temp = h("input", { type: "number", step: "0.1", value: cfg.temperature });
+  const cpuFallback = h("input", { type: "checkbox", checked: cfg.cpu_fallback !== false });
   const idle = h("select", {}, [[0, "Never"], [5, "5 minutes"], [10, "10 minutes"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [240, "4 hours"]]
     .map(([v, l]) => h("option", { value: v }, l)));
   idle.value = String(cfg.idle_unload_min ?? 15);
@@ -3261,7 +3455,7 @@ function renderAssistantSettings() {
   const save = async () => {
     try {
       const body = { context_tokens: ctx.value, keep_recent: keep.value, temperature: temp.value, idle_unload_min: idle.value,
-        escalate_model: escalate.value, escalate_quant: escalateQuant.value };
+        escalate_model: escalate.value, escalate_quant: escalateQuant.value, cpu_fallback: cpuFallback.checked };
       if (useOther.checked) {
         if (!endpoint.value.trim()) throw new Error("Type the other server's URL, or untick “Use another server”.");
         Object.assign(body, { mode: "endpoint", endpoint: endpoint.value.trim(), model: endpointModel.value.trim() });
@@ -3272,15 +3466,15 @@ function renderAssistantSettings() {
       await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, endpoint: memEndpoint.value.trim(), results: results.value });
       await loadSettings();
       toast("Saved the assistant settings.", "ok");
-      openAssistantSettings(false);
+      renderAssistantSettings();
     } catch (e) { fail(e); }
   };
 
   const engineNote = ch.engine_connected ? null
     : h("p", { class: "hint" }, "The engine is not answering right now, so these lists come from your library and profiles. They load once the engine is up.");
-  fill($("#aSettings"),
-    h("div", { class: "view-head" }, h("div", {}, h("h1", {}, "Assistant settings"), h("p", { class: "sub" }, "A small model that knows your GPUs, speeds and history. Pick it from the models Argos has.")),
-      h("span", { class: "spacer" }), btn("Back to chat", () => openAssistantSettings(false), "", "arrow-left"), btn("Save", save, "primary", "save")),
+  fill($("#sAssistant"),
+    h("div", { class: "row", style: "margin-bottom:12px" }, h("p", { class: "sub", style: "margin:0" }, "A small model that knows your GPUs, speeds and history. Pick it from the models Argos has."),
+      h("span", { class: "spacer" }), btn("Open the assistant", () => show("assistant"), "", "message"), btn("Save", save, "primary", "save")),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Chat model")),
       h("p", { class: "hint" }, "Any of your models or profiles. The engine loads it on the first message (or with Load on the chat page) and it shares the GPUs like any other model. A small one is plenty: Qwen3-0.6B fits in under 1 GB."),
       engineNote,
@@ -3302,7 +3496,9 @@ function renderAssistantSettings() {
         field("Context window (tokens)", ctx, "Must match the -c of the model above. At about 70% full, or when you press Compact, older turns are summarised."),
         field("Messages kept as written", keep, "The newest ones are never summarised."),
         field("Temperature", temp, "Lower is steadier for questions about numbers."),
-        field("Unload when unused for", idle, "Frees the GPU memory. Only models the assistant itself used are unloaded; Load brings one back.", true))),
+        field("Unload when unused for", idle, "Frees the GPU memory. Only models the assistant itself used are unloaded; Load brings one back.", true),
+        h("label", { class: "check wide", title: "Needs Schedule's pool router. The model starts with every GPU hidden, so llama.cpp runs it on the CPU: slower, but nothing you are using gets unloaded for it." },
+          cpuFallback, "Run the chat and embedding models on the CPU when the GPUs are full, instead of unloading a model you are using"))),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Memory"), h("span", { class: "spacer" }),
         h("span", { class: `pill ${mem.enabled && mem.model ? "ok" : ""}` }, mem.enabled && mem.model ? "searching by meaning" : "searching by words")),
       h("p", { class: "hint" }, "The assistant remembers your events, notes, profiles, benchmarks and loads. An embedding model turns each record into numbers that describe its meaning, so a question about “cache settings that were slow” also finds records that never use those words. Without one it matches words only."),
@@ -3442,7 +3638,45 @@ const blankServer = () => ({ id: null, name: "", kind: "ssh", host: "", port: 22
   model_dirs: [], download_dir: "", color: "", status: "unknown", engines: {}, has_key: false, is_default: false });
 
 // ── Servers → Local: runners installed inside Argos (Mode 1) ───────────────
-const LC = { data: null, polling: {}, open: new Set() };
+const LC = { data: null, polling: {}, open: new Set(), catalog: {}, pick: {} };
+/** The models a runner can download: a dropdown of every choice (grouped) and a Download button. */
+function catalogRow(r) {
+  if (!["whisper", "kokoro", "sdcpp"].includes(r.kind)) return null;
+  const C = LC.catalog[r.id];
+  if (!C) {
+    LC.catalog[r.id] = { loading: true, choices: [] };
+    api("GET", `/api/runners/${encodeURIComponent(r.id)}/catalog`).then((x) => { LC.catalog[r.id] = x; renderLocal(); })
+      .catch((e) => { LC.catalog[r.id] = { choices: [], error: e.message }; renderLocal(); });
+    return h("p", { class: "hint" }, "Loading the models it can download…");
+  }
+  if (C.loading) return h("p", { class: "hint" }, "Loading the models it can download…");
+  if (!C.choices.length) return C.error ? h("p", { class: "hint" }, C.error) : null;
+  const groups = [];
+  for (const c of C.choices) { let g = groups.find((x) => x.name === c.group); if (!g) groups.push(g = { name: c.group, items: [] }); g.items.push(c); }
+  const cur = LC.pick[r.id] || (C.choices.find((c) => !c.have && /turbo|^model$|sd-v1-5/.test(c.key)) || C.choices[0]).key;
+  const sel = h("select", { style: "min-width:280px;flex:1" }, groups.map((g) => h("optgroup", { label: g.name },
+    g.items.map((c) => h("option", { value: c.key, selected: c.key === cur }, `${c.have ? "✓ " : ""}${c.label} · ~${size(c.approx || 0)}`)))));
+  const chosen = () => C.choices.find((c) => c.key === sel.value) || C.choices[0];
+  const note = h("small", { class: "hint", style: "display:block" });
+  const showNote = () => { const c = chosen(); note.textContent = [c.note, c.have ? "already downloaded" : c.missing < c.parts.length ? `${c.missing} of ${c.parts.length} files still to get` : "", `to ${c.folder}`].filter(Boolean).join(" · "); };
+  sel.addEventListener("change", () => { LC.pick[r.id] = sel.value; showNote(); });
+  showNote();
+  const go = btn("Download", async () => {
+    const c = chosen();
+    try {
+      const x = await api("POST", `/api/runners/${encodeURIComponent(r.id)}/catalog/download`, { key: c.key });
+      if (x.have) return toast(`${c.label} is already here.`, "ok");
+      toast(`Downloading ${c.label} (Models → Downloads shows progress).${x.model ? ` Its sd-server arguments are set on ${x.model}.` : ""} It shows up here once it is done.`, "ok");
+      delete LC.catalog[r.id];
+      loadLocal();
+    } catch (e) { fail(e); }
+  }, "sm primary", "download");
+  return h("div", { class: "field wide", style: "margin:10px 0 0" },
+    h("span", {}, r.kind === "kokoro" ? "Get the model or a voice" : "Get a model"),
+    h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, sel, go,
+      btn("Refresh", () => { delete LC.catalog[r.id]; renderLocal(); }, "sm ghost")),
+    note, h("small", { class: "hint", style: "display:block" }, `List from ${C.source}.`));
+}
 async function loadLocal() {
   if (!LC.torch) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; if (LC.data) renderLocal(); }).catch(() => {});
   try { LC.data = await api("GET", "/api/runners"); } catch (e) { fill($("#lcList"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
@@ -3545,10 +3779,21 @@ function runnerCard(r) {
     r.addon ? null : h("div", { class: "table-wrap" }, h("table", { class: "dense" },
       h("thead", {}, h("tr", {}, ["Model", "Does", "Also answers to", "Size", "Served by", ...(r.kind === "sdcpp" ? ["Extra arguments"] : [])].map((x) => h("th", {}, x)))),
       h("tbody", {}, models.length ? models : h("tr", {}, h("td", { colspan: 5 }, h("span", { class: "muted" },
-        r.kind === "whisper" ? "No whisper model yet. Put a ggml-*.bin file in the models folder Argos uses (the same one as your chat models)."
+        r.kind === "whisper" ? ((r.skipped || []).length ? "No whisper model it can read yet: see below."
+          : "No whisper model yet. Put a ggml-*.bin file in the models folder Argos uses (the same one as your chat models).")
           : r.kind === "sdcpp" ? "No image model yet. Put a .gguf, .safetensors or .ckpt image model in the models folder Argos uses."
           : r.kind === "custom" ? "One model: this runner's start command. Give a model-file pattern and ${MODEL_PATH} in the start command to serve one model per file."
           : r.installed ? "—" : "Install it first.")))))),
+    r.addon ? null : catalogRow(r),
+    // whisper models it found but cannot read: a Hugging Face copy is not the ggml file whisper.cpp needs
+    (r.skipped || []).length ? h("div", { class: "card", style: "margin:10px 0 0;background:var(--bg)" },
+      h("p", { class: "hint", style: "margin-top:0" }, "Found in your models folder but not usable by whisper.cpp: these are the Hugging Face (Transformers) copies, and whisper.cpp reads only ggml-*.bin files. The same model as a ggml file comes from ggerganov/whisper.cpp; once it is downloaded it shows up above."),
+      h("div", { class: "ody-list" }, r.skipped.map((m) => h("div", { class: "ody-row" },
+        h("div", { class: "ody-main" }, h("div", { class: "cell-main" }, m.name), h("div", { class: "cell-sub mono-sm", title: m.path }, `${m.format || "?"} · ${m.why}`)),
+        btn(`Download ${m.ggml}`, async () => {
+          try { await api("POST", `/api/runners/${encodeURIComponent(r.id)}/catalog/download`, { key: m.ggml }); toast(`Downloading ${m.ggml} to your models folder (Models → Downloads).`, "ok"); }
+          catch (e) { fail(e); }
+        }, "sm primary", "download"))))) : null,
     details);
 }
 function toolsLine() {
@@ -4353,13 +4598,22 @@ const resultPill = (r) => h("span", { class: `pill ${["loaded", "served", "finis
 function cardBars(cards, usage, real = {}) {
   return h("div", { class: "gpu-cards" }, cards.map((c) => {
     const parts = c.models.map((m) => ({ id: m, gib: usage(m, c) })).filter((p) => p.gib > 0);
+    // VRAM held by something other than Argos's models (another app), read live by the engine; the pool plans around it
+    const live = c.live_used_gib ?? (real && real[c.id]);
+    // an engine that does not read the cards itself: what the GPU reports beyond the models Argos placed
+    const otherGib = c.other_gib ?? (live != null && c.id !== "pool" ? Math.max(live - c.used_gib, 0) : 0);
+    const other = otherGib >= 0.25 ? otherGib : 0;
+    const OTHER = "repeating-linear-gradient(45deg, var(--muted, #888) 0 4px, transparent 4px 8px)";
     return h("div", { class: "gpu-card" },
       h("div", { class: "head" }, h("b", {}, c.id === "pool" ? "Pool" : `GPU ${c.id}`),
-        h("span", { title: "planned / capacity" }, `${num(c.used_gib)} / ${num(c.cap_gib)} GiB`,
-          real && real[c.id] != null ? h("small", { class: "muted", title: "VRAM the GPU reports in use now" }, ` · in use ${num(real[c.id])}`) : null)),
-      h("div", { class: "vbar", title: `${num(c.free_gib ?? Math.max(c.cap_gib - c.used_gib, 0))} GiB free` },
-        parts.map((p) => h("i", { style: `width:${Math.min(100, (p.gib / c.cap_gib) * 100)}%; background:${segColor(p.id)}`, title: `${p.id}: ${num(p.gib)} GiB` }))),
-      parts.length ? h("div", { class: "vbar-legend" }, parts.map((p) => h("span", { style: `--c:${segColor(p.id)}` }, `${p.id} ${num(p.gib)}`)))
+        h("span", { title: "planned by Argos / capacity" }, `${num(c.used_gib)} / ${num(c.cap_gib)} GiB`,
+          live != null ? h("small", { class: "muted", title: "VRAM the GPU reports in use now, by Argos and anything else" }, ` · in use ${num(live)}`) : null)),
+      h("div", { class: "vbar", title: `${num(c.free_gib ?? Math.max(c.cap_gib - c.used_gib, 0))} GiB free for Argos` },
+        parts.map((p) => h("i", { style: `width:${Math.min(100, (p.gib / c.cap_gib) * 100)}%; background:${segColor(p.id)}`, title: `${p.id}: ${num(p.gib)} GiB` })),
+        other ? h("i", { style: `width:${Math.min(100, (other / c.cap_gib) * 100)}%; background:${OTHER}`,
+          title: `other apps: ${num(other)} GiB in use on this card that is not an Argos model (see GPU processes). Argos plans around it.` }) : null),
+      parts.length || other ? h("div", { class: "vbar-legend" }, parts.map((p) => h("span", { style: `--c:${segColor(p.id)}` }, `${p.id} ${num(p.gib)}`)),
+        other ? h("span", { style: "--c:var(--muted, #888)", title: "not started by Argos: another container or app" }, `other apps ${num(other)}`) : null)
         : h("div", { class: "hint", style: "margin:8px 0 0" }, "empty"));
   }));
 }
@@ -4514,6 +4768,7 @@ function workPill(m) {
     : h("span", { class: "pill ok", title: `slot ${sl.id}: ${num(sl.generated || 0, 0)} tokens of the answer so far, ${num(sl.gen_tokens_per_second || 0, 1)} t/s now` }, "generating"));
   if (!pills.length && m.prefill) pills.push(h("span", { class: "pill warn" }, m.prefill.total ? `prefill ${pct(m.prefill.progress)}` : "prefill"));
   if (!pills.length && m.in_flight && m.state === "ready") pills.push(h("span", { class: "pill ok", title: "answering: the prompt is read" }, "generating"));
+  if (m.on_cpu) pills.push(h("span", { class: "pill", title: "It did not fit on the GPUs, so it runs on the CPU (cpu fallback) and holds no VRAM. Its next load goes back to the GPUs if they have room." }, "on CPU"));
   if (m.update_pending) pills.push(h("span", { class: "pill warn", title: `Its profile changed while it was busy (since ${new Date(m.update_pending).toLocaleTimeString()}). It restarts with the new settings once its requests are done; checked every 30 s.` }, "update waiting"));
   if (m.crash) pills.push(h("span", { class: "pill bad", title: `${m.crash.line}\n${m.crash.recent} crash(es) in the last 10 minutes${m.crash.blocked ? ". Requests no longer start it: fix its command, or Load it from ⋯ to try again." : ""}` },
     m.crash.blocked ? "crash loop: stopped" : `crashed${m.crash.recent > 1 ? ` ×${m.crash.recent}` : ""}`));
@@ -5292,6 +5547,8 @@ function initTabs() {
     else if (bar.dataset.tabs === "schedule") { SC.pane = b.dataset.pane; if (SC.pane === "live") loadLive(); else loadSchedule(); }
     else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
+    else if (bar.dataset.tabs === "playground" && b.dataset.pane === "bench") loadBenchTab();
+    else if (bar.dataset.tabs === "settings" && b.dataset.pane === "assistant") loadSettingsAssistant();
   }));
 }
 
