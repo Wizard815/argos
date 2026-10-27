@@ -4393,6 +4393,17 @@ function requestsCard(rows, inFlight, opts = {}) {
   const fresh = (r) => now - (seenReq.at.get(r.source_id) || 0) < 6000;
   const running = Object.entries(inFlight || {}).filter(([, n]) => n > 0);
   // requests still running sit on top with a clock that counts up, so a long prompt shows while it works
+  // A model reads one prompt at a time: its oldest request still sending nothing is the one prefilling; a
+  // question sent while it does waits behind it. The engine lists running requests oldest first.
+  const reading = {};
+  for (const r of opts.running || []) if (!r.resp_bytes && (opts.prefill || {})[r.model] && !(r.model in reading)) reading[r.model] = r.id;
+  const status = (r) => {
+    if (r.resp_bytes) return ["generating", "sending its answer"];
+    const pf = (opts.prefill || {})[r.model];
+    if (pf && reading[r.model] === r.id) return [pf.total ? `prefill ${pct(pf.progress)}` : "prefill", "reading this prompt"];
+    if (pf) return ["waiting", `${r.model} is reading another prompt; this one starts after it`];
+    return ["prompt", "reading the prompt; nothing sent back yet"];
+  };
   const live = (opts.running || []).map((r) => h("tr", { class: "req-running" },
     h("td", { class: "muted" }, "now"),
     h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
@@ -4400,8 +4411,7 @@ function requestsCard(rows, inFlight, opts = {}) {
     h("td", { class: "num", title: "bytes sent back so far" }, r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
     h("td", { class: "num" }, DASH), h("td", { class: "num" }, DASH),
     h("td", { class: "num", "data-run-start": String(Date.now() - (r.elapsed_ms || 0)) }, runClock(r.elapsed_ms || 0)),
-    h("td", {}, h("span", { class: "pill warn", title: r.resp_bytes ? "sending its answer" : "reading the prompt; nothing sent back yet" },
-      r.resp_bytes ? "generating" : (opts.prefill || {})[r.model]?.total ? `prefill ${pct(opts.prefill[r.model].progress)}` : "prompt"))));
+    h("td", {}, (([label, why]) => h("span", { class: `pill ${label === "waiting" ? "" : "warn"}`, title: why }, label))(status(r)))));
   const table = rows.length || live.length ? h("div", { class: "table-wrap" }, h("table", { class: "dense" },
     h("thead", {}, h("tr", {}, ["When", "Model", "Kind", "From", "Context in", "Out", "Prompt t/s", "Gen t/s", "Time", "Status"]
       .map((x, i) => h("th", { class: i >= 4 && i <= 8 ? "num" : "" }, x)))),
@@ -4443,7 +4453,7 @@ function prefillCard(models) {
   if (!busy.length) return null;
   return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Prefill"), h("span", { class: "spacer" }),
     h("span", { class: "hint" }, "prompts being read now, from each model's log")),
-  h("div", { class: "table-wrap" }, simpleTable(["Model", "Progress", "Tokens", "Speed", "Running", "Left"], busy.map((m) => {
+  h("div", { class: "table-wrap" }, simpleTable(["Model", "Progress", "Tokens", "Speed", "Running", "Left", "Waiting behind it"], busy.map((m) => {
     const p = m.prefill, started = Date.parse(p.started);
     const left = p.tokens_per_second > 0 && p.total ? (p.total - p.tokens) / p.tokens_per_second : null;
     return [h("span", { class: "strong" }, m.id),
@@ -4451,7 +4461,9 @@ function prefillCard(models) {
       p.total ? `${num(p.tokens, 0)} / ${num(p.total, 0)}` : "starting",
       p.tokens_per_second ? `${num(p.tokens_per_second, 0)} t/s` : DASH,
       h("span", { "data-run-start": String(started) }, runClock(Date.now() - started)),
-      left == null ? DASH : `~${runClock(left * 1000)}`];
+      left == null ? DASH : `~${runClock(left * 1000)}`,
+      // the other requests the model has: new questions sent while it reads this prompt
+      m.in_flight > 1 ? h("span", { class: "pill", title: "requests to this model that start once this prompt is read" }, `${m.in_flight - 1} waiting`) : DASH];
   }))));
 }
 function renderLive() {
