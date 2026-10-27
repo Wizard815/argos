@@ -56,7 +56,7 @@ def test_kfd_shows_gpu_memory_of_processes_argos_cannot_see(tmp_path, monkeypatc
 
 
 def test_a_process_outside_the_container_is_never_signalled(app, client, monkeypatch):
-    monkeypatch.setattr(gpu_procs, "listing", lambda running, launches: {"tool": "kernel (KFD)", "note": "", "processes": [
+    monkeypatch.setattr(gpu_procs, "listing", lambda running, launches, pool=None: {"tool": "kernel (KFD)", "note": "", "processes": [
         {"pid": 550406, "host_pid": 550406, "visible": False, "name": "not visible from Argos", "vram_gib": 3.2, "owner": None}]})
     killed = []
     monkeypatch.setattr(gpu_procs, "kill", lambda *a, **k: killed.append(a))
@@ -66,7 +66,7 @@ def test_a_process_outside_the_container_is_never_signalled(app, client, monkeyp
 
 def test_a_dry_run_says_what_would_happen_and_signals_nothing(app, client, monkeypatch):
     row = {"pid": 4242, "visible": True, "name": "llama-server", "vram_gib": 3.3, "owner": None, "cmd": "llama-server --port 8081"}
-    monkeypatch.setattr(gpu_procs, "listing", lambda running, launches: {"tool": "x", "note": "", "processes": [row]})
+    monkeypatch.setattr(gpu_procs, "listing", lambda running, launches, pool=None: {"tool": "x", "note": "", "processes": [row]})
     killed = []
     monkeypatch.setattr(gpu_procs, "kill", lambda *a, **k: killed.append(a))
     monkeypatch.setattr(gpu_procs.os, "kill", lambda *a: killed.append(a))
@@ -74,3 +74,47 @@ def test_a_dry_run_says_what_would_happen_and_signals_nothing(app, client, monke
         out = client.post("/api/gpu/processes/4242/kill", json={"dry_run": True, "hard": hard}).get_json()
         assert out["dry_run"] and out["allowed"] and "PID 4242" in out["would"] and "3.3 GiB" in out["would"]
     assert killed == []
+
+
+def _hidden(monkeypatch, root, procs):
+    """KFD sees these processes; none of them is in this container (a llama.cpp sidecar's, over SSH)."""
+    _fake_kfd(root, procs)
+    monkeypatch.setattr(gpu_procs, "KFD", root)
+    monkeypatch.setattr(gpu_procs, "_nvidia", lambda: None)
+    monkeypatch.setattr(gpu_procs, "_host_pids", lambda: {})
+    real = gpu_procs.kfd_processes
+    monkeypatch.setattr(gpu_procs, "kfd_processes", lambda: real(root, sample_s=0))
+
+
+GIB_B = 1 << 30
+
+
+def test_a_model_started_over_ssh_is_named_by_its_cards_and_memory(tmp_path, monkeypatch):
+    _hidden(monkeypatch, str(tmp_path / "kfd"), {
+        2420766: {"vram_4521": 30 * GIB_B, "vram_8840": int(29.3 * GIB_B), "sdma_4521": 0, "stats_4521/cu_occupancy": 0},
+        777: {"vram_4521": 2 * GIB_B, "sdma_4521": 0, "stats_4521/cu_occupancy": 0},
+    })
+    running = [{"model": "qwen-coder--256", "cmd": "/app/bin/remote-llama rocm --port 5891 -m /app/models/q.gguf"},
+               {"model": "embed", "cmd": "llama-server --port 5802"}]
+    pool = [{"id": "qwen-coder--256", "size_gib": 58.0, "cards": ["0", "1"]}, {"id": "embed", "size_gib": 0.6, "cards": ["0"]}]
+    out = gpu_procs.listing(running, [], pool)
+    big = next(p for p in out["processes"] if p["host_pid"] == 2420766)
+    assert big["owner"] == "model qwen-coder--256" and big["matched"] == "by cards and memory" and big["argos"]
+    assert big["cmd"].startswith("/app/bin/remote-llama"), "the engine's command for it, since its own is unreadable"
+    small = next(p for p in out["processes"] if p["host_pid"] == 777)
+    assert small["owner"] is None, "2 GiB is not a 0.6 GiB model: it stays unknown"
+    assert "1 process(es) are outside" in out["note"], "only the unknown one is called out"
+
+
+def test_a_hidden_process_on_other_cards_is_not_taken_for_a_model(tmp_path, monkeypatch):
+    _hidden(monkeypatch, str(tmp_path / "kfd"), {9: {"vram_8840": 8 * GIB_B, "sdma_4521": 0, "stats_4521/cu_occupancy": 0}})
+    out = gpu_procs.listing([{"model": "m", "cmd": "remote-llama rocm --port 1"}], [], [{"id": "m", "size_gib": 8, "cards": ["0"]}])
+    assert out["processes"][0]["owner"] is None, "the model is on card 0, the process on card 1"
+
+
+def test_an_engine_model_in_another_container_is_unloaded_not_killed(app, client, monkeypatch):
+    monkeypatch.setattr(gpu_procs, "listing", lambda running, launches, pool=None: {"tool": "kernel (KFD)", "note": "", "processes": [
+        {"pid": 2420766, "host_pid": 2420766, "visible": False, "name": "not visible from Argos", "vram_gib": 59.3,
+         "owner": "model qwen-coder--256", "matched": "by cards and memory"}]})
+    r = client.post("/api/gpu/processes/2420766/kill", json={"hard": True})
+    assert r.status_code == 409 and "unload it from Schedule" in r.get_json()["error"]
