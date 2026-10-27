@@ -156,6 +156,10 @@
       <div class="view-head">
         <div><h1>Playground</h1><p class="sub">Launch, wait for the server, benchmark. Results are saved under Benchmarks.</p></div>
       </div>
+      <div class="tabs" data-tabs="playground">
+        <button data-pane="server" class="on">Server</button><button data-pane="bench">llama-bench</button>
+      </div>
+      <div class="pane on" data-pane="server">
       <div class="grid2">
         <div>
           <div class="card">
@@ -213,6 +217,40 @@
               <button class="btn ghost" id="gRemove" hidden title="Take it off this page; the engine keeps it loaded"><i data-icon="x"></i>Remove from Playground</button>
             </div>
             <div class="stats" id="gStats" style="margin-top:12px"></div>
+          </div>
+        </div>
+      </div>
+      </div>
+      <div class="pane" data-pane="bench">
+        <div class="grid2">
+          <div>
+            <div class="card">
+              <div class="card-head"><h2>llama-bench</h2><span class="spacer"></span>
+                <span class="hint">llama.cpp's own benchmark: prompt reading and generation, at any context depth, across settings</span></div>
+              <div class="fields" id="bnFields"></div>
+              <label class="check" style="margin-top:8px" title="llama-bench loads the model itself: models the engine has loaded would leave it no room and slow it down">
+                <input type="checkbox" id="bnUnload" checked> Unload the engine's models first</label>
+              <pre class="pre mono-sm" id="bnCmd" style="margin-top:10px;white-space:pre-wrap"></pre>
+              <div class="row" style="margin-top:10px">
+                <button class="btn primary" id="bnRun"><i data-icon="zap"></i>Run</button>
+                <button class="btn danger" id="bnStop" disabled><i data-icon="square"></i>Stop</button>
+                <span class="spacer" style="flex:1"></span><span id="bnState" class="hint" style="margin:0"></span>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h2>Earlier runs</h2><span class="spacer"></span><span class="hint">results are saved under Benchmarks</span></div>
+              <div id="bnRuns"></div>
+            </div>
+          </div>
+          <div>
+            <div class="card">
+              <div class="card-head"><h2>Results</h2><span class="spacer"></span><span class="hint" id="bnResHint">pp = reading the prompt · tg = generating · @ d = with that much already in the context</span></div>
+              <div class="table-wrap"><table id="bnResults" class="dense"></table></div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h2>Output</h2></div>
+              <pre class="pre log" id="bnOut" style="max-height:420px"></pre>
+            </div>
           </div>
         </div>
       </div>

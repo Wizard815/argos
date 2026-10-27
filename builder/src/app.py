@@ -41,7 +41,7 @@ from . import engine_proxy, readcache  # noqa: E402
 from .log_analyzer import parse_log_text  # noqa: E402
 from .routes import assistant as assistant_routes  # noqa: E402
 from .routes import runners as runners_routes  # noqa: E402
-from .routes import core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
+from .routes import bench as bench_routes, core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
 from .measure import Measurer  # noqa: E402
 from .runner import Runner  # noqa: E402
 from .scheduler import Plans, idle_unload  # noqa: E402
@@ -288,6 +288,18 @@ def create_app(config: dict | None = None) -> Flask:
         memory=memory, servers=servers,
         runners=Runners(store, settings, event, lambda: settings.get("paths")["models_dir"], scan_media))
     app.extensions["pb"].assistant.runners = app.extensions["pb"].runners
+    from .bench import Benches, run_rows
+
+    def save_bench(run):
+        """A finished llama-bench run goes to Benchmarks: one row per test."""
+        rows = run_rows(run)
+        for row in rows:
+            store.add_run(row)
+        run.saved = len(rows)
+        event("bench", f"llama-bench finished: {len(rows)} result(s) saved to Benchmarks"
+              + (" (stopped)" if run.stopped else f", exit code {run.exit_code}" if run.exit_code else ""),
+              level="info" if rows else "warn", data={"bench_id": run.bench_id})
+    app.extensions["pb"].benches = Benches(on_done=save_bench)
     from . import gputools
     gputools.configure(settings.get("gpu"))
     app.extensions["runner"] = runner
@@ -307,7 +319,7 @@ def create_app(config: dict | None = None) -> Flask:
         for name, work in prewarm:
             threading.Thread(target=work, name=name, daemon=True).start()
 
-    for bp in (core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp,
+    for bp in (bench_routes.bp, core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp,
                runners_routes.bp):
         app.register_blueprint(bp)
     # last: anything the builder does not own goes to the engine (one port for both)
