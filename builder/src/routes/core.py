@@ -280,21 +280,6 @@ def profiles_delete(profile_id):
     return ok(**extra)
 
 
-@bp.post("/api/profiles/delete")
-def profiles_delete_many():
-    """Delete several profiles at once: ``{"profile_ids": [...]}``. Says what happened to each."""
-    c = ctx()
-    ids = [check_id(str(i)) for i in body().get("profile_ids") or []]
-    if not ids:
-        return err("profile_ids is required")
-    results = {}
-    for pid in ids:
-        extra = _delete_profile(c, pid)
-        results[pid] = {"deleted": False, "error": "not found"} if extra is None else {"deleted": True, **extra}
-    refresh_schedule()  # once for the lot
-    return ok(results=results, deleted=sum(1 for r in results.values() if r["deleted"]))
-
-
 # ----- catalog of extra files ---------------------------------------------
 @bp.get("/api/catalog")
 def catalog_list():
