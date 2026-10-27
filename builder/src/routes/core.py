@@ -252,14 +252,14 @@ def profiles_save():
     return ok(profile=profile)
 
 
-@bp.delete("/api/profiles/<profile_id>")
-def profiles_delete(profile_id):
-    c = ctx()
-    p = c.store.get_profile(check_id(profile_id))
+def _delete_profile(c, profile_id: str) -> Optional[dict]:
+    """Delete one profile; None when there is no such profile. A profile pulled from Odysseus is deleted
+    there too, and kept out of later pulls, so it cannot come back."""
+    p = c.store.get_profile(profile_id)
     if not p or not c.store.delete_profile(profile_id):
-        return err("not found", 404)
+        return None
     extra = {}
-    if p.get("source") == "odysseus":  # pulled from Odysseus: delete it there too, so a pull cannot bring it back
+    if p.get("source") == "odysseus":
         from .odysseus_hub import delete_preset
         try:
             extra = {"odysseus": delete_preset(p["name"], p["launch_command"])}
@@ -267,8 +267,32 @@ def profiles_delete(profile_id):
             pass
     c.event("profile", f"deleted profile “{p['name']}”" + (f"; {extra['odysseus']['odysseus']}" if extra else ""),
             data={"profile_id": profile_id})
+    return extra
+
+
+@bp.delete("/api/profiles/<profile_id>")
+def profiles_delete(profile_id):
+    c = ctx()
+    extra = _delete_profile(c, check_id(profile_id))
+    if extra is None:
+        return err("not found", 404)
     refresh_schedule()
     return ok(**extra)
+
+
+@bp.post("/api/profiles/delete")
+def profiles_delete_many():
+    """Delete several profiles at once: ``{"profile_ids": [...]}``. Says what happened to each."""
+    c = ctx()
+    ids = [check_id(str(i)) for i in body().get("profile_ids") or []]
+    if not ids:
+        return err("profile_ids is required")
+    results = {}
+    for pid in ids:
+        extra = _delete_profile(c, pid)
+        results[pid] = {"deleted": False, "error": "not found"} if extra is None else {"deleted": True, **extra}
+    refresh_schedule()  # once for the lot
+    return ok(results=results, deleted=sum(1 for r in results.values() if r["deleted"]))
 
 
 # ----- catalog of extra files ---------------------------------------------

@@ -806,6 +806,7 @@ function initBuilder() {
   $("#bSave").onclick = () => saveProfile(false);
   $("#bSaveNew").onclick = () => saveProfile(true);
   $("#bDefault").onclick = toggleBuilderDefault;
+  $("#pDeleteSel").onclick = deleteSelectedProfiles;
   $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim(), B.profileId); };
   $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? B.parsed.multiline : B.parsed.command); };
   $("#bRaw").onclick = () => { $("#bRawText").value = B.parsed.multiline; $("#bRawBox").hidden = false; $("#bPreview").hidden = true; $("#bRawText").focus(); };
@@ -1274,6 +1275,26 @@ async function toggleFavorite(p) {
     await loadProfiles();
   } catch (e) { fail(e); }
 }
+function renderSelected() {
+  const n = (S.pSel || new Set()).size, b = $("#pDeleteSel");
+  if (!b) return;
+  b.hidden = !n;
+  b.lastChild.textContent = `Delete selected (${n})`;
+}
+async function deleteSelectedProfiles() {
+  const ids = [...(S.pSel || [])];
+  if (!ids.length) return;
+  const picked = S.profiles.filter((p) => ids.includes(p.profile_id));
+  const ody = picked.filter((p) => p.source === "odysseus").length;
+  if (!(await confirmBox(`Delete ${ids.length} profile(s)?` + (ody ? ` ${ody} came from Odysseus: they are deleted there too, and kept out of later pulls.` : "")))) return;
+  try {
+    const r = await api("POST", "/api/profiles/delete", { profile_ids: ids });
+    const odyNotes = [...new Set(Object.values(r.results).map((x) => x.odysseus?.odysseus).filter(Boolean))];
+    toast(`Deleted ${r.deleted} profile(s).` + (odyNotes.length ? ` Odysseus: ${odyNotes.join("; ")}.` : ""), "ok");
+    S.pSel.clear();
+  } catch (e) { fail(e); }
+  loadProfiles();
+}
 const FAV_GROUP = "\u0000fav", RECENT_GROUP = "\u0000recent";
 const RECENT_S = 14 * 86400, RECENT_N = 6;  // used in the last two weeks, at most six
 function renderProfiles() {
@@ -1286,7 +1307,15 @@ function renderProfiles() {
   const recent = new Set(S.profiles.filter((p) => !p.favorite && p.last_used_at && Date.now() / 1000 - p.last_used_at < RECENT_S)
     .sort((a, b) => b.last_used_at - a.last_used_at).slice(0, RECENT_N).map((p) => p.profile_id));
   const pinned = { [FAV_GROUP]: 0, [RECENT_GROUP]: 1 };
+  // ticked profiles, for Delete selected; the header box ticks every one shown
+  const sel = S.pSel || (S.pSel = new Set());
+  for (const id of [...sel]) if (!S.profiles.some((p) => p.profile_id === id)) sel.delete(id);
+  renderSelected();
   renderTable($("#pTable"), [
+    { label: h("input", { type: "checkbox", "aria-label": "Select every profile matching the filter", checked: rows.length > 0 && rows.every((p) => sel.has(p.profile_id)),
+      onchange: (e) => { rows.forEach((p) => (e.target.checked ? sel.add(p.profile_id) : sel.delete(p.profile_id))); renderProfiles(); } }),
+    cell: (p) => h("td", { style: "width:1%" }, h("input", { type: "checkbox", "aria-label": `Select ${p.name}`, checked: sel.has(p.profile_id),
+      onchange: (e) => { e.target.checked ? sel.add(p.profile_id) : sel.delete(p.profile_id); renderSelected(); } })) },
     { label: "", cell: (p) => h("td", { style: "width:1%" }, h("button", {
       class: "icon-btn ghost", title: p.favorite ? "Unstar" : "Star", "aria-label": "Favorite",
       style: p.favorite ? "color:var(--warn)" : "color:var(--muted)", onclick: () => toggleFavorite(p) }, icon("star"))) },

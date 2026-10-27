@@ -24,3 +24,12 @@ def test_ProfileFavorites_launching_marks_it_used(app, client):
     client.post(f"/api/launches/{r['launch']['launch_id']}/stop")
     used = app.extensions["pb"].store.get_profile(p["profile_id"])["last_used_at"]
     assert used and used >= p["created_at"]
+
+
+def test_Profiles_delete_several_at_once(app, client):
+    a, b, keep = save(client, name="a"), save(client, name="b"), save(client, name="keep")
+    j = client.post("/api/profiles/delete", json={"profile_ids": [a["profile_id"], b["profile_id"], "prof_gone"]}).get_json()
+    assert j["deleted"] == 2 and j["results"]["prof_gone"] == {"deleted": False, "error": "not found"}
+    left = [p["profile_id"] for p in client.get("/api/profiles").get_json()["profiles"]]
+    assert left == [keep["profile_id"]]
+    assert client.post("/api/profiles/delete", json={"profile_ids": []}).status_code == 400
