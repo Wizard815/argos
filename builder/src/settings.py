@@ -90,6 +90,9 @@ def env_defaults(cfg: dict) -> dict:
             "env": "",
             "extra": "",
         },
+        "playground": {
+            "llama_bench": True,  # the llama-bench tab in the Playground
+        },
         "downloads": {
             "hf_endpoint": cfg.get("HF_ENDPOINT") or "https://huggingface.co",
             "hf_token": cfg.get("HF_TOKEN", ""),

@@ -259,16 +259,23 @@ function renderCommand(parsed, multiline) {
   const out = [];
   const sep = () => out.push(multiline ? h("span", { class: "tk-cont" }, " \\\n  ") : " ");
   Object.entries(parsed.env || {}).forEach(([k, v]) => out.push(h("span", { class: "tk-env" }, k), "=", h("span", { class: "tk-str" }, shq(v)), " "));
+  // Settings → Always set: added at launch and export, shown faint because the profile does not hold them
+  const ALWAYS = "From Settings → Always set: added when this runs, not saved in the profile";
+  Object.entries(parsed.always_env || {}).forEach(([k, v]) => out.push(h("span", { class: "tk-always", title: ALWAYS },
+    h("span", { class: "tk-env" }, k), "=", h("span", { class: "tk-str" }, shq(v))), " "));
   out.push(h("span", { class: "tk-prog" }, shq(parsed.program)));
-  for (const a of parsed.args || []) {
-    sep();
-    if (a.flag) out.push(h("span", { class: "tk-flag" }, a.flag));
+  const arg = (a) => {
+    const parts = [];
+    if (a.flag) parts.push(h("span", { class: "tk-flag" }, a.flag));
     if (a.value != null) {
-      if (a.flag) out.push(" ");
+      if (a.flag) parts.push(" ");
       const text = odysseus && PATH_FLAGS.has(a.name) ? dq(a.value) : shq(a.value);
-      out.push(h("span", { class: /^-?\d+(\.\d+)?$/.test(a.value) ? "tk-num" : "tk-str" }, text));
+      parts.push(h("span", { class: /^-?\d+(\.\d+)?$/.test(a.value) ? "tk-num" : "tk-str" }, text));
     }
-  }
+    return parts;
+  };
+  for (const a of parsed.args || []) { sep(); out.push(...arg(a)); }
+  for (const a of parsed.always_args || []) { sep(); out.push(h("span", { class: "tk-always", title: ALWAYS }, ...arg(a))); }
   return out;
 }
 
@@ -384,7 +391,9 @@ const onShow = {
   playground: () => {
     if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect();
     renderLaunches(); pollSelected(true);
-    if ($(".tabs[data-tabs=playground] button.on")?.dataset.pane === "bench") loadBenchTab();
+    (S.settings ? Promise.resolve() : loadSettings()).then(applyPlaygroundTabs).catch(() => {}).then(() => {
+      if ($(".tabs[data-tabs=playground] button.on")?.dataset.pane === "bench") loadBenchTab();
+    });
   },
 };
 
@@ -512,6 +521,14 @@ async function loadProfiles() {
 async function loadModels() {
   S.models = (await api("GET", "/api/models")).models;
   fill($("#modelList"), S.models.map((m) => h("option", { value: m })));
+}
+/** The Playground's optional tabs follow Settings → Playground: off hides the tab (and leaves it if open). */
+function applyPlaygroundTabs() {
+  const on = ((S.settings || {}).playground || {}).llama_bench !== false;
+  const bar = $(".tabs[data-tabs=playground]"), b = bar && bar.querySelector('button[data-pane="bench"]');
+  if (!b) return;
+  b.style.display = on ? "" : "none";
+  if (!on && b.classList.contains("on")) bar.querySelector('button[data-pane="server"]').click();
 }
 async function loadSettings() {
   S.settings = (await api("GET", "/api/settings")).settings;
@@ -827,7 +844,7 @@ function initBuilder() {
   $("#bSaveNew").onclick = () => saveProfile(true);
   $("#bDefault").onclick = toggleBuilderDefault;
   $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim(), B.profileId); };
-  $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? B.parsed.multiline : B.parsed.command); };
+  $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? (B.parsed.run_multiline || B.parsed.multiline) : (B.parsed.run_command || B.parsed.command)); };
   $("#bRaw").onclick = () => { $("#bRawText").value = B.parsed.multiline; $("#bRawBox").hidden = false; $("#bPreview").hidden = true; $("#bRawText").focus(); };
   $("#bRawCancel").onclick = () => { $("#bRawBox").hidden = true; $("#bPreview").hidden = false; };
   $("#bRawApply").onclick = async () => {
@@ -3572,6 +3589,8 @@ const SETTINGS_FORM = [
     { k: "nvidia_smi", label: "nvidia-smi to use", ph: "/usr/bin/nvidia-smi", hint: "blank = on PATH" }] },
   { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
     { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
+  { group: "playground", title: "Playground", fields: [
+    { k: "llama_bench", label: "llama-bench tab", type: "check", hint: "llama.cpp's own benchmark in the Playground, run where your llama-server runs. Off hides the tab." }] },
   { group: "downloads", title: "Downloads", fields: [
     { k: "hf_endpoint", label: "Hugging Face endpoint", ph: "https://huggingface.co" },
     { k: "hf_token", label: "HF token", type: "password", hint: "Only for gated or private repos." },
@@ -3615,6 +3634,7 @@ function renderSettings() {
         toast(`Saved ${g.title.toLowerCase()}.`, "ok");
         if (g.group === "builder") B.format = S.settings.builder.command_format;
         if (g.group === "paths") loadLibrary();
+        if (g.group === "playground") applyPlaygroundTabs();
       } catch (e) { fail(e); }
     };
     const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;

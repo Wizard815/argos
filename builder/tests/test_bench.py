@@ -57,3 +57,10 @@ def test_Bench_a_run_from_a_profile_ends_up_in_benchmarks(app, client, tmp_path)
     notes = [r["note"] for r in client.get("/api/runs?limit=10").get_json()["runs"]]
     assert any("llama-bench pp512: 900.00" in n for n in notes) and any("tg128: 42.00" in n for n in notes)
     assert client.post(f"/api/bench/{bid}/stop").status_code == 404, "not running any more"
+
+
+def test_Bench_can_be_turned_off_in_settings(client):
+    assert client.get("/api/settings").get_json()["settings"]["playground"]["llama_bench"] is True
+    assert client.put("/api/settings/playground", json={"llama_bench": False}).status_code == 200
+    r = client.post("/api/bench", json={"command": "llama-server -m /m/x.gguf", "params": {"model": "/m/x.gguf"}})
+    assert r.status_code == 409 and "Settings" in r.get_json()["error"]

@@ -12,7 +12,7 @@ from urllib.parse import quote
 from flask import Blueprint, abort, current_app, request
 
 from ..command import guess_base_model, parse_command, swap_model_id, to_odysseus
-from ..always import apply_always
+from ..always import apply_always, parse_always
 from ..servers import on_server
 from ..gpu_pick import apply_pick, picked, resolve as resolve_gpus, vars_for as gpu_vars_for
 from ..cookbook import build_state, normalize_preset
@@ -41,6 +41,22 @@ def _render(cmd, fmt: str) -> dict:
     return d
 
 
+def _with_always(out: dict, cmd, fmt: str) -> dict:
+    """Adds what Settings -> Always set puts on this command at launch and export: ``always_env`` and
+    ``always_args`` (only what the command does not set itself), and ``run_command`` / ``run_multiline``,
+    the whole command as it runs. The preview shows them; the profile keeps only its own."""
+    env, args = parse_always(ctx().settings.get("always"))
+    add_env = {k: v for k, v in env.items() if k not in cmd.env}
+    add_args = [a for a in args if a.name and not cmd.has(a.name)]
+    out["always_env"] = add_env
+    out["always_args"] = [{"flag": a.flag, "name": a.name, "value": a.value} for a in add_args]
+    out["always_added"] = [f"{k}={v}" for k, v in add_env.items()] + [" ".join(a.tokens()) for a in add_args]
+    full, added = apply_always(cmd.to_string(), ctx().settings.get("always"))
+    run = _render(parse_command(full), fmt) if added else out
+    out["run_command"], out["run_multiline"] = run["command"], run["multiline"]
+    return out
+
+
 def _format(d: dict) -> str:
     fmt = d.get("format") or ctx().settings.get("builder")["command_format"]
     return fmt if fmt in ("odysseus", "plain") else "plain"
@@ -54,8 +70,7 @@ def command_parse():
         cmd = resolve_gpus(parse_command(d.get("command") or ""))  # an old ARGOS_GPUS shows as what it runs as
     except ValueError as exc:
         return err(str(exc))
-    return ok(**_render(cmd, _format(d)), always_added=apply_always(cmd.to_string(), ctx().settings.get("always"))[1],
-              gpu_vars=gpu_vars_for(cmd, picked(cmd)))
+    return ok(**_with_always(_render(cmd, _format(d)), cmd, _format(d)), gpu_vars=gpu_vars_for(cmd, picked(cmd)))
 
 
 @bp.post("/api/command/build")
@@ -74,8 +89,7 @@ def command_build():
         return err(str(exc))
     if isinstance(d.get("gpus"), list):
         apply_pick(cmd, d["gpus"])
-    out = _render(cmd, _format(d))
-    out["always_added"] = apply_always(cmd.to_string(), ctx().settings.get("always"))[1]
+    out = _with_always(_render(cmd, _format(d)), cmd, _format(d))
     out["gpu_vars"] = gpu_vars_for(cmd, picked(cmd))
     return ok(**out)
 

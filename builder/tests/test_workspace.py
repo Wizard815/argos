@@ -32,6 +32,13 @@ def test_always_reaches_the_builder_launches_and_export(app, client, tmp_path):
     j = client.post("/api/command/parse", json={"command": "llama-server -m /m/a.gguf", "format": "plain"}).get_json()
     assert j["always_added"] == ["HSA_OVERRIDE_GFX_VERSION=9.0.6", "HIP_VISIBLE_DEVICES=0", "-lm dio", "--no-warmup"]
     assert "--no-warmup" not in j["command"], "the builder shows them, it does not write them into the profile"
+    assert j["always_env"] == {"HSA_OVERRIDE_GFX_VERSION": "9.0.6", "HIP_VISIBLE_DEVICES": "0"}
+    assert [x["flag"] for x in j["always_args"]] == ["-lm", "--no-warmup"] and j["always_args"][0]["value"] == "dio"
+    assert j["run_command"].startswith("HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_VISIBLE_DEVICES=0 llama-server")
+    assert j["run_command"].endswith("--no-warmup") and "--no-warmup" in j["run_multiline"], "Copy gives what runs"
+    own = client.post("/api/command/build", json={"command": "HIP_VISIBLE_DEVICES=1 llama-server -m /m/a.gguf -lm mmap",
+                                                   "format": "plain"}).get_json()
+    assert own["always_env"] == {"HSA_OVERRIDE_GFX_VERSION": "9.0.6"} and [x["flag"] for x in own["always_args"]] == ["--no-warmup"]
 
     client.post("/api/profiles", json={"name": "p", "base_model": "a", "launch_command": "llama-server --model /m/a.gguf --port 8080"})
     state = lambda: client.get("/api/cookbook/state").get_json()["presets"]  # noqa: E731 - what the engine reads
