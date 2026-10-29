@@ -8,7 +8,7 @@ def test_defaults_overrides_and_coercion(tmp_path):
     s = Settings(Store(str(tmp_path / "s.db")), env_defaults({"MODELS_DIR": "/app/models", "HF_TOKEN": "hf_x"}))
     assert s.get("paths")["models_dir"] == "/app/models"
     saved = s.update("telemetry", {"interval_s": "30", "enabled": "false"})
-    assert saved["interval_s"] == 30 and saved["enabled"] is False and saved["raw_days"] == 14
+    assert saved["interval_s"] == 30 and saved["enabled"] is False and saved["keep_minutes"] == 120
     assert s.update("assistant", {"temperature": "0.2"})["temperature"] == 0.2
     with pytest.raises(KeyError):
         s.update("telemetry", {"nope": 1})
