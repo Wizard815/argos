@@ -227,6 +227,7 @@ pre.code, pre.log {
 pre.code.wrap { white-space: pre-wrap; word-break: break-all; }
 pre.log { max-height: 460px; min-height: 160px; white-space: pre-wrap; word-break: break-word; color: var(--fg); }
 .tk-env { color: var(--hl-builtin); }
+.tk-always { opacity: .55; font-style: italic; border-bottom: 1px dotted currentColor; cursor: help; }
 .tk-str { color: var(--hl-string); }
 .tk-num { color: var(--hl-number); }
 .tk-prog { color: var(--red); font-weight: 600; }

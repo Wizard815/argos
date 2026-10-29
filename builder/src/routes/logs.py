@@ -11,7 +11,7 @@ from ..web import ctx, err, ok
 bp = Blueprint("logs", __name__)
 
 # range -> (seconds, bucket seconds)
-RANGES = {"30s": (30, 2), "5m": (300, 5), "10m": (600, 10), "30m": (1800, 15), "1h": (3600, 30), "6h": (6 * 3600, 120), "24h": (86400, 300), "7d": (7 * 86400, 3600),
+RANGES = {"30s": (30, 2), "1m": (60, 2), "2m": (120, 2), "15m": (900, 10), "5m": (300, 5), "10m": (600, 10), "30m": (1800, 15), "1h": (3600, 30), "6h": (6 * 3600, 120), "24h": (86400, 300), "7d": (7 * 86400, 3600),
           "30d": (30 * 86400, 3 * 3600), "90d": (90 * 86400, 86400), "1y": (365 * 86400, 86400)}
 
 
@@ -34,11 +34,11 @@ def gpu_series():
     if request.args.get("live") == "1":  # the page is live: read the GPUs every 2 s while it polls
         c.collector.watch_live()
     since = time.time() - span
-    raw_days = c.settings.get("telemetry")["raw_days"]
-    if span <= raw_days * 86400:
-        rows, source = c.store.gpu_series(since, bucket), "raw"
-    else:
-        rows, source = c.store.gpu_rollup_series(since, bucket), "hourly"
+    # the page keeps what it has and asks only for what is newer, in buckets of its choosing
+    if request.args.get("since"):
+        since = max(since, request.args.get("since", type=float) or since)
+    bucket = max(1, min(request.args.get("bucket", bucket, type=int), 3600))
+    rows, source = c.store.gpu_series(since, bucket), "raw"
     return ok(range=rng, bucket=bucket, source=source, rows=rows, latest=c.store.gpu_latest(),
               collector={"source": c.collector.last_source,
                          "enabled": c.settings.get("telemetry")["enabled"]})

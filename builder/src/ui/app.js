@@ -259,16 +259,23 @@ function renderCommand(parsed, multiline) {
   const out = [];
   const sep = () => out.push(multiline ? h("span", { class: "tk-cont" }, " \\\n  ") : " ");
   Object.entries(parsed.env || {}).forEach(([k, v]) => out.push(h("span", { class: "tk-env" }, k), "=", h("span", { class: "tk-str" }, shq(v)), " "));
+  // Settings → Always set: added at launch and export, shown faint because the profile does not hold them
+  const ALWAYS = "From Settings → Always set: added when this runs, not saved in the profile";
+  Object.entries(parsed.always_env || {}).forEach(([k, v]) => out.push(h("span", { class: "tk-always", title: ALWAYS },
+    h("span", { class: "tk-env" }, k), "=", h("span", { class: "tk-str" }, shq(v))), " "));
   out.push(h("span", { class: "tk-prog" }, shq(parsed.program)));
-  for (const a of parsed.args || []) {
-    sep();
-    if (a.flag) out.push(h("span", { class: "tk-flag" }, a.flag));
+  const arg = (a) => {
+    const parts = [];
+    if (a.flag) parts.push(h("span", { class: "tk-flag" }, a.flag));
     if (a.value != null) {
-      if (a.flag) out.push(" ");
+      if (a.flag) parts.push(" ");
       const text = odysseus && PATH_FLAGS.has(a.name) ? dq(a.value) : shq(a.value);
-      out.push(h("span", { class: /^-?\d+(\.\d+)?$/.test(a.value) ? "tk-num" : "tk-str" }, text));
+      parts.push(h("span", { class: /^-?\d+(\.\d+)?$/.test(a.value) ? "tk-num" : "tk-str" }, text));
     }
-  }
+    return parts;
+  };
+  for (const a of parsed.args || []) { sep(); out.push(...arg(a)); }
+  for (const a of parsed.always_args || []) { sep(); out.push(h("span", { class: "tk-always", title: ALWAYS }, ...arg(a))); }
   return out;
 }
 
@@ -384,7 +391,9 @@ const onShow = {
   playground: () => {
     if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect();
     renderLaunches(); pollSelected(true);
-    if ($(".tabs[data-tabs=playground] button.on")?.dataset.pane === "bench") loadBenchTab();
+    (S.settings ? Promise.resolve() : loadSettings()).then(applyPlaygroundTabs).catch(() => {}).then(() => {
+      if ($(".tabs[data-tabs=playground] button.on")?.dataset.pane === "bench") loadBenchTab();
+    });
   },
 };
 
@@ -512,6 +521,14 @@ async function loadProfiles() {
 async function loadModels() {
   S.models = (await api("GET", "/api/models")).models;
   fill($("#modelList"), S.models.map((m) => h("option", { value: m })));
+}
+/** The Playground's optional tabs follow Settings → Playground: off hides the tab (and leaves it if open). */
+function applyPlaygroundTabs() {
+  const on = ((S.settings || {}).playground || {}).llama_bench !== false;
+  const bar = $(".tabs[data-tabs=playground]"), b = bar && bar.querySelector('button[data-pane="bench"]');
+  if (!b) return;
+  b.style.display = on ? "" : "none";
+  if (!on && b.classList.contains("on")) bar.querySelector('button[data-pane="server"]').click();
 }
 async function loadSettings() {
   S.settings = (await api("GET", "/api/settings")).settings;
@@ -827,7 +844,7 @@ function initBuilder() {
   $("#bSaveNew").onclick = () => saveProfile(true);
   $("#bDefault").onclick = toggleBuilderDefault;
   $("#bLaunch").onclick = async () => { await B.queue; launch(B.cmd, $("#bBase").value.trim(), $("#bName").value.trim(), B.profileId); };
-  $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? B.parsed.multiline : B.parsed.command); };
+  $("#bCopy").onclick = async () => { await B.queue; copyText(B.layout === "multi" ? (B.parsed.run_multiline || B.parsed.multiline) : (B.parsed.run_command || B.parsed.command)); };
   $("#bRaw").onclick = () => { $("#bRawText").value = B.parsed.multiline; $("#bRawBox").hidden = false; $("#bPreview").hidden = true; $("#bRawText").focus(); };
   $("#bRawCancel").onclick = () => { $("#bRawBox").hidden = true; $("#bPreview").hidden = false; };
   $("#bRawApply").onclick = async () => {
@@ -2646,9 +2663,35 @@ async function loadGpuBars() {
 // ── Logs: GPU charts ─────────────────────────────────────────
 const SVGNS = "http://www.w3.org/2000/svg";
 const sv = (tag, attrs = {}) => { const el = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
-const RANGES = [["30s", "30s"], ["5m", "5m"], ["10m", "10m"], ["30m", "30m"], ["1h", "1h"], ["6h", "6h"], ["24h", "24h"], ["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["1y", "1y"]];
-const SHORT_RANGES = new Set(["30s", "5m", "10m", "30m"]);
-const G = { range: "30m", data: null };
+// range -> [seconds, bucket seconds]. The page keeps the last hour in 2 s buckets and cuts every range from it,
+// so changing the range redraws at once instead of starting over.
+const RANGES = [["30s", "30s"], ["1m", "1m"], ["2m", "2m"], ["5m", "5m"], ["10m", "10m"], ["15m", "15m"], ["30m", "30m"], ["1h", "1h"]];
+const RANGE_SPAN = { "30s": [30, 2], "1m": [60, 2], "2m": [120, 2], "5m": [300, 4], "10m": [600, 6], "15m": [900, 10], "30m": [1800, 16], "1h": [3600, 30] };
+const SHORT_RANGES = new Set(RANGES.map(([v]) => v));
+const BUF_SPAN = 3600, BUF_BUCKET = 2;
+const G = { range: (() => { try { const r = localStorage.getItem("gpuRange"); return RANGE_SPAN[r] ? r : "30m"; } catch (e) { return "30m"; } })(),
+  data: null, buf: [], meta: null };
+
+/** The kept readings cut to the selected range, averaged into its buckets. */
+function gpuView() {
+  if (!G.meta) return null;
+  const [span, bucket] = RANGE_SPAN[G.range];
+  const end = Math.max(Date.now() / 1000, ...G.buf.slice(-1).map((r) => r.t)), since = end - span;
+  const groups = new Map();
+  for (const r of G.buf) {
+    if (r.t < since) continue;
+    const t = Math.floor(r.t / bucket) * bucket, key = `${t}|${r.gpu}`;
+    let g = groups.get(key);
+    if (!g) groups.set(key, g = { t, gpu: r.gpu, name: r.name, n: 0, sum: {}, cnt: {}, util_max: null, temp_max: null, mem_total_mb: null });
+    g.n += r.n || 1;
+    for (const k of ["util", "mem_used_mb", "temp_c", "power_w"]) if (r[k] != null) { g.sum[k] = (g.sum[k] || 0) + r[k]; g.cnt[k] = (g.cnt[k] || 0) + 1; }
+    for (const k of ["util_max", "temp_max", "mem_total_mb"]) if (r[k] != null) g[k] = Math.max(g[k] ?? r[k], r[k]);
+  }
+  const rows = [...groups.values()].sort((a, b) => a.t - b.t || a.gpu - b.gpu).map((g) => ({
+    t: g.t, gpu: g.gpu, name: g.name, n: g.n, util_max: g.util_max, temp_max: g.temp_max, mem_total_mb: g.mem_total_mb,
+    ...Object.fromEntries(Object.keys(g.sum).map((k) => [k, g.sum[k] / g.cnt[k]])) }));
+  return { ...G.meta, rows, bucket, source: "raw" };
+}
 const seriesColor = (i) => `var(--series-${(i % 8) + 1})`;
 
 /** Round tick step for roughly four intervals up to ``max``. */
@@ -2739,11 +2782,15 @@ function lineChart(box, { title, unit, xs, series, yMax, digits = 0, bucket }) {
 
 function renderGpu() {
   const d = G.data;
-  fill($("#gRange"), RANGES.map(([v, l]) => h("button", { class: G.range === v ? "on" : "", onclick: () => { G.range = v; G.sig = null; G.loading = null; loadGpu(); } }, l)));
+  fill($("#gRange"), RANGES.map(([v, l]) => h("button", { class: G.range === v ? "on" : "", onclick: () => {
+    G.range = v;
+    try { localStorage.setItem("gpuRange", v); } catch (e) { /* private window */ }
+    G.data = gpuView(); renderGpu();  // from what is already here: nothing reloads
+  } }, l)));
   if (!d) return;
   const every = S.settings?.telemetry?.interval_s;
   $("#gSource").textContent = (d.rows.length
-    ? `${d.source === "hourly" ? "hourly rollups" : `${d.bucket}s buckets`} · source: ${d.collector.source || "stored"}`
+    ? `${d.bucket}s buckets · source: ${d.collector.source || "stored"} · the last ${num((S.settings?.telemetry?.keep_minutes || 120) / 60, 0)} h are kept`
     : "") + (usageLive() ? " · live: read every 2 s while this page is open"
       : (SHORT_RANGES.has(G.range) && every > 5 ? ` · readings come every ${every}s; turn on Live, or set Telemetry to 2–5 s in Settings` : "")
         + (SHORT_RANGES.has(G.range) ? " · live" : ""));
@@ -2794,16 +2841,19 @@ function renderGpu() {
 // and the charts are only redrawn when a reading changed, so a hover or a scroll is not thrown away for nothing.
 async function loadGpu() {
   if (G.loading) return G.loading;
-  const live = usageLive(), range = G.range;
-  if (!live) $("#gCharts").style.opacity = G.data ? "0.5" : "1";
+  const live = usageLive();
   const job = (async () => {
     try {
-      const d = await api("GET", `/api/gpu/series?range=${range}${live ? "&live=1" : ""}`);
-      if (range !== G.range) return;  // the range changed while this was loading
-      const sig = JSON.stringify([range, live, d.rows.length, d.rows[d.rows.length - 1], d.latest]);
-      if (sig !== G.sig || !live) { G.data = d; G.sig = sig; renderGpu(); }
+      // the first time the whole hour, then only the buckets from the newest one kept onward (it may have grown)
+      const last = G.buf.length ? G.buf[G.buf.length - 1].t : null;
+      const d = await api("GET", `/api/gpu/series?range=1h&bucket=${BUF_BUCKET}${last != null ? `&since=${last}` : ""}${live ? "&live=1" : ""}`);
+      const cut = Date.now() / 1000 - BUF_SPAN;
+      G.buf = G.buf.filter((r) => r.t >= cut && (last == null || r.t < last)).concat(d.rows);
+      G.meta = { latest: d.latest, collector: d.collector };
+      const sig = JSON.stringify([G.range, live, G.buf.length, G.buf[G.buf.length - 1], d.latest]);
+      if (sig !== G.sig) { G.data = gpuView(); G.sig = sig; renderGpu(); }
     } catch (e) { if (!live) fail(e); }
-    finally { $("#gCharts").style.opacity = "1"; if (G.loading === job) G.loading = null; }
+    finally { if (G.loading === job) G.loading = null; }
   })();
   G.loading = job;
   await job;
@@ -3572,6 +3622,8 @@ const SETTINGS_FORM = [
     { k: "nvidia_smi", label: "nvidia-smi to use", ph: "/usr/bin/nvidia-smi", hint: "blank = on PATH" }] },
   { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
     { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
+  { group: "playground", title: "Playground", fields: [
+    { k: "llama_bench", label: "llama-bench tab", type: "check", hint: "llama.cpp's own benchmark in the Playground, run where your llama-server runs. Off hides the tab." }] },
   { group: "downloads", title: "Downloads", fields: [
     { k: "hf_endpoint", label: "Hugging Face endpoint", ph: "https://huggingface.co" },
     { k: "hf_token", label: "HF token", type: "password", hint: "Only for gated or private repos." },
@@ -3580,7 +3632,7 @@ const SETTINGS_FORM = [
     { k: "enabled", label: "Record GPU history", type: "check" },
     { k: "source", label: "Source", type: "select", wide: true, options: [["auto", "Auto: the engine, else this machine directly"], ["engine", "The engine (rocm-smi / nvidia-smi / sysfs)"], ["local", "This machine directly (sysfs / nvidia-smi)"], ["off", "Off"]] },
     { k: "interval_s", label: "Every (seconds)", type: "number" },
-    { k: "raw_days", label: "Keep raw readings (days)", type: "number", hint: "Hourly rollups are kept forever." }] },
+    { k: "keep_minutes", label: "Keep readings (minutes)", type: "number", hint: "Older GPU readings and request history are deleted. Usage shows up to the last hour." }] },
 ];
 
 function settingsField(f, val) {
@@ -3615,6 +3667,7 @@ function renderSettings() {
         toast(`Saved ${g.title.toLowerCase()}.`, "ok");
         if (g.group === "builder") B.format = S.settings.builder.command_format;
         if (g.group === "paths") loadLibrary();
+        if (g.group === "playground") applyPlaygroundTabs();
       } catch (e) { fail(e); }
     };
     const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;
