@@ -350,14 +350,53 @@ def _engine_running(c) -> list[dict]:
     return out
 
 
+def _profiles_by_command(c):
+    """A function giving the name of the saved profile a command is ("" for none). What Settings -> Always set adds is left
+    out on both sides, since the engine runs a profile with them and the profile is saved without."""
+    import json
+    env, args = parse_always(c.settings.get("always"))
+    drop = set(env) | {a.name for a in args if a.name}
+
+    def key(command: str) -> str:
+        _, s = signature(command)
+        return json.dumps({k: v for k, v in s.items() if k not in drop}, sort_keys=True, default=str)
+    names: dict[str, str] = {}
+    for p in c.store.list_profiles():
+        if p.get("launch_command"):
+            names.setdefault(key(p["launch_command"]), p.get("name") or "")
+    return lambda command: names.get(key(command or ""), "")
+
+
+def _engine_profile(c, mid: str, command: str = "") -> tuple[str, str]:
+    """(the plain model id, the profile's name) for a model the engine runs: ``<model>--<label>`` is that
+    profile; the plain name runs the default profile chosen for it, if any; else the command is matched
+    against the saved profiles. No name: the model's own command."""
+    base, label = _split_variant(mid)
+    url = c.settings.get("integrations").get("engine_url")
+    if not label and url:
+        try:
+            label = (engine_api.model_profile(url, base, timeout=1.5) or {}).get("chosen") or ""
+        except Exception:  # noqa: BLE001 - matched by its command instead
+            label = ""
+    if label:
+        vid = f"{base}--{label}"
+        for pid, v in _profile_variants().items():
+            if v == vid:
+                p = c.store.get_profile(pid)
+                return base, (p or {}).get("name") or label
+        return base, label
+    if command:
+        return base, _profiles_by_command(c)(command)
+    return base, ""
+
+
 class _EngineRun:
     """What the Recorder needs of a launch, for a model the engine runs."""
 
     def __init__(self, launch: dict):
         self.launch_id = launch["launch_id"]
         self.command = launch["command"]
-        self.base_model = launch["base_model"]
-        self.profile_name = ""
+        self.base_model, self.profile_name = _engine_profile(ctx(), launch["base_model"], self.command)
         self.port = None
         try:
             self.env = dict(parse_command(self.command).env) if self.command else {}
@@ -674,6 +713,18 @@ def launch_record(launch_id):
 def runs_list():
     limit = max(1, min(request.args.get("limit", 1000, type=int), 100_000))
     runs = ctx().store.list_runs(request.args.get("base_model") or None, limit)
+    # runs saved without a profile name (a model the engine ran was always saved that way): name the profile
+    # its command is, or the one its engine name says
+    unnamed = [r for r in runs if not r.get("profile_name")]
+    if unnamed:
+        profile_of = _profiles_by_command(ctx())
+        for r in unnamed:
+            name = profile_of(r.get("launch_command") or "")
+            lid = str(r.get("launch_id") or "")
+            if not name and lid.startswith(ENGINE_PREFIX) and "--" in lid:
+                name = _split_variant(lid[len(ENGINE_PREFIX):])[1]
+            if name:
+                r["profile_name"] = name
     # The count comes back either way, so a caller never has to ask for a hundred
     # thousand rows to find out how many there are.
     return ok(runs=runs, total=ctx().store.count_runs())

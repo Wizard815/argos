@@ -3632,7 +3632,7 @@ const SETTINGS_FORM = [
     { k: "enabled", label: "Record GPU history", type: "check" },
     { k: "source", label: "Source", type: "select", wide: true, options: [["auto", "Auto: the engine, else this machine directly"], ["engine", "The engine (rocm-smi / nvidia-smi / sysfs)"], ["local", "This machine directly (sysfs / nvidia-smi)"], ["off", "Off"]] },
     { k: "interval_s", label: "Every (seconds)", type: "number" },
-    { k: "keep_minutes", label: "Keep readings (minutes)", type: "number", hint: "Older GPU readings are deleted. Usage shows up to the last hour." }] },
+    { k: "keep_minutes", label: "Keep readings (minutes)", type: "number", hint: "Older GPU readings and request history are deleted. Usage shows up to the last hour." }] },
 ];
 
 function settingsField(f, val) {

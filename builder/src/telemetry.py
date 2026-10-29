@@ -258,6 +258,7 @@ class Collector:
         if now - self._last_rollup > 60:
             minutes = self.settings()["telemetry"].get("keep_minutes") or 120
             self.store.prune_gpu(now - minutes * 60)
+            self.store.prune_requests(now - minutes * 60)
             self._last_rollup = now
 
     def sync_activity(self) -> int:

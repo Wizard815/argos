@@ -59,9 +59,12 @@ def test_engine_readers():
         assert [r["source_id"] for r in rows] == [3, 4] and rows[0]["error"] == "too long"
 
 
-def settings_for(url, source="auto"):
-    return lambda: {"telemetry": {"enabled": True, "interval_s": 15, "keep_minutes": 120, "source": source},
-                    "integrations": {"engine_url": url}}
+def settings_for(url, source="auto", keep=120):
+    s = {"telemetry": {"enabled": True, "interval_s": 15, "keep_minutes": keep, "source": source},
+         "integrations": {"engine_url": url}}
+    get = lambda: s  # noqa: E731
+    get.values = s
+    return get
 
 
 def test_collector_stores_samples_activity_and_rollups(tmp_path):
@@ -69,7 +72,8 @@ def test_collector_stores_samples_activity_and_rollups(tmp_path):
     events = []
     acts = [activity(i) for i in range(1, 4)]
     with serve(make_engine(GPU_STATS, acts)) as url:
-        col = Collector(store, settings_for(url), lambda *a, **k: events.append(a))
+        settings = settings_for(url, keep=10 ** 8)  # the sample requests are dated weeks back
+        col = Collector(store, settings, lambda *a, **k: events.append(a))
         now = time.time()
         col.tick(now=now - 7200)
         col.tick(now=now)
@@ -83,8 +87,10 @@ def test_collector_stores_samples_activity_and_rollups(tmp_path):
     stats = {r["model"]: r for r in store.request_stats(0)}
     assert stats["qwen3.6-35b"]["requests"] == 4 and stats["qwen3.6-35b"]["errors"] == 1
     assert {r["gpu"] for r in store.gpu_latest()} == {0, 1}
+    settings.values["telemetry"]["keep_minutes"] = 120
     col.tick(now=now + 3 * 3600)  # three hours on: everything before the last two is gone
     assert all(r["t"] >= now + 3600 - 1 for r in store.gpu_series(0, 1)) and store.gpu_hourly(0) == []
+    assert all(r["ts"] >= now + 3600 for r in store.list_requests()), "request history too"
 
 
 def test_collector_reports_each_failure_once(tmp_path):

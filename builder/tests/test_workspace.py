@@ -241,3 +241,18 @@ def test_digest_compares_models(app, client):
                                              for i, (m, tg) in enumerate([("a", 40.0), ("a", 42.0), ("b", 60.0)])])
     d = client.get("/api/assistant/digest").get_json()["digest"]
     assert "Model speeds last 30d (compare models): b: gen 60.0 t/s" in d and "a: gen 41.0 t/s" in d
+
+
+def test_benchmark_runs_of_engine_models_are_named_by_their_profile(app, client):
+    store = app.extensions["pb"].store
+    client.put("/api/settings/always", json={"env": "HSA_OVERRIDE_GFX_VERSION=9.0.6", "flags": "--no-warmup"})
+    client.post("/api/profiles", json={"name": "fast 32k", "base_model": "a",
+                                       "launch_command": "llama-server -m /m/a.gguf -c 32768 -fa on --port 8080"})
+    run = {"created_at": 1.0, "base_model": "a", "profile_name": "", "success": 1, "tokens_per_second": 9.0}
+    # the engine ran the profile with Always set added and its own port: still that profile
+    store.add_run({**run, "run_id": "r1", "launch_id": "engine:a",
+                   "launch_command": "HSA_OVERRIDE_GFX_VERSION=9.0.6 llama-server -m /m/a.gguf -c 32768 -fa on --port 5801 --no-warmup"})
+    store.add_run({**run, "run_id": "r2", "launch_id": "engine:a--long", "launch_command": "llama-server -m /m/a.gguf -c 131072"})
+    store.add_run({**run, "run_id": "r3", "launch_id": "engine:a", "launch_command": "llama-server -m /m/a.gguf -c 4096"})
+    names = {r["run_id"]: r["profile_name"] for r in client.get("/api/runs").get_json()["runs"]}
+    assert names == {"r1": "fast 32k", "r2": "long", "r3": ""}, "r3 is the model's own command"

@@ -1022,6 +1022,12 @@ class Store:
     def gpu_hourly(self, since: float) -> list[dict]:
         return self._q("SELECT * FROM gpu_hourly WHERE hour>=? ORDER BY hour, gpu", (since,))
 
+    def prune_requests(self, before: float) -> None:
+        """Delete the request history older than ``before``."""
+        with self._lock:
+            self._conn.execute("DELETE FROM requests WHERE ts < ?", (before,))
+            self._conn.commit()
+
     def prune_gpu(self, before: float) -> None:
         """Delete every GPU reading older than ``before``: the raw samples and the hourly rollups."""
         with self._lock:
