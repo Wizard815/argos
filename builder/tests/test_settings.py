@@ -21,7 +21,7 @@ def test_defaults_overrides_and_coercion(tmp_path):
 
 def test_settings_routes(client):
     j = client.get("/api/settings").get_json()["settings"]
-    assert set(j) == {"paths", "integrations", "always", "odysseus", "memory", "builder", "prefab", "downloads", "telemetry", "assistant", "kv", "gpu"}
+    assert set(j) == {"paths", "integrations", "always", "odysseus", "memory", "builder", "prefab", "downloads", "telemetry", "assistant", "kv", "gpu", "playground"}
     assert client.put("/api/settings/builder", json={"command_format": "plain"}).get_json()["ok"]
     assert client.post("/api/command/parse", json={"command": "llama-server -m a.gguf"}).get_json()["command"] == \
         "llama-server -m a.gguf"

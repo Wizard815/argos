@@ -70,6 +70,8 @@ def bench_preview():
 def bench_start():
     """Start a run: ``{profile_id | command, params, server_id, unload_first}``."""
     c, d = ctx(), body()
+    if not (c.settings.get("playground") or {}).get("llama_bench", True):
+        return err("llama-bench is turned off in Settings → Playground", 409)
     try:
         command, meta = _base_command(c, d)
         argv, env = build(d.get("params") or {}, command, _server_parts(c, str(d.get("server_id") or "")))
