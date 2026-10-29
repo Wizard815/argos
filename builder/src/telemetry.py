@@ -255,9 +255,10 @@ class Collector:
         self.store.add_gpu_samples(rows)
         note_cards(rows)  # AMD or NVIDIA, for the Builder's GPU pick
         self.sync_activity()
-        if now - self._last_rollup > 600:
-            days = self.settings()["telemetry"].get("raw_days") or 14
-            self.store.rollup_gpu(now, keep_raw_s=days * 86400)
+        if now - self._last_rollup > 60:
+            minutes = self.settings()["telemetry"].get("keep_minutes") or 120
+            self.store.prune_gpu(now - minutes * 60)
+            self.store.prune_requests(now - minutes * 60)
             self._last_rollup = now
 
     def sync_activity(self) -> int:
