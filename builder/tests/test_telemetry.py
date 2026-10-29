@@ -60,7 +60,7 @@ def test_engine_readers():
 
 
 def settings_for(url, source="auto"):
-    return lambda: {"telemetry": {"enabled": True, "interval_s": 15, "raw_days": 14, "source": source},
+    return lambda: {"telemetry": {"enabled": True, "interval_s": 15, "keep_minutes": 120, "source": source},
                     "integrations": {"engine_url": url}}
 
 
@@ -82,11 +82,9 @@ def test_collector_stores_samples_activity_and_rollups(tmp_path):
         assert {r["model"] for r in store.list_requests()} == {"qwen3.6-35b", "fresh"}
     stats = {r["model"]: r for r in store.request_stats(0)}
     assert stats["qwen3.6-35b"]["requests"] == 4 and stats["qwen3.6-35b"]["errors"] == 1
-    hourly = store.gpu_hourly(0)
-    assert [(h["gpu"], h["util_max"]) for h in hourly] == [(0, 99), (1, 0)]  # the older hour got rolled up
     assert {r["gpu"] for r in store.gpu_latest()} == {0, 1}
-    store.rollup_gpu(now=now + 30 * 86400, keep_raw_s=86400)
-    assert store.gpu_summary(0) == [] and len(store.gpu_hourly(0)) == 4  # raw expired, rollups kept
+    col.tick(now=now + 3 * 3600)  # three hours on: everything before the last two is gone
+    assert all(r["t"] >= now + 3600 - 1 for r in store.gpu_series(0, 1)) and store.gpu_hourly(0) == []
 
 
 def test_collector_reports_each_failure_once(tmp_path):
@@ -99,6 +97,17 @@ def test_collector_reports_each_failure_once(tmp_path):
     assert len([e for e in events if e.startswith("GPU sampling")]) == 1
 
 
+def test_old_gpu_readings_are_deleted(tmp_path):
+    store = Store(str(tmp_path / "p.db"))
+    now = time.time()
+    store.add_gpu_samples([{"ts": now - 3 * 3600, "gpu": 0, "name": "g", "util": 1, "source": "t"},
+                           {"ts": now - 60, "gpu": 0, "name": "g", "util": 2, "source": "t"}])
+    store.rollup_gpu(now=now)
+    store.prune_gpu(now - 2 * 3600)
+    assert [r["util"] for r in store.gpu_series(0, 1)] == [2]
+    assert all(h["hour"] >= now - 3 * 3600 for h in store.gpu_hourly(0)), "rollups older than the window go too"
+
+
 def test_log_routes(client, app):
     store = app.extensions["pb"].store
     now = time.time()
@@ -108,7 +117,10 @@ def test_log_routes(client, app):
     store.add_requests([{"source_id": 1, "ts": now, "model": "m", "tokens_per_second": 10.0}])
     s = client.get("/api/gpu/series?range=1h").get_json()
     assert s["source"] == "raw" and s["rows"][0]["util"] == 50 and s["latest"][0]["gpu"] == 0
-    assert client.get("/api/gpu/series?range=1y").get_json()["source"] == "hourly"
+    # the page asks for 2 s buckets, then only what is newer than what it has
+    fine = client.get("/api/gpu/series?range=1h&bucket=2").get_json()
+    assert fine["bucket"] == 2 and len(fine["rows"]) == 1
+    assert client.get(f"/api/gpu/series?range=1h&bucket=2&since={now}").get_json()["rows"] == []
     assert client.get("/api/gpu/series?range=2w").status_code == 400
     assert client.get("/api/events?level=error").get_json()["events"][0]["message"] == "boom"
     assert client.get("/api/events?q=nothing").get_json()["events"] == []
