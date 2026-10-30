@@ -64,3 +64,59 @@ def test_Bench_can_be_turned_off_in_settings(client):
     assert client.put("/api/settings/playground", json={"llama_bench": False}).status_code == 200
     r = client.post("/api/bench", json={"command": "llama-server -m /m/x.gguf", "params": {"model": "/m/x.gguf"}})
     assert r.status_code == 409 and "Settings" in r.get_json()["error"]
+
+
+def test_Bench_a_running_model_runs_the_tests_as_requests():
+    import time
+
+    from src.bench import Benches, ServerBench, server_tests
+
+    assert server_tests({"n_prompt": "512,1024", "n_gen": "64", "pg": "256,32", "depth": "0,4096"}) == [
+        ("pp", 512, 0, 0), ("pp", 1024, 0, 0), ("tg", 0, 64, 0), ("pg", 256, 32, 0),
+        ("pp", 512, 0, 4096), ("pp", 1024, 0, 4096), ("tg", 0, 64, 4096), ("pg", 256, 32, 4096)]
+    calls = []
+
+    def post(path, payload):
+        calls.append((path, payload))
+        if path == "/tokenize":
+            return {"tokens": list(range(5000))}
+        n = len(payload["prompt"])
+        return {"timings": {"prompt_n": n, "prompt_ms": n / 2, "prompt_per_second": 2000.0,
+                            "predicted_n": payload["n_predict"], "predicted_ms": payload["n_predict"] * 20, "predicted_per_second": 50.0}}
+
+    saved = []
+    benches = Benches(on_done=saved.append)
+    run = benches.start_server(ServerBench("http://x/upstream/m", post=post), {"n_prompt": "128", "n_gen": "16", "depth": "0,1000", "repetitions": "2"},
+                               {"base_model": "m", "command": "llama-server -m /m/m.gguf"}, "/m/m.gguf")
+    deadline = time.time() + 5
+    while run.running and time.time() < deadline:
+        time.sleep(0.01)
+    assert run.exit_code == 0 and saved == [run]
+    assert [(r["test"], round(r["avg_ts"])) for r in run.results] == [("pp128", 2000), ("tg16", 50), ("pp128 @ d1000", 2000), ("tg16 @ d1000", 50)]
+    comp = [p for path, p in calls if path == "/completion"]
+    assert all(p["cache_prompt"] and p["id_slot"] == 0 for p in comp)
+    pp = [p for p in comp if p["n_predict"] == 0 and len(p["prompt"]) == 128]
+    assert len(pp) == 2 and pp[0]["prompt"] != pp[1]["prompt"], "each repetition reads new text, never the cache"
+    deep = [p for p in comp if len(p["prompt"]) == 1000]
+    assert deep and all(p["n_predict"] == 0 for p in deep), "the depth is read into the cache before each test at depth"
+    assert all(p["prompt"][:1000] == deep[0]["prompt"] for p in comp if len(p["prompt"]) > 1000)
+
+    from src.bench import run_rows
+    rows = run_rows(run)
+    assert rows[0]["launch_command"] == "llama-server -m /m/m.gguf" and rows[0]["log_source"] == "server-bench"
+
+
+def test_Bench_lists_and_starts_on_a_running_model(client, app, monkeypatch):
+    from src.routes import bench as routes
+
+    monkeypatch.setattr(routes, "_running", lambda c: [{"id": "engine:m", "label": "m", "where": "engine", "url": "http://x/upstream/m",
+                                                         "command": "llama-server -m /m/m.gguf", "base_model": "m", "profile_name": ""}])
+    started = {}
+    monkeypatch.setattr(app.extensions["pb"].benches, "start_server",
+                        lambda bench, params, meta, model_file: started.update(url=bench.base, file=model_file) or
+                        type("R", (), {"bench_id": "b1", "to_dict": lambda self: {"bench_id": "b1"}})())
+    assert client.get("/api/bench/running").get_json()["running"][0] == {
+        "id": "engine:m", "label": "m", "where": "engine", "command": "llama-server -m /m/m.gguf", "base_model": "m", "profile_name": ""}
+    assert client.post("/api/bench", json={"running": "engine:nope"}).status_code == 404
+    r = client.post("/api/bench", json={"running": "engine:m", "params": {"n_prompt": "512"}})
+    assert r.status_code == 200 and started == {"url": "http://x/upstream/m", "file": "/m/m.gguf"}
