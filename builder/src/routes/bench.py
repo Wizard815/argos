@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from flask import Blueprint, request
 
-from ..bench import build, params_from_command
+from urllib.parse import quote
+
+from ..bench import ServerBench, build, params_from_command
 from ..gpu_pick import resolve as resolve_gpus
 from ..command import parse_command
 from ..servers import launch_parts
@@ -39,6 +41,30 @@ def _server_parts(c, server_id: str):
     return launch_parts(server, c.servers.key_path(server["id"]) if c.servers.has_key(server["id"]) else "")
 
 
+def _running(c) -> list[dict]:
+    """Models up now that a benchmark can use without restarting them: the engine's, and launches here."""
+    from .core import _engine_profile, _engine_running
+    url = c.settings.get("integrations")["engine_url"]
+    out = []
+    for m in _engine_running(c):
+        if m.get("ready"):
+            base, profile = _engine_profile(c, m["base_model"], m["command"]) if m["command"] else (m["base_model"], "")
+            out.append({"id": m["launch_id"], "label": m["base_model"] + (f" · {profile}" if profile else ""), "where": "engine",
+                        "url": url.rstrip("/") + "/upstream/" + quote(m["base_model"], safe=""), "command": m["command"],
+                        "base_model": base, "profile_name": profile})
+    for r in c.runner.list():
+        if r.running:
+            out.append({"id": r.launch_id, "label": r.profile_name or r.base_model or r.launch_id, "where": f"port {r.port}",
+                        "url": c.runner._url(r, ""), "command": r.command, "base_model": r.base_model, "profile_name": r.profile_name})
+    return out
+
+
+@bp.get("/api/bench/running")
+def bench_running():
+    """What the "a model that is running" choice lists."""
+    return ok(running=[{k: v for k, v in m.items() if k != "url"} for m in _running(ctx())])
+
+
 @bp.get("/api/bench/defaults")
 def bench_defaults():
     """The settings a profile (or command) implies, to fill the form."""
@@ -72,6 +98,23 @@ def bench_start():
     c, d = ctx(), body()
     if not (c.settings.get("playground") or {}).get("llama_bench", True):
         return err("llama-bench is turned off in Settings → Playground", 409)
+    if d.get("running"):  # a model that is up: its tests as requests to it, nothing unloaded or restarted
+        m = next((x for x in _running(c) if x["id"] == d["running"]), None)
+        if not m:
+            return err("that model is not running (or not ready yet)", 404)
+        try:
+            cmd = parse_command(m["command"]) if m["command"] else None
+        except ValueError:
+            cmd = None
+        model_file = cmd.summary()["model"] if cmd else ""
+        meta = {"profile_name": m["profile_name"], "base_model": m["base_model"], "command": m["command"],
+                "params": d.get("params") or {}, "running": m["id"]}
+        try:
+            run = c.benches.start_server(ServerBench(m["url"]), d.get("params") or {}, meta, model_file)
+        except (RuntimeError, ValueError) as exc:
+            return err(str(exc), 409)
+        c.event("bench", f"benchmark of the running {m['label']} started (no restart)", data={"bench_id": run.bench_id})
+        return ok(bench=run.to_dict())
     try:
         command, meta = _base_command(c, d)
         argv, env = build(d.get("params") or {}, command, _server_parts(c, str(d.get("server_id") or "")))

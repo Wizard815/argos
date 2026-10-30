@@ -1390,12 +1390,15 @@ function fillProfileSelect() {
 // llama.cpp's own benchmark: prompt reading (pp) and generation (tg) at the sizes asked for, at a depth of
 // context already in the cache, across sweeps of settings (every field takes a comma list). It runs where the
 // model runs: beside llama-server here, or in the llama.cpp container over SSH. Results go to Benchmarks.
-const BN = { params: { n_prompt: "512", n_gen: "128", depth: "0", repetitions: "3" }, env: {}, source: "", server: "", run: null, servers: null, built: false };
+const BN = { params: { n_prompt: "512", n_gen: "128", depth: "0", repetitions: "3" }, env: {}, source: "", server: "", run: null, servers: null, built: false,
+  mode: (() => { try { return localStorage.getItem("argos.bench.mode") || "load"; } catch (e) { return "load"; } })(), running: "", runningList: [] };
+// a running model is benchmarked through requests: only the test sizes apply, its settings are the ones it runs with
+const BN_RUNNING_FIELDS = new Set(["n_prompt", "n_gen", "pg", "depth", "repetitions"]);
 const BN_FIELDS = [
   ["model", "Model file (-m)", "/app/models/…/model.gguf", "wide"],
   ["n_prompt", "Prompt sizes (-p)", "512", "comma list: 512,4096"],
   ["n_gen", "Generate (-n)", "128", ""],
-  ["pg", "Prompt + generate (-pg)", "4096,128", "one test reading N then writing M"],
+  ["pg", "Prompt + generate (-pg)", "4096,128", "reading N then writing M; more pairs with ;"],
   ["depth", "Context already in (-d)", "0,16384,65536", "speed once this much is in the chat"],
   ["repetitions", "Repetitions (-r)", "3", ""],
   ["n_gpu_layers", "GPU layers (-ngl)", "99", ""],
@@ -1418,9 +1421,17 @@ function bnBody() {
   delete params.gpus;
   for (const k of Object.keys(params.env)) if (/VISIBLE_DEVICES$/.test(k)) delete params.env[k];
   if (gpus) params.env[bnGpuVar()] = gpus;
+  if (BN.mode === "running") return { running: BN.running, params };
   return { profile_id: BN.source && BN.source !== "custom" ? BN.source : "", params, server_id: BN.server, unload_first: $("#bnUnload").checked };
 }
 const bnPreview = debounce(async () => {
+  if (BN.mode === "running") {
+    const m = BN.runningList.find((x) => x.id === BN.running);
+    $("#bnCmd").textContent = m ? `Requests to ${m.label} (${m.where}), with the settings it is running with. Nothing is unloaded or restarted. `
+      + "Each test reads exactly that many tokens or writes that many; a depth is read into its cache first, so a test times only its own part."
+      : "No model is running. Load one (Schedule, or the Server tab), then pick it here.";
+    return;
+  }
   try {
     const r = await api("POST", "/api/bench/preview", bnBody());
     const env = Object.entries(r.env || {}).filter(([k]) => !/_SSH_/.test(k)).map(([k, v]) => `${k}=${v}`).join(" ");
@@ -1443,6 +1454,28 @@ async function bnFrom(source) {
   bnPreview();
 }
 function renderBenchForm() {
+  const mode = h("select", { "aria-label": "What to benchmark" },
+    h("option", { value: "load" }, "Load its own copy (llama-bench)"), h("option", { value: "running" }, "A model that is running (no restart)"));
+  mode.value = BN.mode;
+  mode.onchange = async () => {
+    BN.mode = mode.value;
+    try { localStorage.setItem("argos.bench.mode", BN.mode); } catch (e) { /* private window */ }
+    if (BN.mode === "running") await bnLoadRunning();
+    renderBenchForm(); bnPreview();
+  };
+  $("#bnUnload").closest("label").hidden = BN.mode === "running";
+  if (BN.mode === "running") {
+    const pick = h("select", { "aria-label": "Running model" }, BN.runningList.length
+      ? BN.runningList.map((m) => h("option", { value: m.id }, `${m.label} · ${m.where}`)) : h("option", { value: "" }, "nothing is running"));
+    pick.value = BN.running;
+    pick.onchange = () => { BN.running = pick.value; bnPreview(); };
+    fill($("#bnFields"),
+      h("label", { class: "field" }, h("span", {}, "Benchmark"), mode),
+      h("label", { class: "field" }, h("span", {}, "Running model"), h("div", { class: "row", style: "gap:6px" }, pick,
+        btn("", async () => { await bnLoadRunning(); renderBenchForm(); bnPreview(); }, "sm ghost", "refresh"))),
+      BN_FIELDS.filter(([k]) => BN_RUNNING_FIELDS.has(k)).map(bnField));
+    return;
+  }
   const src = h("select", { "aria-label": "Start from" }, h("option", { value: "custom" }, "A model file (type it below)"),
     h("optgroup", { label: "Profiles: their settings" }, (S.profiles || []).map((p) => h("option", { value: p.profile_id }, p.name))));
   src.value = BN.source || "custom";
@@ -1452,27 +1485,34 @@ function renderBenchForm() {
   srv.value = BN.server;
   srv.onchange = () => { BN.server = srv.value; bnPreview(); };
   fill($("#bnFields"),
+    h("label", { class: "field" }, h("span", {}, "Benchmark"), mode),
     h("label", { class: "field" }, h("span", {}, "Start from"), src),
     h("label", { class: "field" }, h("span", {}, "Run on"), srv),
-    BN_FIELDS.map(([k, label, ph, hint, wide]) => {
-      const input = h("input", { type: "text", value: BN.params[k] ?? "", placeholder: ph, spellcheck: "false" });
-      input.addEventListener("input", () => { BN.params[k] = input.value; bnPreview(); });
-      return h("label", { class: `field${wide === "wide" || hint === "wide" ? " wide" : ""}` }, h("span", {}, label), input,
-        hint && hint !== "wide" ? h("span", { class: "muted mono-sm" }, hint) : null);
-    }));
+    BN_FIELDS.map(bnField));
+}
+function bnField([k, label, ph, hint, wide]) {
+  const input = h("input", { type: "text", value: BN.params[k] ?? "", placeholder: ph, spellcheck: "false" });
+  input.addEventListener("input", () => { BN.params[k] = input.value; bnPreview(); });
+  return h("label", { class: `field${wide === "wide" || hint === "wide" ? " wide" : ""}` }, h("span", {}, label), input,
+    hint && hint !== "wide" ? h("span", { class: "muted mono-sm" }, hint) : null);
+}
+async function bnLoadRunning() {
+  try { BN.runningList = (await api("GET", "/api/bench/running")).running; } catch (e) { BN.runningList = []; }
+  if (!BN.runningList.some((m) => m.id === BN.running)) BN.running = (BN.runningList[0] || {}).id || "";
 }
 async function loadBenchTab() {
   if (!BN.built) {
     BN.built = true;
     try { BN.servers = (await api("GET", "/api/servers")).servers; } catch (e) { BN.servers = []; }
     if (!S.profiles || !S.profiles.length) await loadProfiles();
+    if (BN.mode === "running") await bnLoadRunning();
     renderBenchForm();
     bnPreview();
     $("#bnRun").onclick = async () => {
       try {
         const r = await api("POST", "/api/bench", bnBody());
         BN.run = r.bench;
-        toast("llama-bench started.", "ok");
+        toast(BN.mode === "running" ? "Benchmark started on the running model." : "llama-bench started.", "ok");
       } catch (e) { fail(e); }
       renderBench();
       loadBenchRuns();
@@ -1536,7 +1576,7 @@ function renderBench() {
       h("span", { class: "muted mono-sm" }, `± ${num(x.stddev_ts || 0, 1)}`)) },
     { label: "", cell: (x) => h("td", { class: "bar-cell" }, h("div", { class: "bar", style: "width:120px" }, h("i", { style: `width:${Math.round((x.avg_ts / (best[x.kind] || 1)) * 100)}%;background:${x.kind === "tg" ? "var(--green)" : "var(--red)"}` }))) },
     ...knobs.map(([k, l]) => ({ label: l, cell: (x) => String(x[k] ?? DASH) })),
-  ], rows, { key: null }, r && r.running ? "Waiting for the first result… (llama-bench loads the model first)" : "No results.");
+  ], rows, { key: null }, r && r.running ? (r.meta && r.meta.mode === "running" ? "Waiting for the first result…" : "Waiting for the first result… (llama-bench loads the model first)") : "No results.");
 }
 
 // Playground is for testing: it lists only what was started from it. Everything else the engine is running
