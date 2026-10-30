@@ -1005,14 +1005,29 @@ function builderAssistToggle() {
 function builderActionEl(a) {
   // A model action (load, unload, keep) is the same button wherever it appears.
   if (a.verb === "load" || a.verb === "unload" || a.verb === "keep") return actionEl(a);
-  const label = a.verb === "unset" ? `Remove ${a.flag}` : `Set ${a.flag}${a.value ? " " + a.value : ""}`;
-  const btn = h("button", { class: "btn sm" }, "Apply");
+  const label = a.verb === "describe" ? `Flags page: ${a.flag} — ${a.value}`
+    : a.verb === "unset" ? `Remove ${a.flag}` : `Set ${a.flag}${a.value ? (a.kind === "env" ? "=" : " ") + a.value : ""}`;
+  const btn = h("button", { class: "btn sm" }, a.verb === "describe" ? "Add" : "Apply");
   const row = h("div", { class: "assistant-action", style: "display:flex;gap:8px;align-items:center;margin-top:6px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;" },
     h("span", { style: "flex:1;min-width:0;font-size:12px" }, label), btn);
   btn.onclick = async () => {
     btn.disabled = true; btn.textContent = "…";
     try {
-      await edit({ [String(a.flag).replace(/^-+/, "")]: a.verb === "unset" ? null : (a.value || true) });
+      if (a.verb === "describe") {
+        // a row you have not got yet is added; one already there gets this description
+        const kind = a.kind || (String(a.flag).startsWith("-") ? "flag" : "env");
+        await api("POST", `/api/flags/${kind}/describe`, { name: a.flag, description: a.value });
+        btn.textContent = "Done"; row.style.opacity = "0.6";
+        toast(`${a.flag} is on the Flags page with that description.`, "ok");
+        return;
+      }
+      if (a.kind === "env") {
+        const env = { ...(B.parsed.env || {}) };
+        if (a.verb === "unset") delete env[a.flag]; else env[a.flag] = a.value;
+        await edit({}, env);
+      } else {
+        await edit({ [String(a.flag).replace(/^-+/, "")]: a.verb === "unset" ? null : (a.value || true) });
+      }
       btn.textContent = "Done"; row.style.opacity = "0.6";
       toast(`${label} — applied to the command`, "ok");
     } catch (e) { btn.disabled = false; btn.textContent = "Apply"; fail(e); }
@@ -1912,7 +1927,7 @@ function renderPerf() {
     { key: "base_model", label: PF.grouped ? "Profile" : "Model", cell: (r) => h("td", { class: "cell-model", title: r.launch_command },
       h("div", { class: "cell-main" }, PF.grouped ? r.profile_name || "(no profile)" : r.base_model),
       h("div", { class: "cell-sub" }, [PF.grouped ? null : r.profile_name, r.input_tokens ? `${num(r.input_tokens, 0)} in / ${num(r.output_tokens, 0)} out` : null].filter(Boolean).join(" · "))) },
-    { key: "prompt_per_second", label: "Prefill t/s", num: true, cell: (r) => num(r.prompt_per_second, 0) },
+    { key: "prompt_per_second", label: "Prefill t/s", num: true, cell: (r) => prefillCell(r.prompt_per_second, r.prefill_high_tps, r.prefill_low_tps) },
     { key: "tokens_per_second", label: "Decode t/s", num: true, cell: (r) => tpsBar(r.tokens_per_second, maxTps) },
     { key: "n_ctx", label: "Ctx", num: true, cell: (r) => (r.n_ctx ? `${num(r.n_ctx / 1024, 0)}k` : DASH) },
     { label: "Settings", cell: (r) => h("td", { class: "settings-cell", title: r.layers_offloaded ? `layers on GPU: ${r.layers_offloaded}` : "" }, h("div", { class: "chips" }, settingChips({ ...r, n_ctx: null }))) },
@@ -2124,6 +2139,22 @@ function renderFlagsTable() {
           if (await confirmBox(msg, r.raw.custom ? "Delete" : "Remove")) act(r, "DELETE");
         }, "danger")]) },
   ], rows, flagSort, FLAGS.showRemoved ? "Nothing removed." : "No matches.");
+}
+
+/** Paste a command or KEY=VALUE line: every flag and variable in it that is not on the list yet is added. */
+function flagImport() {
+  const text = h("textarea", { rows: 4, spellcheck: "false", placeholder: "GGML_SCHED_N_COPIES=1 HIP_VISIBLE_DEVICES=0,1 HSA_ENABLE_SDMA=0 llama-server --no-warmup -lm dio" });
+  modal("Paste several", h("div", { class: "stack" },
+    h("p", { class: "hint", style: "margin:0" }, "A whole command, or just the variables. Each one not on the page is added with no description yet: ask the Builder's assistant to describe them, or edit each row."),
+    text), [
+    { label: "Cancel", run: (c) => c() },
+    { label: "Add them", cls: "primary", icon: "plus", run: async (c) => {
+      try {
+        const r = await api("POST", "/api/flags/import", { text: text.value });
+        c(); loadEnv();
+        toast(r.added.length ? `Added ${r.added.join(", ")}.${r.known.length ? ` Already listed: ${r.known.join(", ")}.` : ""}` : "Everything there is already on the page.", "ok");
+      } catch (e) { fail(e); }
+    } }]);
 }
 
 /** Add a flag or variable (no row), or edit one. Profiles are not changed: this is the reference list. */
@@ -2912,7 +2943,7 @@ async function loadGpuRequests() {
   }
   if (!tog.checked) return fill(box);
   let r;
-  try { r = await api("GET", "/api/requests/recent?limit=25"); } catch (e) { return fill(box, h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); }
+  try { r = await api("GET", `/api/requests/recent?limit=${Math.max(reqShow(), 1)}`); } catch (e) { return fill(box, h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); }
   fill(box, requestsCard(r.requests, r.in_flight, { running: r.running, hint: r.source === "engine" ? "newest first · live from the engine" : "newest first · as last synced" }));
 }
 
@@ -2943,7 +2974,7 @@ async function loadRequests() {
     { key: "ts", label: "When", cell: (r) => h("span", { class: "muted", title: new Date(r.ts * 1000).toLocaleString() }, ago(r.ts)) },
     { key: "model", label: "Model", cell: (r) => r.model || DASH },
     { key: "tokens_per_second", label: "Gen t/s", num: true, cell: (r) => num(r.tokens_per_second, 1) },
-    { key: "prompt_per_second", label: "Prompt t/s", num: true, cell: (r) => num(r.prompt_per_second, 0) },
+    { key: "prompt_per_second", label: "Prompt t/s", num: true, cell: (r) => prefillCell(r.prompt_per_second, r.prefill_high_tps, r.prefill_low_tps) },
     { label: "In / out", num: true, cell: (r) => `${num(r.input_tokens, 0)} / ${num(r.output_tokens, 0)}` },
     { key: "duration_ms", label: "Time", num: true, cell: (r) => (r.duration_ms ? `${num(r.duration_ms / 1000, 1)} s` : DASH) },
     { key: "status", label: "Status", cell: (r) => (r.status || r.error ? h("span", { class: `pill ${r.status >= 400 || r.error ? "bad" : "ok"}`, title: r.error || "" }, String(r.status || "error"))
@@ -4194,6 +4225,12 @@ function modelCell(main, sub, title) {
   return h("td", { class: "cell-model", title: title || main }, h("div", { class: "cell-main" }, main), sub ? h("div", { class: "cell-sub" }, sub) : null);
 }
 /** "62 – 205" lowest to highest speed, over 90 days of requests and benchmarks. */
+/** Prefill as the average, with the fastest stretch (the start of the prompt) and the slowest (the end) under it. */
+function prefillCell(avg, high, low, cls = "num") {
+  const range = high || low ? h("div", { class: "cell-sub nowrap", title: "Within the prompt: fastest stretch (the start) ↑ and slowest (the end, with the context full) ↓, between llama-server's progress reports. The big number is the average." },
+    `↑${num(high, 0)} ↓${num(low, 0)}`) : null;
+  return h("td", { class: cls }, avg == null || avg === 0 ? DASH : num(avg, 0), range);
+}
 function speedRange(r, d) {
   if (!r) return DASH;
   return h("td", { class: "num nowrap", title: `lowest ${num(r.min, d)} · highest ${num(r.max, d)} t/s over ${r.n} requests and benchmarks (90 days)` },
@@ -4212,7 +4249,14 @@ function renderInvModels() {
       [m.open ? "● loaded" : null, m.origin, m.arch, !m.present ? "gone" : null].filter(Boolean).join(" · "), m.model_id) },
     { label: "Settings seen", cell: (m) => chips([...m.quants, ...m.cache.map((c) => `kv ${c}`), ...m.split_modes.map((x) => `sm ${x}`), ...m.spec_types].slice(0, 6)) },
     { label: "GPUs", cell: (m) => (m.gpus.length ? m.gpus.join(",") : DASH) },
-    { key: "prefill", label: "Prefill t/s", num: true, sort: (m) => (m.prefill ? m.prefill.max : 0), cell: (m) => speedRange(m.prefill, 0) },
+    { key: "prefill", label: "Prefill t/s", num: true, sort: (m) => (m.prefill ? m.prefill.max : 0), cell: (m) => {
+      const td = speedRange(m.prefill, 0), st = m.prefill_stretch;
+      if (!st || !(st.high || st.low)) return td;
+      const cell = td === DASH ? h("td", { class: "num nowrap" }, DASH) : td;
+      cell.append(h("div", { class: "cell-sub nowrap", title: "Within one prompt: the fastest stretch seen (the start) ↑ and the slowest (the end, the context full) ↓, over 90 days" },
+        `↑${num(st.high, 0)} ↓${num(st.low, 0)}`));
+      return cell;
+    } },
     { key: "loaded", label: "Loaded", num: true, sort: (m) => m.loaded_seconds, cell: (m) => (m.loaded_seconds ? dur(m.loaded_seconds) : DASH) },
     { key: "last", label: "Last", sort: (m) => m.last_loaded || 0, cell: (m) => h("td", { class: "nowrap" }, ago(m.last_loaded)) },
     { key: "vram", label: "VRAM", num: true, sort: (m) => m.vram_gib_avg || 0, cell: (m) => (m.vram_gib_avg ? `${num(m.vram_gib_avg)} GiB` : DASH) },
@@ -4733,7 +4777,7 @@ function syncPlanForm() {
 const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], answer_first: [...SC.answerFirst], one_at_a_time: [...SC.oneAtATime], sizes: SC.sizes });
 
 async function loadLive() {
-  try { SC.live = await api("GET", "/api/schedule/live"); } catch (e) { SC.live = { connected: false, error: e.message, pool: null }; }
+  try { SC.live = await api("GET", `/api/schedule/live?requests=${Math.max(reqShow(), 1)}`); } catch (e) { SC.live = { connected: false, error: e.message, pool: null }; }
   if (S.view === "schedule" && SC.pane === "live") renderLive();
   refreshScheduleNav();
 }
@@ -4773,8 +4817,12 @@ const bytesShort = (b) => (b < 1024 ? `${b} B` : b < 1048576 ? `${num(b / 1024, 
 setInterval(() => {
   for (const el of document.querySelectorAll("[data-run-start]")) el.textContent = runClock(Date.now() - Number(el.dataset.runStart));
 }, 500);
+// how many finished requests the Requests card lists (0: only the ones running); remembered per browser
+const REQ_SHOW = [[0, "running only"], [5, "5"], [10, "10"], [25, "25"], [50, "50"], [100, "100"]];
+const reqShow = () => { try { const v = localStorage.getItem("argos.requests.show"); return v == null ? 25 : Number(v); } catch (e) { return 25; } };
 function requestsCard(rows, inFlight, opts = {}) {
-  rows = rows || [];
+  const args = [rows, inFlight, opts];
+  rows = (rows || []).slice(0, reqShow());
   const now = Date.now();
   for (const r of rows) if (!seenReq.at.has(r.source_id)) seenReq.at.set(r.source_id, seenReq.primed ? now : 0);
   seenReq.primed = true;
@@ -4818,7 +4866,8 @@ function requestsCard(rows, inFlight, opts = {}) {
     h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
     h("td", { class: "num", title: "the prompt's length, once its slot reports it" }, slotFor[r.id]?.total ? num(slotFor[r.id].total, 0) : DASH),
     h("td", { class: "num", title: "tokens of the answer so far (or bytes sent back)" }, slotFor[r.id]?.generated ? num(slotFor[r.id].generated, 0) : r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
-    h("td", { class: "num" }, slotFor[r.id]?.tokens_per_second ? num(slotFor[r.id].tokens_per_second, 0) : DASH),
+    slotFor[r.id]?.tokens_per_second ? prefillCell(slotFor[r.id].tokens_per_second, slotFor[r.id].high_tokens_per_second, slotFor[r.id].low_tokens_per_second)
+      : h("td", { class: "num" }, DASH),
     h("td", { class: "num" }, slotFor[r.id]?.gen_tokens_per_second ? num(slotFor[r.id].gen_tokens_per_second, 1) : DASH),
     h("td", { class: "num", "data-run-start": String(Date.now() - (r.elapsed_ms || 0)) }, runClock(r.elapsed_ms || 0)),
     h("td", { class: "nowrap" }, (([label, why]) => h("span", { class: `pill ${label === "waiting" || label === "held" ? "" : "warn"}`, title: why }, label))(status(r)),
@@ -4838,17 +4887,25 @@ function requestsCard(rows, inFlight, opts = {}) {
       h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
       h("td", { class: "num" }, n(r.input_tokens, 0)),
       h("td", { class: "num" }, n(r.output_tokens, 0)),
-      h("td", { class: "num" }, n(r.prompt_per_second, 0)),
+      failed ? h("td", { class: "num" }, DASH) : prefillCell(r.prompt_per_second, r.prefill_high_tps, r.prefill_low_tps),
       h("td", { class: "num" }, n(r.tokens_per_second, 1)),
       h("td", { class: "num" }, r.duration_ms == null ? DASH : r.duration_ms < 1000 ? `${num(r.duration_ms, 0)} ms` : `${num(r.duration_ms / 1000, 1)} s`),
       h("td", {}, r.status >= 400 || r.error ? h("span", { class: "pill bad", title: r.error || "" }, String(r.status || "error"))
         : r.status ? h("span", { class: "pill ok" }, String(r.status)) : DASH));
     }))))
     : h("div", { class: "empty" }, "No requests yet. Chat, embeddings, a benchmark or a transcription through the engine shows up here as soon as it starts.");
-  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Requests"),
+  const show = h("select", { "aria-label": "How many to show", title: "How many finished requests to list; the running ones are always shown", style: "width:auto" },
+    REQ_SHOW.map(([v, l]) => h("option", { value: String(v), selected: v === reqShow() }, l)));
+  const card = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Requests"),
     running.length ? h("span", { class: "row", style: "gap:6px;margin-left:10px" },
       running.map(([m, n]) => h("span", { class: "pill warn", title: "requests the GPU is working on now" }, `${m} · ${n} running`))) : null,
-    h("span", { class: "spacer" }), h("span", { class: "hint" }, opts.hint || "newest first · live from the engine")), table);
+    h("span", { class: "spacer" }), h("span", { class: "hint" }, opts.hint || "newest first · live from the engine"),
+    h("label", { class: "row", style: "gap:6px;margin-left:10px" }, h("span", { class: "hint", style: "margin:0" }, "Show"), show)), table);
+  show.onchange = () => {
+    try { localStorage.setItem("argos.requests.show", show.value); } catch (e) { /* private window */ }
+    card.replaceWith(requestsCard(...args));  // at once, from what is here; the next refresh fetches as many
+  };
+  return card;
 }
 
 // ----- live ------------------------------------------------------------------------------
@@ -5678,6 +5735,7 @@ function boot() {
     renderFlagsTable();
   });
   $("#flagAdd").onclick = () => flagForm();
+  $("#flagImport").onclick = flagImport;
   $("#flagRemoved").onclick = () => { FLAGS.showRemoved = !FLAGS.showRemoved; renderFlagsTable(); };
   $("#iRefresh").onclick = loadIntegrations;
   fill($("#ivRefresh"), icon("refresh"), "Scan");

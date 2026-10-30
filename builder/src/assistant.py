@@ -62,7 +62,8 @@ If the user asks how to do something, name the view to open and the setting to c
 If LIVE DATA does not cover the question, say so in one line instead of guessing.
 Know llama-server flags (-ngl, -c, --flash-attn, --cache-type-k/v, -lm, --split-mode, --n-cpu-moe, --spec-type) and suggest concrete changes.
 If the question needs something you cannot do - the full flag reference, comparing many models, reading a long log - reply with the single word ESCALATE on its own line and nothing else, and a larger model answers it instead. Do not guess when you could hand over.
-When BUILDER appears in LIVE DATA, the user is in the Builder view and that is the command on their screen: answer about it directly. To propose a change to it, end with one line per flag, "ACTION set <flag> <value>" or "ACTION unset <flag>" (for example: ACTION set --flash-attn off). Propose only flags you know; the user applies each one. Never rewrite the whole command unless asked to.
+When BUILDER appears in LIVE DATA, the user is in the Builder view and that is the command on their screen: answer about it directly. To propose a change to it, end with one line per flag or environment variable, "ACTION set <flag or VAR> <value>" or "ACTION unset <flag or VAR>" (for example: ACTION set --flash-attn off, ACTION set HSA_ENABLE_SDMA 0). Propose only flags you know; the user applies each one. Never rewrite the whole command unless asked to.
+FLAGS PAGE lines are the user's own notes on flags and environment variables: prefer them. To add a flag or variable to the Flags page, or to write or fix its description, end with "ACTION describe <flag or VAR> <one-sentence description>", one line each; the user adds each one with a click.
 Answer in a few short sentences or a short list."""
 
 # How many models one question may pull into focus. Two was tight: a question
@@ -82,8 +83,10 @@ ESCALATE_RE = re.compile(r"^\s*ESCALATE\s*[.!]?\s*$", re.MULTILINE | re.IGNORECA
 # The flag name is checked against a flag's shape before it is offered, because the
 # answer is free text and this one ends up in a command line: a model that writes
 # "ACTION set $(curl ...) x" must not produce a button.
-ACTION_EDIT_RE = re.compile(r"ACTION\s+(set|unset)\s+(\S+)(?:\s+(.*))?\s*$", re.IGNORECASE)
+ACTION_EDIT_RE = re.compile(r"ACTION\s+(set|unset|describe)\s+(\S+)(?:\s+(.*))?\s*$", re.IGNORECASE)
 FLAG_NAME_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$")
+ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]{1,127}$")  # an environment variable, upper case as they are written
+ENV_VALUE_RE = re.compile(r"^[A-Za-z0-9_.,:/=+@-]{0,200}$")  # what may follow it: no quotes, spaces or $()
 
 SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}  # Qwen3 non-thinking defaults
 THINK = re.compile(r"<think>.*?(?:</think>\s*|$)", re.DOTALL)
@@ -183,6 +186,7 @@ class Assistant:
         lines += self._tool_lines(question)
         if getattr(self, "_builder", None):
             lines.append("BUILDER (open in the Builder view right now): " + _builder_line(self._builder))
+        lines += self._flags_page_lines(question)
         latest = self.store.gpu_latest()
         if latest and now - latest[0]["ts"] < 600:
             lines.append("GPU now: " + " | ".join(
@@ -257,6 +261,43 @@ class Assistant:
             lines = [l for l in lines if not l.startswith(("GPU last", "Model speeds last", "Requests last 24h", "MODELS ON DISK", "Most loaded"))]
         return "\n".join(lines)
 
+    def _flags_page_lines(self, question: str, limit: int = 16) -> list[str]:
+        """The Flags page rows for what is in the Builder's command and what the question names, so the assistant
+        answers from the user's own notes, and a name with no row is said to have none."""
+        from .command import canonical, parse_command
+        names: list[tuple[str, str]] = []
+        builder = getattr(self, "_builder", None) or {}
+        try:
+            cmd = parse_command(str(builder.get("command") or "")) if builder.get("command") else None
+        except ValueError:
+            cmd = None
+        if cmd:
+            names += [("env", k) for k in cmd.env] + [("flag", a.name) for a in cmd.args if a.flag and a.name]
+        names += [("env", w) for w in re.findall(r"\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b", question or "")]
+        names += [("flag", canonical(w)) for w in re.findall(r"(?<![\w-])--?[A-Za-z][A-Za-z0-9-]*", question or "")]
+        if not names or self.analytics is None:
+            return []
+        try:
+            rows = {("env", r["flag"]): r for r in self.analytics.env_table()}
+            rows.update({("flag", r["flag"]): r for r in self.analytics.flag_table()})
+        except Exception:  # noqa: BLE001 - the answer goes on without the notes
+            return []
+        out, seen = [], set()
+        for key in names:
+            if key in seen or key[1] in ("model", "port", "host"):
+                continue
+            seen.add(key)
+            r = rows.get(key)
+            label = key[1] if key[0] == "env" else "--" + key[1]
+            if not r or r.get("removed"):
+                out.append(f"- {label}: not on the Flags page")
+            elif r.get("description") or r.get("recommended") or r.get("notes"):
+                extra = r.get("recommended") or r.get("notes") or ""
+                out.append(f"- {label}: {r.get('description') or ''}{f' ({extra})' if extra else ''}"[:400])
+            if len(out) >= limit:
+                break
+        return ["FLAGS PAGE (the user's notes):"] + out if out else []
+
     def _tool_ctx(self) -> dict:
         measured = {}
         try:
@@ -319,9 +360,14 @@ class Assistant:
             m = ACTION_RE.match(line.strip())
             if not m:
                 edit = ACTION_EDIT_RE.match(line.strip())
-                if edit and FLAG_NAME_RE.match(edit.group(2)):
-                    actions.append({"verb": edit.group(1).lower(), "flag": edit.group(2),
-                                    "value": (edit.group(3) or "").strip(), "model": ""})
+                name = edit.group(2) if edit else ""
+                verb = edit.group(1).lower() if edit else ""
+                value = (edit.group(3) or "").strip() if edit else ""
+                is_env = bool(ENV_NAME_RE.match(name))
+                if edit and (FLAG_NAME_RE.match(name) or is_env) and (
+                        verb == "describe" and value or verb == "unset"
+                        or verb == "set" and (not is_env or ENV_VALUE_RE.match(value))):
+                    actions.append({"verb": verb, "flag": name, "value": value, "kind": "env" if is_env else "flag", "model": ""})
                     continue
                 kept.append(line)
                 continue

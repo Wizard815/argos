@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import re
+import shlex
 import time
 from typing import Optional
 from urllib.parse import quote
@@ -768,6 +769,66 @@ def flag_add(kind):
         return err(str(exc))
     ctx().event("settings", f"added {kind} {name} to the Flags page")
     return ok(name=name)
+
+
+@bp.post("/api/flags/import")
+def flag_import():
+    """Body: {text}: a command or a line of KEY=VALUE. Adds each flag and variable in it that the page lacks."""
+    from ..flag_edits import FlagEditError, FlagEdits, name_for
+    text = str(body().get("text") or "").strip()
+    if not text:
+        return err("paste a command or some KEY=VALUE pairs")
+    try:
+        words = shlex.split(text)
+    except ValueError as exc:
+        return err(f"that does not read as a command line: {exc}")
+    found: list[tuple[str, str]] = []
+    for w in words:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w):
+            found.append(("env", w.split("=", 1)[0]))
+        elif re.match(r"^-{1,2}[A-Za-z][A-Za-z0-9-]*(=.*)?$", w):
+            found.append(("flag", w.split("=", 1)[0]))
+    edits = FlagEdits(ctx().store)
+    known = {"env": _flag_known("env"), "flag": _flag_known("flag")}
+    added, listed = [], []
+    for kind, raw in found:
+        try:
+            name = name_for(kind, raw)
+            current = edits.all()[kind].get(name)
+            if (name in known[kind] and not (current or {}).get("removed")) or (current and not current.get("removed")):
+                listed.append(raw)
+                continue
+            edits.add(kind, {"name": name}, known[kind])
+            added.append(raw)
+        except FlagEditError:
+            continue
+    if added:
+        ctx().event("settings", f"added {', '.join(added)} to the Flags page")
+    return ok(added=added, known=listed)
+
+
+@bp.post("/api/flags/<kind>/describe")
+def flag_describe(kind):
+    """Add a flag or variable with this description, or give the one already on the list this description:
+    what the assistant's "describe" proposal does when the user accepts it."""
+    from ..flag_edits import KINDS, FlagEditError, FlagEdits, name_for
+    if kind not in KINDS:
+        return err("kind is flag or env", 404)
+    d = body()
+    edits, known = FlagEdits(ctx().store), _flag_known(kind)
+    try:
+        name = name_for(kind, str(d.get("name") or ""))
+        current = edits.all()[kind].get(name)
+        if (name in known and not (current or {}).get("removed")) or (current and not current.get("removed")):
+            edits.update(kind, name, {"description": d.get("description") or ""})
+            added = False
+        else:
+            edits.add(kind, {"name": name, "description": d.get("description") or ""}, known)
+            added = True
+    except FlagEditError as exc:
+        return err(str(exc))
+    ctx().event("settings", f"{'added' if added else 'described'} {kind} {name} on the Flags page")
+    return ok(name=name, added=added)
 
 
 @bp.put("/api/flags/<kind>/<path:name>")

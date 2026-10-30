@@ -38,7 +38,7 @@ def test_an_empty_builder_says_so():
 
 def test_a_flag_edit_is_offered(client, app):
     text, actions = app.extensions["pb"].assistant._actions("Try this.\nACTION set --flash-attn off")
-    assert actions == [{"verb": "set", "flag": "--flash-attn", "value": "off", "model": ""}]
+    assert actions == [{"verb": "set", "flag": "--flash-attn", "value": "off", "kind": "flag", "model": ""}]
     assert "ACTION" not in text and "Try this." in text
 
 
@@ -63,3 +63,42 @@ def test_the_digest_carries_the_builder_for_the_turn(client, app):
     finally:
         a._builder = None
     assert "BUILDER" not in a.digest()
+
+
+def test_an_env_var_can_be_set_unset_and_described(client, app):
+    a = app.extensions["pb"].assistant
+    _t, actions = a._actions("ACTION set HSA_ENABLE_SDMA 0\nACTION unset GGML_SCHED_N_COPIES\n"
+                             "ACTION describe HIP_FORCE_DEV_KERNARG Puts kernel arguments in device memory.\n"
+                             "ACTION describe --no-warmup Skips the warm-up run.")
+    assert [(x["verb"], x["flag"], x["kind"]) for x in actions] == [
+        ("set", "HSA_ENABLE_SDMA", "env"), ("unset", "GGML_SCHED_N_COPIES", "env"),
+        ("describe", "HIP_FORCE_DEV_KERNARG", "env"), ("describe", "--no-warmup", "flag")]
+    assert actions[2]["value"] == "Puts kernel arguments in device memory."
+    for bad in ["ACTION set HSA_X $(id)", "ACTION set HSA_X 'a b'", "ACTION describe HSA_X", "ACTION set lower_case 1"]:
+        assert a._actions(bad)[1] == [], bad
+
+
+def test_the_digest_carries_the_flags_page_notes(client, app):
+    a = app.extensions["pb"].assistant
+    client.post("/api/flags/env", json={"name": "MY_TUNING", "description": "my own note"})
+    a._builder = {"command": "HSA_ENABLE_SDMA=0 MY_TUNING=1 NOT_LISTED=2 llama-server -m /m/x.gguf -fa on"}
+    try:
+        d = a.digest("what does HIP_FORCE_DEV_KERNARG do?")
+    finally:
+        a._builder = None
+    assert "FLAGS PAGE" in d and "- MY_TUNING: my own note" in d and "- NOT_LISTED: not on the Flags page" in d
+    assert "- HSA_ENABLE_SDMA: Use the SDMA copy engines" in d and "- HIP_FORCE_DEV_KERNARG: Put HIP kernel arguments" in d
+    assert "--flash-attn" in d
+
+
+def test_the_flags_page_takes_a_pasted_line_and_descriptions(client):
+    r = client.post("/api/flags/import", json={"text": "GGML_SCHED_N_COPIES=1 HIP_VISIBLE_DEVICES=0,1 NEW_ONE=x "
+                                                       "llama-server --brand-new-flag 3 -ngl 99"}).get_json()
+    assert r["added"] == ["NEW_ONE", "--brand-new-flag"] and set(r["known"]) == {"GGML_SCHED_N_COPIES", "HIP_VISIBLE_DEVICES", "-ngl"}
+    assert client.post("/api/flags/env/describe", json={"name": "NEW_ONE", "description": "first"}).get_json()["added"] is False
+    assert client.post("/api/flags/env/describe", json={"name": "OTHER_ONE", "description": "second"}).get_json()["added"] is True
+    assert client.post("/api/flags/flag/describe", json={"name": "-ngl", "description": "layers on the GPU"}).get_json()["name"] == "n-gpu-layers"
+    env = {r["flag"]: r for r in client.get("/api/env-flags").get_json()["rows"]}
+    assert env["NEW_ONE"]["description"] == "first" and env["OTHER_ONE"]["description"] == "second"
+    flags = {r["flag"]: r for r in client.get("/api/flags").get_json()["rows"]}
+    assert flags["n-gpu-layers"]["description"] == "layers on the GPU"

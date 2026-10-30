@@ -78,6 +78,8 @@ RUN_COLUMNS: dict[str, str] = {
     "draft_acc": "REAL",
     "prompt_per_second": "REAL",
     "tokens_per_second": "REAL",
+    "prefill_high_tps": "REAL",  # the fastest and slowest stretch of the prompt, between progress reports
+    "prefill_low_tps": "REAL",
     "prompt_ms": "REAL",
     "eval_ms": "REAL",
     "duration_ms": "INTEGER",
@@ -179,7 +181,7 @@ CREATE TABLE IF NOT EXISTS requests (
     source_id INTEGER, ts REAL NOT NULL, model TEXT, src TEXT, path TEXT, status INTEGER,
     input_tokens INTEGER, output_tokens INTEGER, cache_tokens INTEGER, draft_tokens INTEGER,
     draft_acc_tokens INTEGER, prompt_per_second REAL, tokens_per_second REAL,
-    duration_ms INTEGER, error TEXT,
+    duration_ms INTEGER, error TEXT, prefill_high_tps REAL, prefill_low_tps REAL,
     UNIQUE (source_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests (ts DESC);
@@ -253,7 +255,7 @@ PROFILE_FIELDS = ("name", "base_model", "model_id", "source", "launch_command", 
 GPU_FIELDS = ("ts", "gpu", "name", "util", "mem_used_mb", "mem_total_mb", "temp_c", "power_w", "source")
 REQUEST_FIELDS = ("source_id", "ts", "model", "src", "path", "status", "input_tokens", "output_tokens",
                   "cache_tokens", "draft_tokens", "draft_acc_tokens", "prompt_per_second",
-                  "tokens_per_second", "duration_ms", "error")
+                  "tokens_per_second", "duration_ms", "error", "prefill_high_tps", "prefill_low_tps")
 
 SPEED_FIELDS = ("prompt_per_second", "tokens_per_second")
 
@@ -285,6 +287,7 @@ class Store:
             self._conn.executescript(SCHEMA)
             self._add_missing_columns("runs", RUN_COLUMNS)
             self._add_missing_columns("profiles", PROFILE_COLUMNS)
+            self._add_missing_columns("requests", {"prefill_high_tps": "REAL", "prefill_low_tps": "REAL"})
             self._add_missing_columns("servers", {"env_kind": "TEXT DEFAULT 'none'", "env_value": "TEXT DEFAULT ''",
                                                  "color": "TEXT DEFAULT ''", "download_dir": "TEXT DEFAULT ''"})
             self._add_missing_columns("notes", {"x": "REAL", "y": "REAL", "w": "REAL", "h": "REAL", "collapsed": "INTEGER DEFAULT 0"})
@@ -1109,6 +1112,14 @@ class Store:
         def entry(model: str) -> dict[str, Any]:
             return out.setdefault(model, {"requests": 0, "tg_sum": 0.0, "tg_n": 0, "prefill": None, "decode": None})
 
+        def stretch(d: dict[str, Any], hi: Any, lo: Any) -> None:
+            """Within one prompt: its fastest stretch (the start) and its slowest (the end, the context full)."""
+            if hi is None and lo is None:
+                return
+            cur = d.get("prefill_stretch") or {}
+            d["prefill_stretch"] = {"high": max(x for x in (cur.get("high"), hi) if x is not None) if (hi or cur.get("high")) else None,
+                                    "low": min(x for x in (cur.get("low"), lo) if x is not None) if (lo or cur.get("low")) else None}
+
         def widen(d: dict[str, Any], kind: str, lo: Any, hi: Any, n: int) -> None:
             if not n:
                 return
@@ -1123,6 +1134,7 @@ class Store:
                "MAX(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? THEN prompt_per_second END) AS prefill_max, "
                "SUM(CASE WHEN prompt_per_second > 0 AND COALESCE(input_tokens, 0) >= ? "
                "THEN 1 ELSE 0 END) AS prefill_n, "
+               "MAX(prefill_high_tps) AS stretch_high, MIN(CASE WHEN prefill_low_tps > 0 THEN prefill_low_tps END) AS stretch_low, "
                "MIN(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_min, "
                "MAX(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? THEN tokens_per_second END) AS decode_max, "
                "SUM(CASE WHEN tokens_per_second > 0 AND COALESCE(output_tokens, 0) >= ? "
@@ -1143,9 +1155,11 @@ class Store:
                 d["tg_n"] += r["tg_n"] or 0
                 widen(d, "prefill", r["prefill_min"], r["prefill_max"], r["prefill_n"])
                 widen(d, "decode", r["decode_min"], r["decode_max"], r["decode_n"])
+                stretch(d, r["stretch_high"], r["stretch_low"])
             t0 = t1
         for r in self._q(
                 "SELECT model_id AS model, "
+                "MAX(prefill_high_tps) AS stretch_high, MIN(CASE WHEN prefill_low_tps > 0 THEN prefill_low_tps END) AS stretch_low, "
                 "MIN(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_min, "
                 "MAX(CASE WHEN prompt_per_second > 0 THEN prompt_per_second END) AS prefill_max, "
                 "SUM(CASE WHEN prompt_per_second > 0 THEN 1 ELSE 0 END) AS prefill_n, "
@@ -1157,6 +1171,7 @@ class Store:
             d = entry(r["model"])
             widen(d, "prefill", r["prefill_min"], r["prefill_max"], r["prefill_n"])
             widen(d, "decode", r["decode_min"], r["decode_max"], r["decode_n"])
+            stretch(d, r["stretch_high"], r["stretch_low"])
         for d in out.values():
             d["tg_avg"] = d.pop("tg_sum") / d["tg_n"] if d["tg_n"] else None
             d.pop("tg_n")

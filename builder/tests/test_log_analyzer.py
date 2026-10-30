@@ -74,3 +74,18 @@ def test_errors_and_bad_numbers():
     assert r.error.startswith("llama_model_load: error loading model")
     assert r.tokens_per_second == 0.0
     assert parse_log_text("").samples == 0
+
+
+def test_a_long_prompt_keeps_its_fastest_and_slowest_stretch():
+    log = "\n".join([
+        "slot print_timing: id  0 | task 3 | prompt processing, n_tokens =    512, progress = 0.50, t =   0.20 s / 2560.00 tokens per second",
+        "slot print_timing: id  0 | task 3 | prompt processing, n_tokens =   1024, progress = 1.00, t =   0.60 s / 1706.67 tokens per second",
+        "slot print_timing: id  0 | task 4 | prompt processing, n_tokens =   4096, progress = 0.25, t =   2.00 s / 2048.00 tokens per second",
+        "slot print_timing: id  0 | task 4 | prompt processing, n_tokens =   8192, progress = 0.50, t =   5.00 s / 1638.40 tokens per second",
+        "slot print_timing: id  0 | task 4 | prompt processing, n_tokens =  16384, progress = 1.00, t =  13.00 s / 1260.31 tokens per second",
+        "prompt eval time =   13000.00 ms / 16384 tokens (    0.79 ms per token,  1260.31 tokens per second)",
+    ])
+    r = parse_log_text(log)
+    assert (r.prefill_high_tps, r.prefill_low_tps) == (2048.0, 1024.0), "the last prompt's, not the one before"
+    assert r.prompt_per_second == 1260.31
+    assert parse_log_text("prompt eval time = 50 ms / 13 tokens ( 3.8 ms per token, 260 tokens per second)").prefill_high_tps is None

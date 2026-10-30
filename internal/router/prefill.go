@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,7 +28,7 @@ import (
 var (
 	reSlot            = regexp.MustCompile(`\bid\s+(\d+)\s*\|\s*task\s+(-?\d+)`)
 	reSlotStart       = regexp.MustCompile(`processing task`)
-	rePrefillProgress = regexp.MustCompile(`prompt processing, n_tokens\s*=\s*(\d+), progress\s*=\s*([0-9.]+)(?:, t\s*=\s*[0-9.]+ s / ([0-9.]+) tokens per second)?`)
+	rePrefillProgress = regexp.MustCompile(`prompt processing, n_tokens\s*=\s*(\d+), progress\s*=\s*([0-9.]+)(?:, t\s*=\s*([0-9.]+) s / ([0-9.]+) tokens per second)?`)
 	rePromptDone      = regexp.MustCompile(`prompt (?:processing )?done`)
 	reGenerating      = regexp.MustCompile(`n_gen\s*=\s*(\d+), tg\s*=\s*([0-9.]+) t/s(?:, tg_3s\s*=\s*([0-9.]+) t/s)?`)
 	reSlotEnd         = regexp.MustCompile(`stop processing|release`)
@@ -54,10 +55,32 @@ type Prefill struct {
 	// Progress is 0..1, as llama-server reports it.
 	Progress float64 `json:"progress"`
 	// TokensPerSecond is the prompt processing speed so far.
-	TokensPerSecond float64   `json:"tokens_per_second"`
-	Started         time.Time `json:"started"`
-	Updated         time.Time `json:"updated"`
+	TokensPerSecond float64 `json:"tokens_per_second"`
+	// High and Low are the fastest and slowest stretch of the prompt so far:
+	// the speed between two progress reports. Reading a long prompt starts
+	// fast and slows as the context fills, which the average hides.
+	HighTokensPerSecond float64   `json:"high_tokens_per_second,omitempty"`
+	LowTokensPerSecond  float64   `json:"low_tokens_per_second,omitempty"`
+	Started             time.Time `json:"started"`
+	Updated             time.Time `json:"updated"`
+
+	lastT      float64 // seconds into the prompt at the last report
+	lastTokens int
 }
+
+// PrefillRun is a prompt a slot finished reading, kept a while so the request
+// it belongs to can be filed with its high and low speed.
+type PrefillRun struct {
+	Slot, Task int
+	Tokens     int
+	High, Low  float64
+	Started    time.Time
+	Ended      time.Time
+	claimed    bool
+}
+
+// prefillRunsKept is how many finished prompts each model keeps for claiming.
+const prefillRunsKept = 32
 
 // Slot is one llama-server slot busy with a request: reading its prompt, then
 // generating the answer.
@@ -79,7 +102,8 @@ type PrefillWatch struct {
 	mu      sync.Mutex
 	now     func() time.Time
 	models  map[string]map[int]*Slot
-	partial map[string][]byte // a line split across writes
+	runs    map[string][]*PrefillRun // finished prompts, oldest first
+	partial map[string][]byte        // a line split across writes
 	// onLine also sees every line (the crash watch's fatal lines)
 	onLine func(model string, line []byte)
 }
@@ -88,7 +112,7 @@ type PrefillWatch struct {
 var Prefills = NewPrefillWatch(time.Now)
 
 func NewPrefillWatch(now func() time.Time) *PrefillWatch {
-	return &PrefillWatch{now: now, models: map[string]map[int]*Slot{}, partial: map[string][]byte{}}
+	return &PrefillWatch{now: now, models: map[string]map[int]*Slot{}, runs: map[string][]*PrefillRun{}, partial: map[string][]byte{}}
 }
 
 // Tap returns a writer for a model's log that feeds the watch and passes
@@ -159,8 +183,24 @@ func (p *PrefillWatch) line(model string, line []byte) {
 		slots[id] = s
 		return s
 	}
+	// the prompt is read: file its high and low for the request to claim
+	prefillDone := func(s *Slot) {
+		if s == nil || s.Phase != PhasePrefill {
+			return
+		}
+		s.Phase = PhaseGenerating
+		if s.HighTokensPerSecond > 0 {
+			runs := append(p.runs[model], &PrefillRun{Slot: s.ID, Task: s.Task, Tokens: s.Tokens, High: s.HighTokensPerSecond,
+				Low: s.LowTokensPerSecond, Started: s.Started, Ended: now})
+			if len(runs) > prefillRunsKept {
+				runs = runs[len(runs)-prefillRunsKept:]
+			}
+			p.runs[model] = runs
+		}
+	}
 	switch {
 	case reSlotEnd.Match(line):
+		prefillDone(st)
 		delete(slots, id)
 	case reSlotStart.Match(line):
 		newSlot()
@@ -169,7 +209,7 @@ func (p *PrefillWatch) line(model string, line []byte) {
 			if st == nil {
 				st = newSlot()
 			}
-			st.Phase = PhaseGenerating
+			prefillDone(st)
 			st.Generated, _ = strconv.Atoi(string(g[1]))
 			speed := g[2]
 			if len(g[3]) > 0 {
@@ -185,20 +225,36 @@ func (p *PrefillWatch) line(model string, line []byte) {
 			}
 			st.Tokens, _ = strconv.Atoi(string(pp[1]))
 			st.Progress, _ = strconv.ParseFloat(string(pp[2]), 64)
-			if len(pp[3]) > 0 {
-				st.TokensPerSecond, _ = strconv.ParseFloat(string(pp[3]), 64)
+			if len(pp[4]) > 0 {
+				st.TokensPerSecond, _ = strconv.ParseFloat(string(pp[4]), 64)
+			}
+			// this stretch's speed: the tokens since the last report over the time since it
+			stretch := st.TokensPerSecond
+			if t, err := strconv.ParseFloat(string(pp[3]), 64); err == nil && len(pp[3]) > 0 {
+				if dt := t - st.lastT; dt > 0.01 && st.Tokens > st.lastTokens {
+					stretch = float64(st.Tokens-st.lastTokens) / dt
+				}
+				st.lastT, st.lastTokens = t, st.Tokens
+			}
+			if stretch > 0 {
+				if stretch > st.HighTokensPerSecond {
+					st.HighTokensPerSecond = stretch
+				}
+				if st.LowTokensPerSecond == 0 || stretch < st.LowTokensPerSecond {
+					st.LowTokensPerSecond = stretch
+				}
 			}
 			if st.Progress > 0 {
 				st.Total = int(float64(st.Tokens)/st.Progress + 0.5)
 			}
 			if st.Progress >= 1 {
-				st.Phase = PhaseGenerating
+				prefillDone(st)
 			}
 			st.Updated = now
 			return
 		}
 		if st != nil && rePromptDone.Match(line) {
-			st.Phase = PhaseGenerating
+			prefillDone(st)
 			st.Updated = now
 		}
 	}
@@ -235,6 +291,34 @@ func (p *PrefillWatch) Get(model string) (Prefill, bool) {
 		}
 	}
 	return Prefill{}, false
+}
+
+// Claim hands the request that started at since the high and low of the
+// prompt its slot read: the newest unclaimed one of the model (or of a profile
+// of it, <model>--<label>) that started after the request did. Each prompt is
+// claimed once.
+func (p *PrefillWatch) Claim(model string, since time.Time) (PrefillRun, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var best *PrefillRun
+	for id, runs := range p.runs {
+		if id != model && !strings.HasPrefix(id, model+"--") {
+			continue
+		}
+		for _, r := range runs {
+			if r.claimed || r.Started.Before(since.Add(-2*time.Second)) {
+				continue
+			}
+			if best == nil || r.Ended.After(best.Ended) {
+				best = r
+			}
+		}
+	}
+	if best == nil {
+		return PrefillRun{}, false
+	}
+	best.claimed = true
+	return *best, true
 }
 
 // Forget drops what a model's slots were doing: its process stopped, so no

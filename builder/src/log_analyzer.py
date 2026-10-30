@@ -30,6 +30,8 @@ RE_NCTX = re.compile(r"\bn_ctx(?:_slot)?\s*=\s*(\d+)")
 RE_OFFLOAD = re.compile(r"offloaded (\d+)/(\d+) layers to GPU")
 RE_BUFFER = re.compile(r"\b([A-Za-z_]+\d*)\s+(?:model|KV|RS|compute)\s+buffer size\s*=\s*([\d.]+)\s*MiB")
 RE_BENCH_ROW = re.compile(r"^\|.*\|\s*(pp|tg)(\d+)[^|]*\|\s*([\d.]+)\s*±")
+# llama-server's progress while it reads a long prompt; the speed it prints is the average so far
+RE_PROGRESS = re.compile(r"task\s+(\d+)\s*\|\s*prompt processing, n_tokens\s*=\s*(\d+), progress\s*=\s*[\d.]+, t\s*=\s*([\d.]+)\s*s")
 RE_READY = re.compile(r"server is listening on|HTTP server listening|all slots are idle")
 RE_ERROR = re.compile(
     r"(error:|failed to|out of memory|CUDA error|ROCm error|exception|invalid argument|unknown argument)",
@@ -62,6 +64,10 @@ class ParsedRun:
     gpu_mem_mb: float = 0.0
     gpu_by_device: Optional[dict] = None  # {"ROCm0": MiB, ...}: model + KV + RS + compute buffers per device
     samples: int = 0
+    # the fastest and slowest stretch of the last long prompt (between two progress lines): reading starts fast
+    # and slows as the context fills, which prompt_per_second (the average) hides
+    prefill_high_tps: Optional[float] = None
+    prefill_low_tps: Optional[float] = None
     ready: bool = False
     error: str = ""
 
@@ -78,7 +84,20 @@ class ParsedRun:
 def parse_log_text(text: str) -> ParsedRun:
     r = ParsedRun()
     buffers: dict[tuple[str, str], float] = {}
+    task, last_t, last_n = None, 0.0, 0
     for line in (text or "").splitlines():
+        m = RE_PROGRESS.search(line)
+        if m:
+            t_id, n, t = m.group(1), int(m.group(2)), float(m.group(3))
+            if t_id != task:  # a new prompt: its own range
+                task, last_t, last_n = t_id, 0.0, 0
+                r.prefill_high_tps = r.prefill_low_tps = None
+            if t - last_t > 0.01 and n > last_n:
+                stretch = round((n - last_n) / (t - last_t), 1)
+                r.prefill_high_tps = max(r.prefill_high_tps or 0.0, stretch)
+                r.prefill_low_tps = stretch if r.prefill_low_tps is None else min(r.prefill_low_tps, stretch)
+            last_t, last_n = t, n
+            continue
         m = RE_TIMING.search(line)
         if m:
             ms, n, tps = float(m.group(2)), int(m.group(3)), _f(m.group(4))

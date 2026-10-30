@@ -39,8 +39,27 @@ ENV_FLAG_LIBRARY: list[dict] = [
      "description": "Make ROCm treat the GPU as a supported gfx target.",
      "recommended": "9.0.6 for gfx906 (MI50 / Radeon VII), 10.3.0 for RDNA2, 11.0.0 for RDNA3."},
     {"flag": "HSA_ENABLE_SDMA", "category": "amd-tuning",
-     "description": "Use SDMA engines for host/device copies.",
-     "recommended": "0 if you see hangs or corrupted output on some APUs/boards."},
+     "description": "Use the SDMA copy engines for host/device and GPU-to-GPU copies; 0 does them with shader "
+                    "(blit) kernels instead.",
+     "recommended": "0 on MI50/MI60 and other multi-GPU ROCm boxes when copies hang, are slow or corrupt output."},
+    {"flag": "HSA_FORCE_FINE_GRAIN_PCIE", "category": "amd-tuning",
+     "description": "Make ROCm allocate host-visible memory as fine-grained over PCIe, so GPUs can access each "
+                    "other's and the host's memory directly (peer to peer) without an xGMI bridge.",
+     "recommended": "1 when splitting a model over several AMD cards on PCIe."},
+    {"flag": "HIP_FORCE_DEV_KERNARG", "category": "amd-tuning",
+     "description": "Put HIP kernel arguments in device memory instead of host memory, which cuts kernel "
+                    "launch latency.",
+     "recommended": "1 on MI-series cards; it mostly helps generation speed, which launches many small kernels."},
+    {"flag": "GGML_SCHED_N_COPIES", "category": "gpu-scheduling",
+     "description": "In llama.cpp builds that read it: how many copies of a graph's inputs the scheduler keeps for "
+                    "pipeline parallelism across GPUs (upstream fixes this at build time, GGML_SCHED_MAX_COPIES=4). "
+                    "1 turns pipelining off.",
+     "recommended": "1 to save VRAM on multi-GPU splits, at some prompt-reading speed."},
+    {"flag": "GGML_CUDA_ALLREDUCE", "category": "gpu-scheduling",
+     "description": "In llama.cpp builds with tensor-parallel splitting (-sm tensor): which all-reduce combines "
+                    "the GPUs' partial results; internal is llama.cpp's own, with no NCCL or RCCL. Also read by "
+                    "the HIP build, despite the CUDA in its name.",
+     "recommended": "internal on ROCm cards without RCCL, such as MI50s split with -sm tensor."},
     {"flag": "LLAMA_ENABLE_MTP_OPT", "category": "speculative",
      "description": "MTP fast path in builds that carry it (the RaidLab llama.cpp image does); "
                     "pairs with --spec-type draft-mtp.",
@@ -86,6 +105,7 @@ class Recorder:
             "tokens_per_second": parsed.tokens_per_second,
             "draft_tokens": parsed.draft_tokens or None, "draft_acc": parsed.draft_acc,
             "mem_used_gb": round(parsed.gpu_mem_mb / 1024, 2) if parsed.gpu_mem_mb else None,
+            "prefill_high_tps": parsed.prefill_high_tps, "prefill_low_tps": parsed.prefill_low_tps,
         }
         perf.update({k: v for k, v in (timings or {}).items() if v is not None})
         now = time.time()

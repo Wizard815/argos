@@ -246,7 +246,7 @@ def schedule_live():
         except Exception:  # noqa: BLE001 - the column falls back to llama.cpp
             pass
         try:  # the requests the GPUs are working on, newest first, straight from the engine
-            requests = recent_requests(url)
+            requests = recent_requests(url, max(1, min(request.args.get("requests", 25, type=int), 200)))
         except Exception:  # noqa: BLE001 - the feed is empty rather than the page broken
             requests = []
         try:  # and the ones still running, so they show while they work, not once they finish
