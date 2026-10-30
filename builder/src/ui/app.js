@@ -1240,22 +1240,20 @@ async function applyPreset(pid, part) {
     toast(r.added.length ? `${name}: added ${r.added.join(", ")}. Edit them like any other row.` : `${name}: everything in it is set here already.`, "ok");
   } catch (e) { fail(e); }
 }
-/** The preset row of the Environment card (part "env") or the Other flags card (part "flags"). */
+/** The preset row, on the Environment and the Other flags card alike: one list of presets, and applying one
+ *  fills in both its environment variables and its flags. */
 function presetBar(part) {
   if (!ENVP.list) { loadEnvPresets().then(() => B.parsed && renderBuilder()); return h("div", { class: "muted mono-sm" }, "Loading presets…"); }
-  const has = (p) => (part === "env" ? /\S+=/.test(p.env || "") : !!(p.flags || "").trim());
-  const usable = ENVP.list.filter(has);
-  const pick = h("select", { "aria-label": part === "env" ? "Apply an env preset" : "Apply a flags preset", style: "flex:1;min-width:0" },
-    h("option", { value: "" }, usable.length ? "Apply a preset…" : `No preset with ${part === "env" ? "environment variables" : "flags"} yet`),
-    usable.map((p) => h("option", { value: p.id }, p.name)));
-  pick.onchange = () => { if (pick.value) applyPreset(pick.value, part); };
+  const what = (p) => [(p.env || "").split("\n").filter((l) => l.includes("=")).length ? "env" : "", (p.flags || "").trim() ? "flags" : ""].filter(Boolean).join(" + ");
+  const pick = h("select", { "aria-label": "Apply a preset", style: "flex:1;min-width:0" },
+    h("option", { value: "" }, ENVP.list.length ? "Apply a preset…" : "No presets yet"),
+    ENVP.list.map((p) => h("option", { value: p.id }, `${p.name} (${what(p)})`)));
+  pick.onchange = () => { if (pick.value) applyPreset(pick.value, "all"); };
+  // a preset from what this profile has: its environment and its other flags
   const saveAs = () => {
-    if (part === "env") {
-      const env = Object.entries((B.parsed || {}).env || {}).filter(([k]) => k !== PRESET_VAR);
-      return presetForm({ name: "", env: env.map(([k, v]) => `${k}=${v}`).join("\n"), flags: "" }, null, true);
-    }
+    const env = Object.entries((B.parsed || {}).env || {}).filter(([k]) => k !== PRESET_VAR);
     const flags = ((B.parsed || {}).args || []).filter((a) => a.flag && !KEY_NAMES.has(a.name)).map((a) => (a.value == null ? a.flag : `${a.flag} ${a.value}`)).join(" ");
-    return presetForm({ name: "", env: "", flags }, null, true);
+    return presetForm({ name: "", env: env.map(([k, v]) => `${k}=${v}`).join("\n"), flags }, null, true);
   };
   // an older profile linked to a preset instead of holding its values: offer to bring them in to edit
   const linked = part === "env" ? linkedPresets() : [];
@@ -1272,7 +1270,7 @@ function presetBar(part) {
 function manageEnvPresets() {
   const body = h("div", { class: "stack" });
   const draw = () => fill(body,
-    h("p", { class: "hint", style: "margin:0" }, "A preset is a starting set of env vars and flags. Apply it from a profile's Environment or Other flags card: its values are copied into the profile, where you change whatever that model needs. Values the profile already has stay."),
+    h("p", { class: "hint", style: "margin:0" }, "A preset is a starting set of environment variables and flags. Apply it from a profile's Environment or Other flags card: both its variables and its flags are copied into the profile, where you change whatever that model needs. Values the profile already has stay."),
     (ENVP.list || []).length ? h("div", { class: "ody-list" }, ENVP.list.map((p) => h("div", { class: "ody-row" },
       h("div", { class: "ody-main" }, h("div", { class: "cell-main" }, p.name),
         h("div", { class: "cell-sub mono-sm" }, [p.env.split("\n").filter(Boolean).join(" "), p.flags].filter(Boolean).join(" · ")),
@@ -1284,7 +1282,7 @@ function manageEnvPresets() {
       }, "danger")))) : h("div", { class: "empty" }, "No presets yet."),
     h("div", { class: "row end" }, btn("New preset", () => presetForm(null, draw), "sm primary", "plus")));
   draw();
-  modal("Env presets", body, [{ label: "Close", run: (c) => c() }]);
+  modal("Presets", body, [{ label: "Close", run: (c) => c() }]);
 }
 function presetForm(p, after, asNew = false) {
   const editing = p && !asNew;  // asNew: a new preset, started from these values
@@ -1294,14 +1292,15 @@ function presetForm(p, after, asNew = false) {
   modal(editing ? `Edit ${p.name}` : "New preset", h("div", { class: "stack" },
     h("label", { class: "field" }, h("span", {}, "Name"), name),
     h("label", { class: "field" }, h("span", {}, "Environment (KEY=VALUE per line)"), env),
-    h("label", { class: "field" }, h("span", {}, "Flags (optional)"), flags)), [
+    h("label", { class: "field" }, h("span", {}, "Flags"), flags),
+    h("small", { class: "hint" }, "Either or both: environment variables, flags, or a mix.")), [
     { label: "Cancel", run: (c) => c() },
     { label: "Save", cls: "primary", icon: "save", run: async (c) => {
       const id = editing ? p.id : name.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
       try {
         await api("PUT", `/api/env-presets/${id}`, { name: name.value, env: env.value, flags: flags.value });
         await loadEnvPresets(); c(); after && after();
-        toast(editing ? "Saved. Apply it again to bring the new values into a profile." : `${name.value} saved. Apply it from a profile's Environment or Other flags card.`, "ok");
+        toast(editing ? "Saved. Apply it again to bring the new values into a profile." : `${name.value} saved. Apply it from a profile's Environment or Other flags card: it fills in both.`, "ok");
         if (B.parsed) renderBuilder();
       } catch (e) { fail(e); }
     } }]);
