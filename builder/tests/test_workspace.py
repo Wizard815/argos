@@ -292,3 +292,23 @@ def test_env_presets_are_linked_not_copied(app, client):
     gone = client.post("/api/command/parse", json={"command": cmd, "format": "plain"}).get_json()
     assert gone["presets_linked"][0]["missing"] is True and gone["preset_env"] == {}
     assert client.get("/api/env-presets").get_json()["presets"] == [], "deleted stays deleted: the starter is offered once"
+
+
+def test_an_env_preset_is_applied_as_editable_values(client):
+    cmd = "HSA_ENABLE_SDMA=1 llama-server -m /m/a.gguf -ngl 99"
+    r = client.post("/api/env-presets/tensor-environment/apply", json={"command": cmd, "part": "env"}).get_json()
+    assert "HIP_FORCE_DEV_KERNARG=1" in r["command"] and "HSA_ENABLE_SDMA=1" in r["command"], "what the profile sets stays"
+    assert "HSA_ENABLE_SDMA=1" not in r["added"] and "GGML_CUDA_ALLREDUCE=internal" in r["added"]
+    assert "ARGOS_PRESETS" not in r["command"], "the values are the profile's own now, not a link"
+    j = client.post("/api/command/parse", json={"command": r["command"], "format": "plain"}).get_json()
+    assert j["env"]["GGML_CUDA_ALLREDUCE"] == "internal" and j["preset_env"] == {}
+
+    client.put("/api/env-presets/split", json={"name": "Split", "env": "A_B=1", "flags": "-sm tensor --no-warmup"})
+    only_flags = client.post("/api/env-presets/split/apply", json={"command": cmd, "part": "flags"}).get_json()
+    assert "-sm tensor" in only_flags["command"] and "A_B=1" not in only_flags["command"]
+
+    # an older profile that links to a preset: Make editable brings its values in and drops the link
+    linked = "ARGOS_PRESETS=tensor-environment,split llama-server -m /m/a.gguf"
+    out = client.post("/api/env-presets/tensor-environment/apply", json={"command": linked, "part": "all"}).get_json()["command"]
+    assert "ARGOS_PRESETS=split" in out and "HIP_FORCE_DEV_KERNARG=1" in out
+    assert client.post("/api/env-presets/nope/apply", json={"command": cmd}).status_code == 404

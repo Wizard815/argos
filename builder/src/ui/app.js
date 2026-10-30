@@ -1229,33 +1229,54 @@ async function loadEnvPresets() {
 function linkedPresets() {
   return String(((B.parsed || {}).env || {})[PRESET_VAR] || "").split(",").map((x) => x.trim()).filter(Boolean);
 }
-function setLinkedPresets(ids) {
-  const env = { ...((B.parsed || {}).env || {}) };
-  if (ids.length) env[PRESET_VAR] = ids.join(","); else delete env[PRESET_VAR];
-  edit({}, env);
+/** Copy a preset's values into the command as its own rows, to edit like any other (what is set stays). */
+async function applyPreset(pid, part) {
+  await B.queue;
+  try {
+    const r = await api("POST", `/api/env-presets/${encodeURIComponent(pid)}/apply`, { command: B.cmd, part });
+    B.cmd = r.command;
+    edit({});
+    const name = ((ENVP.list || []).find((p) => p.id === pid) || {}).name || pid;
+    toast(r.added.length ? `${name}: added ${r.added.join(", ")}. Edit them like any other row.` : `${name}: everything in it is set here already.`, "ok");
+  } catch (e) { fail(e); }
 }
-function presetBar() {
-  if (!ENVP.list) { loadEnvPresets().then(() => B.parsed && renderEnv(B.parsed.env || {})); return h("div", { class: "muted mono-sm" }, "Loading presets…"); }
-  const linked = linkedPresets();
+/** The preset row of the Environment card (part "env") or the Other flags card (part "flags"). */
+function presetBar(part) {
+  if (!ENVP.list) { loadEnvPresets().then(() => B.parsed && renderBuilder()); return h("div", { class: "muted mono-sm" }, "Loading presets…"); }
+  const has = (p) => (part === "env" ? /\S+=/.test(p.env || "") : !!(p.flags || "").trim());
+  const usable = ENVP.list.filter(has);
+  const pick = h("select", { "aria-label": part === "env" ? "Apply an env preset" : "Apply a flags preset", style: "flex:1;min-width:0" },
+    h("option", { value: "" }, usable.length ? "Apply a preset…" : `No preset with ${part === "env" ? "environment variables" : "flags"} yet`),
+    usable.map((p) => h("option", { value: p.id }, p.name)));
+  pick.onchange = () => { if (pick.value) applyPreset(pick.value, part); };
+  const saveAs = () => {
+    if (part === "env") {
+      const env = Object.entries((B.parsed || {}).env || {}).filter(([k]) => k !== PRESET_VAR);
+      return presetForm({ name: "", env: env.map(([k, v]) => `${k}=${v}`).join("\n"), flags: "" }, null, true);
+    }
+    const flags = ((B.parsed || {}).args || []).filter((a) => a.flag && !KEY_NAMES.has(a.name)).map((a) => (a.value == null ? a.flag : `${a.flag} ${a.value}`)).join(" ");
+    return presetForm({ name: "", env: "", flags }, null, true);
+  };
+  // an older profile linked to a preset instead of holding its values: offer to bring them in to edit
+  const linked = part === "env" ? linkedPresets() : [];
   const byId = Object.fromEntries(ENVP.list.map((p) => [p.id, p]));
-  const pick = h("select", { "aria-label": "Add an env preset", style: "flex:1;min-width:0" }, h("option", { value: "" }, ENVP.list.length ? "Add a preset…" : "No presets yet"),
-    ENVP.list.filter((p) => !linked.includes(p.id)).map((p) => h("option", { value: p.id }, p.name)));
-  pick.onchange = () => { if (pick.value) setLinkedPresets([...linked, pick.value]); };
   return h("div", { class: "stack", style: "gap:6px;margin-bottom:8px" },
-    h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" },
-      linked.length ? linked.map((id) => h("span", { class: `chip${byId[id] ? "" : " warn"}`, title: byId[id] ? `${byId[id].env}${byId[id].flags ? `\n${byId[id].flags}` : ""}` : "This preset was deleted: the link does nothing" },
-        byId[id] ? byId[id].name : `${id} (gone)`, h("button", { class: "chip-x", "aria-label": "Unlink", title: "Unlink this preset from the profile", onclick: () => setLinkedPresets(linked.filter((x) => x !== id)) }, "×")))
-        : h("span", { class: "muted mono-sm" }, "No preset linked.")),
-    h("div", { class: "row", style: "gap:6px;flex-wrap:nowrap" }, pick, btn("Presets", manageEnvPresets, "sm ghost", "sliders")));
+    linked.length ? h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" },
+      h("span", { class: "muted mono-sm" }, "Linked:"),
+      linked.map((id) => h("span", { class: `chip${byId[id] ? "" : " warn"}`, title: byId[id] ? "Its values are filled in when this runs. Make editable copies them into this card." : "This preset was deleted: the link does nothing" },
+        byId[id] ? byId[id].name : `${id} (gone)`)),
+      btn("Make editable", async () => { for (const id of linked) await applyPreset(id, "all"); }, "sm")) : null,
+    h("div", { class: "row", style: "gap:6px;flex-wrap:nowrap" }, pick,
+      btn("Save as preset", saveAs, "sm ghost", "save"), btn("Presets", manageEnvPresets, "sm ghost", "sliders")));
 }
 function manageEnvPresets() {
   const body = h("div", { class: "stack" });
   const draw = () => fill(body,
-    h("p", { class: "hint", style: "margin:0" }, "A preset is env vars and flags for some models. Link it from a profile's Environment card; editing it here changes every profile linked to it. The profile's own values win over the preset's."),
+    h("p", { class: "hint", style: "margin:0" }, "A preset is a starting set of env vars and flags. Apply it from a profile's Environment or Other flags card: its values are copied into the profile, where you change whatever that model needs. Values the profile already has stay."),
     (ENVP.list || []).length ? h("div", { class: "ody-list" }, ENVP.list.map((p) => h("div", { class: "ody-row" },
       h("div", { class: "ody-main" }, h("div", { class: "cell-main" }, p.name),
         h("div", { class: "cell-sub mono-sm" }, [p.env.split("\n").filter(Boolean).join(" "), p.flags].filter(Boolean).join(" · ")),
-        h("div", { class: "cell-sub" }, p.profiles.length ? `linked by ${p.profiles.join(", ")}` : "no profile linked")),
+        p.profiles.length ? h("div", { class: "cell-sub" }, `still linked (not copied) by ${p.profiles.join(", ")}`) : null),
       btn("Edit", () => presetForm(p, draw), "sm"),
       iconBtn("trash", "Delete", async () => {
         if (!(await confirmBox(`Delete ${p.name}?${p.profiles.length ? ` ${p.profiles.length} profile(s) linked to it run without it.` : ""}`, "Delete"))) return;
@@ -1265,22 +1286,23 @@ function manageEnvPresets() {
   draw();
   modal("Env presets", body, [{ label: "Close", run: (c) => c() }]);
 }
-function presetForm(p, after) {
+function presetForm(p, after, asNew = false) {
+  const editing = p && !asNew;  // asNew: a new preset, started from these values
   const name = h("input", { type: "text", value: p ? p.name : "", placeholder: "Tensor Environment" });
   const env = h("textarea", { rows: 6, spellcheck: "false", placeholder: "HIP_FORCE_DEV_KERNARG=1\nHSA_ENABLE_SDMA=0" }, p ? p.env : "");
   const flags = h("input", { type: "text", value: p ? p.flags : "", spellcheck: "false", placeholder: "-sm tensor --no-warmup" });
-  modal(p ? `Edit ${p.name}` : "New env preset", h("div", { class: "stack" },
+  modal(editing ? `Edit ${p.name}` : "New preset", h("div", { class: "stack" },
     h("label", { class: "field" }, h("span", {}, "Name"), name),
     h("label", { class: "field" }, h("span", {}, "Environment (KEY=VALUE per line)"), env),
     h("label", { class: "field" }, h("span", {}, "Flags (optional)"), flags)), [
     { label: "Cancel", run: (c) => c() },
     { label: "Save", cls: "primary", icon: "save", run: async (c) => {
-      const id = p ? p.id : name.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+      const id = editing ? p.id : name.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
       try {
         await api("PUT", `/api/env-presets/${id}`, { name: name.value, env: env.value, flags: flags.value });
         await loadEnvPresets(); c(); after && after();
-        toast(p ? "Saved. Every profile linked to it uses the new values." : `${name.value} saved. Link it from a profile's Environment card.`, "ok");
-        if (B.parsed) edit({});  // the preview picks up the new values
+        toast(editing ? "Saved. Apply it again to bring the new values into a profile." : `${name.value} saved. Apply it from a profile's Environment or Other flags card.`, "ok");
+        if (B.parsed) renderBuilder();
       } catch (e) { fail(e); }
     } }]);
 }
@@ -1291,7 +1313,7 @@ function renderEnv(env) {
     h("input", { type: "text", value: k, placeholder: "NAME", dataset: { fk: `env-k-${i}` }, style: "flex:1", onchange: commitEnv, spellcheck: "false" }),
     h("input", { type: "text", value: v, placeholder: "value", dataset: { fk: `env-v-${i}` }, style: "flex:1.4", onchange: commitEnv, spellcheck: "false" }),
     i < entries.length ? iconBtn("x", "Remove", (e) => { e.target.closest(".row").remove(); commitEnv(); }, "ghost") : h("span", { style: "width:28px" }));
-  fill($("#bEnv"), presetBar(), entries.map(([k, v], i) => rowFor(k, v, i)), rowFor("", "", entries.length));
+  fill($("#bEnv"), presetBar("env"), entries.map(([k, v], i) => rowFor(k, v, i)), rowFor("", "", entries.length));
 }
 function commitEnv() {
   const env = {};
@@ -1323,7 +1345,7 @@ function renderOther(args) {
   };
   nv.addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
   nf.addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
-  fill($("#bOther"), list.length ? list : h("div", { class: "muted mono-sm" }, "No other flags."), h("div", { class: "row", style: "flex-wrap:nowrap" }, nf, nv, iconBtn("plus", "Add flag", add)));
+  fill($("#bOther"), presetBar("flags"), list.length ? list : h("div", { class: "muted mono-sm" }, "No other flags."), h("div", { class: "row", style: "flex-wrap:nowrap" }, nf, nv, iconBtn("plus", "Add flag", add)));
 }
 
 async function saveProfile(asNew) {

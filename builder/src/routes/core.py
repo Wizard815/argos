@@ -821,6 +821,43 @@ def env_preset_save(pid):
     return ok(id=pid)
 
 
+@bp.post("/api/env-presets/<pid>/apply")
+def env_preset_apply(pid):
+    """Body: {command, part: "env" | "flags" | "all"}. Copies the preset's values into the command as its own,
+    to edit like any other: what the command sets already stays. A link to this preset is dropped (its values
+    are now in the command)."""
+    import copy
+
+    from ..always import PRESET_VAR, linked_presets, parse_always, presets
+    p = presets().get(pid)
+    if not p:
+        return err("no such preset", 404)
+    d = body()
+    part = d.get("part") or "all"
+    try:
+        cmd = parse_command(d.get("command") or "")
+    except ValueError as exc:
+        return err(str(exc))
+    env, args = parse_always(p)
+    added = []
+    if part in ("env", "all"):
+        for k, v in env.items():
+            if k not in cmd.env:
+                cmd.env[k] = v
+                added.append(f"{k}={v}")
+    if part in ("flags", "all"):
+        for a in args:
+            if a.name and not cmd.has(a.name):
+                cmd.args.append(copy.copy(a))
+                added.append(" ".join(a.tokens()))
+    rest = [x for x in linked_presets(cmd) if x != pid]
+    if rest:
+        cmd.env[PRESET_VAR] = ",".join(rest)
+    else:
+        cmd.env.pop(PRESET_VAR, None)
+    return ok(command=cmd.to_string(), added=added)
+
+
 @bp.delete("/api/env-presets/<pid>")
 def env_preset_delete(pid):
     from ..always import presets, save_presets
