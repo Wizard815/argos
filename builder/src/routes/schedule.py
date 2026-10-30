@@ -197,8 +197,7 @@ def measure_start():
     if any(j["state"] in ("queued", "baseline", "loading", "settling") for j in c.measurer.jobs.values()):
         return err("a measurement is already running; wait for it or cancel it", 409)
     always = c.settings.get("always")
-    if always["on_launch"]:
-        command = apply_always(command, always)[0]
+    command = apply_always(command, always if always["on_launch"] else {})[0]  # env presets either way
     job = c.measurer.start(command, row_id, label=row_id, timeout_s=timeout,
                            settle_s=float(d.get("settle_s", 6.0)))
     return ok(job=c.measurer.get(job))

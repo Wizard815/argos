@@ -119,6 +119,8 @@ def create_app(config: dict | None = None) -> Flask:
 
     store = Store(cfg["DB"])
     settings = Settings(store, env_defaults(cfg))
+    from .always import load_presets
+    load_presets(store)
     runner = Runner(cfg["RUNS_DIR"])
     analytics = Analytics(store)
 

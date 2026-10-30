@@ -256,3 +256,39 @@ def test_benchmark_runs_of_engine_models_are_named_by_their_profile(app, client)
     store.add_run({**run, "run_id": "r3", "launch_id": "engine:a", "launch_command": "llama-server -m /m/a.gguf -c 4096"})
     names = {r["run_id"]: r["profile_name"] for r in client.get("/api/runs").get_json()["runs"]}
     assert names == {"r1": "fast 32k", "r2": "long", "r3": ""}, "r3 is the model's own command"
+
+
+def test_env_presets_are_linked_not_copied(app, client):
+    from src.always import apply_always
+
+    presets = client.get("/api/env-presets").get_json()["presets"]
+    assert [p["name"] for p in presets] == ["Tensor Environment"], "the starter preset is there"
+    assert "GGML_CUDA_ALLREDUCE=internal" in presets[0]["env"]
+
+    # a profile links to it; its own value wins over the preset's
+    cmd = "ARGOS_PRESETS=tensor-environment HSA_ENABLE_SDMA=1 llama-server -m /m/a.gguf"
+    full, added = apply_always(cmd, {})
+    assert "ARGOS_PRESETS" not in full and "HIP_FORCE_DEV_KERNARG=1" in full and "HSA_ENABLE_SDMA=1" in full
+    assert "HSA_ENABLE_SDMA=0" not in full and "HSA_ENABLE_SDMA=0" not in added
+
+    j = client.post("/api/command/parse", json={"command": cmd, "format": "plain"}).get_json()
+    assert j["presets_linked"] == [{"id": "tensor-environment", "name": "Tensor Environment", "missing": False}]
+    assert j["preset_env"] == {"HIP_FORCE_DEV_KERNARG": "1", "HSA_FORCE_FINE_GRAIN_PCIE": "1", "GGML_CUDA_ALLREDUCE": "internal"}
+    assert "ARGOS_PRESETS=tensor-environment" in j["command"], "the profile keeps the link"
+    assert "HIP_FORCE_DEV_KERNARG=1" in j["run_command"] and "ARGOS_PRESETS" not in j["run_command"]
+
+    # editing the preset changes what every linked profile runs, the engine's commands included
+    client.post("/api/profiles", json={"name": "tp", "base_model": "a", "launch_command": cmd + " --port 8080"})
+    assert client.put("/api/env-presets/tensor-environment", json={"name": "Tensor Environment", "env": "HIP_FORCE_DEV_KERNARG=1",
+                                                                  "flags": "-sm tensor"}).status_code == 200
+    state = client.get("/api/cookbook/state").get_json()["presets"]
+    ours = next(x for x in state if (x.get("fields") or {}).get("source") == "argos")["cmd"]
+    assert "-sm tensor" in ours and "HSA_FORCE_FINE_GRAIN_PCIE" not in ours and "ARGOS_PRESETS" not in ours
+    assert client.get("/api/env-presets").get_json()["presets"][0]["profiles"] == ["tp"]
+
+    assert client.put("/api/env-presets/Bad Id", json={"name": "x", "env": "A=1"}).status_code == 400
+    assert client.put("/api/env-presets/empty", json={"name": "x", "env": ""}).status_code == 400
+    assert client.delete("/api/env-presets/tensor-environment").status_code == 200
+    gone = client.post("/api/command/parse", json={"command": cmd, "format": "plain"}).get_json()
+    assert gone["presets_linked"][0]["missing"] is True and gone["preset_env"] == {}
+    assert client.get("/api/env-presets").get_json()["presets"] == [], "deleted stays deleted: the starter is offered once"

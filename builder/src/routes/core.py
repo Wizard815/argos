@@ -46,6 +46,20 @@ def _with_always(out: dict, cmd, fmt: str) -> dict:
     """Adds what Settings -> Always set puts on this command at launch and export: ``always_env`` and
     ``always_args`` (only what the command does not set itself), and ``run_command`` / ``run_multiline``,
     the whole command as it runs. The preview shows them; the profile keeps only its own."""
+    import copy
+
+    from ..always import expand_presets, linked_presets, presets
+    linked = linked_presets(cmd)
+    if linked:  # the presets this profile links to: what they add, shown like Always set, apart
+        known = presets()
+        expanded = copy.deepcopy(cmd)
+        expand_presets(expanded)
+        out["preset_env"] = {k: v for k, v in expanded.env.items() if k not in cmd.env}
+        out["preset_args"] = [{"flag": a.flag, "name": a.name, "value": a.value} for a in expanded.args if a.name and not cmd.has(a.name)]
+        out["presets_linked"] = [{"id": p, "name": (known.get(p) or {}).get("name") or p, "missing": p not in known} for p in linked]
+        cmd = expanded
+    else:
+        out["preset_env"], out["preset_args"], out["presets_linked"] = {}, [], []
     env, args = parse_always(ctx().settings.get("always"))
     add_env = {k: v for k, v in env.items() if k not in cmd.env}
     add_args = [a for a in args if a.name and not cmd.has(a.name)]
@@ -53,7 +67,7 @@ def _with_always(out: dict, cmd, fmt: str) -> dict:
     out["always_args"] = [{"flag": a.flag, "name": a.name, "value": a.value} for a in add_args]
     out["always_added"] = [f"{k}={v}" for k, v in add_env.items()] + [" ".join(a.tokens()) for a in add_args]
     full, added = apply_always(cmd.to_string(), ctx().settings.get("always"))
-    run = _render(parse_command(full), fmt) if added else out
+    run = _render(parse_command(full), fmt) if added or linked else out
     out["run_command"], out["run_multiline"] = run["command"], run["multiline"]
     return out
 
@@ -558,8 +572,7 @@ def launch():
         if problem:
             return err(problem, 409)
     always = c.settings.get("always")
-    if always["on_launch"]:
-        command = apply_always(command, always)[0]
+    command = apply_always(command, always if always["on_launch"] else {})[0]  # env presets either way
     served = _engine_model(c, command)
     if served:
         # not a saved profile: the engine loads the model with its own command, not this one
@@ -769,6 +782,56 @@ def flag_add(kind):
         return err(str(exc))
     ctx().event("settings", f"added {kind} {name} to the Flags page")
     return ok(name=name)
+
+
+# ----- env presets: named sets of env vars and flags a profile links to ------------------
+@bp.get("/api/env-presets")
+def env_presets_list():
+    from ..always import linked_presets, presets
+    used: dict[str, list[str]] = {}  # preset id -> the profiles linked to it
+    for p in ctx().store.list_profiles():
+        try:
+            cmd = parse_command(p.get("launch_command") or "")
+        except ValueError:
+            continue
+        for pid in linked_presets(cmd):
+            used.setdefault(pid, []).append(p.get("name") or "")
+    return ok(presets=[{"id": k, **v, "profiles": used.get(k, [])} for k, v in sorted(presets().items(), key=lambda x: x[1].get("name", "").lower())])
+
+
+@bp.put("/api/env-presets/<pid>")
+def env_preset_save(pid):
+    """Body: {name, env (KEY=VALUE per line), flags}. A new id creates one; every profile linked to it follows."""
+    from ..always import parse_always, presets, save_presets
+    d = body()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", pid or ""):
+        return err("the id is lower case letters, digits and dashes")
+    name = str(d.get("name") or "").strip()[:60]
+    if not name:
+        return err("give the preset a name")
+    entry = {"name": name, "env": str(d.get("env") or "").strip()[:4000], "flags": str(d.get("flags") or "").strip()[:2000]}
+    env, args = parse_always(entry)
+    if not env and not args:
+        return err("a preset needs at least one KEY=VALUE line or flag")
+    all_ = presets()
+    all_[pid] = entry
+    save_presets(ctx().store, all_)
+    refresh_schedule()  # the engine's commands follow the preset
+    ctx().event("settings", f"saved env preset {name}")
+    return ok(id=pid)
+
+
+@bp.delete("/api/env-presets/<pid>")
+def env_preset_delete(pid):
+    from ..always import presets, save_presets
+    all_ = presets()
+    if pid not in all_:
+        return err("no such preset", 404)
+    name = all_.pop(pid).get("name") or pid
+    save_presets(ctx().store, all_)
+    refresh_schedule()
+    ctx().event("settings", f"deleted env preset {name}: profiles linked to it run without it")
+    return ok()
 
 
 @bp.post("/api/flags/import")
