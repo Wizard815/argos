@@ -175,7 +175,8 @@ def recent_requests(base_url: str, limit: int = 25) -> list[dict]:
     return rows
 
 
-LIVE_INTERVAL_S = 2  # how often the GPUs are read while a Usage page is live
+LIVE_INTERVAL_S = 1  # how often the GPUs are read while a Usage page is live
+HOOKS_EVERY_S = 15  # the background hooks keep this pace however often the GPUs are read
 LIVE_HOLD_S = 10  # live sampling stops this long after the page's last poll
 
 
@@ -198,6 +199,15 @@ class Collector:
         self.last_source = ""
 
     def start(self) -> None:
+        # Readings used to come every 15 s by default, which left a short range two points to draw. A setting
+        # still at that old default moves to the new one, once; one changed by hand stays.
+        try:
+            saved = self.store.get_settings()
+            if not saved.get("_telemetry_2s") and (saved.get("telemetry") or {}).get("interval_s") == 15:
+                self.store.set_setting("telemetry", {**saved["telemetry"], "interval_s": 2})
+            self.store.set_setting("_telemetry_2s", True)
+        except Exception:  # noqa: BLE001 - the old pace still works
+            pass
         if not self._thread:
             self._thread = threading.Thread(target=self._loop, daemon=True, name="telemetry")
             self._thread.start()
@@ -221,10 +231,10 @@ class Collector:
     def _loop(self) -> None:
         while not self._stop.is_set():
             t = self.settings()["telemetry"]
-            interval = max(2, int(t.get("interval_s") or 15))
+            interval = max(1, int(t.get("interval_s") or 2))
             if t.get("enabled") and t.get("source") != "off":
                 self.tick()
-            if time.time() - self._last_hooks >= interval:  # the hooks keep their own pace while live
+            if time.time() - self._last_hooks >= max(interval, HOOKS_EVERY_S):  # the hooks keep their own pace
                 self._last_hooks = time.time()
                 for hook in self.hooks:
                     try:

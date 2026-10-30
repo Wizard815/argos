@@ -100,7 +100,7 @@ def env_defaults(cfg: dict) -> dict:
         },
         "telemetry": {
             "enabled": bool(cfg.get("TELEMETRY", True)),
-            "interval_s": 15,
+            "interval_s": 2,  # seconds between GPU readings: two hours of them is a few thousand rows
             "keep_minutes": 120,  # GPU readings and request history older than this are deleted
             "source": "auto",  # auto | engine | local | off
         },

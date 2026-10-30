@@ -261,6 +261,9 @@ function renderCommand(parsed, multiline) {
   Object.entries(parsed.env || {}).forEach(([k, v]) => out.push(h("span", { class: "tk-env" }, k), "=", h("span", { class: "tk-str" }, shq(v)), " "));
   // Settings → Always set: added at launch and export, shown faint because the profile does not hold them
   const ALWAYS = "From Settings → Always set: added when this runs, not saved in the profile";
+  const PRESET = `From the env preset${(parsed.presets_linked || []).length > 1 ? "s" : ""} ${(parsed.presets_linked || []).map((p) => p.name).join(", ")}: added when this runs; edit the preset to change every model linked to it`;
+  Object.entries(parsed.preset_env || {}).forEach(([k, v]) => out.push(h("span", { class: "tk-always", title: PRESET },
+    h("span", { class: "tk-env" }, k), "=", h("span", { class: "tk-str" }, shq(v))), " "));
   Object.entries(parsed.always_env || {}).forEach(([k, v]) => out.push(h("span", { class: "tk-always", title: ALWAYS },
     h("span", { class: "tk-env" }, k), "=", h("span", { class: "tk-str" }, shq(v))), " "));
   out.push(h("span", { class: "tk-prog" }, shq(parsed.program)));
@@ -275,6 +278,7 @@ function renderCommand(parsed, multiline) {
     return parts;
   };
   for (const a of parsed.args || []) { sep(); out.push(...arg(a)); }
+  for (const a of parsed.preset_args || []) { sep(); out.push(h("span", { class: "tk-always", title: PRESET }, ...arg(a))); }
   for (const a of parsed.always_args || []) { sep(); out.push(h("span", { class: "tk-always", title: ALWAYS }, ...arg(a))); }
   return out;
 }
@@ -1214,16 +1218,85 @@ function renderEstimate(e) {
     h("p", { class: "hint", style: "margin:6px 0 0" }, "Model + KV cache are close. Buffers are a rough guess, and models that keep part of themselves on the CPU (Gemma-4 E2B/E4B) come out high."));
 }
 
+// Env presets: named sets of env vars and flags ("Tensor Environment"). A profile links to them by
+// ARGOS_PRESETS=<id>,<id> in its environment; they are filled in when it runs, so editing one changes every model.
+const ENVP = { list: null };
+const PRESET_VAR = "ARGOS_PRESETS";
+async function loadEnvPresets() {
+  try { ENVP.list = (await api("GET", "/api/env-presets")).presets; } catch (e) { ENVP.list = []; }
+  return ENVP.list;
+}
+function linkedPresets() {
+  return String(((B.parsed || {}).env || {})[PRESET_VAR] || "").split(",").map((x) => x.trim()).filter(Boolean);
+}
+function setLinkedPresets(ids) {
+  const env = { ...((B.parsed || {}).env || {}) };
+  if (ids.length) env[PRESET_VAR] = ids.join(","); else delete env[PRESET_VAR];
+  edit({}, env);
+}
+function presetBar() {
+  if (!ENVP.list) { loadEnvPresets().then(() => B.parsed && renderEnv(B.parsed.env || {})); return h("div", { class: "muted mono-sm" }, "Loading presets…"); }
+  const linked = linkedPresets();
+  const byId = Object.fromEntries(ENVP.list.map((p) => [p.id, p]));
+  const pick = h("select", { "aria-label": "Add an env preset", style: "flex:1;min-width:0" }, h("option", { value: "" }, ENVP.list.length ? "Add a preset…" : "No presets yet"),
+    ENVP.list.filter((p) => !linked.includes(p.id)).map((p) => h("option", { value: p.id }, p.name)));
+  pick.onchange = () => { if (pick.value) setLinkedPresets([...linked, pick.value]); };
+  return h("div", { class: "stack", style: "gap:6px;margin-bottom:8px" },
+    h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" },
+      linked.length ? linked.map((id) => h("span", { class: `chip${byId[id] ? "" : " warn"}`, title: byId[id] ? `${byId[id].env}${byId[id].flags ? `\n${byId[id].flags}` : ""}` : "This preset was deleted: the link does nothing" },
+        byId[id] ? byId[id].name : `${id} (gone)`, h("button", { class: "chip-x", "aria-label": "Unlink", title: "Unlink this preset from the profile", onclick: () => setLinkedPresets(linked.filter((x) => x !== id)) }, "×")))
+        : h("span", { class: "muted mono-sm" }, "No preset linked.")),
+    h("div", { class: "row", style: "gap:6px;flex-wrap:nowrap" }, pick, btn("Presets", manageEnvPresets, "sm ghost", "sliders")));
+}
+function manageEnvPresets() {
+  const body = h("div", { class: "stack" });
+  const draw = () => fill(body,
+    h("p", { class: "hint", style: "margin:0" }, "A preset is env vars and flags for some models. Link it from a profile's Environment card; editing it here changes every profile linked to it. The profile's own values win over the preset's."),
+    (ENVP.list || []).length ? h("div", { class: "ody-list" }, ENVP.list.map((p) => h("div", { class: "ody-row" },
+      h("div", { class: "ody-main" }, h("div", { class: "cell-main" }, p.name),
+        h("div", { class: "cell-sub mono-sm" }, [p.env.split("\n").filter(Boolean).join(" "), p.flags].filter(Boolean).join(" · ")),
+        h("div", { class: "cell-sub" }, p.profiles.length ? `linked by ${p.profiles.join(", ")}` : "no profile linked")),
+      btn("Edit", () => presetForm(p, draw), "sm"),
+      iconBtn("trash", "Delete", async () => {
+        if (!(await confirmBox(`Delete ${p.name}?${p.profiles.length ? ` ${p.profiles.length} profile(s) linked to it run without it.` : ""}`, "Delete"))) return;
+        try { await api("DELETE", `/api/env-presets/${p.id}`); await loadEnvPresets(); draw(); if (B.parsed) renderBuilder(); } catch (e) { fail(e); }
+      }, "danger")))) : h("div", { class: "empty" }, "No presets yet."),
+    h("div", { class: "row end" }, btn("New preset", () => presetForm(null, draw), "sm primary", "plus")));
+  draw();
+  modal("Env presets", body, [{ label: "Close", run: (c) => c() }]);
+}
+function presetForm(p, after) {
+  const name = h("input", { type: "text", value: p ? p.name : "", placeholder: "Tensor Environment" });
+  const env = h("textarea", { rows: 6, spellcheck: "false", placeholder: "HIP_FORCE_DEV_KERNARG=1\nHSA_ENABLE_SDMA=0" }, p ? p.env : "");
+  const flags = h("input", { type: "text", value: p ? p.flags : "", spellcheck: "false", placeholder: "-sm tensor --no-warmup" });
+  modal(p ? `Edit ${p.name}` : "New env preset", h("div", { class: "stack" },
+    h("label", { class: "field" }, h("span", {}, "Name"), name),
+    h("label", { class: "field" }, h("span", {}, "Environment (KEY=VALUE per line)"), env),
+    h("label", { class: "field" }, h("span", {}, "Flags (optional)"), flags)), [
+    { label: "Cancel", run: (c) => c() },
+    { label: "Save", cls: "primary", icon: "save", run: async (c) => {
+      const id = p ? p.id : name.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+      try {
+        await api("PUT", `/api/env-presets/${id}`, { name: name.value, env: env.value, flags: flags.value });
+        await loadEnvPresets(); c(); after && after();
+        toast(p ? "Saved. Every profile linked to it uses the new values." : `${name.value} saved. Link it from a profile's Environment card.`, "ok");
+        if (B.parsed) edit({});  // the preview picks up the new values
+      } catch (e) { fail(e); }
+    } }]);
+}
 function renderEnv(env) {
+  env = Object.fromEntries(Object.entries(env).filter(([k]) => k !== PRESET_VAR));  // the link shows as the preset bar
   const entries = Object.entries(env);
   const rowFor = (k, v, i) => h("div", { class: "row", style: "flex-wrap:nowrap" },
     h("input", { type: "text", value: k, placeholder: "NAME", dataset: { fk: `env-k-${i}` }, style: "flex:1", onchange: commitEnv, spellcheck: "false" }),
     h("input", { type: "text", value: v, placeholder: "value", dataset: { fk: `env-v-${i}` }, style: "flex:1.4", onchange: commitEnv, spellcheck: "false" }),
     i < entries.length ? iconBtn("x", "Remove", (e) => { e.target.closest(".row").remove(); commitEnv(); }, "ghost") : h("span", { style: "width:28px" }));
-  fill($("#bEnv"), entries.map(([k, v], i) => rowFor(k, v, i)), rowFor("", "", entries.length));
+  fill($("#bEnv"), presetBar(), entries.map(([k, v], i) => rowFor(k, v, i)), rowFor("", "", entries.length));
 }
 function commitEnv() {
   const env = {};
+  const link = ((B.parsed || {}).env || {})[PRESET_VAR];
+  if (link) env[PRESET_VAR] = link;
   $$("#bEnv .row").forEach((r) => {
     const [k, v] = $$("input", r).map((i) => i.value.trim());
     if (k) env[k] = v;
@@ -2740,7 +2813,7 @@ const RANGES = [["30s", "30s"], ["1m", "1m"], ["2m", "2m"], ["5m", "5m"], ["10m"
 const RANGE_SPAN = { "30s": [30, 2], "1m": [60, 2], "2m": [120, 2], "5m": [300, 4], "10m": [600, 6], "15m": [900, 10], "30m": [1800, 16], "1h": [3600, 30] };
 const SHORT_RANGES = new Set(RANGES.map(([v]) => v));
 const BUF_SPAN = 3600, BUF_BUCKET = 2;
-const G = { range: (() => { try { const r = localStorage.getItem("gpuRange"); return RANGE_SPAN[r] ? r : "30m"; } catch (e) { return "30m"; } })(),
+const G = { range: (() => { try { const r = localStorage.getItem("gpuRange"); return RANGE_SPAN[r] ? r : "30s"; } catch (e) { return "30s"; } })(),
   data: null, buf: [], meta: null };
 
 /** The kept readings cut to the selected range, averaged into its buckets. */
@@ -2862,8 +2935,8 @@ function renderGpu() {
   const every = S.settings?.telemetry?.interval_s;
   $("#gSource").textContent = (d.rows.length
     ? `${d.bucket}s buckets · source: ${d.collector.source || "stored"} · the last ${num((S.settings?.telemetry?.keep_minutes || 120) / 60, 0)} h are kept`
-    : "") + (usageLive() ? " · live: read every 2 s while this page is open"
-      : (SHORT_RANGES.has(G.range) && every > 5 ? ` · readings come every ${every}s; turn on Live, or set Telemetry to 2–5 s in Settings` : "")
+    : "") + (usageLive() ? " · live: read every second while this page is open"
+      : (every > 5 ? ` · readings come every ${every}s; turn on Live, or set Settings → Telemetry → Every to 2 s` : "")
         + (SHORT_RANGES.has(G.range) ? " · live" : ""));
   const gpus = [...new Map(d.rows.map((r) => [r.gpu, r.name])).entries()].sort((a, b) => a[0] - b[0]);
   if (!d.rows.length) {
@@ -2921,8 +2994,10 @@ async function loadGpu() {
       const cut = Date.now() / 1000 - BUF_SPAN;
       G.buf = G.buf.filter((r) => r.t >= cut && (last == null || r.t < last)).concat(d.rows);
       G.meta = { latest: d.latest, collector: d.collector };
-      const sig = JSON.stringify([G.range, live, G.buf.length, G.buf[G.buf.length - 1], d.latest]);
-      if (sig !== G.sig) { G.data = gpuView(); G.sig = sig; renderGpu(); }
+      // drawn on every poll, new reading or not: the window moves with the clock, so the lines glide left.
+      // While the pointer reads a chart only a new reading redraws it, so the value under it stays put.
+      const sig = JSON.stringify([G.buf.length, G.buf[G.buf.length - 1]]);
+      if (sig !== G.sig || !$("#gCharts").matches(":hover")) { G.sig = sig; G.data = gpuView(); renderGpu(); }
     } catch (e) { if (!live) fail(e); }
     finally { if (G.loading === job) G.loading = null; }
   })();
@@ -5681,7 +5756,9 @@ async function tick() {
   const liveLogs = S.view === "logs" && (SHORT_RANGES.has(G.range) || SHORT_RANGES.has($("#rRange").value));
   const usageLiveNow = S.view === "logs" && usageLive();
   if (document.hidden) { pollTimer = setTimeout(tick, 30000); return; }  // nobody is looking: poll rarely
-  pollTimer = setTimeout(tick, busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") || usageLiveNow ? 1500 : liveLogs ? 3000 : 8000);
+  const usageGpu = S.view === "logs" && ($(".tabs[data-tabs=logs] button.on")?.dataset.pane || "gpu") === "gpu";
+  pollTimer = setTimeout(tick, usageGpu ? (usageLiveNow ? 1000 : 2000)
+    : busy || ["playground", "models", "assistant", "serverlogs"].includes(S.view) || (S.view === "schedule" && SC.pane === "live") || usageLiveNow ? 1500 : liveLogs ? 3000 : 8000);
 }
 
 function initTabs() {
