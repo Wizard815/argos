@@ -110,3 +110,38 @@ func TestPrefill_FollowsEachSlotOfAModel(t *testing.T) {
 	w.Forget("m")
 	assert.Empty(t, w.Slots("m"), "a stopped process has no busy slot")
 }
+
+// A long prompt reads fast at first and slower as the context fills: the
+// watch keeps the fastest and slowest stretch, and the request claims them.
+func TestPrefill_KeepsTheHighAndLowOfAPrompt(t *testing.T) {
+	now := time.Unix(1000, 0)
+	w := NewPrefillWatch(func() time.Time { return now })
+	feed := func(s string) { w.Feed("m--fast", []byte(s+"\n")) }
+
+	start := now
+	feed("slot launch_slot_: id  0 | task 7 | processing task, is_child = 0")
+	feed("slot print_timing: id  0 | task 7 | prompt processing, n_tokens =   4096, progress = 0.25, t =   2.00 s / 2048.00 tokens per second")
+	feed("slot print_timing: id  0 | task 7 | prompt processing, n_tokens =   8192, progress = 0.50, t =   5.00 s / 1638.40 tokens per second")
+	feed("slot print_timing: id  0 | task 7 | prompt processing, n_tokens =  16384, progress = 1.00, t =  13.00 s / 1260.31 tokens per second")
+	s := w.Slots("m--fast")
+	require.Len(t, s, 1)
+	assert.Equal(t, PhaseGenerating, s[0].Phase)
+	assert.InDelta(t, 2048, s[0].HighTokensPerSecond, 0.1, "the first 4096 tokens took 2 s")
+	assert.InDelta(t, 1024, s[0].LowTokensPerSecond, 0.1, "the last 8192 took 8 s, slower than the average says")
+
+	_, ok := w.Claim("other", start)
+	assert.False(t, ok)
+	run, ok := w.Claim("m", start) // the plain name a client asked for runs the profile m--fast
+	require.True(t, ok)
+	assert.Equal(t, 7, run.Task)
+	assert.InDelta(t, 2048, run.High, 0.1)
+	assert.InDelta(t, 1024, run.Low, 0.1)
+	_, ok = w.Claim("m", start)
+	assert.False(t, ok, "a prompt is claimed by one request")
+
+	// older than the request: not its prompt
+	feed("slot launch_slot_: id  0 | task 8 | processing task, is_child = 0")
+	feed("slot print_timing: id  0 | task 8 | prompt processing, n_tokens =   4096, progress = 1.00, t =   2.00 s / 2048.00 tokens per second")
+	_, ok = w.Claim("m--fast", start.Add(time.Minute))
+	assert.False(t, ok)
+}

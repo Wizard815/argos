@@ -150,8 +150,18 @@ def fetch_activity(base_url: str, after_id: int, limit: int = 999, order: str = 
             "draft_acc_tokens": t.get("draft_acc_tokens"), "prompt_per_second": t.get("prompt_per_second"),
             "tokens_per_second": t.get("tokens_per_second"), "duration_ms": e.get("duration_ms"),
             "error": e.get("error_msg") or "",
+            # the engine reads these from the model's log: the fastest and slowest stretch of the prompt
+            "prefill_high_tps": _num_or_none((e.get("metadata") or {}).get("prefill_high_tps")),
+            "prefill_low_tps": _num_or_none((e.get("metadata") or {}).get("prefill_low_tps")),
         })
     return rows
+
+
+def _num_or_none(v) -> Optional[float]:
+    try:
+        return float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def recent_requests(base_url: str, limit: int = 25) -> list[dict]:

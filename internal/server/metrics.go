@@ -10,12 +10,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wizard815/Argos/internal/cache"
 	"github.com/Wizard815/Argos/internal/event"
 	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/router"
 	"github.com/Wizard815/Argos/internal/store"
 	"github.com/Wizard815/Argos/internal/swaputil"
 	"github.com/Wizard815/Argos/internal/tailcat"
@@ -252,6 +254,7 @@ func (mp *metricsMonitor) record(modelID string, r *http.Request, recorder *resp
 	} else {
 		mp.logger.Warnf("metrics: invalid JSON in response body path=%s, recording minimal metrics", r.URL.Path)
 	}
+	addPrefillRange(&tm, modelID, recorder.StartTime())
 
 	stored, ok := mp.queueMetrics(tm)
 	if !ok {
@@ -557,6 +560,22 @@ func buildMetrics(modelID string, start time.Time, inputTokens, outputTokens, ca
 		},
 		DurationMs: durationMs,
 	}
+}
+
+// addPrefillRange files the fastest and slowest stretch of the prompt this
+// request's slot read, from the model's log: prompt reading starts fast and
+// slows as the context fills, which prompt_per_second (the average) hides.
+// Absent when the prompt was read in one go, with no progress reports.
+func addPrefillRange(tm *ActivityLogEntry, modelID string, start time.Time) {
+	run, ok := router.Prefills.Claim(modelID, start)
+	if !ok {
+		return
+	}
+	if tm.Metadata == nil {
+		tm.Metadata = make(map[string]string)
+	}
+	tm.Metadata["prefill_high_tps"] = strconv.FormatFloat(run.High, 'f', 1, 64)
+	tm.Metadata["prefill_low_tps"] = strconv.FormatFloat(run.Low, 'f', 1, 64)
 }
 
 // decompressBody decompresses the body based on the Content-Encoding header.

@@ -434,6 +434,7 @@ class Inventory:
                 "open": any(s["open"] for s in ss),
                 "tps_avg": (speeds.get(mid) or {}).get("tg_avg"), "requests": (speeds.get(mid) or {}).get("requests") or None,
                 "prefill": span((speeds.get(mid) or {}).get("prefill")), "decode": span((speeds.get(mid) or {}).get("decode")),
+                "prefill_stretch": (speeds.get(mid) or {}).get("prefill_stretch"),
             })
         return sorted(rows, key=lambda r: (-r["loaded_seconds"], r["name"].lower()))
 

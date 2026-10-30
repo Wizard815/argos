@@ -57,6 +57,20 @@ def test_engine_readers():
         assert [(g["gpu"], g["util"], g["mem_used_mb"]) for g in gpus] == [(0, 99, 30000), (1, 0, 10)]
         rows = fetch_activity(url, 2)
         assert [r["source_id"] for r in rows] == [3, 4] and rows[0]["error"] == "too long"
+    acts = [activity(1), {**activity(2), "metadata": {"prefill_high_tps": "2048.0", "prefill_low_tps": "1024.5"}}]
+    with serve(make_engine(GPU_STATS, acts)) as url:
+        rows = fetch_activity(url, 0)
+        assert (rows[0]["prefill_high_tps"], rows[1]["prefill_high_tps"], rows[1]["prefill_low_tps"]) == (None, 2048.0, 1024.5)
+
+
+def test_the_prompt_stretch_reaches_the_model_summary(tmp_path):
+    store = Store(str(tmp_path / "s.db"))
+    now = time.time()
+    store.add_requests([{"source_id": i, "ts": now - i, "model": "m", "input_tokens": 9000, "prompt_per_second": 1300.0,
+                         "prefill_high_tps": hi, "prefill_low_tps": lo} for i, hi, lo in ((1, 2000.0, 900.0), (2, 2400.0, 1100.0), (3, None, None))])
+    s = store.model_speed_summary(now - 3600, 1000, 1)["m"]
+    assert s["prefill_stretch"] == {"high": 2400.0, "low": 900.0}
+    assert store.list_requests()[0]["prefill_high_tps"] in (2000.0, 2400.0, None)
 
 
 def settings_for(url, source="auto", keep=120):
