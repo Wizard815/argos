@@ -193,9 +193,12 @@ the GPUs if they have room then.
         cpuFallback: ["qwen3-0.6b", "nomic-embed-text-v2-q8"]
 ```
 
-The builder fills it with the assistant's chat and embedding models
-(Settings -> Assistant -> "Run the chat and embedding models on the CPU when the
-GPUs are full", on by default). What goes wrong: a llama.cpp build with
+The builder fills it with the assistant's models whose **When the GPUs are
+full** is "Run this model on the CPU instead" (Settings -> Assistant: one
+choice each for the chat, escalation and embedding models; the others are
+"Wait for the GPUs" and "Switch to a CPU model"). Before that choice existed,
+the chat and embedding models ran on the CPU by default, and those settings
+still default to that. What goes wrong: a llama.cpp build with
 GPU-only features in the command (a KV cache type with no CPU kernels, `-sm
 tensor`) can fail on the CPU; give such a model a plain command.
 

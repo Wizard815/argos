@@ -174,15 +174,19 @@ def create_app(config: dict | None = None) -> Flask:
             return True
 
     def watch_memory():
-        """Keep the assistant's memory current: new records and their links every tick (no model). The embedding
-        waits for a search (see sync), except a CPU embedder's bursts: at start, and once whenever no model has had
-        a request for a minute, never while one is working."""
+        """Keep the assistant's memory current: new records and their links every tick (no model). Embedding
+        runs in bursts in downtime (at start, and once whenever no model has had a request for a minute, never
+        while one is working): for any embedder with "quiet", for one on the CPU with "auto", never with
+        "search" (Settings -> Assistant -> Memory -> When to embed)."""
         mem_cfg = settings.get("memory")
         if not mem_cfg["enabled"]:
             return
         memory.sync(budget=0, embed=False)
         pb = app.extensions.get("pb")
-        if not (mem_cfg.get("background", True) and memory.vectors_on() and pb and pb.assistant and pb.assistant.embed_on_cpu()):
+        when = memory.embed_when()
+        if when == "search" or not (memory.vectors_on() and pb and pb.assistant):
+            return
+        if when == "auto" and not pb.assistant.embed_on_cpu():
             return
         if bursts.due(time.time(), models_busy(pb)):
             def run():

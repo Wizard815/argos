@@ -47,10 +47,18 @@ def env_defaults(cfg: dict) -> dict:
             "endpoint": "",   # blank = the engine's /v1 (another OpenAI-compatible server only if you need one)
             "model": "",      # an embedding model id, e.g. nomic-embed-text-v2-q8; blank = search by words only
             "model_cpu": "",  # its CPU alternative for when the GPUs are full: best another profile of the same model
+            # when the GPUs are full: "off" waits for them, "same" runs the model above on the CPU (Schedule's pool
+            # router), "model" switches to model_cpu; blank = what the older settings meant (model_cpu, cpu_fallback)
+            "fallback": "",
+            # when records are embedded: "auto" (a CPU embedder in downtime, plus what a search still needs),
+            # "quiet" (only in downtime, GPU or CPU; a search embeds just its question), "search" (only for a
+            # search); blank = from "background" below
+            "embed_when": "",
             # with the embedding model on the CPU, embed new events, notes, profiles and benchmarks as they come in
             # (the records that never change); off = only when a search needs them
             "background": True,
-            # "embed": the embedding model and the links; "links": the link graph alone, no embedding model runs
+            # "embed": the embedding model and the links; "links": the link graph alone, no embedding model runs;
+            # "words": matching words only
             "search_by": "embed",
             # the link graph: records joined by the models, profiles, flags, variables, GPUs, failures and days they
             # name, searched with no model (memory_links); fused with the embeddings in the memory's search
@@ -110,7 +118,9 @@ def env_defaults(cfg: dict) -> dict:
         "telemetry": {
             "enabled": bool(cfg.get("TELEMETRY", True)),
             "interval_s": 2,  # seconds between GPU readings: two hours of them is a few thousand rows
-            "keep_minutes": 120,  # GPU readings and request history older than this are deleted
+            "keep_minutes": 120,  # GPU and CPU readings older than this are deleted (Usage shows at most this)
+            # request history: Inventory, the model pages, Benchmarks' live speeds and the memory read it over months
+            "request_days": 180,
             "source": "auto",  # auto | engine | local | off
         },
         "assistant": {
@@ -133,6 +143,9 @@ def env_defaults(cfg: dict) -> dict:
             # something (model_choice): blank = the GPU one always
             "model_cpu": "",
             "escalate_model_cpu": "",
+            # per model, when the GPUs are full: "off" / "same" / "model", as memory.fallback; blank = older settings
+            "fallback": "",
+            "escalate_fallback": "",
             # a hard question goes to a bigger chat model that is already loaded and idle (the coder between
             # prompts, say) before loading the escalation model: no load, nothing unloaded
             "escalate_to_loaded": True,

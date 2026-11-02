@@ -94,6 +94,10 @@ def tokens(text: str) -> list[str]:
 
 # records embedded on the way into a search: the ones changed since the last search, bounded
 SEARCH_EMBED_BUDGET = 32
+# a record whose numbers move (a model's speeds, a load still open) keeps its vector when it changes; a burst
+# embeds it again once that vector is this old, so its meaning stays close without re-embedding on every request
+STALE_S = 30 * 60
+EMBED_WHEN = ("auto", "quiet", "search")
 
 
 class Memory:
@@ -107,6 +111,9 @@ class Memory:
         self.last_used = 0.0  # when the embedding model last answered, for unloading it when idle
         self.extra_sources: list[Callable[[], Iterable[tuple]]] = []  # e.g. Odysseus' Brain
         self.pick: Optional[Callable[[], str]] = None  # which embedding model to use now (Assistant.pick)
+        # what the embedding model is doing, for the Schedule page: {"why", "texts", "since"} while it works
+        self.activity: dict = {"now": None, "last": None}
+        self._why = ""
 
     # ----- configuration ---------------------------------------------------------------
     def config(self) -> dict:
@@ -135,15 +142,28 @@ class Memory:
 
     def vectors_on(self) -> bool:
         c = self.config()
-        # "links": the link graph instead of the embedding model, which then never runs
-        return bool(c.get("enabled") and c.get("search_by", "embed") != "links" and c.get("endpoint") and c.get("model"))
+        # "links" (the link graph) and "words" need no embedding model, which then never runs
+        return bool(c.get("enabled") and (c.get("search_by") or "embed") == "embed" and c.get("endpoint") and c.get("model"))
+
+    def embed_when(self) -> str:
+        """When records are embedded: "auto" (a CPU embedder in downtime, and what a search still needs),
+        "quiet" (only in downtime, on the GPU or the CPU; a search embeds just its question) or "search"
+        (only when a search needs them)."""
+        c = self.config()
+        when = str(c.get("embed_when") or "").strip()
+        if when in EMBED_WHEN:
+            return when
+        return "auto" if c.get("background", True) else "search"
 
     def burst(self, budget: int = 512, step: int = 64) -> int:
-        """Embed the records that never change, in steps, until they are done or ``budget`` is reached."""
+        """Embed what waits, in steps, until it is done or ``budget`` is reached: new records first, then the
+        ones whose numbers moved since their vector was made more than STALE_S ago."""
         done = 0
         while done < budget and self.vectors_on():
             with self._lock:
-                n = self._embed_pending(min(step, budget - done), self.STABLE_SOURCES)
+                n = self._embed_pending(min(step, budget - done), why="in downtime")
+                if not n:
+                    n = self._embed_stale(min(step, budget - done))
             if not n:
                 break
             done += n
@@ -250,8 +270,14 @@ class Memory:
                     self.store._x("INSERT INTO memory_records (source, key, ts, text, hash) VALUES (?,?,?,?,?)", (s, k, ts, text, h))
                     added += 1
                     touched.append((s, k))
-                elif row["hash"] != h:
+                elif row["hash"] != h and s in self.STABLE_SOURCES:
                     self.store._x("UPDATE memory_records SET ts=?, text=?, hash=?, vector=NULL, model='', dims=0 WHERE id=?", (ts, text, h, row["id"]))
+                    changed += 1
+                    touched.append((s, k))
+                elif row["hash"] != h:
+                    # its numbers moved: the vector it has still says what it is about, so it is kept (no
+                    # re-embedding on every request); a burst refreshes it once it is STALE_S old
+                    self.store._x("UPDATE memory_records SET ts=?, text=?, hash=? WHERE id=?", (ts, text, h, row["id"]))
                     changed += 1
                     touched.append((s, k))
             gone = [r["id"] for key, r in have.items() if key not in seen]
@@ -264,7 +290,8 @@ class Memory:
                 elif touched:
                     ids = [r["id"] for r in self.store._q("SELECT id, source, key FROM memory_records") if (r["source"], r["key"]) in set(touched)]
                     self._relink(ids)
-            embedded = self._embed_pending(budget, self.STABLE_SOURCES if stable_only else None) if embed and self.vectors_on() else 0
+            embedded = (self._embed_pending(budget, self.STABLE_SOURCES if stable_only else None, why="to catch up")
+                        if embed and self.vectors_on() else 0)
             if added or changed or gone or embedded:
                 self._matrix = None
             return {"added": added, "changed": changed, "removed": len(gone), "embedded": embedded}
@@ -272,7 +299,8 @@ class Memory:
     # ----- the link graph (memory_links): records joined by what they share, no model needed ----------------
     def links_on(self) -> bool:
         c = self.config()
-        return bool(c.get("enabled") and (c.get("links", True) or c.get("search_by") == "links"))
+        by = c.get("search_by") or "embed"
+        return bool(c.get("enabled") and by != "words" and (c.get("links", True) or by == "links"))
 
     def _models(self) -> list[str]:
         try:
@@ -340,17 +368,28 @@ class Memory:
         return {"entities": sorted(wanted), "results": [{**rows[rid], "score": round(s, 3), "shared": shared}
                                                         for rid, s, shared in ranked]}
 
-    def _embed_pending(self, budget: int, sources: Optional[tuple] = None) -> int:
-        c = self.config()
-        model = self.vector_key()
+    def _embed_pending(self, budget: int, sources: Optional[tuple] = None, why: str = "for a search") -> int:
         same, args = self._same_model()
         only = f" AND source IN ({', '.join('?' * len(sources))})" if sources else ""
         rows = self.store._q(f"SELECT id, text FROM memory_records WHERE (vector IS NULL OR NOT {same}){only} ORDER BY ts DESC LIMIT ?",
                              (*args, *(sources or ()), budget))
+        return self._embed_rows(rows, why)
+
+    def _embed_stale(self, budget: int) -> int:
+        """Records whose numbers moved since their vector was made, at least STALE_S ago."""
+        same, args = self._same_model()
+        rows = self.store._q(f"SELECT id, text FROM memory_records WHERE vector IS NOT NULL AND {same} AND indexed_at < ts "
+                             "AND indexed_at < ? ORDER BY indexed_at LIMIT ?", (*args, time.time() - STALE_S, budget))
+        return self._embed_rows(rows, "in downtime, refreshing records whose numbers moved")
+
+    def _embed_rows(self, rows: list, why: str) -> int:
+        c = self.config()
+        model = self.vector_key()
         done, batch = 0, max(1, int(c.get("batch") or 16))
         for i in range(0, len(rows), batch):
             chunk = rows[i:i + batch]
             try:
+                self._why = why
                 vecs = self.embed([r["text"] for r in chunk])
             except MemoryError_ as exc:
                 if self.last_error != str(exc):
@@ -364,7 +403,18 @@ class Memory:
                 done += 1
         return done
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], why: str = "") -> list[list[float]]:
+        why, self._why = why or self._why, ""
+        started = time.time()
+        self.activity["now"] = {"why": why or "a request", "texts": len(texts), "since": started}
+        try:
+            return self._embed_request(texts)
+        finally:
+            self.activity["now"] = None
+            self.activity["last"] = {"why": why or "a request", "texts": len(texts), "at": started,
+                                     "seconds": round(time.time() - started, 2)}
+
+    def _embed_request(self, texts: list[str]) -> list[list[float]]:
         c = self.config()
         body = json.dumps({"model": c["model"], "input": texts}).encode()
         req = urllib.request.Request(c["endpoint"].rstrip("/") + "/embeddings", data=body,
@@ -408,9 +458,10 @@ class Memory:
         ranked_vec: list[tuple[int, float]] = []
         if self.vectors_on():
             try:
-                with self._lock:
-                    if self._embed_pending(SEARCH_EMBED_BUDGET):
-                        self._matrix = None
+                if self.embed_when() != "quiet":  # "quiet": records wait for downtime; only the question is embedded
+                    with self._lock:
+                        if self._embed_pending(SEARCH_EMBED_BUDGET):
+                            self._matrix = None
                 ranked_vec = self._vector(query, set(by_id))
             except MemoryError_ as exc:
                 self.last_error = str(exc)
@@ -466,6 +517,7 @@ class Memory:
     def _vector(self, query: str, allowed: set[int]) -> list[tuple[int, float]]:
         model = self.config()["model"]
         qv = array.array("f")
+        self._why = "the question of a search"
         qv.frombytes(_vec_bytes(self.embed([query])[0]))
         same, args = self._same_model()
         rows = self.store._q(f"SELECT id, vector, dims FROM memory_records WHERE vector IS NOT NULL AND {same}", args)
@@ -494,7 +546,9 @@ class Memory:
                 "links": links["n"] or 0, "linked_things": links["e"] or 0, "links_on": self.links_on(),
                 "vectors_on": self.vectors_on(), "endpoint": c.get("endpoint") or "", "model": c.get("model") or "",
                 "enabled": bool(c.get("enabled")), "error": self.last_error, "by_source": by_source,
-                "fast_search": _np is not None}
+                "fast_search": _np is not None, "search_by": c.get("search_by") or "embed", "embed_when": self.embed_when(),
+                "activity": self.activity,
+                "waiting": self.store._q(f"SELECT COUNT(*) AS n FROM memory_records WHERE vector IS NULL OR NOT {same}", args)[0]["n"] or 0}
 
 
 __all__ = ["Memory", "tokens"]

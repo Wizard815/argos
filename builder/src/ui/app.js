@@ -1962,8 +1962,9 @@ function initPlayground() {
 const perfSort = { key: null, asc: false };
 async function loadPerf() {
   try {
-    const [runs, best] = await Promise.all([api("GET", "/api/runs"), api("GET", "/api/analytics/best")]);
-    S.runs = runs.runs; S.best = best.rows;
+    const [runs, best, live] = await Promise.all([api("GET", "/api/runs"), api("GET", "/api/analytics/best"),
+      api("GET", "/api/benchmarks/live?days=7").catch(() => ({ rows: [] }))]);
+    S.runs = runs.runs; S.best = best.rows; S.liveSpeeds = live.rows || [];
   } catch (e) { fail(e); return; }
   $("#navPerf").textContent = S.runs.length || "";
   const models = [...new Set(S.runs.map((r) => r.base_model))].sort();
@@ -2009,6 +2010,21 @@ function renderPerf() {
     { key: "created_at", label: "Best on", cell: (b) => h("span", { class: "muted nowrap", title: new Date(b.created_at * 1000).toLocaleString() }, ago(b.created_at)) },
     { label: "", cell: (b) => h("td", { class: "actions" }, iconBtn("sliders", "Open in builder", () => openRunInBuilder(b)), iconBtn("database", "Open in Inventory", () => openRunInInventory(b))) },
   ], best, PF.bestSort, "No successful runs yet. Benchmark something in the Playground.");
+
+  const live = (S.liveSpeeds || []).filter((r) => !m || r.model === m || String(r.model).split("--")[0] === m);
+  const maxLive = Math.max(1, ...live.map((r) => r.tg_max || 0));
+  renderTable($("#fLive"), [
+    { key: "model", label: "Model", cell: (r) => h("td", { class: "cell-model", title: r.model }, h("div", { class: "cell-main" }, String(r.model).split("--")[0]),
+      String(r.model).includes("--") ? h("div", { class: "cell-sub" }, String(r.model).split("--").slice(1).join("--")) : null) },
+    { key: "requests", label: "Requests", num: true, cell: (r) => num(r.requests, 0) },
+    { key: "pp_avg", label: "Prefill t/s (avg)", num: true, cell: (r) => num(r.pp_avg, 0) },
+    { key: "tg_avg", label: "Decode t/s (avg)", num: true, cell: (r) => tpsBar(r.tg_avg, maxLive) },
+    { key: "tg_max", label: "Decode best", num: true, cell: (r) => num(r.tg_max, 1) },
+    { key: "output_tokens", label: "Written", num: true, cell: (r) => num(r.output_tokens, 0) },
+    { key: "errors", label: "Errors", num: true, cell: (r) => (r.errors ? h("span", { class: "pill err" }, r.errors) : DASH) },
+    { key: "last_ts", label: "Last", cell: (r) => h("span", { class: "muted nowrap", title: new Date(r.last_ts * 1000).toLocaleString() }, ago(r.last_ts)) },
+    { label: "", cell: (r) => h("td", { class: "actions" }, iconBtn("database", "Open in Inventory", () => openModel(r.model))) },
+  ], live, PF.liveSort || (PF.liveSort = { key: "last_ts", asc: false }), "No requests with speeds in the last 7 days.");
 
   const rows = perfRows();
   const maxTps = Math.max(1, ...rows.map((r) => r.tokens_per_second || 0));
@@ -3670,16 +3686,32 @@ function renderAssistantSettings() {
   const useOther = h("input", { type: "checkbox", checked: cfg.mode === "endpoint" });
   const endpoint = h("input", { type: "text", value: cfg.endpoint || "", placeholder: "http://other-box:8080/v1", spellcheck: "false" });
   const endpointModel = h("input", { type: "text", value: cfg.mode === "endpoint" ? cfg.model || "" : "", placeholder: "model id on that server", spellcheck: "false" });
-  // each model has a CPU alternative, used when the GPU one would have to wait for VRAM or unload something
-  const cpuNote = "Used when the GPU model would have to wait for VRAM or unload something (a big model loaded). Pick a CPU-only profile (GPUs hidden or -ngl 0). Whichever of the two is already loaded is kept.";
-  const chatCpu = modelSelect(ch.chat, cfg.model_cpu || "", { none: "none: the GPU model always", connected: ch.engine_connected });
-  const syncOther = () => { chat.disabled = useOther.checked; chatCpu.disabled = useOther.checked; };
+  // when the GPUs are full, per model: wait for them, run the same model on the CPU, or switch to a CPU model
+  const cpuNote = "Pick a CPU-only profile (GPUs hidden or -ngl 0). Used when the GPU model would have to wait for VRAM or unload something; whichever of the two is already loaded is kept.";
+  const fb = (current) => {
+    const sel = h("select", {}, [["off", "Wait for the GPUs (no CPU fallback)"], ["same", "Run this model on the CPU instead"],
+      ["model", "Switch to a CPU model (below)"]].map(([v, l]) => h("option", { value: v }, l)));
+    sel.value = current || "off";
+    return sel;
+  };
+  const fbField = (sel, cpuSel, label, extra) => {
+    const cpuWrap = field(label, cpuSel, cpuNote, true);
+    const sync = () => { cpuWrap.style.display = sel.value === "model" ? "" : "none"; };
+    sel.addEventListener("change", sync); sync();
+    return [field("When the GPUs are full", sel, extra || "Run on the CPU: the engine starts it with every GPU hidden when it does not fit (needs Schedule's pool router), so nothing you are using is unloaded for it. Slower, but now.", true), cpuWrap];
+  };
+  const fbOf = (set, cpu, legacy) => set || (cpu ? "model" : legacy ? "same" : "off");
+  const chatFb = fb(fbOf(cfg.fallback, cfg.model_cpu, cfg.cpu_fallback !== false));
+  const escFb = fb(fbOf(cfg.escalate_fallback, cfg.escalate_model_cpu, false));
+  const embedFb = fb(fbOf(mem.fallback, mem.model_cpu, cfg.cpu_fallback !== false));
+  const chatCpu = modelSelect(ch.chat, cfg.model_cpu || "", { none: "choose a CPU model…", connected: ch.engine_connected });
+  const syncOther = () => { chat.disabled = useOther.checked; chatCpu.disabled = chatFb.disabled = useOther.checked; };
   useOther.addEventListener("change", syncOther);
   syncOther();
 
   // escalation: what a hard question is handed to
   const escalate = modelSelect(ch.chat, cfg.escalate_model || "", { none: "none: the small model answers everything", connected: ch.engine_connected });
-  const escalateCpu = modelSelect(ch.chat, cfg.escalate_model_cpu || "", { none: "none: the GPU model always", connected: ch.engine_connected });
+  const escalateCpu = modelSelect(ch.chat, cfg.escalate_model_cpu || "", { none: "choose a CPU model…", connected: ch.engine_connected });
   const toLoaded = h("input", { type: "checkbox", checked: cfg.escalate_to_loaded !== false });
   const escalateQuant = h("select", {}, ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"].map((q) => h("option", { value: q }, q)));
   escalateQuant.value = cfg.escalate_quant || "Q4_K_M";
@@ -3697,7 +3729,6 @@ function renderAssistantSettings() {
   const ctx = h("input", { type: "number", value: cfg.context_tokens });
   const keep = h("input", { type: "number", value: cfg.keep_recent });
   const temp = h("input", { type: "number", step: "0.1", value: cfg.temperature });
-  const cpuFallback = h("input", { type: "checkbox", checked: cfg.cpu_fallback !== false });
   const idle = h("select", {}, [[0, "Never"], [5, "5 minutes"], [10, "10 minutes"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [240, "4 hours"]]
     .map(([v, l]) => h("option", { value: v }, l)));
   idle.value = String(cfg.idle_unload_min ?? 15);
@@ -3709,32 +3740,45 @@ function renderAssistantSettings() {
 
   // memory
   const memOn = h("input", { type: "checkbox", checked: !!mem.enabled });
-  const memBg = h("input", { type: "checkbox", checked: mem.background !== false });
   const memLinks = h("input", { type: "checkbox", checked: mem.links !== false });
-  const searchBy = h("select", {}, [["embed", "Embedding model and links: also finds what means the same in other words"],
-    ["links", "Link graph only: what records share (model, flag, GPU, failure…), no embedding model runs"]]
-    .map(([v, l]) => h("option", { value: v, selected: (mem.search_by || "embed") === v }, l)));
-  const syncSearchBy = () => { const off = searchBy.value === "links"; embed.disabled = embedCpu.disabled = memBg.disabled = off; memLinks.disabled = off; if (off) memLinks.checked = true; };
-  searchBy.addEventListener("change", syncSearchBy);
-  const embed = modelSelect(ch.embed, mem.model, { none: "none: search by words only", connected: ch.engine_connected });
-  const embedCpu = modelSelect(ch.embed, mem.model_cpu || "", { none: "none: the GPU model always", connected: ch.engine_connected });
+  // how it searches: no model at all (words, or the link graph), or an embedding model (with the links)
+  const by0 = (mem.search_by || "embed") === "embed" && !mem.model ? "words" : (mem.search_by || "embed");
+  const searchBy = h("select", {}, [["words", "Words only: no model, no links"],
+    ["links", "Link graph: what records share (model, flag, GPU, failure…), no model runs"],
+    ["embed", "Embedding model: also finds what means the same in other words"]]
+    .map(([v, l]) => h("option", { value: v }, l)));
+  searchBy.value = by0;
+  const when0 = mem.embed_when || (mem.background === false ? "search" : "auto");
+  const embedWhen = h("select", {}, [["quiet", "Only in downtime: at start and a minute after the models go quiet, never while one works (GPU or CPU)"],
+    ["auto", "On the CPU in downtime; on a GPU when a search needs it"],
+    ["search", "Only when the bigger model searches"]].map(([v, l]) => h("option", { value: v }, l)));
+  embedWhen.value = when0;
+  const embed = modelSelect(ch.embed, mem.model, { none: "choose an embedding model…", connected: ch.engine_connected });
+  const embedCpu = modelSelect(ch.embed, mem.model_cpu || "", { none: "choose a CPU model…", connected: ch.engine_connected });
   const results = h("input", { type: "number", value: mem.results });
+  const embedBox = h("div", { class: "fields wide" });
+  const linksRow = h("label", { class: "check wide", title: "No model: each record is linked to the models, profiles, flags, environment variables, GPUs, failures and days it names; records sharing rare things are alike. API: GET /api/assistant/memory/similar?q=… or ?source=…&key=…" },
+    memLinks, "Also use the link graph beside the embeddings");
+  const syncSearchBy = () => { const e = searchBy.value === "embed"; embedBox.style.display = e ? "" : "none"; linksRow.style.display = e ? "" : "none"; };
+  searchBy.addEventListener("change", syncSearchBy);
   syncSearchBy();
   const memEndpoint = h("input", { type: "text", value: mem.endpoint || "", placeholder: "blank = the engine (normal)", spellcheck: "false" });
 
   const save = async () => {
     try {
       const body = { context_tokens: ctx.value, keep_recent: keep.value, temperature: temp.value, idle_unload_min: idle.value, idle_unload_min_cpu: idleCpu.value,
-        escalate_model: escalate.value, escalate_model_cpu: escalateCpu.value, escalate_to_loaded: toLoaded.checked,
-        escalate_quant: escalateQuant.value, cpu_fallback: cpuFallback.checked };
+        escalate_model: escalate.value, escalate_to_loaded: toLoaded.checked,
+        escalate_quant: escalateQuant.value, escalate_fallback: escFb.value, escalate_model_cpu: escFb.value === "model" ? escalateCpu.value : "" };
       if (useOther.checked) {
         if (!endpoint.value.trim()) throw new Error("Type the other server's URL, or untick “Use another server”.");
         Object.assign(body, { mode: "endpoint", endpoint: endpoint.value.trim(), model: endpointModel.value.trim() });
       } else {
-        Object.assign(body, { mode: "engine", model: chat.value, model_cpu: chatCpu.value });
+        Object.assign(body, { mode: "engine", model: chat.value, fallback: chatFb.value, model_cpu: chatFb.value === "model" ? chatCpu.value : "" });
       }
       await api("PUT", "/api/settings/assistant", body);
-      await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, model_cpu: embedCpu.value, background: memBg.checked, links: memLinks.checked, search_by: searchBy.value, endpoint: memEndpoint.value.trim(), results: results.value });
+      if (searchBy.value === "embed" && !embed.value) throw new Error("Choose an embedding model, or search by words or the link graph.");
+      await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, fallback: embedFb.value, model_cpu: embedFb.value === "model" ? embedCpu.value : "",
+        embed_when: embedWhen.value, links: memLinks.checked || searchBy.value === "links", search_by: searchBy.value, endpoint: memEndpoint.value.trim(), results: results.value });
       await loadSettings();
       toast("Saved the assistant settings.", "ok");
       renderAssistantSettings();
@@ -3751,7 +3795,7 @@ function renderAssistantSettings() {
       engineNote,
       h("div", { class: "fields" },
         field("GPU model", chat, ch.chat.length ? `${ch.chat.length} to choose from` : "No models yet: add one under Models, or set up Qwen3-0.6B.", true),
-        field("CPU model (when the GPUs are full)", chatCpu, cpuNote, true),
+        ...fbField(chatFb, chatCpu, "CPU model"),
         h("div", { class: "row wide" }, btn("Set up Qwen3-0.6B", async () => { await setupAssistant(); openAssistantSettings(true); }, "sm", "download"),
           h("span", { class: "muted mono-sm" }, "Uses the file if it is already in your models folder, otherwise downloads it, saves a profile for it and picks it."))),
       h("details", { class: "advanced", open: cfg.mode === "endpoint" }, h("summary", {}, "Advanced: use a model on another server"),
@@ -3764,7 +3808,7 @@ function renderAssistantSettings() {
         h("label", { class: "check wide", title: "No load and nothing unloaded: a model already in memory that nothing is using answers" },
           toLoaded, "Use a bigger chat model that is already loaded and idle (the coder between prompts, say) before loading the escalation model"),
         field("Escalation model (GPU)", escalate, "empty: no model is loaded for hard questions", true),
-        field("Escalation model (CPU, when the GPUs are full)", escalateCpu, cpuNote, true),
+        ...fbField(escFb, escalateCpu, "Escalation model (CPU)", "Off: a hard question the GPUs have no room for gets the small model's answer, and the chat says why. Run on the CPU: the escalation model starts on the CPU instead (slow for a big model)."),
         field("Download it at", h("div", { class: "row", style: "gap:8px" }, escalateQuant, escalateFetch), "used only when fetching it"))),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Conversation")),
       h("div", { class: "fields" },
@@ -3772,23 +3816,19 @@ function renderAssistantSettings() {
         field("Messages kept as written", keep, "The newest ones are never summarised."),
         field("Temperature", temp, "Lower is steadier for questions about numbers."),
         field("Unload when unused for (on a GPU)", idle, "Frees the GPU memory. Only models the assistant itself used are unloaded; Load brings one back.", true),
-        field("Unload when unused for (on the CPU)", idleCpu, "A model on the CPU holds RAM, not VRAM, and takes long to start again on the CPU: it can stay. CPU-only profiles and models fallen back to the CPU.", true),
-        h("label", { class: "check wide", title: "Needs Schedule's pool router. The model starts with every GPU hidden, so llama.cpp runs it on the CPU: slower, but nothing you are using gets unloaded for it." },
-          cpuFallback, "Run the chat and embedding models on the CPU when the GPUs are full, instead of unloading a model you are using"))),
+        field("Unload when unused for (on the CPU)", idleCpu, "A model on the CPU holds RAM, not VRAM, and takes long to start again on the CPU: it can stay. CPU-only profiles and models fallen back to the CPU.", true))),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Memory"), h("span", { class: "spacer" }),
-        h("span", { class: `pill ${mem.enabled && mem.model ? "ok" : ""}` }, mem.enabled && mem.model ? "searching by meaning" : "searching by words")),
-      h("p", { class: "hint" }, "The assistant remembers your events, notes, profiles, benchmarks and loads. An embedding model turns each record into numbers that describe its meaning, so a question about “cache settings that were slow” also finds records that never use those words. Without one it matches words only."),
-      h("p", { class: "hint" }, "Pick one of your embedding models (nomic-embed, bge, e5, gte…). There is nothing to connect: the engine serves it like any other model and loads it when the memory needs it. On a GPU it embeds only when the assistant searches, so it does not compete with your models; set up as CPU only (or fallen back to the CPU), it takes nothing from the GPUs and embeds new records as they come in (the switch below)."),
-      h("p", { class: "hint" }, "What it is for: only the bigger model's questions about the past (what happened, what was tried, why it was slow) search the memory. Nothing else uses it: not the charts, not the Schedule, not the small model. Without an embedding model the search still works, by matching words."),
+        h("span", { class: `pill ${mem.enabled ? "ok" : ""}` }, !mem.enabled ? "off" : by0 === "embed" ? "searching by meaning" : by0 === "links" ? "searching by links" : "searching by words")),
+      h("p", { class: "hint" }, "The assistant remembers your events, notes, profiles, benchmarks and loads. Only the bigger model's questions about the past (what happened, what was tried, why it was slow) search it; nothing else does."),
+      h("p", { class: "hint" }, "Words and the link graph need no model at all. An embedding model (nomic-embed, bge, e5, gte…) also finds records that mean the same in other words, at the cost of running it: the engine serves it like any other model."),
       h("div", { class: "fields" },
         h("label", { class: "check wide" }, memOn, "Use the memory"),
-        field("Search by", searchBy, "The link graph needs no model at all: a cheap choice if you would rather not run an embedding model for the assistant.", true),
-        h("label", { class: "check wide", title: "Only the records that never change once written: new events, notes, profiles, benchmarks, Odysseus Brain notes. Speeds, configs and open loads change with every request; they are embedded when a search needs them." },
-          memBg, "With the embedding model on the CPU, embed new records in bursts: when Argos starts, and a minute after the models go quiet, never while one is working (off: only when the bigger model searches)"),
-        h("label", { class: "check wide", title: "No model: each record is linked to the models, profiles, flags, environment variables, GPUs, failures and days it names; records sharing rare things are alike. API: GET /api/assistant/memory/similar?q=… or ?source=…&key=…" },
-          memLinks, "Link graph: find related records by what they share (model, profile, flag, variable, GPU, failure, day), with no model to run"),
-        field("Embedding model (GPU)", embed, ch.embed.length ? `${ch.embed.length} to choose from: embedding models and their profiles` : "No embedding models or profiles yet. Download one under Models (search “nomic-embed”), or save a profile with --embedding.", true),
-        field("Embedding model (CPU, when the GPUs are full)", embedCpu, "Best another profile of the same embedding model, so the memory's vectors fit both and switching re-embeds nothing. A different model makes the memory re-embed when it switches.", true),
+        field("Search by", searchBy, "", true),
+        linksRow,
+        (fill(embedBox,
+          field("Embedding model", embed, ch.embed.length ? `${ch.embed.length} to choose from: embedding models and their profiles` : "No embedding models or profiles yet. Download one under Models (search “nomic-embed”), or save a profile with --embedding.", true),
+          field("When to embed", embedWhen, "New records wait until then. A search always embeds its own question. Records whose numbers move (speeds, open loads) keep their meaning between bursts and are refreshed every half hour at most.", true),
+          ...fbField(embedFb, embedCpu, "Embedding model (CPU)", "Best another profile of the same embedding model for the CPU model, so the memory's vectors fit both and switching re-embeds nothing.")), embedBox),
         field("Records per question", results)),
       h("details", { class: "advanced" }, h("summary", {}, "Advanced: embeddings from another server"),
         h("div", { class: "fields", style: "margin-top:8px" },
@@ -5120,7 +5160,16 @@ function sharingCard(models, plan) {
 }
 /** The CPU, once a model runs on it (CPU only, or fallen back from the GPUs): how busy it is, the RAM the models
  *  take beside everything else, and what each of them is doing. The readings are the whole machine's. */
-function cpuCard(models, cpu, procs = {}) {
+/** What the assistant's embedder is doing, for its row: embedding now (how many texts, and why), or its last batch. */
+function embedderPill(m, emb) {
+  if (!emb || !emb.model || (emb.model !== m.id && emb.model.split("--")[0] !== m.id.split("--")[0])) return null;
+  const when = { quiet: "embeds only in downtime", auto: "embeds in downtime on the CPU", search: "embeds only for a search" }[emb.embed_when] || "";
+  if (emb.now) return h("span", { class: "pill warn", title: `${when}. Started ${ago(emb.now.since)}.` }, `embedding ${emb.now.texts} ${emb.now.why}`);
+  if (emb.last) return h("span", { class: "muted mono-sm", title: `${when}. Took ${num(emb.last.seconds, 1)} s.` }, `last: ${emb.last.texts} text${emb.last.texts === 1 ? "" : "s"} ${emb.last.why}, ${ago(emb.last.at)}`);
+  return h("span", { class: "muted mono-sm", title: when }, `assistant's embedder: nothing embedded since Argos started`);
+}
+
+function cpuCard(models, cpu, procs = {}, errors = {}, embedder = {}) {
   if (!models.length) return null;
   const gibOf = (mb) => (mb || 0) / 1024;
   const total = cpu ? gibOf(cpu.mem_total_mb) : 0, used = cpu ? gibOf(cpu.mem_used_mb) : 0;
@@ -5149,13 +5198,17 @@ function cpuCard(models, cpu, procs = {}) {
         const share = cores != null && cpu && cpu.cores ? cores / cpu.cores * 100 : null;
         return h("tr", {},
           h("td", { class: "nowrap", title: m.id }, h("span", { class: "swatch", style: `--c:${segColor(m.id)}` }), h("span", { class: "strong" }, m.id)),
-          h("td", { class: "num", title: p ? `resident memory of its llama-server (pid ${p.pid}${p.where !== "local" ? `, in the ${p.where} container` : ""})` : "its process was not found: the planned size is the estimate" },
-            p ? `${num(p.rss_gib, 2)} GiB` : DASH),
+          h("td", { class: "num", title: p ? `resident memory of its llama-server (pid ${p.pid}${p.where !== "local" ? `, in the ${p.where} container` : ""})` : `its process was not found${errors[m.id] || errors["*"] ? `: ${errors[m.id] || errors["*"]}` : ""}. The planned size is the estimate.` },
+            p ? `${num(p.rss_gib, 2)} GiB` : h("span", { class: "muted" }, DASH, errors[m.id] || errors["*"] ? " ⓘ" : "")),
           h("td", { class: "num", title: "cores its process kept busy since the last reading; 100% of one core = 1.0" },
             cores != null ? `${num(cores, 1)} cores${share != null ? ` · ${num(share, share < 10 ? 1 : 0)}% of the CPU` : ""}` : p ? "measuring…" : DASH),
           h("td", { class: "num muted", title: "the size the scheduler plans with (an estimate)" }, m.size_gib ? `~${num(m.size_gib)} GiB` : DASH),
-          h("td", {}, workPill(m) || h("span", { class: "muted" }, "idle")));
-      }))))));
+          h("td", {}, h("div", { class: "row", style: "gap:6px; flex-wrap:wrap" }, workPill(m) || h("span", { class: "muted" }, "idle"), embedderPill(m, embedder))));
+      })))),
+    (() => { // why a model's own reading is missing, once, in words
+      const why = [...new Set(models.filter((m) => !procs[m.id] && (errors[m.id] || errors["*"])).map((m) => errors[m.id] || errors["*"]))];
+      return why.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, `Its own RAM and CPU could not be read: ${why.join("; ")}`) : null;
+    })()));
 }
 
 // A model that died: the line it died on, so nobody has to dig through the log for it.
@@ -5246,7 +5299,7 @@ function renderLive() {
       h("span", { class: "muted" }, `${num(P.budget_gib)} GiB usable · models used in the last ${span(P.protect_seconds)} ${(SC.data && SC.data.plan && SC.data.plan.protect_waits === false) ? "are evicted last" : "stay loaded; other models' requests wait"}`),
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
-    cpuCard(P.models.filter((m) => m.on_cpu && m.state !== "stopped"), L.cpu, L.procs || {}),
+    cpuCard(P.models.filter((m) => m.on_cpu && m.state !== "stopped"), L.cpu, L.procs || {}, L.proc_errors || {}, L.embedder || {}),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
     swaps, queue, crashCard(P.models), prefillCard(P.models), sharingCard(P.models, SC.data && SC.data.plan),
     requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])),

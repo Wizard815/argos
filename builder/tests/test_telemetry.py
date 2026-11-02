@@ -104,7 +104,10 @@ def test_collector_stores_samples_activity_and_rollups(tmp_path):
     settings.values["telemetry"]["keep_minutes"] = 120
     col.tick(now=now + 3 * 3600)  # three hours on: everything before the last two is gone
     assert all(r["t"] >= now + 3600 - 1 for r in store.gpu_series(0, 1)) and store.gpu_hourly(0) == []
-    assert all(r["ts"] >= now + 3600 for r in store.list_requests()), "request history too"
+    assert len(store.list_requests()) == 5, "request history outlives Usage's two hours: Inventory reads months of it"
+    settings.values["telemetry"]["request_days"] = 1
+    col.tick(now=now + 6 * 3600)
+    assert all(r["ts"] >= now + 6 * 3600 - 86400 - 1 for r in store.list_requests()), "request_days is its limit"
 
 
 def test_collector_reports_each_failure_once(tmp_path):

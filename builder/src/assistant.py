@@ -756,11 +756,30 @@ class Assistant:
     ROLES = {"chat": ("assistant", "model", "model_cpu"), "escalate": ("assistant", "escalate_model", "escalate_model_cpu"),
              "embed": ("memory", "model", "model_cpu")}
 
+    FALLBACK_KEY = {"chat": ("assistant", "fallback"), "escalate": ("assistant", "escalate_fallback"),
+                    "embed": ("memory", "fallback")}
+
+    def fallback(self, role: str) -> str:
+        """What a role does when the GPUs are full: "off" (wait for them), "same" (its model on the CPU, Schedule's
+        pool router) or "model" (its CPU model). Unset, it is what the older settings meant: a CPU model set is
+        "model"; otherwise the chat and embedding models followed the one CPU-fallback switch."""
+        group, key = self.FALLBACK_KEY[role]
+        set_to = str(self.settings.get(group).get(key) or "").strip()
+        if set_to in ("off", "same", "model"):
+            return set_to
+        group, _, cpu = self.ROLES[role]
+        if str(self.settings.get(group).get(cpu) or "").strip():
+            return "model"
+        if role != "escalate" and self.settings.get("assistant").get("cpu_fallback", True):
+            return "same"
+        return "off"
+
     def role_models(self, role: str) -> tuple[str, str]:
-        """(GPU model, CPU model) set for a role: chat, escalate or embed."""
+        """(GPU model, CPU model) for a role: chat, escalate or embed. The CPU model only when the role's fallback
+        is to switch to it."""
         group, gpu, cpu = self.ROLES[role]
         s = self.settings.get(group)
-        return str(s.get(gpu) or "").strip(), str(s.get(cpu) or "").strip()
+        return str(s.get(gpu) or "").strip(), (str(s.get(cpu) or "").strip() if self.fallback(role) == "model" else "")
 
     def _pool(self) -> dict:
         """The engine's /api/pool, at most five seconds old: picks are made often, and it changes slowly."""
@@ -834,10 +853,12 @@ class Assistant:
         free = sum(c.get("free_gib") or 0 for c in pool.get("cards") or [])
         if not pool.get("cards") or not need or need <= free:
             return esc, "the escalation model"
+        if self.fallback("escalate") == "same":  # the pool router starts it on the CPU instead of making room
+            return esc, f"the escalation model on the CPU: it needs {need:.1f} GiB and the GPUs have {free:.1f} GiB free"
         busy = [mid for mid, m in models.items() if mid in ready and (m.get("in_flight") or m.get("slots"))]
         return "", (f"{esc} needs {need:.1f} GiB and the GPUs have {free:.1f} GiB free: loading it would "
                     + (f"wait for {', '.join(busy)}" if busy else "unload a loaded model")
-                    + ". Set a CPU model for hard questions to use one now, or load it by hand")
+                    + ". Let it fall back to the CPU (Settings → Assistant → Hard questions), or load it by hand")
 
     def _on_cpu(self, model: str) -> bool:
         """The model runs on the CPU now (fallen back), or is kept off the GPUs by its command."""
