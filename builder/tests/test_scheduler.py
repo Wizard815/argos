@@ -338,3 +338,12 @@ def test_protected_models_stay_loaded_unless_turned_off():
     from src.scheduler import DEFAULT_PLAN, clean_plan
     assert DEFAULT_PLAN["protect_waits"] is True
     assert clean_plan({"protect_waits": "false"})["protect_waits"] is False
+
+
+def test_Estimate_chat_split_is_per_slot_unless_unified():
+    from src.schedule_rows import chat_split
+    assert chat_split(524288, 2, False) == {"parallel": 2, "kv_unified": False, "shared": False, "per_chat_ctx": 262144}, \
+        "-c 512K --parallel 2: two chats with 256K each, within a 256K model's training: no RoPE"
+    assert chat_split(524288, 2, True)["per_chat_ctx"] == 524288, "--kv-unified: one chat may use all of it"
+    assert chat_split(524288, None, False) == {"parallel": None, "kv_unified": False, "shared": False, "per_chat_ctx": 524288}
+    assert chat_split(131072, 4, False)["per_chat_ctx"] == 32768

@@ -1140,18 +1140,42 @@ function scheduleEstimate() {
 }
 const ctxLabel = (c) => (c >= 1048576 && c % 1048576 === 0 ? `${c / 1048576}M` : c >= 1024 ? `${num(c / 1024, 0)}K` : String(c));
 
-// Past the trained context the model needs RoPE stretched to cope: YaRN, scaled by how far past it goes,
-// from the context it was trained on. Back inside it, those flags come off again.
+// Past the trained context ONE CHAT needs RoPE stretched to cope: YaRN, scaled by how far past it goes, from
+// the context it was trained on. What counts is each chat's own share: --parallel N splits -c into N slots of
+// -c / N each (unless --kv-unified makes them share it), so -c 512K with --parallel 2 is two 256K chats and needs
+// no RoPE on a 256K model. Back inside it, those flags come off again.
 const ROPE_OFF = { "rope-scaling": null, "rope-scale": null, "yarn-orig-ctx": null };
 const ropeOn = () => argValue("rope-scaling") === "yarn";
-const ropeEdits = (c, train) => ({ "rope-scaling": "yarn", "rope-scale": String(Number((c / train).toFixed(3))), "yarn-orig-ctx": train });
+const ropeEdits = (perChat, train) => ({ "rope-scaling": "yarn", "rope-scale": String(Number((perChat / train).toFixed(3))), "yarn-orig-ctx": train });
+/** The slots a context is split into, from the estimate: [chats, shared?]. */
+const chatSlots = (e) => [e.parallel || 1, !!(e.shared || !e.parallel)];
+/** The context one chat gets of a total c. */
+function perChat(c, e) {
+  const [n, shared] = chatSlots(e);
+  return shared || n <= 1 ? c : Math.floor(c / n);
+}
 /** A click in the VRAM card's KV table: that context, and that cache type when a row was picked. */
 function useContext(c, type, e) {
   const edits = { "ctx-size": c };
   if (type) Object.assign(edits, { "cache-type-k": type, "cache-type-v": type });
-  if (e.train_ctx && c > e.train_ctx) Object.assign(edits, ropeEdits(c, e.train_ctx));
+  const one = perChat(c, e);
+  if (e.train_ctx && one > e.train_ctx) Object.assign(edits, ropeEdits(one, e.train_ctx));
   else if (ropeOn()) Object.assign(edits, ROPE_OFF);
   edit(edits);
+}
+/** "2 chats at once, each with its own 256K of the 512K": how the context splits, for the VRAM card. */
+function chatLine(e) {
+  const [n, shared] = chatSlots(e);
+  const one = perChat(e.ctx, e), total = ctxLabel(e.ctx);
+  let text;
+  if (!e.parallel) text = `--parallel not set: llama-server picks the slots and they share ${total}; one chat can use all of it`;
+  else if (n === 1) text = `1 chat at a time (--parallel 1) with ${total} of context`;
+  else if (shared) text = `${n} chats at once (--parallel ${n} --kv-unified) sharing ${total}: one chat can grow into the others' room`;
+  else text = `${n} chats at once (--parallel ${n}), each with its own ${ctxLabel(one)} of the ${total}`;
+  const over = e.train_ctx && one > e.train_ctx;
+  return h("div", { class: "vram-sum", title: "-c is the total. --parallel N splits it into N slots of -c / N each; --kv-unified makes them share it. RoPE stretching is about one chat's length, not the total." },
+    h("span", { class: `pill ${over ? "warn" : "ok"}` }, `${ctxLabel(one)} per chat`), " ", text,
+    e.train_ctx ? ` · trained on ${ctxLabel(e.train_ctx)} per chat${over ? ": past it, so each chat needs RoPE" : ""}` : "");
 }
 function renderEstimate(e) {
   const box = $("#bVram");
@@ -1169,19 +1193,23 @@ function renderEstimate(e) {
     M ? "Estimate: " : null, h("b", {}, `${num(total, 1)} GiB`), " = ",
     `${num(e.weights_gib, 1)} model`, e.extra_gib ? ` (incl. ${num(e.extra_gib, 1)} mmproj/draft)` : "",
     ` + ${num(e.kv_gib, 1)} KV cache (${ctxLabel(e.ctx)} context, ${cache}) + ${num(e.overhead_gib, 1)} buffers`);
-  const stretched = e.train_ctx && e.ctx > e.train_ctx;
+  const stretched = e.train_ctx && perChat(e.ctx, e) > e.train_ctx;
   const notes = [...(e.notes || []), stretched ? (ropeOn()
     ? `RoPE stretched with YaRN ×${argValue("rope-scale") || "?"} from the trained ${ctxLabel(e.train_ctx)}: answers can get worse at long range`
-    : `context is above the model's trained ${ctxLabel(e.train_ctx)}: turn on RoPE below, or the model will not cope`) : null].filter(Boolean);
+    : `each chat's ${ctxLabel(perChat(e.ctx, e))} is above the model's trained ${ctxLabel(e.train_ctx)}: turn on RoPE below, or the model will not cope`) : null].filter(Boolean);
+  // RoPE left on although no chat needs it any more (the context split between more slots): say so, one click off
+  const needless = !stretched && ropeOn() && e.train_ctx ? h("div", { class: "row", style: "margin-top:6px; gap:8px" },
+    h("span", { class: "hint", style: "margin:0" }, `RoPE (YaRN) is on, but each chat gets ${ctxLabel(perChat(e.ctx, e))}, within the trained ${ctxLabel(e.train_ctx)}: it only blurs positions here.`),
+    btn("Turn RoPE off", () => edit(ROPE_OFF), "sm")) : null;
   let table = null;
   if (e.compare) {
     const C = e.compare;
-    const ropeCol = (c) => e.train_ctx && c > e.train_ctx;
-    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache alone, by cache type and context (GiB) · click to use it"
-      + (C.ctx.some(ropeCol) ? " · * past the trained context: stretched with RoPE" : "")),
+    const ropeCol = (c) => e.train_ctx && perChat(c, e) > e.train_ctx;
+    table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, `KV cache alone, by cache type and total context (GiB) · click to use it${chatSlots(e)[0] > 1 && !chatSlots(e)[1] ? ` · each of the ${chatSlots(e)[0]} chats gets a ${chatSlots(e)[0] === 2 ? "half" : `1/${chatSlots(e)[0]}`}` : ""}`
+      + (C.ctx.some(ropeCol) ? " · * one chat past the trained context: stretched with RoPE" : "")),
       h("div", { class: "table-wrap" }, h("table", { class: "dense" },
         h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num pick", style: c === e.ctx ? "color:var(--strong)" : "",
-          title: `Use ${ctxLabel(c)} context${ropeCol(c) ? " (stretched with RoPE)" : ""}`, onclick: () => useContext(c, null, e) },
+          title: `Use ${ctxLabel(c)} context (${ctxLabel(perChat(c, e))} per chat)${ropeCol(c) ? ", stretched with RoPE" : ""}`, onclick: () => useContext(c, null, e) },
           ctxLabel(c), ropeCol(c) ? h("span", { class: "muted", style: "font-weight:400" }, "*") : null)))),
         h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
           t.kv_gib.map((v, i) => v == null ? h("td", { class: "num" }, DASH) : h("td", { class: "num pick",
@@ -1191,14 +1219,16 @@ function renderEstimate(e) {
   let rope = null;
   if (e.rope_ctx && e.train_ctx) {
     const on = ropeOn();
+    const [n, shared] = chatSlots(e);
+    const slots = shared ? 1 : n;  // a total of per-chat x slots gives each chat that much
     const box = h("input", { type: "checkbox", checked: on, onchange: (ev) => ev.target.checked
-      ? useContext(e.rope_ctx, null, e) : edit({ ...ROPE_OFF, "ctx-size": e.train_ctx }) });
-    // on, it names the context picked (384K, 512K, ... from the table); off, ticking it goes all the way to 1M
-    const to = on && e.ctx > e.train_ctx ? e.ctx : e.rope_ctx;
-    rope = h("label", { class: "check", style: "margin-top:8px", title: `--rope-scaling yarn --rope-scale ${Number((to / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx} -c ${to}` },
-      box, ` RoPE (YaRN) to ${ctxLabel(to)} context`,
-      h("span", { class: "hint", style: "margin:0 0 0 6px" }, on ? `on (×${num(to / e.train_ctx, 1)}): unticking goes back to the trained context; the RoPE columns above pick 384K to 1M`
-        : `trained on ${ctxLabel(e.train_ctx)}; this stretches it ×${num(e.rope_ctx / e.train_ctx, 1)}, or click a RoPE column above for less`));
+      ? useContext(e.rope_ctx * slots, null, e) : edit({ ...ROPE_OFF, "ctx-size": e.train_ctx * slots }) });
+    // on, it names each chat's context picked (384K, 512K, ... from the table); off, ticking it goes to 1M per chat
+    const one = on ? Math.round(e.train_ctx * (parseFloat(argValue("rope-scale")) || perChat(e.ctx, e) / e.train_ctx)) : e.rope_ctx;
+    rope = h("label", { class: "check", style: "margin-top:8px", title: `--rope-scaling yarn --rope-scale ${Number((one / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx} -c ${one * slots}` },
+      box, ` RoPE (YaRN): each chat to ${ctxLabel(one)}${slots > 1 ? ` (-c ${ctxLabel(one * slots)} for ${slots} chats)` : ""}`,
+      h("span", { class: "hint", style: "margin:0 0 0 6px" }, on ? `on (×${num(one / e.train_ctx, 1)}): unticking goes back to the trained ${ctxLabel(e.train_ctx)} per chat`
+        : `trained on ${ctxLabel(e.train_ctx)} per chat; only needed for one chat longer than that`));
   }
   // an unknown cache type: say its bits per value here and it is saved to Settings -> KV cache types
   const unknown = (e.notes || []).map((n) => (n.match(/unknown cache type '([^']+)'/) || [])[1]).find(Boolean);
@@ -1215,7 +1245,7 @@ function renderEstimate(e) {
         try { await api("PUT", "/api/settings/kv", { custom_types: [...list, `${unknown}=${v}`].join(", ") }); await loadSettings(); VE.cmd = null; scheduleEstimate(); toast(`Saved: ${unknown} = ${v} bits per value.`, "ok"); } catch (err) { fail(err); }
       }, "sm primary"));
   }
-  fill(box, measuredLine, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, rope, table,
+  fill(box, measuredLine, head, bar, chatLine(e), notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, needless, define, rope, table,
     h("p", { class: "hint", style: "margin:6px 0 0" }, "Model + KV cache are close. Buffers are a rough guess, and models that keep part of themselves on the CPU (Gemma-4 E2B/E4B) come out high."));
 }
 
