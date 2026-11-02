@@ -1171,8 +1171,12 @@ function contextBox(e) {
     : n === 1 ? "1 chat (--parallel 1)"
     : shared ? `${n} chats (--parallel ${n} --kv-unified): they share ${total}, one can use all of it`
     : `${n} chats (--parallel ${n}): ${ctxLabel(one)} each`;
-  const lines = [h("div", { class: "vram-sum", title: "-c is the total. --parallel N splits it into N chats of -c / N each; with --kv-unified they share it." },
-    h("b", {}, `Context ${total}`), ` · ${chats}`)];
+  const uni = argValue("kv-unified") != null;
+  const uniBtn = btn(uni ? "Turn KV unified off" : "Turn KV unified on", () => edit({ "kv-unified": uni ? null : true }), "sm");
+  uniBtn.title = uni ? "removes --kv-unified: each chat gets its own -c / --parallel"
+    : "adds --kv-unified: the chats share one cache of -c, so a long chat can use what the others leave free (and RoPE then counts the whole -c per chat)";
+  const lines = [h("div", { class: "row", style: "gap:8px; flex-wrap:wrap", title: "-c is the total. --parallel N splits it into N chats of -c / N each; with --kv-unified they share it." },
+    h("span", { class: "vram-sum", style: "margin:0" }, h("b", {}, `Context ${total}`), ` · ${chats}`), uniBtn)];
   if (e.train_ctx) {
     const over = one > e.train_ctx, on = ropeOn();
     const scale = parseFloat(argValue("rope-scale")) || 0;
@@ -1187,11 +1191,28 @@ function contextBox(e) {
     lines.push(h("div", { class: "row", style: "gap:8px; margin-top:6px; flex-wrap:wrap" }, status,
       h("span", { class: "hint", style: "margin:0" }, `Model trained on ${ctxLabel(e.train_ctx)} per chat · ${why}`), toggle));
   }
+  // the same -c for other chat counts: what each chat would get, and whether it needs RoPE (click a row to use it)
+  const counts = [...new Set([1, 2, 4, n].filter((x) => x > 0))].sort((a, b) => a - b);
+  const t = h("table", { class: "dense slot-table" });
+  renderTable(t, [
+    { label: "Parallel (-np)", cell: (x) => (x === (e.parallel || 0) ? h("b", {}, String(x)) : String(x)) },
+    { label: "Chats at once", cell: (x) => String(x) },
+    { label: `Each chat (of ${total})`, cell: (x) => (shared && x > 1 ? `up to ${total}, shared` : ctxLabel(shared ? e.ctx : Math.floor(e.ctx / x))) },
+    { label: "RoPE", cell: (x) => {
+      const each = shared ? e.ctx : Math.floor(e.ctx / x);
+      return !e.train_ctx ? DASH : each > e.train_ctx ? h("span", { class: "pill warn" }, `needed ×${num(each / e.train_ctx, 2)}`) : h("span", { class: "muted" }, "not needed");
+    } },
+  ], counts, { key: null }, "", { onRow: (x) => edit({ parallel: String(x) }), rowClass: (x) => (x === (e.parallel || 0) ? "sel" : "") });
+  lines.push(h("div", { class: "table-wrap", style: "margin-top:8px" }, t),
+    h("p", { class: "hint", style: "margin:4px 0 0" }, `The KV cache size is the same for each row: it is set by -c (${total}) and the cache type, in the VRAM card. ${shared ? "With KV unified on, the chats share it." : "Each chat gets its own slice of it."} Click a row to use that --parallel.`));
   return lines;
 }
 function renderEstimate(e) {
   const box = $("#bVram");
-  if (!e || !e.ok) return fill(box, h("p", { class: "hint", style: "margin:0" }, (e && e.error) || "Pick a model to see its size."));
+  if (!e || !e.ok) {
+    fill($("#bCtx"), h("p", { class: "hint", style: "margin:0" }, "Pick a model to see how its context splits between chats."));
+    return fill(box, h("p", { class: "hint", style: "margin:0" }, (e && e.error) || "Pick a model to see its size."));
+  }
   const parts = [["model", e.weights_gib, "var(--accent, #6aa)"], ["KV cache", e.kv_gib, "var(--red)"], ["buffers", e.overhead_gib, "var(--muted)"]];
   const sum = e.weights_gib + e.kv_gib + e.overhead_gib;
   const bar = h("div", { class: "vram-bar", title: `${num(sum, 2)} GiB estimated` },
@@ -1236,7 +1257,8 @@ function renderEstimate(e) {
         try { await api("PUT", "/api/settings/kv", { custom_types: [...list, `${unknown}=${v}`].join(", ") }); await loadSettings(); VE.cmd = null; scheduleEstimate(); toast(`Saved: ${unknown} = ${v} bits per value.`, "ok"); } catch (err) { fail(err); }
       }, "sm primary"));
   }
-  fill(box, measuredLine, head, bar, ...contextBox(e), notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, table,
+  fill($("#bCtx"), ...contextBox(e));
+  fill(box, measuredLine, head, bar, notes.length ? h("p", { class: "hint", style: "margin:6px 0 0" }, notes.join(" · ")) : null, define, table,
     h("p", { class: "hint", style: "margin:6px 0 0" }, "Model + KV cache are close. Buffers are a rough guess, and models that keep part of themselves on the CPU (Gemma-4 E2B/E4B) come out high."));
 }
 
@@ -1333,7 +1355,7 @@ function renderEnv(env) {
   const rowFor = (k, v, i) => h("div", { class: "row", style: "flex-wrap:nowrap" },
     h("input", { type: "text", value: k, placeholder: "NAME", dataset: { fk: `env-k-${i}` }, style: "flex:1", onchange: commitEnv, spellcheck: "false" }),
     h("input", { type: "text", value: v, placeholder: "value", dataset: { fk: `env-v-${i}` }, style: "flex:1.4", onchange: commitEnv, spellcheck: "false" }),
-    i < entries.length ? iconBtn("x", "Remove", (e) => { e.target.closest(".row").remove(); commitEnv(); }, "ghost") : h("span", { style: "width:28px" }));
+    i < entries.length ? iconBtn("x", "Remove", (e) => { e.target.closest(".row").remove(); commitEnv(); }, "ghost") : iconBtn("plus", "Add (NAME=value pasted into the name is split for you)", commitEnv));
   fill($("#bEnv"), presetBar("env"), entries.map(([k, v], i) => rowFor(k, v, i)), rowFor("", "", entries.length));
 }
 function commitEnv() {
@@ -1342,9 +1364,52 @@ function commitEnv() {
   if (link) env[PRESET_VAR] = link;
   $$("#bEnv .row").forEach((r) => {
     const [k, v] = $$("input", r).map((i) => i.value.trim());
-    if (k) env[k] = v;
+    if (!k) return;
+    // "HSA_FORCE_FINE_GRAIN_PCIE=1" (or several, or "export ...") pasted into the name: split into name and value
+    const pairs = /[=\s]/.test(k) ? pastedEnv(k) : [[k, null]];
+    for (const [name, val] of pairs) env[name] = val != null ? val : (pairs.length === 1 ? v : "");
   });
   edit({}, env);
+}
+
+/** Shell words of pasted text: quotes kept together, line continuations ("\\" at a line end) and newlines are spaces. */
+function shellWords(text) {
+  const out = [];
+  let cur = "", quote = null, any = false;
+  for (const ch of String(text || "").replace(/\\\r?\n/g, " ")) {
+    if (quote) { if (ch === quote) quote = null; else cur += ch; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; any = true; continue; }
+    if (/\s/.test(ch)) { if (cur || any) out.push(cur); cur = ""; any = false; continue; }
+    cur += ch;
+  }
+  if (cur || any) out.push(cur);
+  return out;
+}
+/** [flag, value or true] for every flag in pasted text: "--min-p 0 --top-k=20 --no-warmup" or a bare "min-p".
+ * A word after a flag is its value unless it is a flag itself; "-1" and "-0.5" are values (numbers), not flags. */
+function pastedFlags(text) {
+  const words = shellWords(text).filter((w) => w !== "\\");
+  const isFlag = (w) => /^-/.test(w) && !/^-\d/.test(w);
+  const out = [];
+  for (let i = 0; i < words.length; i++) {
+    let w = words[i];
+    if (!isFlag(w)) {
+      if (i === 0) w = `--${w}`;  // "min-p 0": the first word is the flag even without its dashes
+      else continue;
+    }
+    const eq = w.indexOf("=");
+    if (eq > 0) { out.push([w.slice(0, eq), w.slice(eq + 1)]); continue; }
+    const next = words[i + 1];
+    if (next != null && !isFlag(next)) { out.push([w, next]); i++; } else out.push([w, true]);
+  }
+  return out;
+}
+/** NAME=value pairs in pasted text: one per line or word, "export NAME=value" too. A bare NAME keeps the value box. */
+function pastedEnv(text) {
+  return shellWords(String(text || "").replace(/^\s*export\s+/gm, "")).map((w) => {
+    const eq = w.indexOf("=");
+    return eq > 0 ? [w.slice(0, eq).trim(), w.slice(eq + 1)] : [w.trim(), null];
+  }).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k));
 }
 
 function renderOther(args) {
@@ -1359,10 +1424,11 @@ function renderOther(args) {
   const nf = h("input", { type: "text", placeholder: "--flag", dataset: { fk: "new-flag" }, style: "min-width:120px;flex:0.8", spellcheck: "false" });
   const nv = h("input", { type: "text", placeholder: "value (empty = switch)", dataset: { fk: "new-val" }, style: "flex:1", spellcheck: "false" });
   const add = () => {
-    let flag = nf.value.trim();
-    if (!flag) return;
-    if (!flag.startsWith("-")) flag = `--${flag}`;
-    edit({ [flag]: nv.value.trim() || true });
+    const pairs = pastedFlags(nf.value);
+    if (!pairs.length) return;
+    // one flag typed alone takes the value box; anything pasted with its value ("--min-p 0") keeps that value
+    if (pairs.length === 1 && pairs[0][1] === true && nv.value.trim()) pairs[0][1] = nv.value.trim();
+    edit(Object.fromEntries(pairs));
   };
   nv.addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
   nf.addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
