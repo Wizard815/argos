@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // What a person did to a request from Schedule -> Live, and what the queue
@@ -109,4 +110,11 @@ type StaysLoaded interface {
 	// StaysLoaded reports whether model should not be unloaded for another
 	// model's request yet, and for how many more seconds.
 	StaysLoaded(model string) (bool, float64)
+}
+
+// WaitLimit is what a planner reports when its StaysLoaded hold has a limit: a
+// request that has waited MaxWait is sent on (the model it waits for finishes
+// the prompt it is on, and its newer prompts queue behind). 0 = no limit.
+type WaitLimit interface {
+	MaxWait() time.Duration
 }

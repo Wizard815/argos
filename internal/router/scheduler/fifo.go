@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -132,6 +133,16 @@ func (s *FIFO) OnRequest(req HandlerReq) {
 	running := s.runningSet(req.Model)
 	evict := s.planner.EvictionFor(req.Model, running)
 
+	// (3a) A request for another model has waited its limit for this one: this
+	// model's new prompts queue behind it, so the model finishes what it has and
+	// the waiter's model loads (no starving it while this one stays busy).
+	if q, ok := s.overdueFor(req.Model, req); ok && state == process.StateReady && len(evict) == 0 {
+		s.logger.Debugf("%s: queuing request for model %s behind %s (waited its limit)", s.name, req.Model, q.Model)
+		s.enqueue(req)
+		Marks.say(RequestID(req.Ctx), fmt.Sprintf("waits behind %s: a request for it has waited %.0f s, so it loads once %s finishes the prompt it is on", q.Model, time.Since(q.Arrived).Seconds(), req.Model))
+		return
+	}
+
 	// (3) Fast path: ready, nothing to evict, and nobody is evicting us.
 	if state == process.StateReady && len(evict) == 0 && !collidesWith(req.Model, evict, s.active) {
 		s.logger.Debugf("%s: fast-path serving model %s (already ready)", s.name, req.Model)
@@ -158,7 +169,7 @@ func (s *FIFO) OnRequest(req HandlerReq) {
 
 	// (5) Would evict a busy process — queue until it drains. Busy covers serving a
 	// request and having requests wait for it: a reload undoes both.
-	if s.conflictsWithWork(evict, req.Model) {
+	if s.conflictsWithWork(evict, req) {
 		s.logger.Debugf("%s: queuing request for model %s (would evict a process with work)", s.name, req.Model)
 		s.enqueue(req)
 		Marks.say(RequestID(req.Ctx), fmt.Sprintf("waiting for room: %s is busy and is not unloaded mid-request", strings.Join(evict, ", ")))
@@ -474,6 +485,10 @@ func (s *FIFO) drainQueue() {
 		}
 		running := s.runningSet(req.Model)
 		evict := s.planner.EvictionFor(req.Model, running)
+		if _, behind := s.overdueFor(req.Model, req); behind && state == process.StateReady && len(evict) == 0 {
+			remaining = append(remaining, req)
+			continue
+		}
 		if state == process.StateReady && len(evict) == 0 && !collidesWith(req.Model, evict, s.active) {
 			s.logger.Debugf("%s: queued request for model %s now served fast-path", s.name, req.Model)
 			s.grantHandler(req, req.Model)
@@ -488,7 +503,7 @@ func (s *FIFO) drainQueue() {
 			remaining = append(remaining, req)
 			continue
 		}
-		if s.conflictsWithWork(evict, req.Model) {
+		if s.conflictsWithWork(evict, req) {
 			remaining = append(remaining, req)
 			continue
 		}
@@ -511,15 +526,62 @@ func (s *FIFO) waitReason(req HandlerReq, evict []string) string {
 		return fmt.Sprintf("held: it would unload %s; Release or Go next lets it", strings.Join(evict, ", "))
 	}
 	sl, ok := s.planner.(StaysLoaded)
-	if !ok || (id != "" && Marks.Forced(id)) {
+	if !ok || (id != "" && Marks.Forced(id)) || s.overdue(req) {
 		return ""
 	}
 	for _, m := range evict {
 		if stay, left := sl.StaysLoaded(m); stay {
-			return fmt.Sprintf("waits for %s: it was used moments ago and stays loaded %.0f s more for its next prompt (Go next unloads it now)", m, left)
+			return fmt.Sprintf("waits for %s: it was used moments ago and stays loaded %.0f s more for its next prompt (Go next unloads it now)", m, min(left, s.leftOfMaxWait(req)))
 		}
 	}
 	return ""
+}
+
+// maxWait is how long a request waits for a model that stays loaded, at most
+// (the planner's WaitLimit), or 0 for no limit.
+func (s *FIFO) maxWait() time.Duration {
+	if wl, ok := s.planner.(WaitLimit); ok {
+		return wl.MaxWait()
+	}
+	return 0
+}
+
+// overdue: req has waited its limit, so a model staying loaded no longer holds
+// it, and queued requests that came after it no longer count as work against
+// unloading their model.
+func (s *FIFO) overdue(req HandlerReq) bool {
+	limit := s.maxWait()
+	return limit > 0 && !req.Arrived.IsZero() && time.Since(req.Arrived) >= limit
+}
+
+// leftOfMaxWait is how long req may still be held, for its waiting note.
+func (s *FIFO) leftOfMaxWait(req HandlerReq) float64 {
+	limit := s.maxWait()
+	if limit <= 0 || req.Arrived.IsZero() {
+		return math.Inf(1)
+	}
+	return max(0, (limit - time.Since(req.Arrived)).Seconds())
+}
+
+// overdueFor returns the queued request, for a model other than model, that
+// has waited its limit and would unload model to load. Requests for model
+// itself (other than self) then queue behind it rather than keep model busy.
+func (s *FIFO) overdueFor(model string, self HandlerReq) (HandlerReq, bool) {
+	if s.maxWait() <= 0 {
+		return HandlerReq{}, false
+	}
+	for _, q := range s.queued {
+		if q.Model == model || (self.Respond != nil && q.Respond == self.Respond) || !s.overdue(q) {
+			continue
+		}
+		if id := RequestID(q.Ctx); id != "" && Marks.Held(id) {
+			continue // held by a person: it does not push anything out
+		}
+		if containsString(s.planner.EvictionFor(q.Model, s.runningSet(q.Model)), model) {
+			return q, true
+		}
+	}
+	return HandlerReq{}, false
 }
 
 // OnTick rechecks the queue: a hold released, or a model's stay-loaded time
@@ -644,12 +706,17 @@ func conflictsWithInFlight(evict []string, inFlight map[string]int) bool {
 // serving is the model whose request is being admitted right now: its own wait is
 // ending, so its queue entry must not count against it. A model that is already
 // stopped is never busy either: leaving it stopped costs nothing.
-func (s *FIFO) conflictsWithWork(evict []string, serving string) bool {
+func (s *FIFO) conflictsWithWork(evict []string, req HandlerReq) bool {
+	serving := req.Model
 	if conflictsWithInFlight(evict, s.inFlight) {
 		return true
 	}
+	late := s.overdue(req) // it waited its limit: requests that came after it wait their turn
 	for _, q := range s.queued {
 		if q.Model == serving || !containsString(evict, q.Model) {
+			continue
+		}
+		if late && q.Arrived.After(req.Arrived) {
 			continue
 		}
 		if st, ok := s.effects.ModelState(q.Model); ok && st == process.StateStopped {

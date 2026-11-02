@@ -34,6 +34,12 @@ func validatePool(config *Config) error {
 	if pool.ProtectSeconds < 0 {
 		return fmt.Errorf("routing.router.settings.pool.protectSeconds must be >= 0")
 	}
+	if pool.ProtectWaitSeconds != nil && *pool.ProtectWaitSeconds < 0 {
+		return fmt.Errorf("routing.router.settings.pool.protectWaitSeconds must be >= 0")
+	}
+	if pool.MaxWaitSeconds != nil && *pool.MaxWaitSeconds < 0 {
+		return fmt.Errorf("routing.router.settings.pool.maxWaitSeconds must be >= 0")
+	}
 	if pool.ProtectSeconds == 0 {
 		pool.ProtectSeconds = PoolDefaultProtectSeconds
 	}

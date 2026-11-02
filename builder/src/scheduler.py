@@ -32,6 +32,11 @@ DEFAULT_PLAN: dict[str, Any] = {
     "reserve_gib": 2.0,      # kept free for KV growth and buffers
     "protect_seconds": 600,  # a model used this recently is evicted last
     "protect_waits": True,   # ...and is not unloaded for another model at all: that request waits (Go next sends it)
+    # how long that wait lasts once the model is idle: the gap a chat or agent leaves between prompts
+    "protect_wait_s": 15,
+    # a request that has waited this long goes next however busy the protected model keeps: it finishes the
+    # prompt it is on, its newer prompts queue behind, and the waiting model loads; 0 = no limit
+    "max_wait_s": 60,
     "placement": "auto",     # auto | off
     "persistent": [],        # model ids that are never evicted to make room
     # model ids where a long new prompt waits while another chat on the model is answering, so the answer keeps
@@ -164,8 +169,8 @@ def clean_plan(values: dict) -> dict:
             out[key] = [_num(x, f"cards[{i}]", 0.001) for i, x in enumerate(v)]
         elif key == "reserve_gib":
             out[key] = _num(v, "reserve_gib")
-        elif key == "protect_seconds":
-            out[key] = int(_num(v, "protect_seconds"))
+        elif key in ("protect_seconds", "protect_wait_s", "max_wait_s"):
+            out[key] = int(_num(v, key))
         elif key == "placement":
             if v not in ("auto", "off"):
                 raise PlanError("placement must be auto or off")
@@ -358,6 +363,8 @@ def render_fragment(plan: dict, sizes: Optional[dict[str, float]] = None,
     pool["reserveGiB"] = plan["reserve_gib"]
     pool["protectSeconds"] = plan["protect_seconds"]
     pool["protectWaits"] = bool(plan.get("protect_waits", True))
+    pool["protectWaitSeconds"] = int(plan.get("protect_wait_s", 15))
+    pool["maxWaitSeconds"] = int(plan.get("max_wait_s", 60))
     pool["placement"] = plan["placement"]
     persistent = [m for m in plan["persistent"] if keep(m)]
     if persistent:

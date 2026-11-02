@@ -3,7 +3,7 @@ title: VRAM-aware pool router
 summary: Put every model in one pool so models load side by side while VRAM fits, and only the cheapest idle model is evicted when it does not.
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
-config_keys: [routing, models.*.vram, routing.router.settings.pool.protectWaits, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard, routing.router.settings.pool.cpuFallback]
+config_keys: [routing, models.*.vram, routing.router.settings.pool.protectWaits, routing.router.settings.pool.protectWaitSeconds, routing.router.settings.pool.maxWaitSeconds, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard, routing.router.settings.pool.cpuFallback]
 updated: 2026-10-25
 ---
 
@@ -65,11 +65,25 @@ request has buttons:
 - **Cancel** stops it: the client gets an error and the model stops working
   on it.
 
-With `protectWaits` on, a request for another model can wait up to
-`protectSeconds` after the protected model's last request, so keep that
-window near how long your clients pause between prompts (a tool call, a
-human reading the answer). `protectWaits: false` brings back the old
-behaviour, where protection only orders evictions.
+With `protectWaits` on, a request for another model waits two ways:
+
+- **The model is idle:** for `protectWaitSeconds` (15) after its last prompt,
+  the gap a chat or agent leaves between prompts (a tool call, a human
+  reading the answer). Then the other model loads.
+- **The model keeps busy:** for `maxWaitSeconds` (60) at most. Then the
+  protected model finishes the prompt it is on, its newer prompts queue
+  behind the waiting request, and the other model loads; those prompts get
+  the same 60 s back.
+
+```yaml
+        protectWaitSeconds: 15
+        maxWaitSeconds: 60
+```
+
+What goes wrong: before these, the wait was the whole `protectSeconds`
+(600): two profiles of one model that cannot share the GPUs waited up to ten
+minutes for each other. `protectWaitSeconds: 0` and `maxWaitSeconds: 0` bring
+that back. `protectWaits: false` lets protection only order evictions.
 
 ## Per-card placement
 

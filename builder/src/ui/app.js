@@ -4968,6 +4968,7 @@ async function loadSchedule() {
 function syncPlanForm() {
   const p = SC.data.plan;
   SC.plan = { enabled: p.enabled, cards: p.cards.join(", "), reserve_gib: p.reserve_gib, protect_seconds: p.protect_seconds, protect_waits: p.protect_waits !== false,
+    protect_wait_s: p.protect_wait_s ?? 15, max_wait_s: p.max_wait_s ?? 60,
     placement: p.placement, idle_unload_min: p.idle_unload_min ?? 30,
     answer_first_min_tokens: p.answer_first_min_tokens ?? 4000, answer_first_max_wait_s: p.answer_first_max_wait_s ?? 300,
     share_guard: !!p.share_guard, share_guard_slowdown: p.share_guard_slowdown ?? 50, share_guard_max_wait_s: p.share_guard_max_wait_s ?? 120 };
@@ -5296,7 +5297,10 @@ function renderLive() {
   fill(el,
     h("div", { class: "status-line" }, h("span", { class: "pill ok" }, "pool router"),
       h("span", { class: `pill ${P.placement ? "ok" : "warn"}`, title: P.placement ? "each model is placed on a card" : "no per-card sizes: planning by total VRAM" }, P.placement ? "placement on" : "placement off"),
-      h("span", { class: "muted" }, `${num(P.budget_gib)} GiB usable · models used in the last ${span(P.protect_seconds)} ${(SC.data && SC.data.plan && SC.data.plan.protect_waits === false) ? "are evicted last" : "stay loaded; other models' requests wait"}`),
+      h("span", { class: "muted" }, `${num(P.budget_gib)} GiB usable · ${(() => { const pl = (SC.data && SC.data.plan) || {};
+        if (pl.protect_waits === false) return `models used in the last ${span(P.protect_seconds)} are evicted last`;
+        const gap = pl.protect_wait_s ?? 15, most = pl.max_wait_s ?? 60;
+        return `an idle model keeps its room ${gap ? `${gap} s` : span(P.protect_seconds)} for its next prompt; another model's request waits ${most ? `${most} s at most` : "while it is used"}`; })()}`),
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     cpuCard(P.models.filter((m) => m.on_cpu && m.state !== "stopped"), L.cpu, L.procs || {}, L.proc_errors || {}, L.embedder || {}),
@@ -5381,7 +5385,14 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
   fill(el,
     h("div", { class: "card" },
       h("div", { class: "card-head" }, h("h2", {}, "Rules the scheduler follows"), h("span", { class: "spacer" }),
-        SC.dirty ? h("span", { class: "pill warn" }, "unsaved changes") : appliedPill(D), btn("Save plan", () => savePlan(), "sm primary", "save")),
+        SC.dirty ? h("span", { class: "pill warn" }, "unsaved changes") : appliedPill(D),
+        Object.assign(btn("Reset to defaults", () => {
+          const d = D.defaults || {};
+          Object.keys(d).forEach((k) => { if (k in SC.plan) SC.plan[k] = d[k]; });
+          touch(); renderPlan();
+          toast("Every rule is back to its default (your cards, sizes and model lists stay). Save plan to use them.", "ok");
+        }, "sm ghost", "refresh"), { title: "Waits, protect time, reserve, share guard, answer first, placement and unload time back to their defaults. Cards, sizes and the per-model lists are kept." }),
+        btn("Save plan", () => savePlan(), "sm primary", "save")),
       h("p", { class: "hint" }, "What this page does: it sets the rules for how models share your GPUs. When a request needs a model that is not loaded, the scheduler loads it beside the others if the GPU has room. If not, it unloads the model that is cheapest to reload and has been idle longest, never one that is busy. The Live tab shows what it did; this tab is where you change the rules. Saving sends them to the engine."),
       h("div", { class: "fields" },
         h("label", { class: "check wide" }, enable, "Use the pool router (when off, the engine keeps its own router)"),
@@ -5400,6 +5411,8 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
           c.addEventListener("change", () => { P.protect_waits = c.checked; touch(); renderPlan(); });
           return h("label", { class: "check wide", title: "Off: protection only decides which model goes first, and a request for another model unloads a protected one the moment it is idle" },
             c, "Protected models stay loaded: a request for another model waits instead of unloading one used within Protect (Go next on Live sends it anyway)"); })(),
+        P.protect_waits ? field("Wait for its next prompt (s)", "protect_wait_s", { type: "number", step: "5", min: "0" }, "how long another model's request waits once the protected model is idle: the gap between a chat's prompts. 0 = the whole Protect time") : null,
+        P.protect_waits ? field("Longest wait (s)", "max_wait_s", { type: "number", step: "15", min: "0" }, "a request waiting this long goes next even while the protected model stays busy: it finishes the prompt it is on, then the other model loads. 0 = no limit") : null,
         field("Unload after (min)", "idle_unload_min", { type: "number", step: "5", min: "0" }, "a model unused this long is unloaded; 0 = never"),
         h("label", { class: "field wide" }, h("span", {}, "Placement"), placement)),
       useDetected && h("div", { class: "row", style: "margin-top:8px" }, useDetected)),
