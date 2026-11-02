@@ -162,13 +162,20 @@ def create_app(config: dict | None = None) -> Flask:
     memory = Memory(store, settings.all, event)
     memory.extra_sources.append(odysseus_hub.brain_source(settings.all))
 
+    memory_bg = {"last": 0.0}
+
     def watch_memory():
         """Keep the assistant's memory current: new records every tick. Embedding waits for a search (see sync),
         unless the embedding model runs on the CPU: it takes nothing from the GPUs, so it embeds as it goes."""
         if not settings.get("memory")["enabled"]:
             return
         pb = app.extensions.get("pb")
-        on_cpu = bool(settings.get("memory").get("background", True) and pb and pb.assistant and pb.assistant.embed_on_cpu())
+        mem_cfg = settings.get("memory")
+        # the links are kept current every tick (no model); the embedder catches up only every few minutes
+        due = time.time() - memory_bg["last"] >= max(1, int(mem_cfg.get("background_every_min") or 10)) * 60
+        on_cpu = bool(due and mem_cfg.get("background", True) and pb and pb.assistant and pb.assistant.embed_on_cpu())
+        if on_cpu:
+            memory_bg["last"] = time.time()
         # only the records that never change: the rest change with every request and would be re-embedded forever
         done = memory.sync(budget=64, embed=on_cpu, stable_only=True)
         if (done or {}).get("embedded"):

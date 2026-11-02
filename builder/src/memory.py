@@ -199,22 +199,102 @@ class Memory:
             seen = {(s, k) for s, k, _, _ in current}
             have = {(r["source"], r["key"]): r for r in self.store._q("SELECT id, source, key, hash FROM memory_records")}
             added = changed = 0
+            touched: list[tuple[str, str]] = []
             for s, k, ts, text in current:
                 h = hashlib.sha1(text.encode()).hexdigest()
                 row = have.get((s, k))
                 if row is None:
                     self.store._x("INSERT INTO memory_records (source, key, ts, text, hash) VALUES (?,?,?,?,?)", (s, k, ts, text, h))
                     added += 1
+                    touched.append((s, k))
                 elif row["hash"] != h:
                     self.store._x("UPDATE memory_records SET ts=?, text=?, hash=?, vector=NULL, model='', dims=0 WHERE id=?", (ts, text, h, row["id"]))
                     changed += 1
+                    touched.append((s, k))
             gone = [r["id"] for key, r in have.items() if key not in seen]
             for rid in gone:
                 self.store._x("DELETE FROM memory_records WHERE id=?", (rid,))
+                self.store._x("DELETE FROM memory_links WHERE record_id=?", (rid,))
+            if self.links_on():
+                if not self.store._q("SELECT 1 AS x FROM memory_links LIMIT 1"):
+                    self.relink()  # a first run, or links just turned on: link every record
+                elif touched:
+                    ids = [r["id"] for r in self.store._q("SELECT id, source, key FROM memory_records") if (r["source"], r["key"]) in set(touched)]
+                    self._relink(ids)
             embedded = self._embed_pending(budget, self.STABLE_SOURCES if stable_only else None) if embed and self.vectors_on() else 0
             if added or changed or gone or embedded:
                 self._matrix = None
             return {"added": added, "changed": changed, "removed": len(gone), "embedded": embedded}
+
+    # ----- the link graph (memory_links): records joined by what they share, no model needed ----------------
+    def links_on(self) -> bool:
+        return bool(self.config().get("enabled") and self.config().get("links", True))
+
+    def _models(self) -> list[str]:
+        try:
+            return [m["model_id"] for m in self.store.list_models_seen() if m.get("model_id")]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _query_models(self) -> list[str]:
+        """Models a question may name: the ones Argos has seen, and the ones the records name."""
+        linked = [r["entity"][6:] for r in self.store._q("SELECT DISTINCT entity FROM memory_links WHERE entity LIKE 'model:%'")]
+        return sorted(set(self._models()) | set(linked))
+
+    def _relink(self, ids: list[int]) -> int:
+        """Work out the links of these records again."""
+        from .memory_links import entities
+        if not ids:
+            return 0
+        models = self._models()
+        n = 0
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ", ".join("?" * len(chunk))
+            rows = self.store._q(f"SELECT id, text, ts FROM memory_records WHERE id IN ({marks})", chunk)
+            self.store._x(f"DELETE FROM memory_links WHERE record_id IN ({marks})", chunk)
+            for r in rows:
+                for e in entities(r["text"], r["ts"], models):
+                    self.store._x("INSERT INTO memory_links (record_id, entity) VALUES (?, ?)", (r["id"], e), commit=False)
+                    n += 1
+            self.store._x("SELECT 1")  # commit the chunk
+        return n
+
+    def relink(self) -> int:
+        """Link every record again (a model list that grew, or links just turned on)."""
+        return self._relink([r["id"] for r in self.store._q("SELECT id FROM memory_records")])
+
+    def _link_rank(self, wanted: set[str], exclude: Optional[int] = None, allowed: Optional[set[int]] = None):
+        from .memory_links import rank
+        if not wanted:
+            return []
+        marks = ", ".join("?" * len(wanted))
+        rows = self.store._q(f"SELECT record_id, entity FROM memory_links WHERE entity IN ({marks})", tuple(wanted))
+        df = {r["entity"]: r["n"] for r in self.store._q(
+            f"SELECT entity, COUNT(*) AS n FROM memory_links WHERE entity IN ({marks}) GROUP BY entity", tuple(wanted))}
+        total = (self.store._q("SELECT COUNT(*) AS n FROM memory_records")[0]["n"]) or 1
+        links = [(r["record_id"], r["entity"]) for r in rows if allowed is None or r["record_id"] in allowed]
+        return rank(wanted, links, df, total, exclude)
+
+    def linked(self, query: str = "", source: str = "", key: str = "", k: int = 8,
+               sources: Optional[set[str]] = None) -> dict:
+        """Records like a question, or like one stored record, by the links alone: what they share, the rarer the
+        more it counts. The API's "similar" with no model to run."""
+        from .memory_links import entities, query_entities
+        exclude = None
+        if source and key:
+            rec = self.store._q("SELECT id, text, ts FROM memory_records WHERE source=? AND key=?", (source, key))
+            if not rec:
+                return {"entities": [], "results": []}
+            exclude = rec[0]["id"]
+            wanted = {e for e in entities(rec[0]["text"], None, self._models())}
+        else:
+            wanted = query_entities(query, self._query_models())
+        rows = {r["id"]: r for r in self.store._q("SELECT id, source, key, ts, text FROM memory_records")
+                if not sources or r["source"] in sources}
+        ranked = self._link_rank(wanted, exclude, set(rows))[:k]
+        return {"entities": sorted(wanted), "results": [{**rows[rid], "score": round(s, 3), "shared": shared}
+                                                        for rid, s, shared in ranked]}
 
     def _embed_pending(self, budget: int, sources: Optional[tuple] = None) -> int:
         c = self.config()
@@ -277,6 +357,10 @@ class Memory:
             return []
         by_id = {r["id"]: r for r in rows}
         ranked_kw = self._keyword(query, rows)
+        ranked_links: list[tuple[int, float]] = []
+        if self.links_on():
+            from .memory_links import query_entities
+            ranked_links = [(rid, s) for rid, s, _ in self._link_rank(query_entities(query, self._query_models()), None, set(by_id))]
         ranked_vec: list[tuple[int, float]] = []
         if self.vectors_on():
             try:
@@ -288,7 +372,7 @@ class Memory:
                 self.last_error = str(exc)
         scores: dict[int, float] = {}
         how: dict[int, set] = {}
-        for label, ranked in (("words", ranked_kw), ("meaning", ranked_vec)):
+        for label, ranked in (("words", ranked_kw), ("meaning", ranked_vec), ("links", ranked_links)):
             for rank, (rid, _) in enumerate(ranked[:50]):
                 scores[rid] = scores.get(rid, 0.0) + 1.0 / (RRF_K + rank + 1)
                 how.setdefault(rid, set()).add(label)
@@ -361,7 +445,9 @@ class Memory:
         counts = self.store._q(f"SELECT COUNT(*) AS n, SUM(CASE WHEN vector IS NOT NULL AND {same} THEN 1 ELSE 0 END) AS v, "
                                "MAX(indexed_at) AS last FROM memory_records", args)[0]
         by_source = {r["source"]: r["n"] for r in self.store._q("SELECT source, COUNT(*) AS n FROM memory_records GROUP BY source")}
+        links = self.store._q("SELECT COUNT(*) AS n, COUNT(DISTINCT entity) AS e FROM memory_links")[0]
         return {"records": counts["n"] or 0, "embedded": counts["v"] or 0, "last_indexed": counts["last"],
+                "links": links["n"] or 0, "linked_things": links["e"] or 0, "links_on": self.links_on(),
                 "vectors_on": self.vectors_on(), "endpoint": c.get("endpoint") or "", "model": c.get("model") or "",
                 "enabled": bool(c.get("enabled")), "error": self.last_error, "by_source": by_source,
                 "fast_search": _np is not None}

@@ -50,6 +50,10 @@ def env_defaults(cfg: dict) -> dict:
             # with the embedding model on the CPU, embed new events, notes, profiles and benchmarks as they come in
             # (the records that never change); off = only when a search needs them
             "background": True,
+            "background_every_min": 10,  # how often that background embedding runs: the links cover the meantime
+            # the link graph: records joined by the models, profiles, flags, variables, GPUs, failures and days they
+            # name, searched with no model (memory_links); fused with the embeddings in the memory's search
+            "links": True,
             "batch": 16,
             "results": 8,     # records the assistant sees per question
         },
