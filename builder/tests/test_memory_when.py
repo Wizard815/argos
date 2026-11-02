@@ -115,3 +115,16 @@ def test_Benchmarks_live_lists_speeds_from_real_requests(app, client):
     rows = client.get("/api/benchmarks/live").get_json()["rows"]
     assert [r["model"] for r in rows] == ["coder--chat"], "embeddings have no speeds to show"
     assert rows[0]["tg_avg"] == 39.0
+
+
+def test_Memory_a_burst_leaves_an_unloaded_embedder_alone_for_a_few_records(app, monkeypatch):
+    mem = app.extensions["pb"].memory
+    _records(mem)  # 3 new records
+    asked = _fake_embedder(mem, monkeypatch)
+    assert mem.burst(loaded=False) == 0 and asked == [], "3 records are not worth loading it: its idle timer runs out"
+    _records(mem, sources=tuple(f"event{i}" for i in range(30)))
+    assert mem.burst(loaded=False) > 0, "a real batch is"
+    asked.clear()
+    mem.store._x("UPDATE memory_records SET indexed_at = 0, ts = 1")  # every vector is stale now
+    assert mem.burst(loaded=False) == 0 and asked == [], "moved numbers never start it"
+    assert mem.burst(loaded=True) > 0, "but are refreshed while it is loaded anyway"

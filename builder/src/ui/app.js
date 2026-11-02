@@ -3954,7 +3954,7 @@ function renderAssistantSettings() {
         linksRow,
         (fill(embedBox,
           field("Embedding model", embed, ch.embed.length ? `${ch.embed.length} to choose from: embedding models and their profiles` : "No embedding models or profiles yet. Download one under Models (search “nomic-embed”), or save a profile with --embedding.", true),
-          field("When to embed", embedWhen, "New records wait until then. A search always embeds its own question. Records whose numbers move (speeds, open loads) keep their meaning between bursts and are refreshed every half hour at most.", true),
+          field("When to embed", embedWhen, "New records wait until then. A search always embeds its own question. A burst starts an unloaded embedder only for 25 new records or more, so it can unload on its idle timer (Conversation → Unload when unused). Records whose numbers move (speeds, open loads) are refreshed only while it is loaded.", true),
           ...fbField(embedFb, embedCpu, "Embedding model (CPU)", "Best another profile of the same embedding model for the CPU model, so the memory's vectors fit both and switching re-embeds nothing.")), embedBox),
         field("Records per question", results)),
       h("details", { class: "advanced" }, h("summary", {}, "Advanced: embeddings from another server"),

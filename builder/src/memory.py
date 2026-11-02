@@ -97,6 +97,9 @@ SEARCH_EMBED_BUDGET = 32
 # a record whose numbers move (a model's speeds, a load still open) keeps its vector when it changes; a burst
 # embeds it again once that vector is this old, so its meaning stays close without re-embedding on every request
 STALE_S = 30 * 60
+# a burst starts an embedder that is not loaded only for this many new records: a few events now and then are
+# not worth a load, and loading it for them kept its idle timer from ever running out
+BURST_MIN_NEW = 25
 EMBED_WHEN = ("auto", "quiet", "search")
 
 
@@ -155,14 +158,25 @@ class Memory:
             return when
         return "auto" if c.get("background", True) else "search"
 
-    def burst(self, budget: int = 512, step: int = 64) -> int:
+    def waiting(self) -> int:
+        """Records with no vector from the embedding model in use."""
+        same, args = self._same_model()
+        return self.store._q(f"SELECT COUNT(*) AS n FROM memory_records WHERE vector IS NULL OR NOT {same}", args)[0]["n"] or 0
+
+    def burst(self, budget: int = 512, step: int = 64, loaded: bool = True) -> int:
         """Embed what waits, in steps, until it is done or ``budget`` is reached: new records first, then the
-        ones whose numbers moved since their vector was made more than STALE_S ago."""
+        ones whose numbers moved since their vector was made more than STALE_S ago.
+
+        ``loaded``: whether the embedding model is loaded now. When it is not, a burst starts it only for
+        BURST_MIN_NEW new records or more, and never just to refresh moved numbers, so an unused embedder is
+        left to unload on its idle timer instead of being started again every quiet minute."""
+        if not loaded and (not self.vectors_on() or self.waiting() < BURST_MIN_NEW):
+            return 0
         done = 0
         while done < budget and self.vectors_on():
             with self._lock:
                 n = self._embed_pending(min(step, budget - done), why="in downtime")
-                if not n:
+                if not n and loaded:
                     n = self._embed_stale(min(step, budget - done))
             if not n:
                 break
@@ -548,7 +562,7 @@ class Memory:
                 "enabled": bool(c.get("enabled")), "error": self.last_error, "by_source": by_source,
                 "fast_search": _np is not None, "search_by": c.get("search_by") or "embed", "embed_when": self.embed_when(),
                 "activity": self.activity,
-                "waiting": self.store._q(f"SELECT COUNT(*) AS n FROM memory_records WHERE vector IS NULL OR NOT {same}", args)[0]["n"] or 0}
+                "waiting": self.waiting()}
 
 
 __all__ = ["Memory", "tokens"]
