@@ -29,7 +29,10 @@ Check connects, runs a short script that only reads, and shows:
 - the time it took to connect
 - where `llama-server` is, and whether vLLM, SGLang and Docker are installed
 - the GPU stack (`rocm` or `cuda`) and card names
+- which KV cache pairs (`-ctk` / `-ctv`) have a FlashAttention decode kernel in that `llama-server` build, read from its CUDA/ROCm library (**KV pairs** on the card; hover for the list)
 - whether the server **sees the same model files Argos sees**: it lists the `.gguf` files in the server's Model Directory folders and compares them with Argos' own models folder by file name and size. It tells you which files are missing there, which differ in size, and which folders do not exist. If the llama-server container does not mount the same models folder, this is where you find out.
+
+A pair missing from that list still runs, but every generated token first converts the whole KV cache to f16, which gets slow at long context (the server log says `no FlashAttention vector kernel compiled for K/V types`). Profiles launch on the default server, so the Builder shows **KV cache type not compiled** next to Launch, and Launch asks before starting such a command. Run **Check** again after rebuilding llama.cpp. A build Argos cannot read (stripped, CPU-only, or a launcher script) lists no pairs and is never flagged.
 
 If a Check fails, the reason is shown on the card, for example `Connection refused` or `Permission denied (publickey)`. Permission denied means the key command has not been run on that server yet.
 

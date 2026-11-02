@@ -11,6 +11,9 @@ from src.servers import from_odysseus, parse_facts
 FACTS_ROCM = """argos=ok
 hostname=mx-llama
 llama_server=/app/llama-server
+kv_probe=1
+kv_pair=1-1
+kv_pair=8-8
 vllm=
 sglang=
 docker=
@@ -142,7 +145,7 @@ def test_check_finds_what_is_installed(sclient, fake):
     assert s["status"] == "connected" and s["latency_ms"] is not None
     e = {k: v for k, v in s["engines"].items() if k != "models"}
     assert e == {"hostname": "mx-llama", "llama_server": "/app/llama-server", "vllm": "", "sglang": "",
-                 "docker": "", "gpu": "rocm", "gpus": ["Radeon VII", "Radeon VII"]}
+                 "docker": "", "gpu": "rocm", "gpus": ["Radeon VII", "Radeon VII"], "kv_pairs": ["f16-f16", "q8_0-q8_0"]}
     argv, script = fake.calls[-1]
     assert argv[0] == "ssh" and "BatchMode=yes" in argv and argv[argv.index("--") + 1] == "root@mx-llama"
     assert "/app/llama-server" in script and "echo \"argos=ok\"" in script
@@ -370,3 +373,31 @@ def test_Servers_setup_mode3_adds_containers_once_the_key_is_mounted(tmp_path, f
     assert pb.servers.has_key(rocm["id"]) and pb.servers.public_key(rocm["id"]) == "ssh-ed25519 AAAADERIVED argos"
     assert open(pb.servers.key_path(rocm["id"])).read() == "PRIVATE KEY\n"
     assert pb.servers.default_parts()["env"]["ROCM_SRV%d_SSH_PORT" % rocm["id"]] == "2222"
+
+
+def test_check_lists_the_kv_cache_pairs_the_build_compiled(tmp_path):
+    """The probe reads the FlashAttention decode kernels out of the backend library.
+
+    llama.cpp compiles one ggml_cuda_flash_attn_ext_vec_case<D, K, V> per K/V pair,
+    and a pair it lacks still runs, converting the cache to f16 every step. The
+    mangled names carry the two ggml_type numbers.
+    """
+    app = tmp_path / "app"
+    app.mkdir()
+    server = app / "llama-server"
+    server.write_text("#!/bin/sh\n")
+    server.chmod(0o755)
+    names = [b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi128EL9ggml_type8ELS0_8EEvR25ggml_backend_cuda_contextP11ggml_tensor",
+             b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi256EL9ggml_type8ELS0_8EEvR25ggml_backend_cuda_contextP11ggml_tensor",
+             b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi128EL9ggml_type43ELS0_43EEvR25ggml_backend_cuda_contextP11ggml_tensor",
+             b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi128EL9ggml_type8ELS0_6EEvR25ggml_backend_cuda_contextP11ggml_tensor"]
+    (app / "libggml-hip.so").write_bytes(b"\x7fELF\0" + b"\0".join(names) + b"\0")
+
+    script = servers_mod.detection_script({"llama_server": str(server)})
+    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=30)
+    assert parse_facts(out.stdout)["kv_pairs"] == ["q8_0-q5_0", "q8_0-q8_0", "turbo3-turbo3"]
+
+
+def test_parse_facts_kv_pairs_unknown_build():
+    assert parse_facts("argos=ok\nllama_server=/app/llama-server\nkv_probe=1\n")["kv_pairs"] == []
+    assert parse_facts("argos=ok\nkv_pair=8-8\nkv_pair=99-8\nkv_pair=x\n")["kv_pairs"] == ["q8_0-q8_0"]
