@@ -433,6 +433,7 @@ async function loadProfileServer() {
     const s = list.find((x) => String(x.id) === sel.value);
     try {
       await api("POST", `/api/servers/${sel.value}/default`);
+      await kvServers(true); renderKvWarn();
       sel.style.color = colorOf(s, list.indexOf(s));
       toast(s.kind === "local" ? "Profiles run the way your base models do." : `Profiles now launch on ${s.name}. Models already running stay where they are.`, "ok");
     } catch (e) { fail(e); loadProfileServer(); }
@@ -631,7 +632,7 @@ const B = { cmd: "", parsed: null, profileId: null, source: "", layout: "multi",
 
 const isDirty = () => !!B.parsed && (B.cmd !== B.saved.cmd || $("#bName").value.trim() !== B.saved.name);
 function markSaved() { B.saved = { cmd: B.cmd, name: $("#bName").value.trim(), base: $("#bBase").value }; renderDirty(); }
-function renderDirty() { $("#bDirty").hidden = !isDirty(); $("#bDelete").disabled = !B.profileId; renderBuilderDefault(); }
+function renderDirty() { $("#bDirty").hidden = !isDirty(); $("#bDelete").disabled = !B.profileId; renderBuilderDefault(); renderKvWarn(); }
 
 // The model's default profile: what a client asking for the model's own name gets (Hermes keeps that one
 // name selected, so changing the default here needs no refresh there). Same switch as "serve" on Profiles.
@@ -1823,8 +1824,56 @@ const rememberMine = (id) => { pgMine.add(id); saveMine(); };
 const forgetMine = (id) => { pgMine.delete(id); saveMine(); };
 const playgroundLaunches = () => S.launches.filter((l) => !l.engine || pgMine.has(l.base_model));
 
+// ── KV cache pairs the target server's llama.cpp build compiled ──
+// Check stores them on each server (engines.kv_pairs, e.g. "q8_0-q5_0"). A -ctk/-ctv pair
+// missing there still runs, but every generated token first converts the whole KV cache to
+// f16, which gets slower the longer the context. An empty list means the build could not be
+// read (stripped, CPU-only, a launcher script), so nothing is flagged.
+const KVC = { servers: null, at: 0, loading: null };
+async function kvServers(force = false) {
+  if (force || !KVC.servers || Date.now() - KVC.at > 30000) {
+    KVC.loading = KVC.loading || api("GET", "/api/servers").then((r) => { KVC.servers = r.servers; KVC.at = Date.now(); })
+      .catch(() => { KVC.servers = KVC.servers || []; }).finally(() => { KVC.loading = null; });
+    await KVC.loading;
+  }
+  return KVC.servers;
+}
+function kvTypesOf(command) {
+  const t = (command || "").match(/"[^"]*"|'[^']*'|\S+/g) || [];
+  const get = (...names) => {
+    for (let i = t.length - 1; i >= 0; i--) {
+      const eq = t[i].indexOf("=");
+      const name = eq > 0 ? t[i].slice(0, eq) : t[i];
+      if (names.includes(name)) return (eq > 0 ? t[i].slice(eq + 1) : t[i + 1] || "").replace(/^["']|["']$/g, "");
+    }
+    return "";
+  };
+  const norm = (x) => (!x || x === "f32" ? "f16" : x);  // f32 caches use the f16 kernels
+  return [norm(get("-ctk", "--cache-type-k")), norm(get("-ctv", "--cache-type-v"))];
+}
+/** The warning for this command on the default server (the one profiles launch on), or "". */
+function kvWarning(command, servers) {
+  const s = (servers || []).find((x) => x.is_default);
+  const pairs = (s && s.engines && s.engines.kv_pairs) || [];
+  if (!pairs.length || /(^|\s)(-fa|--flash-attn)(=|\s+)off(\s|$)/.test(command || "")) return "";
+  const [k, v] = kvTypesOf(command);
+  if (pairs.includes(`${k}-${v}`)) return "";
+  return `KV cache ${k} / ${v} has no FlashAttention decode kernel in ${s.name}'s llama.cpp build, so every generated token `
+    + `first converts the whole cache to f16 (slow at long context). Compiled pairs: ${pairs.map((p) => p.replace("-", " / ")).join(", ")}.`;
+}
+function renderKvWarn() {
+  const el = $("#bKvWarn");
+  if (!el) return;
+  if (!KVC.servers) { kvServers().then(renderKvWarn); return; }
+  const w = B.parsed ? kvWarning(B.cmd, KVC.servers) : "";
+  el.hidden = !w;
+  el.title = w;
+}
+
 async function launch(command, base_model, profile_name, profile_id) {
   if (!command || !command.trim()) { toast("Nothing to launch.", "err"); return; }
+  const kvWarn = kvWarning(command, await kvServers());
+  if (kvWarn && !(await confirmBox(kvWarn, "Launch anyway"))) return;
   try {
     const res = await api("POST", "/api/launches", { command, base_model, profile_name, profile_id: profile_id || "" });
     if (res.engine) {
@@ -4482,6 +4531,7 @@ function renderLocal() {
 async function loadServers() {
   try {
     SV.servers = (await api("GET", "/api/servers")).servers;
+    KVC.servers = SV.servers; KVC.at = Date.now(); renderKvWarn();
     $("#navServers").textContent = SV.servers.length > 1 ? SV.servers.length : "";
     renderServers();
   } catch (e) { fail(e); }
@@ -4517,7 +4567,8 @@ function svEngines(s) {
   if (s.id == null || s.status !== "connected") return null;
   const chip = (label, value) => h("span", { class: `pill ${value ? "ok" : ""}`, title: value || "not found on this server" }, `${label} ${value ? "✓" : "—"}`);
   return h("div", { class: "chips sv-engines" }, chip("llama.cpp", e.llama_server), chip("vLLM", e.vllm), chip("SGLang", e.sglang), chip("Docker", e.docker),
-    h("span", { class: `pill ${e.gpu && e.gpu !== "none" ? "ok" : ""}` }, `GPU: ${e.gpu || "none"}${(e.gpus || []).length ? ` (${[...new Set(e.gpus)].join(", ")})` : ""}`));
+    h("span", { class: `pill ${e.gpu && e.gpu !== "none" ? "ok" : ""}` }, `GPU: ${e.gpu || "none"}${(e.gpus || []).length ? ` (${[...new Set(e.gpus)].join(", ")})` : ""}`),
+    (e.kv_pairs || []).length ? h("span", { class: "pill ok", title: `KV cache pairs (-ctk / -ctv) with a FlashAttention decode kernel in this build:\n${e.kv_pairs.map((p) => p.replace("-", " / ")).join("\n")}` }, `KV pairs: ${e.kv_pairs.length}`) : null);
 }
 
 function serverCard(s, index) {

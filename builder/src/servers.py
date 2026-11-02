@@ -203,6 +203,21 @@ for p in {candidates}; do
 done
 [ -n "$ls_found" ] || ls_found="$(command -v llama-server 2>/dev/null)"
 echo "llama_server=$ls_found"
+# KV cache pairs with a compiled FlashAttention decode kernel: llama.cpp's CUDA/HIP
+# backend has one ggml_cuda_flash_attn_ext_vec_case<D, K, V> instance per pair, and
+# its mangled name carries both type numbers. Read them from the backend library
+# next to llama-server (or linked into it); grep -a needs no binutils. A stripped or
+# CPU-only build prints none, which Argos treats as "unknown", not "nothing".
+if [ -n "$ls_found" ]; then
+  ls_real="$(readlink -f "$ls_found" 2>/dev/null || echo "$ls_found")"
+  ls_dir="$(dirname "$ls_real")"
+  echo "kv_probe=1"
+  {{ ls "$ls_dir"/libggml-hip.so* "$ls_dir"/libggml-cuda.so* "$ls_dir"/../lib/libggml-hip.so* "$ls_dir"/../lib/libggml-cuda.so* 2>/dev/null
+    ldd "$ls_real" 2>/dev/null | awk '/libggml-(hip|cuda)/ {{ print $3 }}'
+    echo "$ls_real"; }} | sort -u | while IFS= read -r f; do
+    [ -f "$f" ] && grep -aoE '_Z[0-9]+ggml_cuda_flash_attn_ext_vec_caseILi[0-9]+EL9ggml_type[0-9]+ELS0_[0-9]+E' "$f" 2>/dev/null
+  done | sed -E 's/.*ggml_type([0-9]+)ELS0_([0-9]+)E$/kv_pair=\\1-\\2/' | sort -u
+fi
 echo "vllm=$(command -v vllm 2>/dev/null)"
 echo "sglang=$(command -v sglang 2>/dev/null)"
 echo "docker=$(command -v docker 2>/dev/null)"
@@ -242,10 +257,17 @@ def _remote_path(path: str) -> str:
     return shlex.quote(path)
 
 
+# ggml_type numbers of the KV cache types llama.cpp accepts for -ctk/-ctv, as they
+# appear in the FlashAttention kernel names (turbo* are the TurboQuant forks' types).
+KV_TYPE_NUMBERS = {0: "f32", 1: "f16", 2: "q4_0", 3: "q4_1", 6: "q5_0", 7: "q5_1", 8: "q8_0", 20: "iq4_nl",
+                   30: "bf16", 43: "turbo3", 44: "turbo4", 45: "turbo2"}
+
+
 def parse_facts(text: str) -> dict:
     """Turn the detection script's output into the engines dict stored on the server."""
     facts: dict[str, Any] = {}
     cuda, rocm, files, missing = [], [], [], []
+    kv_pairs: set[str] = set()
     for line in text.splitlines():
         key, sep, val = line.partition("=")
         if not sep:
@@ -257,6 +279,10 @@ def parse_facts(text: str) -> dict:
                 files.append({"path": fpath, "name": os.path.basename(fpath), "size": int(size) if size.isdigit() else 0})
         elif key == "dir_missing":
             missing.append(val)
+        elif key == "kv_pair":
+            k, _, v = val.partition("-")
+            if k.isdigit() and v.isdigit() and int(k) in KV_TYPE_NUMBERS and int(v) in KV_TYPE_NUMBERS:
+                kv_pairs.add(f"{KV_TYPE_NUMBERS[int(k)]}-{KV_TYPE_NUMBERS[int(v)]}")
         elif key == "gpu_cuda" and val:
             cuda.append(val)
         elif key == "gpu_rocm" and val:
@@ -274,6 +300,8 @@ def parse_facts(text: str) -> dict:
         "gpus": cuda or rocm,
         "model_files": files,
         "dirs_missing": missing,
+        # [] when the probe found no kernels (unknown build): the UI only warns when this lists some
+        "kv_pairs": sorted(kv_pairs),
     }
 
 
