@@ -31,8 +31,8 @@ def _base_command(c, d) -> tuple[str, dict]:
 
 def _server_parts(c, server_id: str):
     """Where it runs: "" = where Profiles launch (the default server), "local" = this machine, or a server id."""
-    if server_id == "local":
-        return None
+    if server_id == "local":  # this container: its llama-server path, if Local names one
+        return launch_parts(next((s for s in c.store.list_servers() if s["kind"] == "local"), None))
     if not server_id:
         return c.servers.default_parts()
     server = next((s for s in c.store.list_servers() if str(s.get("id")) == str(server_id)), None)

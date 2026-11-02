@@ -51,13 +51,16 @@ def _model_dirs(value: Any) -> list[dict]:
 
 
 def launcher_for(server: dict) -> str:
-    """The command prefix that starts a model on this server, or "" for this machine.
+    """The command prefix that starts a model on this server, or "" for llama-server on PATH.
 
     The image ships the wrapper that SSHes to the host and forwards the model's port,
-    so a server record only has to name its backend word. The local machine needs no
-    prefix: its llama-server is a program on PATH.
+    so a server record only has to name its backend word. This machine runs its
+    llama-server path when one is set (Mode 1's /app/llama-server, or Mode 2's
+    ``/app/bin/docker-llama rocm``), else llama-server on PATH.
     """
-    if not server or server.get("kind") == LOCAL or not server.get("host"):
+    if server and server.get("kind") == LOCAL:
+        return str(server.get("llama_server") or "").strip()
+    if not server or not server.get("host"):
         return ""
     gpu = str(server.get("gpu") or "auto").strip().lower()
     if gpu not in ("rocm", "cuda", "vulkan"):
@@ -73,8 +76,13 @@ def launch_parts(server: Optional[dict], key: str = "") -> Optional[dict]:
     given, so each server gets a name of its own (``rocm_srv3``) and its host, port, user, llama-server
     path and key ride along as env. A launch then reaches exactly this server, not just "the ROCm host",
     and the name still says which GPU runtime it has (``rocm_`` / ``cuda_``) for the GPU pick.
+
+    This machine (Local) gives its llama-server path as the program when one is set, else None.
     """
-    if not server or server.get("kind") == LOCAL or not server.get("host"):
+    if server and server.get("kind") == LOCAL:
+        program = shlex.split(str(server.get("llama_server") or ""))
+        return {"program": program, "env": {}, "name": server.get("name") or "Local"} if program else None
+    if not server or not server.get("host"):
         return None
     user, _, host = str(server["host"]).rpartition("@")
     engines = server.get("engines") if isinstance(server.get("engines"), dict) else {}
@@ -327,8 +335,10 @@ class Servers:
     def default_parts(self) -> Optional[dict]:
         """``launch_parts`` for the default server (the one Profiles launches on), or None for this machine."""
         server = next((s for s in self.store.list_servers() if s.get("is_default")), None)
-        if not server or server.get("kind") == LOCAL:
+        if not server:
             return None
+        if server.get("kind") == LOCAL:
+            return launch_parts(server)
         return launch_parts(server, self.key_path(server["id"]) if self.has_key(server["id"]) else "")
 
     def key_path(self, server_id: int) -> str:
@@ -442,6 +452,102 @@ class Servers:
         if want_default:
             self.store.set_default_server(want_default)
         return {"created": created, "updated": updated, "skipped": skipped, "errors": errors}
+
+
+    # ----- setup.sh ---------------------------------------------------------
+    def sync_setup(self, env: Optional[dict] = None, key_file: str = "") -> dict:
+        """Add what setup.sh set up to Servers (``setup_plan``). Mode 1 and 2 fill in Local, unless it
+        was edited in the app; Mode 3 adds each llama.cpp container once its key is mounted, and copies
+        that key in as the server's own. Servers edited in the app are left alone."""
+        env = os.environ if env is None else env
+        plan = setup_plan(env)
+        out: dict[str, Any] = {"local": False, "created": [], "updated": [], "skipped": [], "errors": [], "waiting": ""}
+        if plan["local"]:
+            local = self.ensure_local()
+            if local.get("source") in ("builtin", SETUP):
+                self.store.save_server({**plan["local"], "source": SETUP}, local["id"])
+                out["local"] = True
+        if not plan["ssh"]:
+            return out
+        key_file = key_file or env.get("REMOTE_SSH_KEY") or "/run/secrets/argos_ssh_key"
+        try:
+            with open(key_file, encoding="utf-8") as f:
+                private = f.read()
+        except OSError:
+            out["waiting"] = f"no ssh key at {key_file}: mount REMOTE_SSH_KEY_FILE there and restart"
+            return out
+        local_default = any(s.get("is_default") and s["kind"] == LOCAL for s in self.store.list_servers())
+        seeded = self.seed([{**item, "default": local_default and i == 0} for i, item in enumerate(plan["ssh"])], source=SETUP)
+        for k in ("created", "updated", "skipped", "errors"):
+            out[k] = seeded[k]
+        for name in seeded["created"] + seeded["updated"]:
+            server = self.store.server_by_name(name)
+            if server:
+                self._take_key(server["id"], key_file, private)
+        return out
+
+    def _take_key(self, server_id: int, key_file: str, private: str) -> None:
+        """Make the mounted key this server's own (its .pub derived when it is not beside it)."""
+        path = self.key_path(server_id)
+        try:
+            with open(path, encoding="utf-8") as f:
+                if f.read() == private and os.path.exists(path + ".pub"):
+                    return
+        except OSError:
+            pass
+        pub = ""
+        try:
+            with open(key_file + ".pub", encoding="utf-8") as f:
+                pub = f.read().strip()
+        except OSError:
+            try:
+                proc = self.run(["ssh-keygen", "-y", "-f", key_file], "", 10)
+                pub = (proc.stdout or "").strip() if proc.returncode == 0 else ""
+            except (OSError, subprocess.TimeoutExpired):
+                pub = ""
+        os.makedirs(self.ssh_dir, mode=0o700, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(private)
+        if pub:
+            with open(path + ".pub", "w", encoding="utf-8") as f:
+                f.write(pub + "\n")
+        elif os.path.exists(path + ".pub"):
+            os.remove(path + ".pub")
+
+
+SETUP = "setup"
+
+
+def setup_plan(env) -> dict:
+    """What setup.sh chose (``ARGOS_SETUP_MODE`` and the backend variables it passes in), as Servers:
+    ``{"local": fields to set on Local or None, "ssh": [server items]}``.
+
+    Mode 1: llama.cpp is in this container, so Local runs its llama-server path. Mode 2: Local starts a
+    container per model through docker-llama (the first backend; the engine's bk-* macros run the rest).
+    Mode 3: one SSH server per llama.cpp container, all seeing the models at /app/models.
+    """
+    mode = str(env.get("ARGOS_SETUP_MODE") or "").strip()
+    chosen = str(env.get("ARGOS_SETUP_BACKENDS") or "").strip().lower()
+    backends = [b for b in ("rocm", "cuda") if chosen in (b, "both")]
+    if mode in ("1", "2"):
+        first = next((b for b in backends if env.get(f"{b.upper()}_IMAGE")), "")
+        if not first:
+            return {"local": None, "ssh": []}
+        program = (env.get(f"{first.upper()}_BIN") or "/app/llama-server") if mode == "1" else f"/app/bin/docker-llama {first}"
+        return {"local": {"llama_server": program, "gpu": first}, "ssh": []}
+    if mode != "3":
+        return {"local": None, "ssh": []}
+    items = []
+    for name, label, gpu in (("ROCM", "ROCm", "rocm"), ("CUDA", "CUDA", "cuda"), ("CUSTOM", "custom", "auto")):
+        host = str(env.get(f"{name}_SSH_HOST") or "").strip()
+        if not host:
+            continue
+        user = str(env.get(f"{name}_SSH_USER") or "root").strip()
+        items.append({"name": f"llama.cpp {label}", "kind": "ssh", "host": f"{user}@{host}" if user else host,
+                      "port": env.get(f"{name}_SSH_PORT") or 22, "gpu": gpu,
+                      "llama_server": env.get(f"{name}_SSH_BIN") or "", "model_dirs": [{"path": "/app/models"}]})
+    return {"local": None, "ssh": items}
 
 
 def load_seed(path: str = "", env_json: str = "") -> list:

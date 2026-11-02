@@ -305,6 +305,16 @@ def create_app(config: dict | None = None) -> Flask:
             event("server", f"servers seed: {problem}", level="warn")
     except Exception as exc:  # noqa: BLE001 - a bad seed file must not stop the app
         event("server", f"servers seed ignored: {exc}", level="warn")
+    try:
+        synced = servers.sync_setup(cfg.get("SETUP_ENV"))
+        for name in synced["created"]:
+            event("server", f"added {name} from setup")
+        for problem in synced["errors"]:
+            event("server", f"setup server: {problem}", level="warn")
+        if synced["waiting"]:
+            event("server", f"setup servers not added yet: {synced['waiting']}", level="warn")
+    except Exception as exc:  # noqa: BLE001 - setup's servers must not stop the app
+        event("server", f"setup servers ignored: {exc}", level="warn")
     app.extensions["pb"] = Ctx(
         store=store, settings=settings, runner=runner, recorder=Recorder(store, runner), analytics=analytics,
         downloads=Downloads(store, download_settings, event), collector=collector,

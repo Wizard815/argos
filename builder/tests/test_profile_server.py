@@ -13,7 +13,8 @@ def test_ProfileServer_a_server_gets_a_launcher_of_its_own():
                             "ROCM_SRV3_SSH_BIN": "/opt/llama/bin/llama-server", "REMOTE_SSH_KEY": "/data/ssh/server-3"}
     detected = {**SERVER, "gpu": "auto", "engines": {"gpu": "cuda", "llama_server": "/usr/bin/llama-server"}}
     assert launch_parts(detected)["program"][1] == "cuda_srv3", "auto takes what the server's Check found"
-    assert launch_parts({**SERVER, "kind": "local"}) is None
+    assert launch_parts({**SERVER, "kind": "local", "llama_server": ""}) is None, "Local with no path: llama-server on PATH"
+    assert launch_parts({**SERVER, "kind": "local"})["program"] == ["/opt/llama/bin/llama-server"], "Local runs its path"
 
 
 def test_ProfileServer_only_a_plain_llama_server_is_moved():
