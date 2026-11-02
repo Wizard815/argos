@@ -275,6 +275,7 @@ class LaunchCommand:
             "fit": None if self.get("fit") is None else (self.get("fit") or "on"),
             "split_mode": self.get("split-mode"),
             "embedding": self.has("embedding"),
+            "kv_unified": self.has("kv-unified"),
         }
 
     def to_dict(self) -> dict:

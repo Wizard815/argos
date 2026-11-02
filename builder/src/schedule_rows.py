@@ -75,6 +75,9 @@ def estimate_command(command: str, compare: bool = False, measured: Optional[dic
     out = {"ok": True, "path": path, "ctx": ctx, "cache_k": ck or "f16", "cache_v": cv or ck or "f16",
            "train_ctx": (arch or {}).get("train_ctx"), "extra_gib": round(extra / GIB, 2),
            **estimate_gib(weights, arch, ctx, ck, cv, extra)}
+    # how the context splits between chats: --parallel N gives each slot ctx / N of its own; with
+    # --kv-unified (or no --parallel) the slots share it and one chat may use all of it
+    out.update(chat_split(ctx, s.get("parallel"), s.get("kv_unified")))
     if compare and arch:
         train = (arch or {}).get("train_ctx") or 0
         ctxs = sorted({*(c for c in CTX_COMPARE if c <= max(ctx, train or ctx)), ctx})
@@ -91,6 +94,18 @@ def estimate_command(command: str, compare: bool = False, measured: Optional[dic
         out["gib"] = measured["gib"]
         out["measured"] = {"gib": measured["gib"], "at": measured.get("at"), "per_card": measured.get("per_card")}
     return out
+
+
+def chat_split(ctx: int, parallel: Optional[int], unified: bool) -> dict:
+    """{"parallel", "kv_unified", "per_chat_ctx", "shared"}: how many chats at once and the context each one gets.
+
+    llama-server gives each of its --parallel slots ctx / N tokens of its own unless the cache is unified, in
+    which case every chat can grow to the whole ctx (sharing it). RoPE stretching matters only when one chat's
+    own context is past what the model was trained on, not the total."""
+    n = parallel if parallel and parallel > 0 else 1
+    shared = bool(unified) or not parallel
+    return {"parallel": n if parallel else None, "kv_unified": bool(unified), "shared": shared and n > 1,
+            "per_chat_ctx": ctx if shared or n <= 1 else ctx // n}
 
 
 def _row(row_id: str, name: str, kind: str, command: str, plan: dict, known: Optional[set[str]],
