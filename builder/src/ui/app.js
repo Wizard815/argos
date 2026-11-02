@@ -3502,20 +3502,10 @@ function slotsCard(models) {
   if (!multi.length) return null;
   return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Slots"), h("span", { class: "spacer" }),
       h("span", { class: "hint" }, "each ID of a model run with -np, from its log · Logs → per slot for one ID's lines")),
-    multi.map((m) => {
-      const maxDec = Math.max(1, ...m.slots.map((x) => x.decode.avg || x.decode.last || 0));
-      return h("div", { style: "margin-bottom:10px" },
-        h("div", { class: "row", style: "gap:8px; margin:4px 0" }, h("span", { class: "swatch", style: `--c:${segColor(m.model)}` }), h("span", { class: "strong mono-sm" }, m.model)),
-        h("div", { class: "table-wrap" }, simpleTable(["ID", "Now", "Requests", "Prefill last · avg t/s", "Decode last · avg t/s", "Context used", "Share of the time"],
-          m.slots.map((x) => [String(x.id), slotState(x), x.requests || DASH,
-            x.prefill.last != null ? `${num(x.prefill.last, 0)} · ${num(x.prefill.avg, 0)}` : DASH,
-            x.decode.last != null ? h("div", { class: "bar-cell" }, `${num(x.decode.last)} · ${num(x.decode.avg)}`, h("span", { class: "bar" }, h("i", { style: `width:${Math.min(100, (x.decode.avg || x.decode.last) / maxDec * 100)}%` }))) : DASH,
-            x.ctx_used != null ? `${num(x.ctx_used / 1000, 1)}k${x.n_ctx ? ` / ${num(x.n_ctx / 1000, 0)}k` : ""}` : DASH,
-            x.share != null ? shareBar(x.share) : DASH]))));
-    }));
+    multi.map((m) => h("div", { style: "margin-bottom:10px" },
+      h("div", { class: "row", style: "gap:8px; margin:4px 0" }, h("span", { class: "swatch", style: `--c:${segColor(m.model)}` }), h("span", { class: "strong mono-sm" }, m.model)),
+      h("div", { class: "table-wrap" }, slotTable(m.slots)))));
 }
-const shareBar = (f) => h("div", { class: "bar-cell", title: "the time this slot spent reading prompts and writing answers, out of all its model's slots' time" },
-  `${num(f * 100, 0)}%`, h("span", { class: "bar" }, h("i", { style: `width:${Math.min(100, f * 100)}%` })));
 /** "prefill 40%", "generating" or "idle": what a slot is doing as of its log's last line. */
 function slotState(sl) {
   if (sl.state === "prefill") return h("span", { class: "pill warn" }, sl.progress != null ? `prefill ${pct(sl.progress)}` : "prefill");
@@ -3534,21 +3524,25 @@ function renderSlotPick() {
 function renderSlotTable() {
   const el = $("#slSlots");
   if (!SL.perSlot || SL.slots.length < 1) { fill(el); return; }
-  const maxDec = Math.max(1, ...SL.slots.map((x) => x.decode.high || 0));
-  const t = h("table", { class: "dense" });
-  renderTable(t, [
-    { key: "id", label: "ID", num: true, cell: (x) => h("td", { class: "num" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); SL.slot = x.id; loadServerLogs(true); } }, String(x.id))) },
-    { label: "Now", cell: (x) => slotState(x) },
-    { key: "requests", label: "Requests", num: true, cell: (x) => x.requests || DASH },
-    { label: "Prefill last · avg", num: true, cell: (x) => (x.prefill.last != null ? `${num(x.prefill.last, 0)} · ${num(x.prefill.avg, 0)}` : DASH) },
-    { label: "Decode last · avg", num: true, cell: (x) => (x.decode.last != null ? h("div", { class: "bar-cell" }, `${num(x.decode.last)} · ${num(x.decode.avg)}`, h("span", { class: "bar" }, h("i", { style: `width:${Math.min(100, (x.decode.avg || x.decode.last) / maxDec * 100)}%` }))) : DASH) },
-    { label: "Decode low–high", num: true, cell: (x) => (x.decode.low != null ? `${num(x.decode.low)}–${num(x.decode.high)}` : DASH) },
-    { label: "Read · written", num: true, cell: (x) => `${num(x.prefill.tokens, 0)} · ${num(x.decode.tokens, 0)}` },
-    { label: "Context used", num: true, cell: (x) => (x.ctx_used != null ? `${num(x.ctx_used / 1000, 1)}k${x.n_ctx ? ` / ${num(x.n_ctx / 1000, 0)}k` : ""}` : DASH) },
-    { key: "share", label: "Share of the time", num: true, cell: (x) => (x.share != null ? `${num(x.share * 100, 0)}%` : DASH) },
-  ], SL.slots, { key: null }, "");
-  fill(el, h("div", { class: "table-wrap", style: "margin:0 0 10px" }, t),
+  fill(el, h("div", { class: "table-wrap", style: "margin:0 0 10px" }, slotTable(SL.slots, (x) => { SL.slot = x.id; loadServerLogs(true); })),
     h("p", { class: "hint", style: "margin:-4px 0 10px" }, "Each ID is one slot (-np / --parallel). Its slots share the model's GPUs: llama.cpp puts all of them in each batch, so a slot reading a long prompt slows the others' answers. Share = the time a slot spent reading prompts and writing answers, out of all its slots' time."));
+}
+/** Every slot side by side, one row per ID: plain text, each value under its header (Logs and Schedule). */
+function slotTable(slots, onPick) {
+  const t = h("table", { class: "dense slot-table" });
+  const pair = (a, b, d = 1) => (a != null ? `${num(a, d)} · ${num(b, d)}` : DASH);
+  renderTable(t, [
+    { label: "ID", cell: (x) => (onPick ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); onPick(x); } }, String(x.id)) : String(x.id)) },
+    { label: "Now", cell: (x) => slotState(x) },
+    { label: "Requests", cell: (x) => String(x.requests || 0) },
+    { label: "Prefill t/s (last · avg)", cell: (x) => pair(x.prefill.last, x.prefill.avg, 0) },
+    { label: "Decode t/s (last · avg)", cell: (x) => pair(x.decode.last, x.decode.avg) },
+    { label: "Decode range", cell: (x) => (x.decode.low != null ? `${num(x.decode.low)}–${num(x.decode.high)}` : DASH) },
+    { label: "Tokens read · written", cell: (x) => `${num(x.prefill.tokens, 0)} · ${num(x.decode.tokens, 0)}` },
+    { label: "Context", cell: (x) => (x.ctx_used != null ? `${num(x.ctx_used / 1000, 1)}k${x.n_ctx ? ` / ${num(x.n_ctx / 1000, 0)}k` : ""}` : DASH) },
+    { label: "Share", cell: (x) => (x.share != null ? `${num(x.share * 100, 0)}%` : DASH) },
+  ], slots, { key: null }, "");
+  return t;
 }
 function initServerLogs() {
   const per = $("#slPerSlot");
