@@ -39,6 +39,8 @@ type Server struct {
 
 	perf     *perf.Monitor
 	inflight *inflightTracker
+	// guard refuses a client's requests to a model once its loop guard stopped them
+	guard *loopGuard
 	// answerFirst holds long new prompts while another chat on the model answers
 	answerFirst *answerFirstState
 	// gate is the waiting room in front of each model (one at a time, answer first)
@@ -286,6 +288,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		upstreamlog:   upstreamlog,
 		perf:          perfMon,
 		inflight:      newInflightTracker(),
+		guard:         newLoopGuard(),
 		answerFirst:   newAnswerFirst(),
 		metrics:       newMetricsMonitor(proxylog, cfg.MetricsMaxInMemory, cfg.CaptureBuffer, st),
 		store:         st,
@@ -404,6 +407,7 @@ func (s *Server) routes() {
 		CreateProfileMiddleware(s),
 		CreateSelectorMiddleware(s),
 		CreateRequestContextMiddleware(s.cfg),
+		CreateLoopGuardMiddleware(s),
 		CreateInflightMiddleware(s.inflight, s.cfg),
 		CreateAnswerFirstMiddleware(s),
 		CreateFilterMiddleware(s.cfg),
@@ -483,6 +487,9 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/profiles", apiChain.ThenFunc(s.handleAPIProfiles))
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
 	mux.Handle("GET /api/inflight", apiChain.ThenFunc(s.handleAPIInflight))
+	mux.Handle("GET /api/guard", apiChain.ThenFunc(s.handleAPIGuard))
+	mux.Handle("POST /api/guard", apiChain.ThenFunc(s.handleAPIGuard))
+	mux.Handle("DELETE /api/guard", apiChain.ThenFunc(s.handleAPIGuard))
 	mux.Handle("POST /api/inflight/{id}/cancel", apiChain.ThenFunc(s.handleAPICancelInflight))
 	mux.Handle("POST /api/inflight/{id}/next", apiChain.ThenFunc(s.handleAPIInflightNext))
 	mux.Handle("POST /api/inflight/{id}/hold", apiChain.ThenFunc(s.handleAPIInflightHold))

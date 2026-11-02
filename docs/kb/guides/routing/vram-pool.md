@@ -65,6 +65,23 @@ request has buttons:
 - **Cancel** stops it: the client gets an error and the model stops working
   on it.
 
+### Loop guard
+
+A client stuck in a loop (an agent repeating the same tool call and getting the
+same error back) sends the same request again and again: the same tokens in and
+out every time, for as long as nobody notices. Schedule -> Live -> **Loop guard**
+watches for it: 25 requests in a row (Settings: `guard.repeats`) from one client
+to one model, each within 3 tokens (`guard.tolerance`) of the last, is a loop.
+
+- **Stop** (the default): the engine refuses that client's requests to that
+  model with HTTP 429 and the reason, and cancels the ones running. Most agents
+  stop on the error. Other clients and other models are not touched.
+  **Let it run** lifts it and does not flag the same loop again.
+- **Only warn**: it shows on Live and in the event log, nothing is refused.
+
+Embeddings are never counted (the same text embedded again is normal). An
+engine restart lifts every stop.
+
 With `protectWaits` on, a request for another model waits two ways:
 
 - **The model is idle:** for `protectWaitSeconds` (15) after its last prompt,

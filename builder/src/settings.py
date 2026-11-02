@@ -110,6 +110,14 @@ def env_defaults(cfg: dict) -> dict:
         "playground": {
             "llama_bench": True,  # the llama-bench tab in the Playground
         },
+        "guard": {
+            # the loop guard: a client sending the same request again and again (an agent stuck on a tool call)
+            "enabled": True,
+            "action": "stop",  # "stop": the engine refuses that client's requests to the model until you let it
+                               # run (Schedule -> Live); "warn": only say so
+            "repeats": 25,     # this many requests in a row ...
+            "tolerance": 3,    # ... each within this many tokens of the last, in and out
+        },
         "downloads": {
             "hf_endpoint": cfg.get("HF_ENDPOINT") or "https://huggingface.co",
             "hf_token": cfg.get("HF_TOKEN", ""),

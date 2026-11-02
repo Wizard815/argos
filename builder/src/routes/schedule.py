@@ -274,6 +274,58 @@ def schedule_live():
         return ok(connected=False, error=str(exc), pool=None)
 
 
+@bp.get("/api/guard")
+def guard_state():
+    """The loop guard: loops seen (flagged, stopped, let run) and its settings, with the engine's blocks."""
+    c = ctx()
+    url = c.settings.get("integrations").get("engine_url") or ""
+    state = c.schedule_state.setdefault("loops", {})
+    blocked = set()
+    if url:
+        try:
+            blocked = {f"ip:{b['src']}|{b['model']}" for b in engine_api.guard_blocks(url)}
+        except Exception:  # noqa: BLE001 - what the builder knows
+            blocked = {k for k, v in state.items() if v.get("status") == "stopped"}
+    for k, v in state.items():  # an engine restart lifts its blocks
+        if v.get("status") == "stopped" and url and k not in blocked:
+            v["status"] = "flagged"
+    rows = sorted(state.values(), key=lambda v: -(v.get("last") or 0))
+    return ok(loops=[{k: v for k, v in r.items()} for r in rows if time.time() - (r.get("last") or 0) < 6 * 3600],
+              settings=c.settings.get("guard"))
+
+
+@bp.post("/api/guard/<action>")
+def guard_act(action):
+    """{src, model}: "stop" its requests now, "allow" (let it run, and do not flag the same loop again), "forget"."""
+    c, d = ctx(), body()
+    src, model = str(d.get("src") or ""), str(d.get("model") or "")
+    key = f"{src}|{model}"
+    state = c.schedule_state.setdefault("loops", {})
+    entry = state.setdefault(key, {"src": src, "model": model, "in": 0, "out": 0, "count": 0, "last": time.time()})
+    url = c.settings.get("integrations").get("engine_url") or ""
+    if not src.startswith("ip:"):
+        return err("only a client known by its address can be stopped")
+    try:
+        if action == "stop":
+            if not url:
+                return err("the engine is not running")
+            engine_api.guard_block(url, src[3:], model, entry.get("reason") or "stopped from Schedule -> Live")
+            entry["status"] = "stopped"
+        elif action in ("allow", "forget"):
+            if url:
+                engine_api.guard_lift(url, src[3:], model)
+            if action == "forget":
+                state.pop(key, None)
+            else:
+                entry["status"] = "allowed"
+        else:
+            return err("action must be stop, allow or forget", 404)
+    except Exception as exc:  # noqa: BLE001
+        return err(f"the engine did not take it: {exc}", 502)
+    c.event("schedule", f"loop guard: {action} {src} to {model}")
+    return ok(loop=state.get(key))
+
+
 _launch_env: dict = {}  # model -> (when, env list), the engine's env for its launch
 
 

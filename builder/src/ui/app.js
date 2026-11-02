@@ -3619,6 +3619,47 @@ async function loadServerLogs(force) {
     ]);
   } catch (e) { /* the engine may be restarting */ }
 }
+/** Schedule -> Live: the loop guard. A client sending the same request again and again is flagged, and its
+ * requests to that model stopped when set to; let it run, or stop one by hand. */
+function guardCard(G) {
+  if (!G) return null;
+  const g = G.settings || {}, loops = G.loops || [];
+  const mode = h("select", { "aria-label": "Loop guard", style: "width:auto" }, [["stop", "Stop the client's requests"], ["warn", "Only warn"], ["off", "Off"]]
+    .map(([v, l]) => h("option", { value: v }, l)));
+  mode.value = g.enabled === false ? "off" : g.action || "stop";
+  const repeats = h("input", { type: "number", min: "5", step: "5", value: g.repeats || 25, style: "width:70px" });
+  const save = async () => {
+    try {
+      await api("PUT", "/api/settings/guard", { enabled: mode.value !== "off", action: mode.value === "off" ? g.action || "stop" : mode.value, repeats: repeats.value });
+      toast("Loop guard saved.", "ok"); loadLive();
+    } catch (e) { fail(e); }
+  };
+  mode.addEventListener("change", save);
+  repeats.addEventListener("change", save);
+  const act = (l, action) => async () => {
+    try { await api("POST", `/api/guard/${action}`, { src: l.src, model: l.model }); loadLive(); } catch (e) { fail(e); }
+  };
+  const status = (l) => l.status === "stopped" ? h("span", { class: "pill bad" }, "stopped")
+    : l.status === "allowed" ? h("span", { class: "pill" }, "let run") : h("span", { class: "pill warn" }, "looping");
+  const going = loops.filter((l) => l.status !== "allowed");
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Loop guard"),
+      going.length ? h("span", { class: "pill bad", style: "margin-left:8px" }, `${going.length} loop${going.length > 1 ? "s" : ""}`) : null,
+      h("span", { class: "spacer" }), mode, h("span", { class: "hint", style: "margin:0 4px" }, "after"), repeats,
+      h("span", { class: "hint", style: "margin:0" }, "same requests in a row")),
+    h("p", { class: "hint", style: "margin:0 0 6px" }, "A client sending the same request again and again, the same tokens in and out each time (an agent stuck repeating a tool call), is a loop. "
+      + (mode.value === "stop" ? "Argos then refuses that client's requests to that model (HTTP 429 with the reason, which also ends most agent loops) until you let it run. Other clients and models are not touched."
+        : mode.value === "warn" ? "Argos only says so, here and in the event log." : "The guard is off.")),
+    loops.length ? h("div", { class: "table-wrap" }, simpleTable(["Client", "Model", "Each request", "In a row", "Since", "Now", ""],
+      loops.map((l) => [l.src.replace(/^ip:/, ""), h("span", { class: "mono-sm" }, l.model), `${l.in} in / ${l.out} out`, String(l.count),
+        l.since ? ago(l.since) : DASH, status(l),
+        h("div", { class: "row", style: "gap:6px; flex-wrap:nowrap" },
+          l.status === "stopped" ? btn("Let it run", act(l, "allow"), "sm") : null,
+          l.status === "flagged" ? btn("Stop it", act(l, "stop"), "sm danger") : null,
+          l.status === "flagged" ? btn("Let it run", act(l, "allow"), "sm ghost") : null,
+          l.status === "allowed" ? btn("Forget", act(l, "forget"), "sm ghost") : null)])))
+      : h("div", { class: "muted mono-sm" }, "No loops: every client's requests change size as they should."));
+}
+
 /** Schedule -> Live: each loaded model that has more than one slot, every slot side by side. */
 function slotsCard(models) {
   const multi = models.filter((m) => (m.slots || []).length > 1);
@@ -5225,9 +5266,9 @@ const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], answer_fir
 
 async function loadLive() {
   try {
-    const [live, slots] = await Promise.all([api("GET", `/api/schedule/live?requests=${Math.max(reqShow(), 1)}`),
-      api("GET", "/api/slots").catch(() => ({ models: [] }))]);
-    SC.live = live; SC.slots = slots.models || [];
+    const [live, slots, guard] = await Promise.all([api("GET", `/api/schedule/live?requests=${Math.max(reqShow(), 1)}`),
+      api("GET", "/api/slots").catch(() => ({ models: [] })), api("GET", "/api/guard").catch(() => null)]);
+    SC.live = live; SC.slots = slots.models || []; SC.guard = guard;
   } catch (e) { SC.live = { connected: false, error: e.message, pool: null }; }
   if (S.view === "schedule" && SC.pane === "live") renderLive();
   refreshScheduleNav();
@@ -5552,6 +5593,7 @@ function renderLive() {
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     cpuCard(P.models.filter((m) => m.on_cpu && m.state !== "stopped"), L.cpu, L.procs || {}, L.proc_errors || {}, L.embedder || {}),
+    guardCard(SC.guard),
     slotsCard(SC.slots || []),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
     swaps, queue, crashCard(P.models), prefillCard(P.models), sharingCard(P.models, SC.data && SC.data.plan),

@@ -210,3 +210,31 @@ def model_ids(base_url: str, timeout: float = 3.0) -> set[str]:
 
 __all__ = ["model_profile", "set_model_profile", "pool_state", "model_ids", "running", "hardware", "version", "odysseus_refresh", "load_model", "unload_model",
            "model_state", "model_log"]
+
+
+# ----- the loop guard: the engine refuses a stopped client's requests to a model ----------------
+def guard_blocks(base_url: str, timeout: float = 3.0) -> list[dict]:
+    """``GET /api/guard``: the clients stopped per model, each {src, model, reason, since, refused}."""
+    try:
+        data = _get(base_url.rstrip("/") + "/api/guard", timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:  # an engine from before the loop guard
+            return []
+        raise
+    return [b for b in (data.get("blocks") if isinstance(data, dict) else None) or [] if isinstance(b, dict)]
+
+
+def guard_block(base_url: str, src: str, model: str, reason: str, timeout: float = 5.0) -> dict:
+    """Stop this client's requests to this model (its running ones are cancelled too)."""
+    body = json.dumps({"src": src, "model": model, "reason": reason}).encode()
+    req = urllib.request.Request(base_url.rstrip("/") + "/api/guard", data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        return json.loads(resp.read().decode("utf-8", "replace") or "{}")
+
+
+def guard_lift(base_url: str, src: str, model: str, timeout: float = 5.0) -> None:
+    q = urllib.parse.urlencode({"src": src, "model": model})
+    req = urllib.request.Request(base_url.rstrip("/") + f"/api/guard?{q}", method="DELETE")
+    with urllib.request.urlopen(req, timeout=timeout):  # noqa: S310
+        pass
