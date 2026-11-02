@@ -299,6 +299,7 @@ class Store:
             self._add_missing_columns("runs", RUN_COLUMNS)
             self._add_missing_columns("profiles", PROFILE_COLUMNS)
             self._add_missing_columns("requests", {"prefill_high_tps": "REAL", "prefill_low_tps": "REAL"})
+            self._add_missing_columns("cpu_samples", {"power_w": "REAL"})
             self._add_missing_columns("servers", {"env_kind": "TEXT DEFAULT 'none'", "env_value": "TEXT DEFAULT ''",
                                                  "color": "TEXT DEFAULT ''", "download_dir": "TEXT DEFAULT ''"})
             self._add_missing_columns("notes", {"x": "REAL", "y": "REAL", "w": "REAL", "h": "REAL", "collapsed": "INTEGER DEFAULT 0"})
@@ -1044,14 +1045,15 @@ class Store:
 
     # ----- CPU and RAM, beside the GPUs ------------------------------------
     def add_cpu_sample(self, s: dict) -> None:
-        self._x("INSERT INTO cpu_samples (ts, util, cores, mem_used_mb, mem_total_mb, swap_used_mb, load1) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)", (s["ts"], s.get("util"), s.get("cores"), s.get("mem_used_mb"),
-                                                 s.get("mem_total_mb"), s.get("swap_used_mb"), s.get("load1")))
+        self._x("INSERT INTO cpu_samples (ts, util, cores, mem_used_mb, mem_total_mb, swap_used_mb, load1, power_w) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (s["ts"], s.get("util"), s.get("cores"), s.get("mem_used_mb"),
+                                                    s.get("mem_total_mb"), s.get("swap_used_mb"), s.get("load1"), s.get("power_w")))
 
     def cpu_series(self, since: float, bucket: int) -> list[dict]:
         return self._q(
             "SELECT CAST(ts / ? AS INTEGER) * ? AS t, AVG(util) AS util, MAX(util) AS util_max, AVG(mem_used_mb) AS mem_used_mb, "
-            "MAX(mem_total_mb) AS mem_total_mb, AVG(swap_used_mb) AS swap_used_mb, AVG(load1) AS load1, MAX(cores) AS cores "
+            "MAX(mem_total_mb) AS mem_total_mb, AVG(swap_used_mb) AS swap_used_mb, AVG(load1) AS load1, MAX(cores) AS cores, "
+            "AVG(power_w) AS power_w "
             "FROM cpu_samples WHERE ts>=? GROUP BY t ORDER BY t", (bucket, bucket, since))
 
     def cpu_latest(self) -> Optional[dict]:

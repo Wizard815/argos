@@ -248,6 +248,10 @@ def create_app(config: dict | None = None) -> Flask:
             pool = engine_api.pool_state(url)
         except Exception:  # noqa: BLE001 - the Live view shows connection problems
             return
+        pb = app.extensions.get("pb")
+        if pb is not None:  # the header's CPU watts show while a model runs on the CPU
+            pb.schedule_state["cpu_models"] = [m["id"] for m in pool.get("models") or []
+                                               if m.get("on_cpu") and m.get("state") in ("ready", "starting")]
         if not pool.get("enabled"):
             pool_seen["models"] = None
             return
