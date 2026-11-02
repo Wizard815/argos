@@ -1167,44 +1167,53 @@ function useContext(c, type, e) {
 function contextBox(e) {
   const [n, shared] = chatSlots(e);
   const one = perChat(e.ctx, e), total = ctxLabel(e.ctx);
-  const chats = !e.parallel ? `chats: not set (llama-server picks; they share ${total}, one can use all of it)`
+  const chats = !e.parallel ? `chats not set: llama-server picks, and they share ${total}`
     : n === 1 ? "1 chat (--parallel 1)"
-    : shared ? `${n} chats (--parallel ${n} --kv-unified): they share ${total}, one can use all of it`
-    : `${n} chats (--parallel ${n}): ${ctxLabel(one)} each`;
-  const uni = argValue("kv-unified") != null;
-  const uniBtn = btn(uni ? "Turn KV unified off" : "Turn KV unified on", () => edit({ "kv-unified": uni ? null : true }), "sm");
-  uniBtn.title = uni ? "removes --kv-unified: each chat gets its own -c / --parallel"
-    : "adds --kv-unified: the chats share one cache of -c, so a long chat can use what the others leave free (and RoPE then counts the whole -c per chat)";
-  const lines = [h("div", { class: "row", style: "gap:8px; flex-wrap:wrap", title: "-c is the total. --parallel N splits it into N chats of -c / N each; with --kv-unified they share it." },
-    h("span", { class: "vram-sum", style: "margin:0" }, h("b", {}, `Context ${total}`), ` · ${chats}`), uniBtn)];
-  if (e.train_ctx) {
-    const over = one > e.train_ctx, on = ropeOn();
-    const scale = parseFloat(argValue("rope-scale")) || 0;
-    const status = on ? h("span", { class: `pill ${over ? "ok" : "warn"}` }, `RoPE on ×${num(scale || one / e.train_ctx, 2)}`)
-      : h("span", { class: `pill ${over ? "warn" : ""}` }, "RoPE off");
-    const why = on ? (over ? `stretches each chat's ${ctxLabel(one)} from the trained ${ctxLabel(e.train_ctx)}` : `not needed: each chat's ${ctxLabel(one)} fits the trained ${ctxLabel(e.train_ctx)}`)
-      : (over ? `each chat's ${ctxLabel(one)} is past the trained ${ctxLabel(e.train_ctx)}: turn it on, or the model loses track past ${ctxLabel(e.train_ctx)}` : `each chat's ${ctxLabel(one)} fits the trained ${ctxLabel(e.train_ctx)}`);
-    const toggle = btn(on ? "Turn RoPE off" : "Turn RoPE on", () => edit(on ? ROPE_OFF : ropeEdits(one, e.train_ctx)), "sm");
-    toggle.disabled = !on && !over;
-    toggle.title = on ? "removes --rope-scaling, --rope-scale and --yarn-orig-ctx"
-      : over ? `adds --rope-scaling yarn --rope-scale ${Number((one / e.train_ctx).toFixed(3))} --yarn-orig-ctx ${e.train_ctx}` : "only needed when one chat is longer than the trained context";
-    lines.push(h("div", { class: "row", style: "gap:8px; margin-top:6px; flex-wrap:wrap" }, status,
-      h("span", { class: "hint", style: "margin:0" }, `Model trained on ${ctxLabel(e.train_ctx)} per chat · ${why}`), toggle));
-  }
+    : shared ? `${n} chats share one ${total} pool (--parallel ${n} --kv-unified)`
+    : `${n} chats with ${ctxLabel(one)} each (--parallel ${n})`;
+  const lines = [h("div", { class: "vram-sum", style: "margin:0" }, h("b", {}, `Context ${total}`), ` · ${chats}`)];
+  // the two switches on one row, each saying its state
+  const uni = argValue("kv-unified") != null, on = ropeOn();
+  const scale = parseFloat(argValue("rope-scale")) || 0;
+  const over = e.train_ctx && one > e.train_ctx;
+  const toggle = (label, state, active, title, run) => {
+    const b = h("button", { class: `btn sm ${active ? "primary" : ""}`, title, onclick: run }, `${label}: ${state}`);
+    return b;
+  };
+  const uniBtn = toggle("KV unified", uni ? "on" : "off", uni,
+    uni ? "Click to turn off: each chat gets its own -c / --parallel" : "Click to turn on (--kv-unified): the chats share one pool of -c, so a long chat can use what the others leave free",
+    () => edit({ "kv-unified": uni ? null : true }));
+  // RoPE: on stretches each chat's own context from the trained length; with no chat past it, x2 (room to grow)
+  const ropeScale = over ? one / e.train_ctx : 2;
+  const ropeBtn = e.train_ctx ? toggle("RoPE", on ? `on ×${num(scale || ropeScale, 2)}` : "off", on,
+    on ? "Click to turn off: removes --rope-scaling, --rope-scale and --yarn-orig-ctx"
+      : `Click to turn on: --rope-scaling yarn --rope-scale ${Number(ropeScale.toFixed(3))} --yarn-orig-ctx ${e.train_ctx}`,
+    () => edit(on ? ROPE_OFF : ropeEdits(Math.round(ropeScale * e.train_ctx), e.train_ctx))) : null;
+  lines.push(h("div", { class: "row", style: "gap:8px; margin-top:8px" }, uniBtn, ropeBtn));
+  // what the two mean for this context, in words
+  const say = [];
+  say.push(uni || !e.parallel
+    ? `One shared pool: each chat takes what it needs, so one can use all ${total} while the others are empty, but together they never pass ${total}.`
+    : n > 1 ? `Each chat has its own ${ctxLabel(one)} and never uses another's.` : `One chat, ${total}.`);
+  if (e.train_ctx) say.push(on
+    ? (over ? `RoPE stretches each chat's ${ctxLabel(one)} from the ${ctxLabel(e.train_ctx)} the model was trained on.`
+      : `RoPE is on but not needed: each chat's ${ctxLabel(one)} fits the trained ${ctxLabel(e.train_ctx)}, and it slightly blurs positions.`)
+    : (over ? `Each chat's ${ctxLabel(one)} is past the trained ${ctxLabel(e.train_ctx)}: turn RoPE on, or the model loses track past ${ctxLabel(e.train_ctx)}.`
+      : `RoPE is not needed: each chat's ${ctxLabel(one)} fits the trained ${ctxLabel(e.train_ctx)}.`));
+  lines.push(h("p", { class: "hint", style: "margin:6px 0 0" }, say.join(" ")));
   // the same -c for other chat counts: what each chat would get, and whether it needs RoPE (click a row to use it)
   const counts = [...new Set([1, 2, 4, n].filter((x) => x > 0))].sort((a, b) => a - b);
   const t = h("table", { class: "dense slot-table" });
   renderTable(t, [
     { label: "Parallel (-np)", cell: (x) => (x === (e.parallel || 0) ? h("b", {}, String(x)) : String(x)) },
-    { label: "Chats at once", cell: (x) => String(x) },
-    { label: `Each chat (of ${total})`, cell: (x) => (shared && x > 1 ? `up to ${total}, shared` : ctxLabel(shared ? e.ctx : Math.floor(e.ctx / x))) },
+    { label: "Each chat", cell: (x) => (shared && x > 1 ? `shares ${total} with ${x - 1} other${x > 2 ? "s" : ""}` : `${ctxLabel(shared ? e.ctx : Math.floor(e.ctx / x))} of its own`) },
     { label: "RoPE", cell: (x) => {
       const each = shared ? e.ctx : Math.floor(e.ctx / x);
       return !e.train_ctx ? DASH : each > e.train_ctx ? h("span", { class: "pill warn" }, `needed ×${num(each / e.train_ctx, 2)}`) : h("span", { class: "muted" }, "not needed");
     } },
   ], counts, { key: null }, "", { onRow: (x) => edit({ parallel: String(x) }), rowClass: (x) => (x === (e.parallel || 0) ? "sel" : "") });
   lines.push(h("div", { class: "table-wrap", style: "margin-top:8px" }, t),
-    h("p", { class: "hint", style: "margin:4px 0 0" }, `The KV cache size is the same for each row: it is set by -c (${total}) and the cache type, in the VRAM card. ${shared ? "With KV unified on, the chats share it." : "Each chat gets its own slice of it."} Click a row to use that --parallel.`));
+    h("p", { class: "hint", style: "margin:4px 0 0" }, `Click a row to use that --parallel. The KV cache size (VRAM card) is the same for every row: -c ${total} and the cache type set it.`));
   return lines;
 }
 function renderEstimate(e) {
