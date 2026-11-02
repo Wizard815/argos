@@ -190,7 +190,11 @@ def create_app(config: dict | None = None) -> Flask:
             return
         if bursts.due(time.time(), models_busy(pb)):
             def run():
-                if memory.burst():
+                try:
+                    loaded = pb.assistant.models()["embed"]["state"] in ("ready", "starting")
+                except Exception:  # noqa: BLE001 - unknown: as if it were not loaded
+                    loaded = False
+                if memory.burst(loaded=loaded):
                     memory.last_used = time.time()  # it worked: the idle timer starts from here
             threading.Thread(target=run, daemon=True, name="memory-burst").start()
 
