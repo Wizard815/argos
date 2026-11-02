@@ -3705,6 +3705,7 @@ function renderAssistantSettings() {
 
   // memory
   const memOn = h("input", { type: "checkbox", checked: !!mem.enabled });
+  const memBg = h("input", { type: "checkbox", checked: mem.background !== false });
   const embed = modelSelect(ch.embed, mem.model, { none: "none: search by words only", connected: ch.engine_connected });
   const embedCpu = modelSelect(ch.embed, mem.model_cpu || "", { none: "none: the GPU model always", connected: ch.engine_connected });
   const results = h("input", { type: "number", value: mem.results });
@@ -3722,7 +3723,7 @@ function renderAssistantSettings() {
         Object.assign(body, { mode: "engine", model: chat.value, model_cpu: chatCpu.value });
       }
       await api("PUT", "/api/settings/assistant", body);
-      await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, model_cpu: embedCpu.value, endpoint: memEndpoint.value.trim(), results: results.value });
+      await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, model_cpu: embedCpu.value, background: memBg.checked, endpoint: memEndpoint.value.trim(), results: results.value });
       await loadSettings();
       toast("Saved the assistant settings.", "ok");
       renderAssistantSettings();
@@ -3765,9 +3766,12 @@ function renderAssistantSettings() {
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Memory"), h("span", { class: "spacer" }),
         h("span", { class: `pill ${mem.enabled && mem.model ? "ok" : ""}` }, mem.enabled && mem.model ? "searching by meaning" : "searching by words")),
       h("p", { class: "hint" }, "The assistant remembers your events, notes, profiles, benchmarks and loads. An embedding model turns each record into numbers that describe its meaning, so a question about “cache settings that were slow” also finds records that never use those words. Without one it matches words only."),
-      h("p", { class: "hint" }, "Pick one of your embedding models (nomic-embed, bge, e5, gte…). There is nothing to connect: the engine serves it like any other model and loads it when the memory needs it. On a GPU it embeds only when the assistant searches, so it does not compete with your models; set up as CPU only (or fallen back to the CPU), it takes nothing from the GPUs and keeps the memory embedded as records come in."),
+      h("p", { class: "hint" }, "Pick one of your embedding models (nomic-embed, bge, e5, gte…). There is nothing to connect: the engine serves it like any other model and loads it when the memory needs it. On a GPU it embeds only when the assistant searches, so it does not compete with your models; set up as CPU only (or fallen back to the CPU), it takes nothing from the GPUs and embeds new records as they come in (the switch below)."),
+      h("p", { class: "hint" }, "What it is for: only the bigger model's questions about the past (what happened, what was tried, why it was slow) search the memory. Nothing else uses it: not the charts, not the Schedule, not the small model. Without an embedding model the search still works, by matching words."),
       h("div", { class: "fields" },
         h("label", { class: "check wide" }, memOn, "Use the memory"),
+        h("label", { class: "check wide", title: "Only the records that never change once written: new events, notes, profiles, benchmarks, Odysseus Brain notes. Speeds, configs and open loads change with every request; they are embedded when a search needs them." },
+          memBg, "With the embedding model on the CPU, embed new records as they come in (off: only when the bigger model searches)"),
         field("Embedding model (GPU)", embed, ch.embed.length ? `${ch.embed.length} to choose from: embedding models and their profiles` : "No embedding models or profiles yet. Download one under Models (search “nomic-embed”), or save a profile with --embedding.", true),
         field("Embedding model (CPU, when the GPUs are full)", embedCpu, "Best another profile of the same embedding model, so the memory's vectors fit both and switching re-embeds nothing. A different model makes the memory re-embed when it switches.", true),
         field("Records per question", results)),

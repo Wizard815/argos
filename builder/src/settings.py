@@ -47,6 +47,9 @@ def env_defaults(cfg: dict) -> dict:
             "endpoint": "",   # blank = the engine's /v1 (another OpenAI-compatible server only if you need one)
             "model": "",      # an embedding model id, e.g. nomic-embed-text-v2-q8; blank = search by words only
             "model_cpu": "",  # its CPU alternative for when the GPUs are full: best another profile of the same model
+            # with the embedding model on the CPU, embed new events, notes, profiles and benchmarks as they come in
+            # (the records that never change); off = only when a search needs them
+            "background": True,
             "batch": 16,
             "results": 8,     # records the assistant sees per question
         },
