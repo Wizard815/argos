@@ -3,9 +3,9 @@ services:
     build:
       context: .
       args:
-        # an image that already has your llama.cpp (llama-server) in it
-        BASE_IMAGE: ${BASE_IMAGE:-mx-llamacpp-mx-llamacpp-ssh}
-        BASE_TAG: ${BASE_TAG:-latest}
+        # ubuntu, or a llama.cpp image when llama.cpp runs inside Argos (setup.sh Mode 1)
+        BASE_IMAGE: ${BASE_IMAGE:-ubuntu}
+        BASE_TAG: ${BASE_TAG:-24.04}
     container_name: argos
     restart: unless-stopped
     ports:

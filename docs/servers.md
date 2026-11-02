@@ -2,7 +2,19 @@
 
 The **Servers** page lists the machines your models run on. **Local** is the Argos container itself. Add the others over SSH, the same way you do in Odysseus.
 
-This page only connects to servers and reports what they have. It does not launch anything on them yet.
+Profiles launch on the **default** server (★). **Local** runs the `llama-server` path set on it, or `llama-server` on the `PATH` when it is blank.
+
+## Added by setup.sh
+
+`setup/setup.sh` records where llama.cpp runs (`ARGOS_SETUP_MODE` in `.env`), and Argos fills Servers in from it each time it starts:
+
+| Mode | Servers |
+| --- | --- |
+| **1** llama.cpp inside Argos | **Local** runs the image's `llama-server` (the official images keep it at `/app/llama-server`). |
+| **2** llama.cpp next to Argos | **Local** runs `/app/bin/docker-llama rocm` (or `cuda`): one container per model from the image you picked. |
+| **3** your own llama.cpp containers | One server per container (`llama.cpp ROCm`, `llama.cpp CUDA`), with the mounted key as its key. Added only once the key is mounted at `/run/secrets/argos_ssh_key`; until then the Logs page says so. |
+
+Edit Local or a setup server on this page and your edit wins: setup no longer changes it.
 
 ## Add a server
 

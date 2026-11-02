@@ -68,9 +68,9 @@ def params_from_command(command: str) -> dict:
 
 def program_for(cmd: LaunchCommand) -> list[str]:
     """llama-bench where this launch command's llama-server runs: beside it on this machine, or through
-    remote-llama on the server it reaches (its backend word, with --bench)."""
+    remote-llama on the server it reaches, or docker-llama in the image (its backend word, with --bench)."""
     prog = cmd.program or "llama-server"
-    if os.path.basename(prog) == "remote-llama" and cmd.args and not cmd.args[0].flag:
+    if os.path.basename(prog) in ("remote-llama", "docker-llama") and cmd.args and not cmd.args[0].flag:
         return [prog, cmd.args[0].value or "", "--bench"]
     folder = os.path.dirname(prog)
     return [os.path.join(folder, "llama-bench") if folder else "llama-bench"]

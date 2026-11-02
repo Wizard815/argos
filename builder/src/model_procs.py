@@ -98,7 +98,7 @@ class ModelProcs:
                     pc = parse_command(cmd)
                 except ValueError:
                     continue
-                if os.path.basename(pc.program or "") == "remote-llama" and pc.args and not pc.args[0].flag:
+                if os.path.basename(pc.program or "") in ("remote-llama", "docker-llama") and pc.args and not pc.args[0].flag:
                     wrappers[(pc.program, pc.args[0].value or "")] = pc.args[0].value or "remote"
             procs = [("local", p) for p in local_ps()]
             for (program, backend), where in wrappers.items():

@@ -37,7 +37,7 @@ class FakeSSH:
 
     def __call__(self, argv, stdin, timeout):
         self.calls.append((list(argv), stdin))
-        if argv[0] == "ssh-keygen":
+        if argv[0] == "ssh-keygen" and "-y" not in argv:  # -y (derive a .pub) answers from the queue
             path = argv[argv.index("-f") + 1]
             open(path, "w").write("PRIVATE")
             open(path + ".pub", "w").write("ssh-ed25519 AAAATEST argos-test\n")
@@ -316,3 +316,52 @@ def test_check_sees_models_inside_a_huggingface_cache(tmp_path):
     local = servers_mod.gguf_index([str(tmp_path)])
     cmp = servers_mod.compare_models(remote, local)
     assert cmp["common"] == 2 and cmp["same"] is True, cmp
+
+
+# ----- what setup.sh set up --------------------------------------------------------------------
+def _setup_app(tmp_path, fake, env):
+    return create_app({
+        "DB": str(tmp_path / "t.db"), "RUNS_DIR": str(tmp_path / "runs"), "SSH_DIR": str(tmp_path / "ssh"),
+        "MODELS_DIR": str(tmp_path / "models"), "TELEMETRY": False, "BACKGROUND": False, "SSH_RUN": fake,
+        "SETUP_ENV": env,
+    })
+
+
+def test_Servers_setup_mode1_and_mode2_fill_in_local(tmp_path, fake):
+    plan = servers_mod.setup_plan
+    assert plan({"ARGOS_SETUP_MODE": "1", "ARGOS_SETUP_BACKENDS": "cuda", "CUDA_IMAGE": "ghcr.io/ggml-org/llama.cpp:server-cuda",
+                 "CUDA_BIN": "/app/llama-server"})["local"] == {"llama_server": "/app/llama-server", "gpu": "cuda"}
+    assert plan({"ARGOS_SETUP_MODE": "2", "ARGOS_SETUP_BACKENDS": "both", "ROCM_IMAGE": "x", "CUDA_IMAGE": "y"})["local"] == \
+        {"llama_server": "/app/bin/docker-llama rocm", "gpu": "rocm"}
+    assert plan({}) == {"local": None, "ssh": []}
+
+    app = _setup_app(tmp_path, fake, {"ARGOS_SETUP_MODE": "2", "ARGOS_SETUP_BACKENDS": "rocm", "ROCM_IMAGE": "x"})
+    local = app.extensions["pb"].store.list_servers()[0]
+    assert (local["llama_server"], local["gpu"], local["source"]) == ("/app/bin/docker-llama rocm", "rocm", "setup")
+    assert app.extensions["pb"].servers.default_parts()["program"] == ["/app/bin/docker-llama", "rocm"]
+    # an edit in the app wins over setup from then on
+    c = app.test_client()
+    c.put(f"/api/servers/{local['id']}", json={"llama_server": "/opt/mine/llama-server"})
+    again = _setup_app(tmp_path, fake, {"ARGOS_SETUP_MODE": "2", "ARGOS_SETUP_BACKENDS": "rocm", "ROCM_IMAGE": "x"})
+    assert again.extensions["pb"].store.list_servers()[0]["llama_server"] == "/opt/mine/llama-server"
+
+
+def test_Servers_setup_mode3_adds_containers_once_the_key_is_mounted(tmp_path, fake):
+    env = {"ARGOS_SETUP_MODE": "3", "ARGOS_SETUP_BACKENDS": "both", "ROCM_SSH_HOST": "llama-rocm", "ROCM_SSH_PORT": "2222",
+           "ROCM_SSH_USER": "root", "ROCM_SSH_BIN": "/app/llama-server", "CUDA_SSH_HOST": "llama-cuda",
+           "REMOTE_SSH_KEY": str(tmp_path / "secret")}
+    app = _setup_app(tmp_path, fake, env)
+    assert [s["name"] for s in app.extensions["pb"].store.list_servers()] == ["Local"], "no key yet: nothing added"
+
+    (tmp_path / "secret").write_text("PRIVATE KEY\n")
+    fake.replies = [(0, "ssh-ed25519 AAAADERIVED argos\n", "")]  # ssh-keygen -y, no .pub beside the key
+    app = _setup_app(tmp_path, fake, env)
+    pb = app.extensions["pb"]
+    rows = {s["name"]: s for s in pb.store.list_servers()}
+    rocm = rows["llama.cpp ROCm"]
+    assert (rocm["host"], rocm["port"], rocm["gpu"], rocm["source"]) == ("root@llama-rocm", 2222, "rocm", "setup")
+    assert rows["llama.cpp CUDA"]["host"] == "root@llama-cuda" and rocm["model_dirs"] == [{"path": "/app/models", "download": False}]
+    assert rocm["is_default"], "Profiles launch on the first container, not on a Local with no llama.cpp"
+    assert pb.servers.has_key(rocm["id"]) and pb.servers.public_key(rocm["id"]) == "ssh-ed25519 AAAADERIVED argos"
+    assert open(pb.servers.key_path(rocm["id"])).read() == "PRIVATE KEY\n"
+    assert pb.servers.default_parts()["env"]["ROCM_SRV%d_SSH_PORT" % rocm["id"]] == "2222"

@@ -42,6 +42,9 @@ PREV_ROCM_HOST="$(env_get ROCM_SSH_HOST)"; PREV_ROCM_PORT="$(env_get ROCM_SSH_PO
 PREV_ROCM_USER="$(env_get ROCM_SSH_USER)"; PREV_ROCM_BIN="$(env_get ROCM_SSH_BIN)"
 PREV_CUDA_HOST="$(env_get CUDA_SSH_HOST)"; PREV_POOL="$(env_get ARGOS_SCHEDULE_POOL)"
 PREV_CARDS="$(env_get ARGOS_SCHEDULE_CARDS)"
+PREV_CUDA_PORT="$(env_get CUDA_SSH_PORT)"; PREV_CUDA_BIN="$(env_get CUDA_SSH_BIN)"
+PREV_ROCM_IMAGE="$(env_get ROCM_IMAGE)"; PREV_CUDA_IMAGE="$(env_get CUDA_IMAGE)"
+PREV_ROCM_IMG_BIN="$(env_get ROCM_BIN)"; PREV_CUDA_IMG_BIN="$(env_get CUDA_BIN)"
 # Carried over rather than regenerated: changing it would leave the running
 # Postgres on the old password and the app unable to reach it.
 PREV_PG_PASSWORD="$(env_get POSTGRES_PASSWORD)"
@@ -51,9 +54,12 @@ if [[ -f .env ]]; then
   PREV_BACKEND=""
   [[ -n "$PREV_ROCM_HOST" || -n "$(env_get ROCM_IMAGE)" ]] && PREV_BACKEND=rocm
   [[ -n "$PREV_CUDA_HOST" || -n "$(env_get CUDA_IMAGE)" ]] && PREV_BACKEND="${PREV_BACKEND:+$PREV_BACKEND/}cuda"
-  PREV_MODE=1
-  [[ -n "$(env_get HOST_MODELS_DIR)" ]] && PREV_MODE=2
-  [[ -n "$PREV_KEY" ]] && PREV_MODE=3
+  PREV_MODE="$(env_get ARGOS_SETUP_MODE)"
+  if [[ -z "$PREV_MODE" ]]; then  # written before setup recorded its mode
+    PREV_MODE=1
+    [[ -n "$(env_get HOST_MODELS_DIR)" ]] && PREV_MODE=2
+    [[ -n "$PREV_KEY" ]] && PREV_MODE=3
+  fi
   PREV_SCHED=groups; [[ -n "$PREV_POOL" ]] && PREV_SCHED=pool
   say "Found your last setup (.env)"
   printf '  backend   %s\n  mode      %s\n  models    %s\n  port      %s\n  scheduler %s\n' \
@@ -91,50 +97,70 @@ DEF_BK="rocm"
 ask "GPU backend(s): rocm / cuda / both" "${PREV_BACKEND:-$DEF_BK}"; BACKEND="$REPLY"
 case "$BACKEND" in rocm|cuda|both) ;; *) echo "Invalid: $BACKEND"; exit 1;; esac
 
-echo "  Mode 3 = Argos is only the router. It SSHes into your existing llama.cpp container(s)"
-echo "           (one per GPU type) and starts llama-server there. Argos holds no llama-server."
-echo "  Mode 1 = the Argos image itself contains the llama.cpp build (Argos on a llama.cpp image)."
-echo "  Mode 2 = Argos runs 'docker run' per model (needs docker CLI in the image + docker.sock)."
+echo "  Where llama.cpp runs:"
+echo "  Mode 1 = inside the Argos container: Argos is built on a llama.cpp image."
+echo "  Mode 2 = next to it: Argos starts a llama.cpp container per model (needs docker.sock)."
+echo "  Mode 3 = in llama.cpp container(s) you already run: Argos starts models there over SSH."
+echo "  Modes 1 and 2 use the official llama.cpp images unless you name your own."
 ask "Mode (1, 2 or 3)" "${PREV_MODE:-3}"; MODE="$REPLY"
 [[ "$MODE" == 1 || "$MODE" == 2 || "$MODE" == 3 ]] || { echo "Invalid mode"; exit 1; }
-[[ "$BACKEND" == both && "$MODE" == 1 ]] && warn "Both stacks in one image is uncommon; Mode 2 is the usual way."
 
-WRITE_BASE=0; ROCM_SSH_HOST=""; ROCM_SSH_PORT=22; ROCM_SSH_BIN=""; CUDA_SSH_HOST=""; CUDA_SSH_PORT=22; CUDA_SSH_BIN=""
+ROCM_SSH_HOST=""; ROCM_SSH_PORT=22; ROCM_SSH_BIN=""; CUDA_SSH_HOST=""; CUDA_SSH_PORT=22; CUDA_SSH_BIN=""
 CUSTOM_SSH_HOST=""; CUSTOM_SSH_PORT=22; CUSTOM_SSH_BIN=""; SSH_USER=root; SSH_KEY_HOST=""
-VIDEO_GID="44"; ROCM_IMAGE=""; CUDA_IMAGE=""; BASE_IMAGE="mx-llamacpp-mx-llamacpp-ssh"; BASE_TAG="latest"
-ROCM_BIN="/usr/local/bin/llama-server"; CUDA_BIN="/opt/llama-cuda/bin/llama-server"
+VIDEO_GID="${PREV_GID:-44}"; ROCM_IMAGE=""; CUDA_IMAGE=""; BASE_IMAGE="ubuntu"; BASE_TAG="24.04"
+OFFICIAL_ROCM="ghcr.io/ggml-org/llama.cpp:server-rocm"; OFFICIAL_CUDA="ghcr.io/ggml-org/llama.cpp:server-cuda"
+ROCM_BIN="/app/llama-server"; CUDA_BIN="/app/llama-server"
+# the previous run's images only when it was Mode 1 or 2 (Mode 3 records none)
+[[ "${PREV_MODE:-}" == 3 ]] && { PREV_ROCM_IMAGE=""; PREV_CUDA_IMAGE=""; }
+split_ref() { # image reference -> BASE_IMAGE BASE_TAG (registry:port/name:tag keeps its port)
+  local r="$1"
+  if [[ "${r##*/}" == *:* ]]; then BASE_IMAGE="${r%:*}"; BASE_TAG="${r##*:}"; else BASE_IMAGE="$r"; BASE_TAG="latest"; fi
+}
 if [[ "$BACKEND" != cuda && "$MODE" != 3 ]]; then
   ask "Numeric GID owning /dev/kfd and /dev/dri (ls -la /dev/dri)" "$VIDEO_GID"; VIDEO_GID="$REPLY"
 fi
-if [[ "$MODE" == 1 ]]; then
-  ask "BASE_IMAGE that already contains your llama.cpp" "$BASE_IMAGE"; BASE_IMAGE="$REPLY"
-  ask "BASE_TAG" "$BASE_TAG"; BASE_TAG="$REPLY"
-  [[ "$BACKEND" != cuda ]] && { ask "Path of the ROCm llama-server inside that image" "$ROCM_BIN"; ROCM_BIN="$REPLY"; }
-  [[ "$BACKEND" != rocm ]] && { ask "Path of the CUDA llama-server inside that image" "$CUDA_BIN"; CUDA_BIN="$REPLY"; }
-elif [[ "$MODE" == 3 ]]; then
-  echo "  For each backend: the llama.cpp container's hostname on a shared Docker network (or IP),"
-  echo "  its sshd port, ssh user, and the llama-server path INSIDE that container."
+if [[ "$MODE" == 1 || "$MODE" == 2 ]]; then
+  if [[ "$MODE" == 1 ]]; then where="Argos is built on it"; else where="Argos starts one per model next to it"; fi
+  echo "  The llama.cpp image for each backend ($where). Enter for the official image,"
+  echo "  or type your own (any image with llama-server in it)."
+  if [[ "$MODE" == 1 && "$BACKEND" == both ]]; then
+    warn "Mode 1 is one image, so it must hold both builds (no official image does); Mode 2 runs each in its own."
+    ask "llama.cpp image with both builds" "${PREV_ROCM_IMAGE:-$OFFICIAL_ROCM}"; ROCM_IMAGE="$REPLY"; CUDA_IMAGE="$REPLY"
+    ask "  ROCm llama-server path in it" "${PREV_ROCM_IMG_BIN:-$ROCM_BIN}"; ROCM_BIN="$REPLY"
+    ask "  CUDA llama-server path in it" "${PREV_CUDA_IMG_BIN:-$CUDA_BIN}"; CUDA_BIN="$REPLY"
+  else
+    if [[ "$BACKEND" != cuda ]]; then
+      ask "ROCm llama.cpp image" "${PREV_ROCM_IMAGE:-$OFFICIAL_ROCM}"; ROCM_IMAGE="$REPLY"
+      ask "  llama-server path in it" "${PREV_ROCM_IMG_BIN:-$ROCM_BIN}"; ROCM_BIN="$REPLY"
+    fi
+    if [[ "$BACKEND" != rocm ]]; then
+      ask "CUDA llama.cpp image" "${PREV_CUDA_IMAGE:-$OFFICIAL_CUDA}"; CUDA_IMAGE="$REPLY"
+      ask "  llama-server path in it" "${PREV_CUDA_IMG_BIN:-$CUDA_BIN}"; CUDA_BIN="$REPLY"
+    fi
+  fi
+  if [[ "$MODE" == 1 ]]; then split_ref "${ROCM_IMAGE:-$CUDA_IMAGE}"
+  else
+    warn "Mode 2: docker.sock gives Argos root-equivalent control of the host."
+  fi
+else
+  echo "  For each backend: the llama.cpp container you already run. Its hostname on a shared Docker"
+  echo "  network (or IP), its sshd port, and the llama-server path INSIDE that container."
   echo "  That container must mount your models folder at /app/models, same as Argos."
-  SSH_KEY_HOST=""; ask "HOST path of the private ssh key Argos uses" "/mnt/user/appdata/argos/ssh/id_ed25519"; SSH_KEY_HOST="$REPLY"
-  ask "ssh user" "root"; SSH_USER="$REPLY"
+  ask "HOST path of the private ssh key Argos uses" "${PREV_KEY:-$PWD/ssh/argos_ed25519}"; SSH_KEY_HOST="$REPLY"
+  if [[ ! -f "$SSH_KEY_HOST" ]] && command -v ssh-keygen >/dev/null 2>&1 && yes "  no key there yet; create one now?" y; then
+    mkdir -p "$(dirname "$SSH_KEY_HOST")" && ssh-keygen -q -t ed25519 -N "" -C argos -f "$SSH_KEY_HOST" && echo "  created $SSH_KEY_HOST(.pub)"
+  fi
+  ask "ssh user" "${PREV_ROCM_USER:-root}"; SSH_USER="$REPLY"
   if [[ "$BACKEND" != cuda ]]; then
-    ask "ROCm container host" "mx-llama"; ROCM_SSH_HOST="$REPLY"
-    ask "  sshd port" "22"; ROCM_SSH_PORT="$REPLY"
-    ask "  llama-server path in it" "llama-server"; ROCM_SSH_BIN="$REPLY"
+    ask "ROCm container host" "${PREV_ROCM_HOST:-llama-rocm}"; ROCM_SSH_HOST="$REPLY"
+    ask "  sshd port" "${PREV_ROCM_PORT:-22}"; ROCM_SSH_PORT="$REPLY"
+    ask "  llama-server path in it" "${PREV_ROCM_BIN:-llama-server}"; ROCM_SSH_BIN="$REPLY"
   fi
   if [[ "$BACKEND" != rocm ]]; then
-    ask "CUDA container host" "llama-cuda"; CUDA_SSH_HOST="$REPLY"
-    ask "  sshd port" "22"; CUDA_SSH_PORT="$REPLY"
-    ask "  llama-server path in it" "llama-server"; CUDA_SSH_BIN="$REPLY"
+    ask "CUDA container host" "${PREV_CUDA_HOST:-llama-cuda}"; CUDA_SSH_HOST="$REPLY"
+    ask "  sshd port" "${PREV_CUDA_PORT:-22}"; CUDA_SSH_PORT="$REPLY"
+    ask "  llama-server path in it" "${PREV_CUDA_BIN:-llama-server}"; CUDA_SSH_BIN="$REPLY"
   fi
-  yes "Argos's own image has NO ssh client (e.g. BASE_IMAGE=ubuntu)? write Dockerfile.argos-base" n && WRITE_BASE=1
-  if [[ "$WRITE_BASE" == 1 ]]; then BASE_IMAGE="argos-base"; BASE_TAG="local"
-  else ask "BASE_IMAGE for Argos (must contain openssh-client)" "ubuntu"; BASE_IMAGE="$REPLY"; ask "BASE_TAG" "24.04"; BASE_TAG="$REPLY"; fi
-else
-  [[ "$BACKEND" != cuda ]] && { ask "ROCm backend image" "mx-llamacpp:latest"; ROCM_IMAGE="$REPLY"; }
-  [[ "$BACKEND" != rocm ]] && { ask "CUDA backend image" "ghcr.io/ggml-org/llama.cpp:server-cuda"; CUDA_IMAGE="$REPLY"; }
-  warn "Mode 2: the Argos image needs the docker CLI (the repo's Dockerfile does not install it)."
-  warn "docker.sock gives Argos root-equivalent control of the host."
 fi
 CUSTOM_BIN_HOST=""
 if yes "Add a custom llama.cpp build (fork) as an extra backend?" n; then
@@ -224,12 +250,19 @@ PG_PASSWORD="${PREV_PG_PASSWORD:-$(random_secret)}"
 backup .env
 {
   echo "# generated by setup.sh"
+  echo "# where llama.cpp runs (1 inside Argos, 2 next to it, 3 over SSH); Argos adds it to Servers on start"
+  echo "ARGOS_SETUP_MODE=$MODE"; echo "ARGOS_SETUP_BACKENDS=$BACKEND"
   echo "BASE_IMAGE=$BASE_IMAGE"; echo "BASE_TAG=$BASE_TAG"
   echo "MODELS_DIR=$MODELS_DIR"
   echo "ARGOS_PORT=$API_PORT"
   [[ "$BACKEND" != cuda ]] && echo "VIDEO_GID=$VIDEO_GID"
-  [[ -n "$ROCM_IMAGE" ]] && echo "ROCM_IMAGE=$ROCM_IMAGE"
-  [[ -n "$CUDA_IMAGE" ]] && echo "CUDA_IMAGE=$CUDA_IMAGE"
+  [[ -n "$ROCM_IMAGE" ]] && echo "ROCM_IMAGE=$ROCM_IMAGE" && echo "ROCM_BIN=$ROCM_BIN"
+  [[ -n "$CUDA_IMAGE" ]] && echo "CUDA_IMAGE=$CUDA_IMAGE" && echo "CUDA_BIN=$CUDA_BIN"
+  if [[ "$MODE" == 2 && -n "$CUSTOM_BIN_HOST" ]]; then
+    echo "CUSTOM_IMAGE=${ROCM_IMAGE:-$CUDA_IMAGE}"
+    if [[ -n "$ROCM_IMAGE" ]]; then echo "CUSTOM_GPU=rocm"; else echo "CUSTOM_GPU=cuda"; fi
+  fi
+  [[ "$MODE" == 2 ]] && echo "ARGOS_DOCKER_VOLUMES=${VOLS[*]+"${VOLS[*]}"}"
   [[ -n "$CUSTOM_BIN_HOST" && "$MODE" != 3 ]] && echo "HOST_CUSTOM_BIN=$CUSTOM_BIN_HOST"
   if [[ "$MODE" == 3 ]]; then
     echo "REMOTE_SSH_KEY_FILE=$SSH_KEY_HOST"
@@ -282,22 +315,30 @@ backup docker-compose.override.yaml
   elif [[ "$BACKEND" == both ]]; then
     echo "    gpus: all"
   fi
+  echo "    environment:"
+  echo "      # what setup chose: Argos adds it to Servers when it starts"
+  echo "      - ARGOS_SETUP_MODE=\${ARGOS_SETUP_MODE:-}"
+  echo "      - ARGOS_SETUP_BACKENDS=\${ARGOS_SETUP_BACKENDS:-}"
+  if [[ "$MODE" == 1 || "$MODE" == 2 ]]; then
+    for P in ROCM CUDA; do
+      i="${P}_IMAGE"; [[ -n "${!i}" ]] || continue
+      echo "      - ${P}_IMAGE=\${${P}_IMAGE}"; echo "      - ${P}_BIN=\${${P}_BIN}"
+    done
+  fi
   if [[ "$MODE" == 2 ]]; then
-    echo "    environment:"
     echo "      - HOST_MODELS_DIR=\${HOST_MODELS_DIR}"
     echo "      - VIDEO_GID=\${VIDEO_GID:-44}"
-    echo "      - ROCM_IMAGE=\${ROCM_IMAGE:-}"
-    echo "      - CUDA_IMAGE=\${CUDA_IMAGE:-}"
+    echo "      - ARGOS_DOCKER_VOLUMES=\${ARGOS_DOCKER_VOLUMES:-}"
     echo "      - HOST_CUSTOM_BIN=\${HOST_CUSTOM_BIN:-}"
+    echo "      - CUSTOM_IMAGE=\${CUSTOM_IMAGE:-}"
+    echo "      - CUSTOM_GPU=\${CUSTOM_GPU:-}"
     echo "      - HOST_HF_DIR=\${HOST_HF_DIR:-}"
   elif [[ "$MODE" == 3 ]]; then
-    echo "    environment:"
     for P in ROCM CUDA CUSTOM; do
       h="${P}_SSH_HOST"; [[ -n "${!h}" ]] || continue
       for k in HOST PORT USER BIN; do echo "      - ${P}_SSH_${k}=\${${P}_SSH_${k}}"; done
     done
   elif [[ "$BACKEND" != rocm ]]; then
-    echo "    environment:"
     echo "      - NVIDIA_VISIBLE_DEVICES=all"; echo "      - NVIDIA_DRIVER_CAPABILITIES=compute,utility"
   fi
 
@@ -329,33 +370,10 @@ elif [[ "$MODE" == 3 ]]; then
   [[ -n "$CUDA_SSH_HOST" ]] && echo "  bk-cuda: /app/bin/remote-llama cuda" >> "$MAC"
   [[ -n "$CUSTOM_SSH_HOST" ]] && echo "  bk-custom: /app/bin/remote-llama custom" >> "$MAC"
 else
-  MV='-v ${env.HOST_MODELS_DIR}:/app/models:ro'
-  for v in "${VOLS[@]+"${VOLS[@]}"}"; do MV="$MV -v $v"; done
-  if [[ "$BACKEND" != cuda ]]; then cat >> "$MAC" <<EOF
-  bk-rocm: >
-    docker run --rm --init --network container:argos
-    --device /dev/kfd --device /dev/dri --group-add \${env.VIDEO_GID}
-    $MV
-    \${env.ROCM_IMAGE} llama-server
-EOF
-  fi
-  if [[ "$BACKEND" != rocm ]]; then cat >> "$MAC" <<EOF
-  bk-cuda: >
-    docker run --rm --init --network container:argos
-    --gpus all
-    $MV
-    \${env.CUDA_IMAGE} llama-server
-EOF
-  fi
-  if [[ -n "$CUSTOM_BIN_HOST" ]]; then cat >> "$MAC" <<EOF
-  bk-custom: >
-    docker run --rm --init --network container:argos
-    --device /dev/kfd --device /dev/dri --group-add \${env.VIDEO_GID}
-    $MV
-    -v \${env.HOST_CUSTOM_BIN}:/opt/custom:ro
-    \${env.ROCM_IMAGE} /opt/custom/llama-server
-EOF
-  fi
+  # docker-llama starts a container from <BACKEND>_IMAGE per model, next to Argos
+  [[ -n "$ROCM_IMAGE" ]] && echo "  bk-rocm: /app/bin/docker-llama rocm" >> "$MAC"
+  [[ -n "$CUDA_IMAGE" ]] && echo "  bk-cuda: /app/bin/docker-llama cuda" >> "$MAC"
+  [[ -n "$CUSTOM_BIN_HOST" ]] && echo "  bk-custom: /app/bin/docker-llama custom" >> "$MAC"
 fi
 
 GRP="$TMP/groups"; : > "$GRP"
@@ -413,13 +431,6 @@ if [[ "$MODE" == 3 ]]; then
   [[ "$HERE" == "$PWD" ]] || cp "$HERE/remote-llama.sh" ./remote-llama.sh
   chmod +x ./remote-llama.sh 2>/dev/null || true
   echo "  placed remote-llama.sh (reference copy; the image ships the one that runs)"
-  if [[ "$WRITE_BASE" == 1 ]]; then
-    cat > Dockerfile.argos-base <<'DF'
-FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client curl ca-certificates     && rm -rf /var/lib/apt/lists/*
-DF
-    echo "  wrote Dockerfile.argos-base  (build: docker build -f Dockerfile.argos-base -t argos-base:local .)"
-  fi
 fi
 
 # model sanity check
@@ -443,6 +454,8 @@ Mode 3 checklist (each llama.cpp container)
   * the SAME models folder mounted at /app/models
   * on a Docker network Argos can reach (the one(s) you listed), hostname/IP as entered
   * from the argos container: docker exec argos ssh -i /run/secrets/argos_ssh_key ${SSH_USER}@<host> llama-server --version
+  Argos adds each container to Servers when it starts, once the key is mounted. Its public key:
+      $(cat "$SSH_KEY_HOST.pub" 2>/dev/null || echo "(no $SSH_KEY_HOST.pub yet)")
 EOF
 fi
 fi
@@ -465,6 +478,6 @@ else cat <<EOF
 EOF
 fi
 cat <<EOF
-  5. http://$HOSTNAME_HINT:$UI_PORT/#servers -> Check each server: it should see the same model files as Argos.
+  5. http://$HOSTNAME_HINT:$UI_PORT/#servers -> your llama.cpp is listed there already; Check it sees the same model files.
   6. http://$HOSTNAME_HINT:$UI_PORT/#assistant -> Settings: pick a chat model (or Set up Qwen3-0.6B) and an embedding model.
 EOF

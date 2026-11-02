@@ -70,7 +70,7 @@ def local_backends() -> tuple[str, ...]:
 
 def backends_for(cmd: LaunchCommand, cards: Optional[list[str]] = None) -> tuple[str, ...]:
     """Which runtime reads the pick: the remote backend, else the picked cards' makers, else this machine's."""
-    if os.path.basename(cmd.program) == "remote-llama" and cmd.args and not cmd.args[0].flag:
+    if os.path.basename(cmd.program) in ("remote-llama", "docker-llama") and cmd.args and not cmd.args[0].flag:
         word = (cmd.args[0].value or "").strip().lower().split("_")[0]  # rocm, or rocm_srv3 for one server
         if word in VARS_FOR:
             return (word,)
