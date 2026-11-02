@@ -767,6 +767,15 @@ routing:
         # unloading it (Go next on Schedule -> Live sends it anyway).
         # false: protection only orders evictions. Default true.
         protectWaits: true
+        # protectWaitSeconds: how long that wait lasts once the protected model
+        # is idle, from its last prompt (the gap between a chat's prompts).
+        # 0 waits the whole protectSeconds. Default 15.
+        protectWaitSeconds: 15
+        # maxWaitSeconds: a request that has waited this long goes next however
+        # busy the protected model keeps; it finishes the prompt it is on, its
+        # newer prompts queue behind, then the waiting model loads.
+        # 0 = no limit. Default 60.
+        maxWaitSeconds: 60
 
         # persistent: models never evicted to make room for another model
         # - optional, default: empty list

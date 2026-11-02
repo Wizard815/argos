@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -301,6 +302,19 @@ type PoolConfig struct {
 	// request on anyway. Default true; false only orders evictions.
 	ProtectWaits *bool `yaml:"protectWaits"`
 
+	// ProtectWaitSeconds is how long that wait lasts once the protected model is
+	// idle: the gap a chat or agent leaves between its prompts. A request for
+	// another model waits for at most this long after the protected model's last
+	// prompt, then it may unload it. Default 15; 0 waits the whole
+	// ProtectSeconds.
+	ProtectWaitSeconds *int `yaml:"protectWaitSeconds"`
+
+	// MaxWaitSeconds ends the protection for a request that has waited this
+	// long, however busy the protected model keeps: it finishes the prompt it is
+	// on, new prompts for it queue behind the request, and the request's model
+	// loads. Default 60; 0 lets the protection hold as long as the model is used.
+	MaxWaitSeconds *int `yaml:"maxWaitSeconds"`
+
 	// Persistent lists models that are never evicted to make room for another
 	// model. They still stop on TTL, unload or shutdown.
 	Persistent []string `yaml:"persistent"`
@@ -410,6 +424,13 @@ func (a AnswerFirstConfig) Applies(model string) bool {
 const (
 	PoolDefaultReserveGiB     = 2
 	PoolDefaultProtectSeconds = 600
+)
+
+// PoolDefaultProtectWait and PoolDefaultMaxWait apply when protectWaitSeconds
+// and maxWaitSeconds are unset.
+const (
+	PoolDefaultProtectWait = 15 * time.Second
+	PoolDefaultMaxWait     = 60 * time.Second
 )
 
 func (c *Config) RealModelName(search string) (string, bool) {

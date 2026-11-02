@@ -1203,3 +1203,45 @@ func TestFIFO_AProtectedModelStaysForItsNextPrompt(t *testing.T) {
 	s2.OnTick()
 	assert.Equal(t, 2, eff.startsFor("small"))
 }
+
+// limitPlanner is a stayingPlanner whose hold has a limit (WaitLimit).
+type limitPlanner struct {
+	stayingPlanner
+	limit time.Duration
+}
+
+func (l *limitPlanner) MaxWait() time.Duration { return l.limit }
+
+// A model kept busy by its own chat does not hold another model's request for
+// ever: once that request has waited its limit, the busy model finishes the
+// prompt it is on, its newer prompts queue behind, and the other model loads.
+func TestFIFO_ARequestThatWaitedItsLimitGoesNext(t *testing.T) {
+	t.Cleanup(func() { Marks.Forget("9") })
+	eff := newFakeEffects()
+	eff.states["coder"] = process.StateReady
+	eff.states["small"] = process.StateStopped
+	pl := &limitPlanner{stayingPlanner: stayingPlanner{stubPlanner: stubPlanner{evict: map[string][]string{"small": {"coder"}}},
+		staying: map[string]bool{"coder": true}}, limit: time.Second}
+	s := newFIFO(pl, eff)
+
+	s.OnRequest(req("coder"))
+	assert.Equal(t, 1, eff.served("coder"))
+
+	fresh := reqID("small", "9")
+	s.OnRequest(fresh)
+	assert.Equal(t, 0, eff.startsFor("small"), "within its limit: the coder stays for its next prompt")
+	s.OnRequest(req("coder"))
+	assert.Equal(t, 2, eff.served("coder"), "the coder's own prompt is served while the other request is within its limit")
+
+	s.queued[0].Arrived = time.Now().Add(-2 * time.Second) // it has now waited past its limit
+	later := req("coder")
+	later.Arrived = time.Now()
+	s.OnRequest(later)
+	assert.Equal(t, 2, eff.served("coder"), "a newer prompt for the coder queues behind it")
+	assert.Equal(t, 0, eff.startsFor("small"), "the coder is still answering: not unloaded mid-request")
+
+	s.OnServeDone(ServeDoneEvent{ModelID: "coder"})
+	s.OnServeDone(ServeDoneEvent{ModelID: "coder"})
+	assert.Equal(t, 1, eff.startsFor("small"), "the coder finished: the waiting model loads, ahead of the newer coder prompt")
+	assert.Equal(t, 2, eff.served("coder"))
+}

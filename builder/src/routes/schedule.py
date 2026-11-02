@@ -11,7 +11,7 @@ from ..always import apply_always
 from ..command import parse_command
 from ..integrations import engine_api
 from ..library import scan_models
-from ..scheduler import (Engine, PlanError, clean_plan, effective_size, engine_file, render_fragment, simulate,
+from ..scheduler import (DEFAULT_PLAN, Engine, PlanError, clean_plan, effective_size, engine_file, render_fragment, simulate,
                          write_fragment)
 from ..schedule_rows import build_rows, plan_sizes
 from ..web import body, check_id, ctx, err, ok
@@ -129,6 +129,8 @@ def _payload(data: dict) -> dict:
     c = ctx()
     return {"plan": data["plan"], "rows": data["rows"], "fragment": data["fragment"], "skipped": data["skipped"],
             "known_from": data["known_from"], "detected_cards": detected_cards(),
+            # the rules' defaults, for Plan's "Reset to defaults" (not the cards, sizes or model lists)
+            "defaults": {k: v for k, v in DEFAULT_PLAN.items() if not isinstance(v, (list, dict)) and k != "enabled"},
             "applied": {"connected": bool(engine_file()), "at": c.schedule_state.get("written_at"),
                         "error": c.schedule_state.get("error", "")},
             "live_configured": bool(c.settings.get("integrations")["engine_url"])}

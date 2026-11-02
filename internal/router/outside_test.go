@@ -111,13 +111,25 @@ func TestPool_AProtectedModelStaysLoaded(t *testing.T) {
 	p.OnServeStart("a")
 	now = now.Add(5 * time.Minute)
 	p.OnServeDone("a")
-	now = now.Add(time.Minute)
+	now = now.Add(10 * time.Second)
 	stay, left := p.StaysLoaded("a")
 	assert.True(t, stay)
-	assert.InDelta(t, 540, left, 0.1, "counted from the end of its last request")
-	now = now.Add(10 * time.Minute)
+	assert.InDelta(t, 5, left, 0.1, "15 s for its next prompt, counted from the end of its last request")
+	now = now.Add(10 * time.Second)
 	stay, _ = p.StaysLoaded("a")
-	assert.False(t, stay)
+	assert.False(t, stay, "idle past the gap between prompts: another model may have its room")
+	assert.Equal(t, 60*time.Second, p.MaxWait())
+
+	whole := 0
+	conf.Routing.Router.Settings.Pool.ProtectWaitSeconds = &whole
+	w := newPoolSwapper(conf, logmon.NewWriter(io.Discard), nil)
+	w.now = func() time.Time { return now }
+	w.OnServeDone("a")
+	now = now.Add(time.Minute)
+	stay, left = w.StaysLoaded("a")
+	assert.True(t, stay)
+	assert.InDelta(t, 540, left, 0.1, "protectWaitSeconds 0: the whole protect window, as before")
+	conf.Routing.Router.Settings.Pool.ProtectWaitSeconds = nil
 
 	off := false
 	conf.Routing.Router.Settings.Pool.ProtectWaits = &off

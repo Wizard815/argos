@@ -170,7 +170,12 @@ type poolSwapper struct {
 	// protectWaits: a model used within protect is not unloaded for another
 	// model's request; that request waits (scheduler.StaysLoaded)
 	protectWaits bool
-	loadTime     map[string]time.Duration
+	// protectWait: how long that wait lasts after the model's last prompt
+	// (the gap between a chat's prompts); maxWait: how long any request waits
+	// for it at most, however busy it keeps (0 = no limit)
+	protectWait time.Duration
+	maxWait     time.Duration
+	loadTime    map[string]time.Duration
 
 	now func() time.Time
 }
@@ -232,6 +237,14 @@ func newPoolSwapper(conf config.Config, logger *logmon.Monitor, detect func() ([
 		now:         time.Now,
 	}
 	p.protectWaits = pc.ProtectWaits == nil || *pc.ProtectWaits
+	p.protectWait = config.PoolDefaultProtectWait
+	if pc.ProtectWaitSeconds != nil {
+		p.protectWait = time.Duration(*pc.ProtectWaitSeconds) * time.Second
+	}
+	p.maxWait = config.PoolDefaultMaxWait
+	if pc.MaxWaitSeconds != nil {
+		p.maxWait = time.Duration(*pc.MaxWaitSeconds) * time.Second
+	}
 	if pc.Placement != "off" {
 		for _, c := range cards {
 			p.cards = append(p.cards, poolCard{id: c.ID, cap: max(c.TotalGiB-pc.ReserveGiB/float64(len(cards)), 0)})
@@ -714,10 +727,11 @@ func (p *poolSwapper) OnServeStart(id string) {
 	p.lastUsed[id] = p.now()
 }
 
-// StaysLoaded implements scheduler.StaysLoaded: a model used within the
-// protect window stays for its next prompt instead of being unloaded for
-// another model, when protectWaits is on. Persistent models never get here
-// (they are not evicted at all).
+// StaysLoaded implements scheduler.StaysLoaded: a model used a moment ago
+// stays for its next prompt instead of being unloaded for another model, when
+// protectWaits is on. The moment is protectWait after its last prompt (the
+// gap a chat or agent leaves between prompts), within the protect window.
+// Persistent models never get here (they are not evicted at all).
 func (p *poolSwapper) StaysLoaded(id string) (bool, float64) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -728,12 +742,20 @@ func (p *poolSwapper) StaysLoaded(id string) (bool, float64) {
 	if !ok {
 		return false, 0
 	}
-	left := p.protect - p.now().Sub(t)
+	window := p.protect
+	if p.protectWait > 0 && p.protectWait < window {
+		window = p.protectWait
+	}
+	left := window - p.now().Sub(t)
 	if left <= 0 {
 		return false, 0
 	}
 	return true, left.Seconds()
 }
+
+// MaxWait implements scheduler.WaitLimit: a request that has waited this long
+// is no longer held by StaysLoaded.
+func (p *poolSwapper) MaxWait() time.Duration { return p.maxWait }
 
 // OnServeDone implements scheduler.UsageObserver.
 func (p *poolSwapper) OnServeDone(id string) {

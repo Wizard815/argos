@@ -135,7 +135,8 @@ def test_fragment_is_the_routing_block_engine_reads():
     doc = yaml.safe_load(text)
     pool = doc["routing"]["router"]["settings"]["pool"]
     assert doc["routing"]["router"]["use"] == "pool" and skipped == []
-    assert pool == {"cards": [32.0, 32.0], "reserveGiB": 2.0, "protectSeconds": 300, "protectWaits": True, "placement": "auto",
+    assert pool == {"cards": [32.0, 32.0], "reserveGiB": 2.0, "protectSeconds": 300, "protectWaits": True,
+                    "protectWaitSeconds": 15, "maxWaitSeconds": 60, "placement": "auto",
                     "persistent": ["whisper"], "sizes": {"a": 26.0, "whisper": 4.0}}
     assert text.startswith("# Written by Argos")
 

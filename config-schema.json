@@ -858,6 +858,18 @@
                                             "default": true,
                                             "description": "A request for another model waits rather than unload a model used within protectSeconds (Go next on Schedule -> Live sends it on). false: protection only orders evictions."
                                         },
+                                        "protectWaitSeconds": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "default": 15,
+                                            "description": "How long that wait lasts once the protected model is idle: the gap a chat or agent leaves between prompts, counted from its last prompt. 0 waits the whole protectSeconds."
+                                        },
+                                        "maxWaitSeconds": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "default": 60,
+                                            "description": "A request that has waited this long goes next, however busy the protected model keeps: that model finishes the prompt it is on, its newer prompts queue behind, and the waiting model loads. 0 = no limit."
+                                        },
                                         "persistent": {
                                             "type": "array",
                                             "items": {
