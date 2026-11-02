@@ -3702,6 +3702,10 @@ function renderAssistantSettings() {
     .map(([v, l]) => h("option", { value: v }, l)));
   idle.value = String(cfg.idle_unload_min ?? 15);
   if (idle.value === "") idle.append(h("option", { value: cfg.idle_unload_min, selected: true }, `${cfg.idle_unload_min} minutes`));
+  const idleCpu = h("select", {}, [[0, "Never: keep it loaded"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [240, "4 hours"], [1440, "1 day"]]
+    .map(([v, l]) => h("option", { value: v }, l)));
+  idleCpu.value = String(cfg.idle_unload_min_cpu ?? 60);
+  if (idleCpu.value === "") idleCpu.append(h("option", { value: cfg.idle_unload_min_cpu, selected: true }, `${cfg.idle_unload_min_cpu} minutes`));
 
   // memory
   const memOn = h("input", { type: "checkbox", checked: !!mem.enabled });
@@ -3720,7 +3724,7 @@ function renderAssistantSettings() {
 
   const save = async () => {
     try {
-      const body = { context_tokens: ctx.value, keep_recent: keep.value, temperature: temp.value, idle_unload_min: idle.value,
+      const body = { context_tokens: ctx.value, keep_recent: keep.value, temperature: temp.value, idle_unload_min: idle.value, idle_unload_min_cpu: idleCpu.value,
         escalate_model: escalate.value, escalate_model_cpu: escalateCpu.value, escalate_to_loaded: toLoaded.checked,
         escalate_quant: escalateQuant.value, cpu_fallback: cpuFallback.checked };
       if (useOther.checked) {
@@ -3767,7 +3771,8 @@ function renderAssistantSettings() {
         field("Context window (tokens)", ctx, "Must match the -c of the model above. At about 70% full, or when you press Compact, older turns are summarised."),
         field("Messages kept as written", keep, "The newest ones are never summarised."),
         field("Temperature", temp, "Lower is steadier for questions about numbers."),
-        field("Unload when unused for", idle, "Frees the GPU memory. Only models the assistant itself used are unloaded; Load brings one back.", true),
+        field("Unload when unused for (on a GPU)", idle, "Frees the GPU memory. Only models the assistant itself used are unloaded; Load brings one back.", true),
+        field("Unload when unused for (on the CPU)", idleCpu, "A model on the CPU holds RAM, not VRAM, and takes long to start again on the CPU: it can stay. CPU-only profiles and models fallen back to the CPU.", true),
         h("label", { class: "check wide", title: "Needs Schedule's pool router. The model starts with every GPU hidden, so llama.cpp runs it on the CPU: slower, but nothing you are using gets unloaded for it." },
           cpuFallback, "Run the chat and embedding models on the CPU when the GPUs are full, instead of unloading a model you are using"))),
     h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Memory"), h("span", { class: "spacer" }),

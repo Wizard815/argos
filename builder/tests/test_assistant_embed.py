@@ -115,3 +115,19 @@ def test_background_embedding_leaves_the_records_that_keep_changing(app):
     mem.vectors_on = lambda: True
     mem._embed_pending(10, mem.STABLE_SOURCES)
     assert sorted(asked) == ["t0", "t3"], "events and notes; speeds, configs and loads wait for a search"
+
+
+def test_a_cpu_model_has_its_own_idle_time(client, app, monkeypatch):
+    a = app.extensions["pb"].assistant
+    client.put("/api/settings/integrations", json={"engine_url": "http://engine"})
+    client.put("/api/settings/assistant", json={"mode": "engine", "model": "chat-cpu", "idle_unload_min": 5, "idle_unload_min_cpu": 0})
+    monkeypatch.setattr(a, "models", lambda: {"chat": {"model": "chat-cpu", "controllable": True, "state": "ready", "where": "engine"},
+                                              "embed": {"model": "", "controllable": False, "state": "none", "where": ""}})
+    unloaded = []
+    monkeypatch.setattr(a, "unload", lambda which, reason="": unloaded.append((which, reason)))
+    monkeypatch.setattr(a, "_on_cpu", lambda model: True)
+    a.last_used = 1000.0
+    assert a.unload_idle(now=1000.0 + 99 * 60) == [] and unloaded == [], "on the CPU and set to never: it stays"
+    client.put("/api/settings/assistant", json={"idle_unload_min_cpu": 60})
+    assert a.unload_idle(now=1000.0 + 30 * 60) == [], "the GPU's 5 minutes do not apply to it"
+    assert a.unload_idle(now=1000.0 + 61 * 60) == ["chat"] and unloaded[0][1] == "unused for 60 min"

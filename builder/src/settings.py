@@ -122,6 +122,8 @@ def env_defaults(cfg: dict) -> dict:
             "keep_recent": 8,        # messages always kept verbatim
             "temperature": 0.7,
             "idle_unload_min": 15,   # unload the assistant's chat and embedding models after this long unused; 0 = never
+            # the same for one running on the CPU: it holds RAM, not VRAM, so it can stay longer; 0 = never
+            "idle_unload_min_cpu": 60,
             # the assistant's chat and embedding models run on the CPU when the GPUs are full, instead of unloading
             # a model you are using to make room (needs Schedule's pool router)
             "cpu_fallback": True,
