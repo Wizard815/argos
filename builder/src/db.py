@@ -945,7 +945,7 @@ class Store:
 
     def delete_server(self, server_id: int) -> bool:
         s = self.get_server(server_id)
-        if not s or s["kind"] == "local":
+        if not s or (s["kind"] == "local" and s["name"] == "Local"):  # the built-in Local stays
             return False
         self._x("DELETE FROM servers WHERE id=?", (server_id,))
         if s["is_default"]:

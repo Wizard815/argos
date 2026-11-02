@@ -4,7 +4,7 @@ from __future__ import annotations
 from flask import Blueprint
 
 from ..integrations.odysseus_api import OdysseusError, as_list
-from ..servers import LOCAL, ServerError, clean_server, from_odysseus
+from ..servers import LOCAL, ServerError, clean_server, from_odysseus, is_builtin_local
 from ..web import body, ctx, err, ok
 from .odysseus_hub import client
 
@@ -70,7 +70,7 @@ def servers_delete(server_id):
     s = c.store.get_server(server_id)
     if not s:
         return err("not found", 404)
-    if s["kind"] == LOCAL:
+    if is_builtin_local(s):
         return err("Local cannot be removed")
     c.store.delete_server(server_id)
     c.event("server", f"removed server {s['name']}")
