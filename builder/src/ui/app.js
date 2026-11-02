@@ -1197,6 +1197,12 @@ function contextBox(e) {
       : `Click to turn on: --rope-scaling yarn --rope-scale ${Number(ropeScale.toFixed(3))} --yarn-orig-ctx ${e.train_ctx}`,
     () => edit(on ? ROPE_OFF : ropeEdits(Math.round(ropeScale * e.train_ctx), e.train_ctx))) : null;
   lines.push(h("div", { class: "row", style: "gap:8px; margin-top:8px" }, uniBtn, ropeBtn));
+  // what a click on each does, written out (not only on hover)
+  lines.push(h("ul", { class: "hint", style: "margin:4px 0 0; padding-left:18px" },
+    h("li", {}, uni ? "KV unified: click to turn off: each chat gets its own fixed -c ÷ --parallel and cannot use another's."
+      : "KV unified: click to turn on (--kv-unified): the chats share one pool of -c, so a long chat can use what the others leave free."),
+    e.train_ctx ? h("li", {}, on ? "RoPE: click to turn off: removes --rope-scaling, --rope-scale and --yarn-orig-ctx."
+      : `RoPE: click to turn on: adds --rope-scaling yarn --rope-scale ${Number(ropeScale.toFixed(3))} --yarn-orig-ctx ${e.train_ctx}. It is only needed when one chat is longer than the ${ctxLabel(e.train_ctx)} the model was trained on${over ? " (yours is)" : " (none is now)"}.`) : null));
   // what the two mean for this context, in words
   const say = [];
   say.push(uni || !e.parallel
