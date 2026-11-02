@@ -182,7 +182,12 @@ class Memory:
         return out
 
     # ----- keeping it current ------------------------------------------------------------
-    def sync(self, budget: int = 64, embed: bool = True) -> dict:
+    # Records that, once written, stay as they are: worth embedding as they come in. The others (speeds, configs,
+    # loads still open, settings' counts, the model list) change with every request, so embedding them in the
+    # background re-embeds the same records again and again; they are embedded when a search needs them.
+    STABLE_SOURCES = ("event", "note", "preset", "benchmark", "odysseus-brain")
+
+    def sync(self, budget: int = 64, embed: bool = True, stable_only: bool = False) -> dict:
         """Add new and changed records, drop ones that are gone, and embed up to ``budget`` texts.
 
         The background tick passes ``embed=False``: records change all the time (every request moves a speed
@@ -206,17 +211,18 @@ class Memory:
             gone = [r["id"] for key, r in have.items() if key not in seen]
             for rid in gone:
                 self.store._x("DELETE FROM memory_records WHERE id=?", (rid,))
-            embedded = self._embed_pending(budget) if embed and self.vectors_on() else 0
+            embedded = self._embed_pending(budget, self.STABLE_SOURCES if stable_only else None) if embed and self.vectors_on() else 0
             if added or changed or gone or embedded:
                 self._matrix = None
             return {"added": added, "changed": changed, "removed": len(gone), "embedded": embedded}
 
-    def _embed_pending(self, budget: int) -> int:
+    def _embed_pending(self, budget: int, sources: Optional[tuple] = None) -> int:
         c = self.config()
         model = self.vector_key()
         same, args = self._same_model()
-        rows = self.store._q(f"SELECT id, text FROM memory_records WHERE vector IS NULL OR NOT {same} ORDER BY ts DESC LIMIT ?",
-                             (*args, budget))
+        only = f" AND source IN ({', '.join('?' * len(sources))})" if sources else ""
+        rows = self.store._q(f"SELECT id, text FROM memory_records WHERE (vector IS NULL OR NOT {same}){only} ORDER BY ts DESC LIMIT ?",
+                             (*args, *(sources or ()), budget))
         done, batch = 0, max(1, int(c.get("batch") or 16))
         for i in range(0, len(rows), batch):
             chunk = rows[i:i + batch]

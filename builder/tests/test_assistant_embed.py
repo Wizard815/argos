@@ -103,3 +103,15 @@ def test_a_cpu_only_embedder_embeds_as_records_come_in(client, app, monkeypatch)
     a._embed_cpu = None
     pool["models"] = [{"id": "embed--gpu", "on_cpu": True}]
     assert a.embed_on_cpu() is True, "fallen back to the CPU while the GPUs were full"
+
+
+def test_background_embedding_leaves_the_records_that_keep_changing(app):
+    mem = app.extensions["pb"].memory
+    st = mem.store
+    for i, src in enumerate(("event", "speed", "config", "note", "load")):
+        st._x("INSERT INTO memory_records (source, key, ts, text, hash) VALUES (?, ?, ?, ?, ?)", (src, str(i), i, f"t{i}", f"h{i}"))
+    asked = []
+    mem.embed = lambda texts: asked.extend(texts) or [[0.1, 0.2] for _ in texts]
+    mem.vectors_on = lambda: True
+    mem._embed_pending(10, mem.STABLE_SOURCES)
+    assert sorted(asked) == ["t0", "t3"], "events and notes; speeds, configs and loads wait for a search"

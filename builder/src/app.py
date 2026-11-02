@@ -168,8 +168,9 @@ def create_app(config: dict | None = None) -> Flask:
         if not settings.get("memory")["enabled"]:
             return
         pb = app.extensions.get("pb")
-        on_cpu = bool(pb and pb.assistant and pb.assistant.embed_on_cpu())
-        done = memory.sync(budget=128, embed=on_cpu)
+        on_cpu = bool(settings.get("memory").get("background", True) and pb and pb.assistant and pb.assistant.embed_on_cpu())
+        # only the records that never change: the rest change with every request and would be re-embedded forever
+        done = memory.sync(budget=64, embed=on_cpu, stable_only=True)
         if (done or {}).get("embedded"):
             memory.last_used = time.time()  # it is working: the idle timer does not unload it under the work
 
