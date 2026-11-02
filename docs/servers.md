@@ -6,15 +6,16 @@ Profiles launch on the **default** server (★). **Local** runs the `llama-serve
 
 ## Added by setup.sh
 
-`setup/setup.sh` records where llama.cpp runs (`ARGOS_SETUP_MODE` in `.env`), and Argos fills Servers in from it each time it starts:
+`setup/setup.sh` records where llama.cpp runs (`ARGOS_SETUP_MODE` in `.env`), and each time Argos starts it adds one server per backend you chose: **llama.cpp ROCm** and/or **llama.cpp CUDA**. The first one becomes the default while the default is still the plain Local.
 
-| Mode | Servers |
+| Mode | Each server runs… |
 | --- | --- |
-| **1** llama.cpp inside Argos | **Local** runs the image's `llama-server` (the official images keep it at `/app/llama-server`). |
-| **2** llama.cpp next to Argos | **Local** runs `/app/bin/docker-llama rocm` (or `cuda`): one container per model from the image you picked. |
-| **3** your own llama.cpp containers | One server per container (`llama.cpp ROCm`, `llama.cpp CUDA`), with the mounted key as its key. Added only once the key is mounted at `/run/secrets/argos_ssh_key`; until then the Logs page says so. |
+| **1** llama.cpp inside Argos | that backend's `llama-server` in the image (the official images keep it at `/app/llama-server`). |
+| **2** llama.cpp next to Argos | `/app/bin/docker-llama rocm` (or `cuda`): a container per model from the image you picked. |
+| **3** your own llama.cpp containers | over SSH, with the mounted key as its key. Added only once the key is mounted at `/run/secrets/argos_ssh_key`; until then the Logs page says so. |
 
-Edit Local or a setup server on this page and your edit wins: setup no longer changes it.
+Run setup again with fewer backends and the server it no longer has is removed. **Local** stays as it is: this container with `llama-server` on the `PATH`.
+Edit a setup server on this page and your edit wins: setup no longer changes or removes it.
 
 ## Add a server
 

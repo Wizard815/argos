@@ -327,23 +327,28 @@ def _setup_app(tmp_path, fake, env):
     })
 
 
-def test_Servers_setup_mode1_and_mode2_fill_in_local(tmp_path, fake):
+def test_Servers_setup_mode1_and_mode2_add_a_server_per_backend(tmp_path, fake):
     plan = servers_mod.setup_plan
-    assert plan({"ARGOS_SETUP_MODE": "1", "ARGOS_SETUP_BACKENDS": "cuda", "CUDA_IMAGE": "ghcr.io/ggml-org/llama.cpp:server-cuda",
-                 "CUDA_BIN": "/app/llama-server"})["local"] == {"llama_server": "/app/llama-server", "gpu": "cuda"}
-    assert plan({"ARGOS_SETUP_MODE": "2", "ARGOS_SETUP_BACKENDS": "both", "ROCM_IMAGE": "x", "CUDA_IMAGE": "y"})["local"] == \
-        {"llama_server": "/app/bin/docker-llama rocm", "gpu": "rocm"}
-    assert plan({}) == {"local": None, "ssh": []}
+    one = plan({"ARGOS_SETUP_MODE": "1", "ARGOS_SETUP_BACKENDS": "cuda", "CUDA_IMAGE": "ghcr.io/ggml-org/llama.cpp:server-cuda",
+                "CUDA_BIN": "/app/llama-server"})["servers"]
+    assert [(s["name"], s["kind"], s["llama_server"], s["gpu"]) for s in one] == [("llama.cpp CUDA", "local", "/app/llama-server", "cuda")]
+    two = plan({"ARGOS_SETUP_MODE": "2", "ARGOS_SETUP_BACKENDS": "both", "ROCM_IMAGE": "x", "CUDA_IMAGE": "y"})["servers"]
+    assert [s["llama_server"] for s in two] == ["/app/bin/docker-llama rocm", "/app/bin/docker-llama cuda"]
+    assert plan({}) == {"mode": "", "needs_key": False, "servers": []}
 
-    app = _setup_app(tmp_path, fake, {"ARGOS_SETUP_MODE": "2", "ARGOS_SETUP_BACKENDS": "rocm", "ROCM_IMAGE": "x"})
-    local = app.extensions["pb"].store.list_servers()[0]
-    assert (local["llama_server"], local["gpu"], local["source"]) == ("/app/bin/docker-llama rocm", "rocm", "setup")
-    assert app.extensions["pb"].servers.default_parts()["program"] == ["/app/bin/docker-llama", "rocm"]
-    # an edit in the app wins over setup from then on
+    env = {"ARGOS_SETUP_MODE": "2", "ARGOS_SETUP_BACKENDS": "rocm", "ROCM_IMAGE": "x"}
+    app = _setup_app(tmp_path, fake, env)
+    rows = {s["name"]: s for s in app.extensions["pb"].store.list_servers()}
+    rocm = rows["llama.cpp ROCm"]
+    assert (rocm["llama_server"], rocm["gpu"], rocm["source"], rocm["is_default"]) == ("/app/bin/docker-llama rocm", "rocm", "setup", True)
+    assert rows["Local"]["llama_server"] == "" and rows["Local"]["source"] == "builtin", "Local stays llama-server on PATH"
+    # an edit in the app wins over setup from then on, and a setup server can be removed
     c = app.test_client()
-    c.put(f"/api/servers/{local['id']}", json={"llama_server": "/opt/mine/llama-server"})
-    again = _setup_app(tmp_path, fake, {"ARGOS_SETUP_MODE": "2", "ARGOS_SETUP_BACKENDS": "rocm", "ROCM_IMAGE": "x"})
-    assert again.extensions["pb"].store.list_servers()[0]["llama_server"] == "/opt/mine/llama-server"
+    c.put(f"/api/servers/{rocm['id']}", json={"llama_server": "/opt/mine/llama-server"})
+    again = _setup_app(tmp_path, fake, env)
+    assert again.extensions["pb"].store.server_by_name("llama.cpp ROCm")["llama_server"] == "/opt/mine/llama-server"
+    assert again.test_client().delete(f"/api/servers/{rocm['id']}").status_code == 200
+    assert again.test_client().delete(f"/api/servers/{rows['Local']['id']}").status_code == 400
 
 
 def test_Servers_setup_mode3_adds_containers_once_the_key_is_mounted(tmp_path, fake):

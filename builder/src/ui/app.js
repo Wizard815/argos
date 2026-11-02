@@ -1591,7 +1591,7 @@ function renderBenchForm() {
   src.value = BN.source || "custom";
   src.onchange = () => bnFrom(src.value);
   const srv = h("select", { "aria-label": "Run on" }, h("option", { value: "" }, "Where profiles run"), h("option", { value: "local" }, "This container"),
-    (BN.servers || []).filter((x) => x.kind !== "local").map((x) => h("option", { value: String(x.id) }, x.name)));
+    (BN.servers || []).filter((x) => !(x.kind === "local" && x.name === "Local")).map((x) => h("option", { value: String(x.id) }, x.name)));
   srv.value = BN.server;
   srv.onchange = () => { BN.server = srv.value; bnPreview(); };
   fill($("#bnFields"),
@@ -4292,7 +4292,7 @@ function serverCard(s, index) {
       tags, h("div", { class: "sv-row sv-add-row" }, newDir, h("button", { class: "sv-btn", onclick: addDir }, icon("plus"), "Add directory"))),
     isNew ? null : section("Status", null, svEngines(s) || h("span", { class: "muted mono-sm" }, s.status === "connected" ? "" : "Check to see what this server has."), svModels(s)),
     keyPanel,
-    h("div", { class: "sv-foot" }, !local && !isNew ? small("Delete", del, "trash", "danger") : null, small("Save", save, "save")));
+    h("div", { class: "sv-foot" }, !(local && s.name === "Local") && !isNew ? small("Delete", del, "trash", "danger") : null, small("Save", save, "save")));
   drawDirs();
   return card;
 }

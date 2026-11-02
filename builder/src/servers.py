@@ -315,7 +315,7 @@ class Servers:
 
     # ----- local ----------------------------------------------------------
     def ensure_local(self) -> dict:
-        row = next((s for s in self.store.list_servers() if s["kind"] == LOCAL), None)
+        row = next((s for s in self.store.list_servers() if is_builtin_local(s)), None)
         if row:
             return row
         row = self.store.save_server({"name": "Local", "kind": LOCAL, "host": "", "port": 22, "gpu": "auto",
@@ -456,34 +456,44 @@ class Servers:
 
     # ----- setup.sh ---------------------------------------------------------
     def sync_setup(self, env: Optional[dict] = None, key_file: str = "") -> dict:
-        """Add what setup.sh set up to Servers (``setup_plan``). Mode 1 and 2 fill in Local, unless it
-        was edited in the app; Mode 3 adds each llama.cpp container once its key is mounted, and copies
-        that key in as the server's own. Servers edited in the app are left alone."""
+        """Add what setup.sh set up to Servers (``setup_plan``): a server per llama.cpp backend.
+
+        Modes 1 and 2 run on this container, so their servers are added straight away. Mode 3's need the
+        key: they are added once it is mounted, each with that key as its own. A setup server the
+        current setup no longer has is removed; one edited in the app is left alone either way.
+        The first one becomes the default when the default is still the plain Local."""
         env = os.environ if env is None else env
         plan = setup_plan(env)
-        out: dict[str, Any] = {"local": False, "created": [], "updated": [], "skipped": [], "errors": [], "waiting": ""}
-        if plan["local"]:
-            local = self.ensure_local()
-            if local.get("source") in ("builtin", SETUP):
-                self.store.save_server({**plan["local"], "source": SETUP}, local["id"])
-                out["local"] = True
-        if not plan["ssh"]:
+        out: dict[str, Any] = {"created": [], "updated": [], "skipped": [], "removed": [], "errors": [], "waiting": ""}
+        local = self.ensure_local()
+        if local.get("source") == SETUP:  # an earlier Argos set Local up itself; setup servers do that now
+            self.store.save_server({"llama_server": "", "gpu": "auto", "source": "builtin"}, local["id"])
+        if not plan["mode"]:
             return out
-        key_file = key_file or env.get("REMOTE_SSH_KEY") or "/run/secrets/argos_ssh_key"
-        try:
-            with open(key_file, encoding="utf-8") as f:
-                private = f.read()
-        except OSError:
-            out["waiting"] = f"no ssh key at {key_file}: mount REMOTE_SSH_KEY_FILE there and restart"
-            return out
-        local_default = any(s.get("is_default") and s["kind"] == LOCAL for s in self.store.list_servers())
-        seeded = self.seed([{**item, "default": local_default and i == 0} for i, item in enumerate(plan["ssh"])], source=SETUP)
+        private = ""
+        if plan["needs_key"]:
+            key_file = key_file or env.get("REMOTE_SSH_KEY") or "/run/secrets/argos_ssh_key"
+            try:
+                with open(key_file, encoding="utf-8") as f:
+                    private = f.read()
+            except OSError:
+                out["waiting"] = f"no ssh key at {key_file}: mount REMOTE_SSH_KEY_FILE there and restart"
+                return out
+        names = {item["name"] for item in plan["servers"]}
+        for s in self.store.list_servers():
+            if s.get("source") == SETUP and s["name"] not in names and not is_builtin_local(s):
+                self.store.delete_server(s["id"])
+                out["removed"].append(s["name"])
+        local_default = any(s.get("is_default") and is_builtin_local(s) for s in self.store.list_servers())
+        seeded = self.seed([{**item, "default": local_default and i == 0} for i, item in enumerate(plan["servers"])],
+                           source=SETUP)
         for k in ("created", "updated", "skipped", "errors"):
             out[k] = seeded[k]
-        for name in seeded["created"] + seeded["updated"]:
-            server = self.store.server_by_name(name)
-            if server:
-                self._take_key(server["id"], key_file, private)
+        if private:
+            for name in seeded["created"] + seeded["updated"]:
+                server = self.store.server_by_name(name)
+                if server:
+                    self._take_key(server["id"], key_file, private)
         return out
 
     def _take_key(self, server_id: int, key_file: str, private: str) -> None:
@@ -519,35 +529,50 @@ class Servers:
 SETUP = "setup"
 
 
+def is_builtin_local(server: dict) -> bool:
+    """The one Local every Argos has (this container, llama-server on PATH), as opposed to a setup server
+    that also runs here."""
+    return server.get("kind") == LOCAL and server.get("name") == "Local"
+
+
+BACKENDS = (("ROCM", "ROCm", "rocm"), ("CUDA", "CUDA", "cuda"))
+
+
 def setup_plan(env) -> dict:
     """What setup.sh chose (``ARGOS_SETUP_MODE`` and the backend variables it passes in), as Servers:
-    ``{"local": fields to set on Local or None, "ssh": [server items]}``.
+    ``{"mode": "1"|"2"|"3"|"", "needs_key": bool, "servers": [server items]}``, one per llama.cpp backend.
 
-    Mode 1: llama.cpp is in this container, so Local runs its llama-server path. Mode 2: Local starts a
-    container per model through docker-llama (the first backend; the engine's bk-* macros run the rest).
-    Mode 3: one SSH server per llama.cpp container, all seeing the models at /app/models.
+    Mode 1: llama.cpp is in this container; each server runs that backend's llama-server path.
+    Mode 2: each server starts a container per model from its image (``docker-llama <backend>``).
+    Mode 3: one SSH server per llama.cpp container. All of them see the models at /app/models.
     """
     mode = str(env.get("ARGOS_SETUP_MODE") or "").strip()
     chosen = str(env.get("ARGOS_SETUP_BACKENDS") or "").strip().lower()
-    backends = [b for b in ("rocm", "cuda") if chosen in (b, "both")]
+    items: list[dict] = []
+    dirs = [{"path": "/app/models"}]
     if mode in ("1", "2"):
-        first = next((b for b in backends if env.get(f"{b.upper()}_IMAGE")), "")
-        if not first:
-            return {"local": None, "ssh": []}
-        program = (env.get(f"{first.upper()}_BIN") or "/app/llama-server") if mode == "1" else f"/app/bin/docker-llama {first}"
-        return {"local": {"llama_server": program, "gpu": first}, "ssh": []}
-    if mode != "3":
-        return {"local": None, "ssh": []}
-    items = []
-    for name, label, gpu in (("ROCM", "ROCm", "rocm"), ("CUDA", "CUDA", "cuda"), ("CUSTOM", "custom", "auto")):
-        host = str(env.get(f"{name}_SSH_HOST") or "").strip()
-        if not host:
-            continue
-        user = str(env.get(f"{name}_SSH_USER") or "root").strip()
-        items.append({"name": f"llama.cpp {label}", "kind": "ssh", "host": f"{user}@{host}" if user else host,
-                      "port": env.get(f"{name}_SSH_PORT") or 22, "gpu": gpu,
-                      "llama_server": env.get(f"{name}_SSH_BIN") or "", "model_dirs": [{"path": "/app/models"}]})
-    return {"local": None, "ssh": items}
+        for name, label, gpu in BACKENDS:
+            if chosen not in (gpu, "both") or not env.get(f"{name}_IMAGE"):
+                continue
+            program = (env.get(f"{name}_BIN") or "/app/llama-server") if mode == "1" else f"/app/bin/docker-llama {gpu}"
+            items.append({"name": f"llama.cpp {label}", "kind": LOCAL, "host": "", "port": 22, "gpu": gpu,
+                          "llama_server": program, "model_dirs": dirs})
+        if env.get("HOST_CUSTOM_BIN") and mode == "2" and env.get("CUSTOM_IMAGE"):
+            items.append({"name": "llama.cpp custom", "kind": LOCAL, "host": "", "port": 22,
+                          "gpu": env.get("CUSTOM_GPU") if env.get("CUSTOM_GPU") in ("rocm", "cuda") else "auto",
+                          "llama_server": "/app/bin/docker-llama custom", "model_dirs": dirs})
+    elif mode == "3":
+        for name, label, gpu in (*BACKENDS, ("CUSTOM", "custom", "auto")):
+            host = str(env.get(f"{name}_SSH_HOST") or "").strip()
+            if not host:
+                continue
+            user = str(env.get(f"{name}_SSH_USER") or "root").strip()
+            items.append({"name": f"llama.cpp {label}", "kind": "ssh", "host": f"{user}@{host}" if user else host,
+                          "port": env.get(f"{name}_SSH_PORT") or 22, "gpu": gpu,
+                          "llama_server": env.get(f"{name}_SSH_BIN") or "", "model_dirs": dirs})
+    else:
+        mode = ""
+    return {"mode": mode, "needs_key": mode == "3", "servers": items}
 
 
 def load_seed(path: str = "", env_json: str = "") -> list:
