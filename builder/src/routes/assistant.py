@@ -105,6 +105,18 @@ def memory_search():
     return ok(results=ctx().memory.search(q, max(1, min(int(d.get("k") or 10), 50)), sources))
 
 
+@bp.get("/api/assistant/memory/similar")
+def memory_similar():
+    """Records like a question (?q=) or like one record (?source=&key=), by the link graph: the models, profiles,
+    flags, variables, GPUs, failures and days they share, the rarer the more it counts. No model runs."""
+    a = request.args
+    if not (a.get("q") or (a.get("source") and a.get("key"))):
+        return err("give q, or source and key")
+    sources = {s for s in (a.get("sources") or "").split(",") if s} or None
+    return ok(**ctx().memory.linked(a.get("q") or "", a.get("source") or "", a.get("key") or "",
+                                    max(1, min(a.get("k", 8, type=int), 50)), sources))
+
+
 @bp.post("/api/assistant/memory/sync")
 def memory_sync():
     return ok(result=ctx().memory.sync(budget=max(1, min(int(body().get("budget") or 256), 5000))), **ctx().memory.status())
@@ -114,7 +126,8 @@ def memory_sync():
 def memory_rebuild():
     c = ctx()
     c.memory.rebuild()
-    c.event("memory", "cleared the assistant's memory vectors; they are rebuilt in the background")
+    links = c.memory.relink() if c.memory.links_on() else 0
+    c.event("memory", f"cleared the assistant's memory vectors (they are rebuilt in the background) and relinked its records ({links} links)")
     return ok(**c.memory.status())
 
 

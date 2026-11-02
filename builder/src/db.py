@@ -240,6 +240,12 @@ CREATE TABLE IF NOT EXISTS memory_records (
     indexed_at REAL, UNIQUE (source, key)
 );
 
+CREATE TABLE IF NOT EXISTS memory_links (
+    record_id INTEGER NOT NULL, entity TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_links_entity ON memory_links (entity);
+CREATE INDEX IF NOT EXISTS idx_memory_links_record ON memory_links (record_id);
+
 CREATE TABLE IF NOT EXISTS servers (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'ssh',
     host TEXT DEFAULT '', port INTEGER DEFAULT 22, env_prefix TEXT DEFAULT '', llama_server TEXT DEFAULT '',
