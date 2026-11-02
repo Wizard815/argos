@@ -3089,8 +3089,36 @@ async function loadGpuRequests() {
 }
 
 // ── Logs: requests + events ──────────────────────────────────
+/** Usage -> Requests: how each loaded model's time split between its slots (IDs) over the range. */
+async function loadSlotUsage(rng, model) {
+  const minutes = { "1m": 1, "5m": 5, "10m": 10, "15m": 15, "30m": 30, "1h": 60 }[rng] || 30;
+  let models = [];
+  try { models = (await api("GET", `/api/slots?minutes=${minutes}`)).models || []; } catch (e) { /* the engine may be down */ }
+  models = models.filter((m) => (m.slots || []).length > 1 && (!model || m.model === model));
+  const el = $("#rSlots");
+  if (!models.length) { fill(el); return; }
+  const colors = ["#61afef", "#e5c07b", "#98c379", "#c678dd", "#e06c75", "#56b6c2", "#d19a66", "#abb2bf"];
+  fill(el, h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Per slot"), h("span", { class: "spacer" }),
+      h("span", { class: "hint" }, `loaded models with more than one slot · the last ${minutes < 60 ? `${minutes} min` : "hour"} of each model's log`)),
+    h("p", { class: "hint" }, "How much of each model's compute every slot (ID) got: the time it spent reading prompts and writing answers, out of all its slots' time, and the tokens it moved. The slots share the model's GPUs, so this is how its work split, not a separate GPU reading per slot."),
+    models.map((m) => {
+      const busy = m.slots.filter((x) => x.busy_s > 0);
+      return h("div", { style: "margin:10px 0" },
+        h("div", { class: "row", style: "gap:8px; margin-bottom:4px" }, h("span", { class: "strong mono-sm" }, m.model), h("span", { class: "spacer" }),
+          h("span", { class: "muted mono-sm" }, `${num(m.slots.reduce((a, x) => a + x.busy_s, 0), 0)} s of work`)),
+        h("div", { class: "vbar", title: "share of the model's time per slot" }, busy.length
+          ? busy.map((x) => h("i", { style: `width:${(x.share || 0) * 100}%; background:${colors[x.id % colors.length]}`, title: `ID ${x.id}: ${num((x.share || 0) * 100, 0)}% · ${num(x.busy_s, 0)} s` }))
+          : h("i", { style: "width:0" })),
+        h("div", { class: "table-wrap", style: "margin-top:6px" }, simpleTable(["ID", "Share", "Busy", "Requests", "Read (tokens)", "Written (tokens)", "Prefill avg t/s", "Decode avg t/s"],
+          m.slots.map((x) => [h("span", {}, h("span", { class: "swatch", style: `--c:${colors[x.id % colors.length]}` }), `ID ${x.id}`),
+            x.share != null ? `${num(x.share * 100, 0)}%` : DASH, `${num(x.busy_s, 0)} s`, x.requests || DASH,
+            num(x.prefill.tokens, 0), num(x.decode.tokens, 0), x.prefill.avg != null ? num(x.prefill.avg, 0) : DASH, x.decode.avg != null ? num(x.decode.avg) : DASH]))));
+    })));
+}
+
 async function loadRequests() {
   const rng = $("#rRange").value, model = $("#rModel").value;
+  loadSlotUsage(rng, model);
   let res;
   try { res = await api("GET", `/api/requests?range=${rng}&limit=500${model ? `&model=${encodeURIComponent(model)}` : ""}`); } catch (e) { fail(e); return; }
   const url = S.settings?.integrations.engine_url;
@@ -3349,7 +3377,8 @@ async function loadGpuProcs() {
 }
 
 // ── Logs: every llama-server's own output ───────────────────
-const SL = { sel: null, len: -1, auto: true };
+const SL = { sel: null, len: -1, auto: true, slot: "", slots: [] };
+try { SL.perSlot = localStorage.getItem("argos.logs.perSlot") === "1"; } catch (e) { SL.perSlot = false; }
 function slSources() {
   const engine = S.launches.filter((l) => l.engine), local = S.launches.filter((l) => !l.engine);
   return { engine, local, all: [...engine, ...local, { launch_id: "proxy", base_model: "Engine: routing and loads", special: true },
@@ -3396,7 +3425,8 @@ async function loadServerLogs(force) {
     $("#slTitle").textContent = src ? (src.profile_name || src.base_model || id) : id;
     const q = $("#slFilter").value.trim().toLowerCase(), errOnly = $("#slErrors").checked;
     const cpu = runsOnCpu(src) || /(HIP|CUDA|ROCR)_VISIBLE_DEVICES=-1\b/.test(text);
-    const lines = text.split("\n").filter((l) => (!q || l.toLowerCase().includes(q)) && (!errOnly || slErr(l, cpu)));
+    const slotRe = SL.perSlot && SL.slot !== "" ? new RegExp(`\\bid\\s+${SL.slot}\\s*\\|`) : null;
+    const lines = text.split("\n").filter((l) => (!q || l.toLowerCase().includes(q)) && (!errOnly || slErr(l, cpu)) && (!slotRe || slotRe.test(l)));
     const pre = $("#slLog");
     const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
     fill(pre, lines.length ? lines.map((line) => {
@@ -3417,6 +3447,25 @@ async function loadServerLogs(force) {
     const pre_ = [...text.matchAll(/prompt eval time.*?([\d.]+) tokens per second/gi)].map((m) => +m[1]);
     const errs = text.split("\n").filter((l) => slErr(l, cpu)).length;
     const stat = (k, v, unit) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v, unit && h("small", {}, unit)));
+    if (!special && SL.perSlot) {
+      try { SL.slots = (await api("GET", `/api/launches/${encodeURIComponent(id)}/slots`)).slots || []; } catch (e) { SL.slots = []; }
+    } else SL.slots = [];
+    renderSlotPick();
+    const one = SL.perSlot && SL.slot !== "" ? SL.slots.find((x) => String(x.id) === String(SL.slot)) : null;
+    if (one) {
+      fill($("#slStats"), [
+        stat(`ID ${one.id}`, slotState(one)),
+        stat("Requests", one.requests || DASH),
+        stat("Decode last", one.decode.last != null ? num(one.decode.last) : DASH, one.decode.last != null ? "t/s" : ""),
+        stat("Decode low–high", one.decode.low != null ? `${num(one.decode.low)}–${num(one.decode.high)}` : DASH, one.decode.low != null ? "t/s" : ""),
+        stat("Prefill last", one.prefill.last != null ? num(one.prefill.last, 0) : DASH, one.prefill.last != null ? "t/s" : ""),
+        stat("Context used", one.ctx_used != null ? `${num(one.ctx_used / 1000, 1)}k${one.n_ctx ? ` / ${num(one.n_ctx / 1000, 0)}k` : ""}` : DASH),
+        stat("Share of the time", one.share != null ? `${num(one.share * 100, 0)}%` : DASH),
+      ]);
+      renderSlotTable();
+      return;
+    }
+    renderSlotTable();
     fill($("#slStats"), special ? null : [
       stat("Requests", dec.length || DASH),
       stat("Decode last", dec.length ? num(dec[dec.length - 1]) : DASH, dec.length ? "t/s" : ""),
@@ -3426,7 +3475,64 @@ async function loadServerLogs(force) {
     ]);
   } catch (e) { /* the engine may be restarting */ }
 }
+/** Schedule -> Live: each loaded model that has more than one slot, every slot side by side. */
+function slotsCard(models) {
+  const multi = models.filter((m) => (m.slots || []).length > 1);
+  if (!multi.length) return null;
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Slots"), h("span", { class: "spacer" }),
+      h("span", { class: "hint" }, "each ID of a model run with -np, from its log · Logs → per slot for one ID's lines")),
+    multi.map((m) => {
+      const maxDec = Math.max(1, ...m.slots.map((x) => x.decode.avg || x.decode.last || 0));
+      return h("div", { style: "margin-bottom:10px" },
+        h("div", { class: "row", style: "gap:8px; margin:4px 0" }, h("span", { class: "swatch", style: `--c:${segColor(m.model)}` }), h("span", { class: "strong mono-sm" }, m.model)),
+        h("div", { class: "table-wrap" }, simpleTable(["ID", "Now", "Requests", "Prefill last · avg t/s", "Decode last · avg t/s", "Context used", "Share of the time"],
+          m.slots.map((x) => [String(x.id), slotState(x), x.requests || DASH,
+            x.prefill.last != null ? `${num(x.prefill.last, 0)} · ${num(x.prefill.avg, 0)}` : DASH,
+            x.decode.last != null ? h("div", { class: "bar-cell" }, `${num(x.decode.last)} · ${num(x.decode.avg)}`, h("span", { class: "bar" }, h("i", { style: `width:${Math.min(100, (x.decode.avg || x.decode.last) / maxDec * 100)}%` }))) : DASH,
+            x.ctx_used != null ? `${num(x.ctx_used / 1000, 1)}k${x.n_ctx ? ` / ${num(x.n_ctx / 1000, 0)}k` : ""}` : DASH,
+            x.share != null ? shareBar(x.share) : DASH]))));
+    }));
+}
+const shareBar = (f) => h("div", { class: "bar-cell", title: "the time this slot spent reading prompts and writing answers, out of all its model's slots' time" },
+  `${num(f * 100, 0)}%`, h("span", { class: "bar" }, h("i", { style: `width:${Math.min(100, f * 100)}%` })));
+/** "prefill 40%", "generating" or "idle": what a slot is doing as of its log's last line. */
+function slotState(sl) {
+  if (sl.state === "prefill") return h("span", { class: "pill warn" }, sl.progress != null ? `prefill ${pct(sl.progress)}` : "prefill");
+  if (sl.state === "generating") return h("span", { class: "pill ok" }, "generating");
+  return h("span", { class: "muted" }, "idle");
+}
+/** The slot switch above the Logs boxes: All, or one ID. */
+function renderSlotPick() {
+  const el = $("#slSlotPick");
+  if (!SL.perSlot || !SL.slots.length) { fill(el); return; }
+  if (SL.slot !== "" && !SL.slots.some((x) => String(x.id) === String(SL.slot))) SL.slot = "";
+  const chip = (v, label) => h("button", { class: `chip ${String(SL.slot) === String(v) ? "on" : ""}`, onclick: () => { SL.slot = v; SL.len = -1; loadServerLogs(true); } }, label);
+  fill(el, chip("", "All slots"), SL.slots.map((x) => chip(x.id, `ID ${x.id}`)));
+}
+/** Every slot side by side: the same numbers as the boxes, one row per ID. */
+function renderSlotTable() {
+  const el = $("#slSlots");
+  if (!SL.perSlot || SL.slots.length < 1) { fill(el); return; }
+  const maxDec = Math.max(1, ...SL.slots.map((x) => x.decode.high || 0));
+  const t = h("table", { class: "dense" });
+  renderTable(t, [
+    { key: "id", label: "ID", num: true, cell: (x) => h("td", { class: "num" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); SL.slot = x.id; loadServerLogs(true); } }, String(x.id))) },
+    { label: "Now", cell: (x) => slotState(x) },
+    { key: "requests", label: "Requests", num: true, cell: (x) => x.requests || DASH },
+    { label: "Prefill last · avg", num: true, cell: (x) => (x.prefill.last != null ? `${num(x.prefill.last, 0)} · ${num(x.prefill.avg, 0)}` : DASH) },
+    { label: "Decode last · avg", num: true, cell: (x) => (x.decode.last != null ? h("div", { class: "bar-cell" }, `${num(x.decode.last)} · ${num(x.decode.avg)}`, h("span", { class: "bar" }, h("i", { style: `width:${Math.min(100, (x.decode.avg || x.decode.last) / maxDec * 100)}%` }))) : DASH) },
+    { label: "Decode low–high", num: true, cell: (x) => (x.decode.low != null ? `${num(x.decode.low)}–${num(x.decode.high)}` : DASH) },
+    { label: "Read · written", num: true, cell: (x) => `${num(x.prefill.tokens, 0)} · ${num(x.decode.tokens, 0)}` },
+    { label: "Context used", num: true, cell: (x) => (x.ctx_used != null ? `${num(x.ctx_used / 1000, 1)}k${x.n_ctx ? ` / ${num(x.n_ctx / 1000, 0)}k` : ""}` : DASH) },
+    { key: "share", label: "Share of the time", num: true, cell: (x) => (x.share != null ? `${num(x.share * 100, 0)}%` : DASH) },
+  ], SL.slots, { key: null }, "");
+  fill(el, h("div", { class: "table-wrap", style: "margin:0 0 10px" }, t),
+    h("p", { class: "hint", style: "margin:-4px 0 10px" }, "Each ID is one slot (-np / --parallel). Its slots share the model's GPUs: llama.cpp puts all of them in each batch, so a slot reading a long prompt slows the others' answers. Share = the time a slot spent reading prompts and writing answers, out of all its slots' time."));
+}
 function initServerLogs() {
+  const per = $("#slPerSlot");
+  per.checked = SL.perSlot;
+  per.addEventListener("change", () => { SL.perSlot = per.checked; SL.slot = ""; try { localStorage.setItem("argos.logs.perSlot", per.checked ? "1" : "0"); } catch (e) { /* ignore */ } loadServerLogs(true); });
   $("#slFilter").addEventListener("input", debounce(() => loadServerLogs(true), 150));
   $("#slErrors").addEventListener("change", () => loadServerLogs(true));
   $("#slCopy").onclick = () => { navigator.clipboard?.writeText($("#slLog").textContent || "").then(() => toast("Copied.", "ok"), () => toast("Could not copy.", "err")); };
@@ -4980,7 +5086,11 @@ function syncPlanForm() {
 const planBody = () => ({ ...SC.plan, persistent: [...SC.persistent], answer_first: [...SC.answerFirst], one_at_a_time: [...SC.oneAtATime], sizes: SC.sizes });
 
 async function loadLive() {
-  try { SC.live = await api("GET", `/api/schedule/live?requests=${Math.max(reqShow(), 1)}`); } catch (e) { SC.live = { connected: false, error: e.message, pool: null }; }
+  try {
+    const [live, slots] = await Promise.all([api("GET", `/api/schedule/live?requests=${Math.max(reqShow(), 1)}`),
+      api("GET", "/api/slots").catch(() => ({ models: [] }))]);
+    SC.live = live; SC.slots = slots.models || [];
+  } catch (e) { SC.live = { connected: false, error: e.message, pool: null }; }
   if (S.view === "schedule" && SC.pane === "live") renderLive();
   refreshScheduleNav();
 }
@@ -5304,6 +5414,7 @@ function renderLive() {
       h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, `updated ${ago(L.at)}`)),
     cardBars(cards, usage, L.real_gib),
     cpuCard(P.models.filter((m) => m.on_cpu && m.state !== "stopped"), L.cpu, L.procs || {}, L.proc_errors || {}, L.embedder || {}),
+    slotsCard(SC.slots || []),
     h("p", { class: "hint", style: "margin:-4px 0 12px" }, "Bars are the planned sizes the scheduler fits models by; “in use” is what the GPU reports. After a model loads once, Argos measures its real size and the plan uses that."),
     swaps, queue, crashCard(P.models), prefillCard(P.models), sharingCard(P.models, SC.data && SC.data.plan),
     requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])),

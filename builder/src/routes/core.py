@@ -659,6 +659,48 @@ def launch_log(launch_id):
     return current_app.response_class(ANSI.sub("", text), mimetype="text/plain")
 
 
+@bp.get("/api/launches/<launch_id>/slots")
+def launch_slots(launch_id):
+    """Each slot (ID) of this launch on its own, from its log: speeds, requests, context, share of the time."""
+    from ..slot_stats import parse
+    eng = _engine_launch(launch_id)
+    text = (_engine_log(eng[0], eng[1]["base_model"]) if eng
+            else ctx().runner.read_log(check_id(launch_id), tail_bytes=2_000_000))
+    if text is None:
+        abort(404)
+    minutes = request.args.get("minutes", 0, type=float) or None
+    return ok(slots=parse(ANSI.sub("", text), minutes))
+
+
+_slots_cache: dict = {}  # model -> (when, log text): the engine's logs, read at most every few seconds
+
+
+@bp.get("/api/slots")
+def all_slots():
+    """Each running engine model's slots, for Schedule -> Live and Usage. Models with one slot are listed too
+    (``slots`` of length 1); the page decides what is worth showing."""
+    from ..slot_stats import parse
+    url = ctx().settings.get("integrations").get("engine_url")
+    if not url:
+        return ok(models=[])
+    minutes = request.args.get("minutes", 0, type=float) or None
+    try:
+        running = [r for r in engine_api.running(url, 2.0) if r.get("state") in ("ready", "starting")]
+    except Exception as exc:  # noqa: BLE001
+        return ok(models=[], error=str(exc))
+    out, now = [], time.time()
+    for r in running:
+        mid = r["model"]
+        hit = _slots_cache.get(mid)
+        if not hit or now - hit[0] > 4:
+            hit = (now, _engine_log(url, mid))
+            _slots_cache[mid] = hit
+        out.append({"model": mid, "slots": parse(hit[1], minutes)})
+    for mid in [m for m in _slots_cache if m not in {r["model"] for r in running}]:
+        _slots_cache.pop(mid, None)
+    return ok(models=out)
+
+
 @bp.get("/api/launches/<launch_id>/insight")
 def launch_insight(launch_id):
     eng = _engine_launch(launch_id)
