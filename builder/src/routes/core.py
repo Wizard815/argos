@@ -743,6 +743,15 @@ def launch_record(launch_id):
 
 
 # ----- perf sheet -------------------------------------------------------------
+@bp.get("/api/benchmarks/live")
+def benchmarks_live():
+    """Each model's speeds from the requests it really served (Hermes, the assistant, any client), not from tests:
+    the Benchmarks page's "From your requests" table. Models with no speeds (embeddings) are left out."""
+    days = max(1 / 24.0, min(request.args.get("days", 7, type=float), 365.0))
+    rows = [r for r in ctx().store.request_stats(time.time() - days * 86400) if r.get("tg_avg") or r.get("pp_avg")]
+    return ok(days=days, rows=rows)
+
+
 @bp.get("/api/runs")
 def runs_list():
     limit = max(1, min(request.args.get("limit", 1000, type=int), 100_000))

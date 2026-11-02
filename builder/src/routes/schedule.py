@@ -55,15 +55,19 @@ def known_ids() -> tuple[Optional[set[str]], str]:
 
 
 def cpu_fallback_models() -> list[str]:
-    """The assistant's chat and embedding models, when they may fall back to the CPU (Settings -> Assistant)."""
-    st = ctx().settings
-    a = st.get("assistant")
-    if not a.get("cpu_fallback", True):
-        return []
-    out = [a.get("model") or ""] if a.get("mode", "engine") == "engine" else []
+    """The assistant's models whose fallback is to run on the CPU themselves when the GPUs are full (Settings ->
+    Assistant: "When the GPUs are full" for the chat, escalation and embedding models)."""
+    c = ctx()
+    st, a = c.settings, c.assistant
+    out = []
+    if st.get("assistant").get("mode", "engine") == "engine":
+        if a.fallback("chat") == "same":
+            out.append(st.get("assistant").get("model") or "")
+        if a.fallback("escalate") == "same":
+            out.append(st.get("assistant").get("escalate_model") or "")
     m = st.get("memory")
-    if m.get("enabled") and not (m.get("endpoint") or "").strip():  # blank endpoint = the engine's own /v1
-        out.append(m.get("model") or "")
+    if m.get("enabled") and not (m.get("endpoint") or "").strip() and a.fallback("embed") == "same":
+        out.append(m.get("model") or "")  # blank endpoint = the engine's own /v1
     return [x for x in out if x]
 
 
@@ -254,17 +258,49 @@ def schedule_live():
         except Exception:  # noqa: BLE001
             running_now = []
         pool = engine_api.pool_state(url)
-        procs = {}
+        procs, proc_errors = {}, {}
         if any(m.get("on_cpu") and m.get("state") != "stopped" for m in pool.get("models") or []):
             try:  # what each model on the CPU really uses: its own process's RAM and cores busy
-                procs = _model_procs.sample(engine_api.running(url))
-            except Exception:  # noqa: BLE001 - the card shows the estimate then
-                procs = {}
+                procs = _model_procs.sample(_with_launch_env(url, engine_api.running(url)))
+                proc_errors = dict(_model_procs.errors)
+            except Exception as exc:  # noqa: BLE001 - the card shows the estimate then
+                procs, proc_errors = {}, {"*": f"could not read the processes: {exc}"}
         return ok(connected=True, error="", pool=pool, at=time.time(), real_gib=real, activity=activity,
-                  cpu=ctx().store.cpu_latest(), procs=procs,
+                  cpu=ctx().store.cpu_latest(), procs=procs, proc_errors=proc_errors, embedder=_embedder_now(),
                   runners=runners, requests=requests, running=running_now)
     except Exception as exc:  # noqa: BLE001
         return ok(connected=False, error=str(exc), pool=None)
+
+
+_launch_env: dict = {}  # model -> (when, env list), the engine's env for its launch
+
+
+def _with_launch_env(url: str, running: list[dict]) -> list[dict]:
+    """The running rows with each wrapper launch's env (its Servers host and key ride there), a minute old at most."""
+    out = []
+    for r in running:
+        cmd = r.get("cmd") or ""
+        if "remote-llama" in cmd or "docker-llama" in cmd:
+            hit = _launch_env.get(r["model"])
+            if not hit or time.time() - hit[0] > 60:
+                try:
+                    hit = (time.time(), engine_api.model_launch(url, r["model"], timeout=2.0).get("env") or [])
+                except Exception:  # noqa: BLE001 - without it the wrapper's own defaults
+                    hit = (time.time(), [])
+                _launch_env[r["model"]] = hit
+            r = {**r, "env": hit[1]}
+        out.append(r)
+    return out
+
+
+def _embedder_now() -> dict:
+    """What the assistant's embedding model is doing: its model, when it embeds, and its work now or last."""
+    c = ctx()
+    if c.memory is None or not c.memory.vectors_on():
+        return {}
+    a = c.memory.activity
+    return {"model": c.memory.config().get("model") or "", "embed_when": c.memory.embed_when(),
+            "now": a.get("now"), "last": a.get("last")}
 
 
 # ----- one model in the Live view: load, unload, keep loaded, its log, its launch command --------

@@ -329,14 +329,21 @@ class Collector:
         if now - self._last_rollup > 60:
             minutes = self.settings()["telemetry"].get("keep_minutes") or 120
             self.store.prune_gpu(now - minutes * 60)
-            self.store.prune_requests(now - minutes * 60)
+            self.store.prune_requests(now - float(self.settings()["telemetry"].get("request_days") or 180) * 86400)
             self._last_rollup = now
 
     def sync_activity(self) -> int:
         url = self.settings()["integrations"].get("engine_url") or ""
         if not url:
             return 0
-        cursor = int(self.store.get_settings().get("_activity_cursor") or 0)
+        saved = self.store.get_settings()
+        if not saved.get("_requests_restored"):
+            # an earlier Argos deleted request history older than Usage's two hours: read the engine's own
+            # activity log again from the start (rows already here are skipped)
+            self.store.set_setting("_activity_cursor", 0)
+            self.store.set_setting("_requests_restored", 1)
+            saved = {**saved, "_activity_cursor": 0}
+        cursor = int(saved.get("_activity_cursor") or 0)
         try:
             rows = fetch_activity(url, cursor)
             if not rows and cursor:

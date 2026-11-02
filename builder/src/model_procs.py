@@ -3,7 +3,9 @@
 The CPU view's bars are the whole machine; this is the model itself. A model the engine starts here is a
 llama-server process this container sees in /proc. One started through remote-llama runs in the llama.cpp
 container, so remote-llama is asked (``remote-llama <backend> --ps``, over the same SSH it starts models with).
-A process is matched to its model by the --port it listens on. Cores busy is CPU time between two readings over
+Through a Servers entry the wrapper learns its host from the launch's own environment (``ROCM_SRV3_SSH_HOST``
+and friends), so ``--ps`` is run with that same environment. A process is matched to its model by the --port
+it listens on. Cores busy is CPU time between two readings over
 the time between them, so it is what the model does now, not its average since it started.
 """
 from __future__ import annotations
@@ -69,15 +71,22 @@ class ModelProcs:
     def __init__(self, run=None):
         self._prev: dict[tuple, tuple[float, float]] = {}  # (where, pid) -> (when, cpu seconds)
         self._lock = threading.Lock()
-        self._run = run or self._ssh_ps
+        # run(argv, env): a test's run takes the argv alone
+        self._run = (lambda argv, env=None: run(argv)) if run else self._ssh_ps
+        self._last_error = ""
         self._cache: tuple[float, dict] = (0.0, {})
+        self.errors: dict[str, str] = {}  # model -> why its process could not be read, for the Schedule page
 
-    @staticmethod
-    def _ssh_ps(argv: list[str]) -> str:
+    def _ssh_ps(self, argv: list[str], env: Optional[dict] = None) -> str:
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=8, check=False)
-        except (OSError, subprocess.SubprocessError):
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=8, check=False,
+                               env={**os.environ, **(env or {})})
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._last_error = f"{os.path.basename(argv[0])} --ps: {exc}"
             return ""
+        if r.returncode != 0:
+            tail = (r.stderr or "").strip().splitlines()
+            self._last_error = tail[-1][:300] if tail else f"{os.path.basename(argv[0])} --ps exited {r.returncode}"
         return r.stdout or ""
 
     def sample(self, running: list[dict], max_age: float = 3.0) -> dict[str, dict]:
@@ -89,6 +98,8 @@ class ModelProcs:
                 return self._cache[1]
             by_port: dict[str, str] = {}
             wrappers: dict[tuple, str] = {}  # (program, backend) -> where
+            wrapper_env: dict[tuple, dict] = {}
+            wrapper_models: dict[tuple, list] = {}
             for r in running:
                 cmd = r.get("cmd") or ""
                 m = PORT.search(cmd)
@@ -99,10 +110,27 @@ class ModelProcs:
                 except ValueError:
                     continue
                 if os.path.basename(pc.program or "") in ("remote-llama", "docker-llama") and pc.args and not pc.args[0].flag:
-                    wrappers[(pc.program, pc.args[0].value or "")] = pc.args[0].value or "remote"
+                    key = (pc.program, pc.args[0].value or "")
+                    wrappers[key] = pc.args[0].value or "remote"
+                    env = dict(pc.env or {})
+                    for item in r.get("env") or []:  # the engine's env list for the launch: "K=V"
+                        k, sep, v = str(item).partition("=")
+                        if sep:
+                            env.setdefault(k, v)
+                    wrapper_env.setdefault(key, {}).update(env)
+                    wrapper_models.setdefault(key, []).append(r["model"])
             procs = [("local", p) for p in local_ps()]
-            for (program, backend), where in wrappers.items():
-                procs += [(where, p) for p in parse_ps(self._run([program, backend, "--ps"]))]
+            self.errors = {}
+            for key, where in wrappers.items():
+                program, backend = key
+                self._last_error = ""
+                text = self._run([program, backend, "--ps"], wrapper_env.get(key) or {})
+                found = parse_ps(text)
+                procs += [(where, p) for p in found]
+                if not found:
+                    why = self._last_error or f"{os.path.basename(program)} {backend} --ps listed no llama.cpp process"
+                    for model in wrapper_models.get(key) or []:
+                        self.errors[model] = why
             out: dict[str, dict] = {}
             seen = set()
             for where, p in procs:
