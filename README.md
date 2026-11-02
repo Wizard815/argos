@@ -1,83 +1,64 @@
 # Argos
 
-**Run your models with a profile builder, performance sheets, a demo playground and a scheduler that handles model requests. Bring your own back-end and this is a one-stop shop. Integrates with Odysseus.**
+**Run your local models like a service.** A profile builder, a GPU scheduler that shares your cards between models, live monitoring, benchmarks and an assistant that knows your setup. Bring your own llama.cpp. Integrates with Odysseus.
 
 ![Schedule](docs/shots/schedule.png)
 
 ## What you get
 
-- **Builder.** Tune a `llama-server` command with simple controls. Save as many presets as you want.
-- **Models.** See every model file you have. Download new ones from Hugging Face.
-- **Scheduler.** All your models share the GPUs. Argos loads what fits and only unloads a model when it has to.
-- **Playground.** Launch a model, run a speed test, and watch speed per request while it works.
-- **Perf sheets and Inventory.** Every model and every launch is remembered, with prefill and decode speed for each setup.
-- **Logs.** GPU use, speed per request and events, from 30 seconds back to a year.
-- **Assistant.** A small model that knows your history and answers questions about it.
-- **Servers.** Local plus any machine you can reach over SSH, each with its own key and a Check that shows what is installed there. See [docs/servers.md](docs/servers.md).
-- **Odysseus.** Notes, Brain, Calendar, Library, Cookbook, Tasks, Gallery and Tools, right inside Argos.
-- **Themes.** The same themes as Odysseus, or make your own.
+| | |
+| --- | --- |
+| **Builder** | Tune a `llama-server` command, save it as a profile, keep as many per model as you like. |
+| **Profiles** | Each profile is its own model in `/v1/models`; a model's own name can run the profile you pick as its default. |
+| **Presets** | Sets of environment variables and flags you apply to any profile, then adjust. |
+| **Scheduler** | Models share the GPUs. It places each on the cards with room and unloads only what it must, never a model that is working. |
+| **Request control** | Recently used models stay loaded between prompts. Hold, send on or cancel any waiting request. |
+| **CPU models** | CPU-only models, or ones that fall back to the CPU when the cards are full, with their own RAM and cores shown. |
+| **Live and Usage** | Each model's prompt progress and answer speed as it works; GPU, CPU and RAM over the last hour. |
+| **Playground** | Launch, speed-test, and run llama-bench, also on a model that is already running. |
+| **Local runners** | whisper.cpp, Kokoro and stable-diffusion.cpp on the same port, with their models a click away. |
+| **Assistant** | Answers from Argos's own data; harder questions go to a bigger model on a GPU or the CPU. |
+| **API and MCP** | What the GPUs and requests are doing, for a dashboard or another model. |
+| **Odysseus** | Notes, Brain, Calendar, Library, Cookbook, Tasks, Gallery and Tools inside Argos. |
 
 ![Inventory](docs/shots/inventory.png)
-
-![Playground](docs/shots/playground.png)
-
-![Odysseus](docs/shots/odysseus.png)
 
 _Screenshots use demo data._
 
 ## Run it
 
-Argos runs in Docker. It needs an image that already has your `llama-server` in it. That is your back-end, and Argos does not replace it.
+Argos runs in Docker and uses your llama.cpp; it does not replace it. The setup script asks a few questions and writes `.env`, `docker-compose.override.yaml` and `config.yaml` (existing ones are backed up):
 
 ```sh
 git clone https://github.com/Wizard815/Argos
 cd Argos
-echo "BASE_IMAGE=your-llamacpp-image" > .env
+bash setup/setup.sh
 docker compose up -d --build
 ```
 
-Put your `.gguf` files in `./models` (or set `MODELS_DIR` in `.env`). Then open **http://localhost:8080**. That one port serves the Argos page, the OpenAI API your apps use (`/v1`), and the engine's endpoints. Change it with `ARGOS_PORT` in `.env`.
+Then open **http://localhost:8080**. That one port serves the Argos page, the OpenAI API your apps use (`/v1`) and the engine's endpoints.
 
-The compose file passes your AMD GPUs through (`/dev/kfd` and `/dev/dri`). On NVIDIA, change that part for your setup.
+### The three modes
 
-## Connect Odysseus
+The script asks where your llama.cpp lives:
 
-Open **Odysseus** in the sidebar, paste your Odysseus URL and an API token (Odysseus → Settings → API tokens), and press **Save & connect**.
+| Mode | Argos… | Pick it when |
+| --- | --- | --- |
+| **1** | is built on your llama.cpp image, and runs `llama-server` itself. | You have one llama.cpp image and want one container. |
+| **2** | starts a `docker run` per model. | Each model should get its own container. Needs the Docker socket, which gives Argos control of the host. |
+| **3** | SSHes into your existing llama.cpp container(s), one per GPU type, and starts models there (`remote-llama`). | Your llama.cpp already runs in its own container. The default. |
 
-More settings are in [docs/configuration.md](docs/configuration.md). Running without Docker is in [docs/development.md](docs/development.md).
+In Mode 3 the llama.cpp container needs sshd with Argos's key, and the **same models folder at `/app/models`**. The script prints a checklist.
 
-## Postgres (optional)
+It also asks for the **backend** (ROCm, CUDA or both), the **scheduler** (the GPU-sharing pool, or fixed groups), your **models folder** and the **ports**. Run it again later and it offers your last answers.
 
-By default Argos keeps its data in SQLite files under `./data` — one for the builder, one for the engine. You can run both on Postgres instead, which is worth doing when more than one thing writes at once: a single file serialises its writers, and one long read can stop its journal from checkpointing until every query has to walk a growing log.
+## More
 
-**Starting the postgres service does not switch Argos over to it.** Argos stays on the SQLite files until you set `ARGOS_DATABASE_URL`, so starting the stack first is safe. `docker-compose.yml` already has the service — set a password and start it:
+- **Odysseus:** open **Odysseus** in the sidebar, paste its URL and an API token, **Save & connect**.
+- **Scheduler rules:** [VRAM pool guide](docs/kb/guides/routing/vram-pool.md).
+- **Settings:** [docs/configuration.md](docs/configuration.md). **Servers over SSH:** [docs/servers.md](docs/servers.md). **Without Docker:** [docs/development.md](docs/development.md).
+- **Postgres** (optional, for many writers at once): set `POSTGRES_PASSWORD` in `.env`, run `docker compose exec argos argos-migrate`, then set `ARGOS_DATABASE_URL`. Step by step in [docs/postgres.md](docs/postgres.md).
 
-```sh
-echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
-docker compose up -d --build
-```
+**Security:** there is no login, and the Playground runs whatever command you give it. Only expose Argos to people you trust.
 
-Then move the data across — **this is the script; you do not re-run `setup.sh`**:
-
-```sh
-docker compose exec argos argos-migrate
-```
-
-If you are on an older image, or want to see what it would do first, `argos-migrate` passes anything through to the script: `docker compose exec argos argos-migrate --dry-run`. The container has no system Python — uv brings its own at `/opt/venv` — so `python scripts/...` is not a command that works in there.
-
-It copies the builder's database and the engine's activity log in one pass. Then switch over:
-
-```sh
-echo 'ARGOS_DATABASE_URL=postgresql://argos:YOUR_PASSWORD@postgres:5432/argos' >> .env
-docker compose up -d
-```
-
-One variable moves both stores. The migration only *reads* the SQLite files, so they stay as a fallback — delete `ARGOS_DATABASE_URL` to go back. It prints every table's row count before and after and exits non-zero if any came across short; re-running it is safe. Add `--dry-run` to see what it would move without writing.
-
-If you would rather not set a password by hand, `setup/setup.sh` generates one into `.env` for you. `.env` is gitignored, so it stays out of the repo; the compose file's value is only a placeholder for a stack started with no setup at all.
-
-Postgres wants a real filesystem with real `fsync` and real locking, so keep its volume off the Unraid array — a pool or a cache drive is fine. See [docs/postgres.md](docs/postgres.md) for how the two dialects are kept in step.
-
-**Security:** the Playground runs whatever command you give it, and there is no login. Only expose the ports to people you trust.
-
-Argos started as a fork of [llama-swap](https://github.com/mostlygeek/llama-swap) by Benson Wong (MIT, see [LICENSE.md](LICENSE.md)). The engine is now part of Argos and is configured and documented here.
+Argos started as a fork of [llama-swap](https://github.com/mostlygeek/llama-swap) by Benson Wong (MIT, see [LICENSE.md](LICENSE.md)).

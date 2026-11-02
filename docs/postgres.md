@@ -6,6 +6,36 @@ Argos runs on either a SQLite file (the default) or Postgres. `ARGOS_DATABASE_UR
 
 SQLite is not a bad database, but it has one shape: a single file, one writer at a time, and a journal that a long-running read stops from checkpointing. When the journal grows, every read has to walk it, and queries that took microseconds start taking seconds — and get worse the longer the process runs. Postgres has none of that. Readers never wait for a writer, there is no file lock, and there is no journal to grow.
 
+## Switching to Postgres
+
+Starting the `postgres` service does not switch Argos over; it stays on the SQLite files until you set `ARGOS_DATABASE_URL`, so starting the stack first is safe.
+
+1. Set a password and start the stack (`setup/setup.sh` writes one for you if you prefer):
+
+   ```sh
+   echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
+   docker compose up -d --build
+   ```
+
+2. Copy the data across (the builder's database and the engine's activity log, in one pass):
+
+   ```sh
+   docker compose exec argos argos-migrate            # add --dry-run to see what it would move
+   ```
+
+   It prints every table's row count before and after, exits non-zero if any came across short, and is safe to run again. It only reads the SQLite files, so they stay as a fallback. (The container has no system Python; `argos-migrate` runs the script with the right one.)
+
+3. Switch over:
+
+   ```sh
+   echo 'ARGOS_DATABASE_URL=postgresql://argos:YOUR_PASSWORD@postgres:5432/argos' >> .env
+   docker compose up -d
+   ```
+
+   One variable moves both stores. Delete it to go back to SQLite.
+
+Postgres wants a real filesystem with real `fsync` and locking: keep its volume off the Unraid array (a pool or cache drive is fine).
+
 ## How the two are kept in step
 
 `builder/src/dialect.py` is the whole seam. It holds the handful of places the dialects genuinely differ, so the store's ~1000 lines of SQL stay put:
