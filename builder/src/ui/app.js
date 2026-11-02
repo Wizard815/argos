@@ -1154,6 +1154,13 @@ function perChat(c, e) {
   const [n, shared] = chatSlots(e);
   return shared || n <= 1 ? c : Math.floor(c / n);
 }
+/** With RoPE on, the scale each chat needs after a change (to -c, --parallel or --kv-unified): {} when off or not past. */
+function ropeFollow(ctx, parallel, unified, e) {
+  if (!ropeOn() || !e.train_ctx) return {};
+  const n = parallel || 1, shared = unified || !parallel;
+  const one = shared || n <= 1 ? ctx : Math.floor(ctx / n);
+  return one > e.train_ctx ? ropeEdits(one, e.train_ctx) : {};
+}
 /** A click in the VRAM card's KV table: that context, and that cache type when a row was picked. RoPE is left
  * to its own button; when it is on already, its scale follows the new per-chat context. */
 function useContext(c, type, e) {
@@ -1182,7 +1189,7 @@ function contextBox(e) {
   };
   const uniBtn = toggle("KV unified", uni ? "on" : "off", uni,
     uni ? "Click to turn off: each chat gets its own -c / --parallel" : "Click to turn on (--kv-unified): the chats share one pool of -c, so a long chat can use what the others leave free",
-    () => edit({ "kv-unified": uni ? null : true }));
+    () => edit({ "kv-unified": uni ? null : true, ...ropeFollow(e.ctx, e.parallel, !uni, e) }));
   // RoPE: on stretches each chat's own context from the trained length; with no chat past it, x2 (room to grow)
   const ropeScale = over ? one / e.train_ctx : 2;
   const ropeBtn = e.train_ctx ? toggle("RoPE", on ? `on ×${num(scale || ropeScale, 2)}` : "off", on,
@@ -1201,19 +1208,33 @@ function contextBox(e) {
     : (over ? `Each chat's ${ctxLabel(one)} is past the trained ${ctxLabel(e.train_ctx)}: turn RoPE on, or the model loses track past ${ctxLabel(e.train_ctx)}.`
       : `RoPE is not needed: each chat's ${ctxLabel(one)} fits the trained ${ctxLabel(e.train_ctx)}.`));
   lines.push(h("p", { class: "hint", style: "margin:6px 0 0" }, say.join(" ")));
+  if (on && over && scale && Math.abs(scale - one / e.train_ctx) > 0.01) {
+    lines.push(h("div", { class: "row", style: "gap:8px; margin-top:6px" },
+      h("span", { class: "pill warn" }, `RoPE is ×${num(scale, 2)}, each chat needs ×${num(one / e.train_ctx, 2)}`),
+      btn(`Set ×${num(one / e.train_ctx, 2)}`, () => edit(ropeEdits(one, e.train_ctx)), "sm")));
+  }
   // the same -c for other chat counts: what each chat would get, and whether it needs RoPE (click a row to use it)
   const counts = [...new Set([1, 2, 4, n].filter((x) => x > 0))].sort((a, b) => a - b);
   const t = h("table", { class: "dense slot-table" });
   renderTable(t, [
     { label: "Parallel (-np)", cell: (x) => (x === (e.parallel || 0) ? h("b", {}, String(x)) : String(x)) },
     { label: "Each chat", cell: (x) => (shared && x > 1 ? `shares ${total} with ${x - 1} other${x > 2 ? "s" : ""}` : `${ctxLabel(shared ? e.ctx : Math.floor(e.ctx / x))} of its own`) },
+    { label: `KV cache per chat (${e.cache_k === e.cache_v ? e.cache_k : `${e.cache_k}/${e.cache_v}`})`, cell: (x) => (e.kv_gib == null ? DASH
+      : shared && x > 1 ? `${num(e.kv_gib, 2)} GiB pool, shared` : `${num(e.kv_gib / x, 2)} GiB${x > 1 ? ` (of ${num(e.kv_gib, 2)})` : ""}`) },
     { label: "RoPE", cell: (x) => {
       const each = shared ? e.ctx : Math.floor(e.ctx / x);
       return !e.train_ctx ? DASH : each > e.train_ctx ? h("span", { class: "pill warn" }, `needed ×${num(each / e.train_ctx, 2)}`) : h("span", { class: "muted" }, "not needed");
     } },
-  ], counts, { key: null }, "", { onRow: (x) => edit({ parallel: String(x) }), rowClass: (x) => (x === (e.parallel || 0) ? "sel" : "") });
+  ], counts, { key: null }, "", { onRow: (x) => edit({ parallel: String(x), ...ropeFollow(e.ctx, x, uni, e) }), rowClass: (x) => (x === (e.parallel || 0) ? "sel" : "") });
   lines.push(h("div", { class: "table-wrap", style: "margin-top:8px" }, t),
-    h("p", { class: "hint", style: "margin:4px 0 0" }, `Click a row to use that --parallel. The KV cache size (VRAM card) is the same for every row: -c ${total} and the cache type set it.`));
+    h("p", { class: "hint", style: "margin:4px 0 0" }, `Click a row to use that --parallel. The total KV cache is the same in every row (${e.kv_gib != null ? `${num(e.kv_gib, 2)} GiB, ` : ""}set by -c ${total} and the cache type): --parallel only decides how it is shared out.`),
+    h("details", { class: "advanced", style: "margin-top:8px" }, h("summary", {}, "How --parallel, the cache and RoPE fit together"),
+      h("ul", { class: "hint", style: "margin:6px 0 0; padding-left:18px" },
+        h("li", {}, "-c is the KV cache: memory for every token every chat holds at once. Its size in VRAM is -c × the cache type (q8_0 is about twice q4_0), whatever --parallel is."),
+        h("li", {}, "--parallel N is how many chats run at the same time. Without --kv-unified each gets its own fixed slice, -c ÷ N; a chat that fills its slice cannot borrow from the others."),
+        h("li", {}, "--kv-unified makes the slices one shared pool: each chat takes what it needs, one can use all of -c while the others are empty, but together they never pass -c."),
+        h("li", {}, `RoPE (YaRN) is about one chat's length, not the total: it is needed only when one chat can be longer than the model was trained on${e.train_ctx ? ` (${ctxLabel(e.train_ctx)} here)` : ""}, and the scale is that chat's context ÷ the trained length (1M ÷ 256K = ×4). It costs no memory, but it loosens positions for every chat, short ones too.`),
+        h("li", {}, "The chats also share the GPU's speed: llama.cpp works on all of them in each batch, so a chat reading a long prompt slows the others' answers (Logs → per slot shows each ID)."))));
   return lines;
 }
 function renderEstimate(e) {
