@@ -839,6 +839,11 @@ class Assistant:
                     + (f"wait for {', '.join(busy)}" if busy else "unload a loaded model")
                     + ". Set a CPU model for hard questions to use one now, or load it by hand")
 
+    def _on_cpu(self, model: str) -> bool:
+        """The model runs on the CPU now (fallen back), or is kept off the GPUs by its command."""
+        m = next((x for x in self._pool().get("models") or [] if x.get("id") == model), None)
+        return bool(m and m.get("on_cpu")) or self._cpu_only(model)
+
     def _cpu_only(self, model: str) -> bool:
         try:
             launch = engine_api.model_launch(self._engine(), model, timeout=2.0)
@@ -870,8 +875,9 @@ class Assistant:
     def unload_idle(self, now: Optional[float] = None) -> list[str]:
         """Called every telemetry tick. Unloads a model only after the assistant itself used it and then left it
         alone for ``idle_unload_min`` minutes, so a model some other app loaded is never touched."""
-        minutes = int(self.settings.get("assistant").get("idle_unload_min") or 0)
-        if minutes <= 0 or self._turn.locked():
+        cfg = self.settings.get("assistant")
+        gpu_min, cpu_min = int(cfg.get("idle_unload_min") or 0), int(cfg.get("idle_unload_min_cpu") or 0)
+        if (gpu_min <= 0 and cpu_min <= 0) or self._turn.locked():
             return []
         now = now or time.time()
         done = []
@@ -890,9 +896,13 @@ class Assistant:
             elif self.memory is not None:
                 self.memory.last_used = last["embed"] = now
         for which, ts in last.items():
-            if not ts or now - ts < minutes * 60:
+            if not ts:
                 continue
             info = self.models()[which]
+            # a model on the CPU holds RAM, not VRAM: its own wait (0 = it stays)
+            minutes = cpu_min if info.get("model") and self._on_cpu(info["model"]) else gpu_min
+            if minutes <= 0 or now - ts < minutes * 60:
+                continue
             if not info["controllable"] or info["state"] not in ("ready", "starting"):
                 if which == "chat":
                     self.last_used = 0.0
