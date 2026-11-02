@@ -52,7 +52,7 @@ from .integrations import engine_api  # noqa: E402
 from .gpu_pick import note_cards  # noqa: E402
 from .inventory import Inventory  # noqa: E402
 from .library import scan_media, scan_models  # noqa: E402
-from .memory import Memory  # noqa: E402
+from .memory import EmbedBursts, Memory  # noqa: E402
 from .services import Analytics, Recorder  # noqa: E402
 from .settings import Settings, env_defaults  # noqa: E402
 from .telemetry import Collector  # noqa: E402
@@ -162,24 +162,33 @@ def create_app(config: dict | None = None) -> Flask:
     memory = Memory(store, settings.all, event)
     memory.extra_sources.append(odysseus_hub.brain_source(settings.all))
 
-    memory_bg = {"last": 0.0}
+    bursts = EmbedBursts()
+
+    def models_busy(pb) -> bool:
+        """A model is working (a request in flight, a slot busy), the memory's own embedder aside."""
+        try:
+            embedder = pb.assistant.pick("embed")
+            return any((m.get("in_flight") or m.get("slots")) and m.get("id") != embedder
+                       for m in (pb.assistant._pool().get("models") or []))
+        except Exception:  # noqa: BLE001 - unknown: treat as busy, the burst waits
+            return True
 
     def watch_memory():
-        """Keep the assistant's memory current: new records every tick. Embedding waits for a search (see sync),
-        unless the embedding model runs on the CPU: it takes nothing from the GPUs, so it embeds as it goes."""
-        if not settings.get("memory")["enabled"]:
-            return
-        pb = app.extensions.get("pb")
+        """Keep the assistant's memory current: new records and their links every tick (no model). The embedding
+        waits for a search (see sync), except a CPU embedder's bursts: at start, and once whenever no model has had
+        a request for a minute, never while one is working."""
         mem_cfg = settings.get("memory")
-        # the links are kept current every tick (no model); the embedder catches up only every few minutes
-        due = time.time() - memory_bg["last"] >= max(1, int(mem_cfg.get("background_every_min") or 10)) * 60
-        on_cpu = bool(due and mem_cfg.get("background", True) and pb and pb.assistant and pb.assistant.embed_on_cpu())
-        if on_cpu:
-            memory_bg["last"] = time.time()
-        # only the records that never change: the rest change with every request and would be re-embedded forever
-        done = memory.sync(budget=64, embed=on_cpu, stable_only=True)
-        if (done or {}).get("embedded"):
-            memory.last_used = time.time()  # it is working: the idle timer does not unload it under the work
+        if not mem_cfg["enabled"]:
+            return
+        memory.sync(budget=0, embed=False)
+        pb = app.extensions.get("pb")
+        if not (mem_cfg.get("background", True) and memory.vectors_on() and pb and pb.assistant and pb.assistant.embed_on_cpu()):
+            return
+        if bursts.due(time.time(), models_busy(pb)):
+            def run():
+                if memory.burst():
+                    memory.last_used = time.time()  # it worked: the idle timer starts from here
+            threading.Thread(target=run, daemon=True, name="memory-burst").start()
 
     def watch_inventory():
         """Keep the load history current, and look for new models and settings every ten minutes."""

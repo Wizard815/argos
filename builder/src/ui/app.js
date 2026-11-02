@@ -3707,11 +3707,15 @@ function renderAssistantSettings() {
   const memOn = h("input", { type: "checkbox", checked: !!mem.enabled });
   const memBg = h("input", { type: "checkbox", checked: mem.background !== false });
   const memLinks = h("input", { type: "checkbox", checked: mem.links !== false });
-  const memEvery = h("select", {}, [[2, "every 2 minutes"], [5, "every 5 minutes"], [10, "every 10 minutes"], [30, "every 30 minutes"], [60, "every hour"]]
-    .map(([v, l]) => h("option", { value: v, selected: Number(mem.background_every_min || 10) === v }, l)));
+  const searchBy = h("select", {}, [["embed", "Embedding model and links: also finds what means the same in other words"],
+    ["links", "Link graph only: what records share (model, flag, GPU, failure…), no embedding model runs"]]
+    .map(([v, l]) => h("option", { value: v, selected: (mem.search_by || "embed") === v }, l)));
+  const syncSearchBy = () => { const off = searchBy.value === "links"; embed.disabled = embedCpu.disabled = memBg.disabled = off; memLinks.disabled = off; if (off) memLinks.checked = true; };
+  searchBy.addEventListener("change", syncSearchBy);
   const embed = modelSelect(ch.embed, mem.model, { none: "none: search by words only", connected: ch.engine_connected });
   const embedCpu = modelSelect(ch.embed, mem.model_cpu || "", { none: "none: the GPU model always", connected: ch.engine_connected });
   const results = h("input", { type: "number", value: mem.results });
+  syncSearchBy();
   const memEndpoint = h("input", { type: "text", value: mem.endpoint || "", placeholder: "blank = the engine (normal)", spellcheck: "false" });
 
   const save = async () => {
@@ -3726,7 +3730,7 @@ function renderAssistantSettings() {
         Object.assign(body, { mode: "engine", model: chat.value, model_cpu: chatCpu.value });
       }
       await api("PUT", "/api/settings/assistant", body);
-      await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, model_cpu: embedCpu.value, background: memBg.checked, links: memLinks.checked, background_every_min: memEvery.value, endpoint: memEndpoint.value.trim(), results: results.value });
+      await api("PUT", "/api/settings/memory", { enabled: memOn.checked, model: embed.value, model_cpu: embedCpu.value, background: memBg.checked, links: memLinks.checked, search_by: searchBy.value, endpoint: memEndpoint.value.trim(), results: results.value });
       await loadSettings();
       toast("Saved the assistant settings.", "ok");
       renderAssistantSettings();
@@ -3773,9 +3777,9 @@ function renderAssistantSettings() {
       h("p", { class: "hint" }, "What it is for: only the bigger model's questions about the past (what happened, what was tried, why it was slow) search the memory. Nothing else uses it: not the charts, not the Schedule, not the small model. Without an embedding model the search still works, by matching words."),
       h("div", { class: "fields" },
         h("label", { class: "check wide" }, memOn, "Use the memory"),
+        field("Search by", searchBy, "The link graph needs no model at all: a cheap choice if you would rather not run an embedding model for the assistant.", true),
         h("label", { class: "check wide", title: "Only the records that never change once written: new events, notes, profiles, benchmarks, Odysseus Brain notes. Speeds, configs and open loads change with every request; they are embedded when a search needs them." },
-          memBg, "With the embedding model on the CPU, embed new records in the background (off: only when the bigger model searches)"),
-        field("Background embedding runs", memEvery, "The links keep up in between: the embedder can be slow.", true),
+          memBg, "With the embedding model on the CPU, embed new records in bursts: when Argos starts, and a minute after the models go quiet, never while one is working (off: only when the bigger model searches)"),
         h("label", { class: "check wide", title: "No model: each record is linked to the models, profiles, flags, environment variables, GPUs, failures and days it names; records sharing rare things are alike. API: GET /api/assistant/memory/similar?q=… or ?source=…&key=…" },
           memLinks, "Link graph: find related records by what they share (model, profile, flag, variable, GPU, failure, day), with no model to run"),
         field("Embedding model (GPU)", embed, ch.embed.length ? `${ch.embed.length} to choose from: embedding models and their profiles` : "No embedding models or profiles yet. Download one under Models (search “nomic-embed”), or save a profile with --embedding.", true),
