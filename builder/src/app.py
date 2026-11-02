@@ -299,13 +299,22 @@ def create_app(config: dict | None = None) -> Flask:
         """Unload the assistant's chat and embedding models once they sit unused for the set number of minutes."""
         app.extensions["pb"].assistant.unload_idle()
 
+    def watch_loops():
+        """The loop guard: a client sending the same request over and over is flagged, and stopped if set to."""
+        pb = app.extensions.get("pb")
+        if pb is None:
+            return
+        from .loop_guard import check
+        check(pb.store, pb.settings, pb.settings.get("integrations").get("engine_url") or "",
+              pb.schedule_state.setdefault("loops", {}), event, time.time())
+
     def watch_schedule():
         """Unload the models the schedule loaded once they sit unused for its own idle timer."""
         pb = app.extensions["pb"]
         idle_unload(pb.plans, pb.store, pb.settings.get("integrations").get("engine_url") or "", pb.event)
 
     collector = Collector(store, settings.all, event,
-                          hooks=[watch_exits, refresh_plan, watch_pool, watch_inventory, watch_memory, watch_assistant,
+                          hooks=[watch_exits, refresh_plan, watch_pool, watch_inventory, watch_memory, watch_assistant, watch_loops,
                                  watch_schedule])
     plans = Plans(store)
     servers = Servers(store, cfg["SSH_DIR"] or os.path.join(os.path.dirname(os.path.abspath(cfg["DB"])), "ssh"), run=cfg.get("SSH_RUN"),
