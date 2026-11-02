@@ -684,3 +684,9 @@ pre.log.logs-big { max-height: 70dvh; min-height: 320px; }
 /* a request that arrived since the last refresh */
 .req-new td { background: color-mix(in srgb, var(--accent, #6aa) 18%, transparent); }
 .req-running td { background: color-mix(in srgb, var(--warn, #c90) 14%, transparent); }
+
+/* per-slot tables: every value left-aligned under its header, the ID narrow */
+.slot-table th, .slot-table td { text-align: left; vertical-align: bottom; }
+.slot-table td { white-space: nowrap; }
+.slot-table th { white-space: normal; }
+.slot-table td:first-child, .slot-table th:first-child { width: 2.5em; }
