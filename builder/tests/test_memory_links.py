@@ -51,3 +51,30 @@ def test_the_memory_links_its_records_and_finds_similar_ones_with_no_model(app, 
     mem.sync()  # a new record is linked as it comes in
     top = client.get("/api/assistant/memory/similar?q=did gemma crash").get_json()["results"][0]
     assert "gemma-4-e2b--fast crashed" in top["text"]
+
+
+def test_the_cpu_embedder_runs_in_bursts_never_while_a_model_works():
+    from src.memory import EmbedBursts
+    b = EmbedBursts(quiet_s=60)
+    assert b.due(0, busy=True) is False, "a model is working: wait"
+    assert b.due(10, busy=False) is True, "the burst at start, once things are quiet"
+    assert b.due(20, busy=False) is False and b.due(500, busy=False) is False, "one burst per quiet spell"
+    assert b.due(600, busy=True) is False
+    assert b.due(620, busy=False) is False and b.due(670, busy=False) is False, "quiet for 50 s only"
+    assert b.due(681, busy=False) is True, "a minute after the models stopped"
+    assert b.due(700, busy=False) is False
+
+
+def test_links_only_runs_no_embedding_model(app, client):
+    mem = app.extensions["pb"].memory
+    client.put("/api/settings/integrations", json={"engine_url": "http://engine"})
+    client.put("/api/settings/memory", json={"enabled": True, "model": "qembed", "search_by": "embed"})
+    assert mem.vectors_on() and mem.links_on()
+    client.put("/api/settings/memory", json={"search_by": "links", "links": False})
+    assert not mem.vectors_on() and mem.links_on(), "the link graph instead: on even with the switch off"
+    mem.embed = lambda texts: (_ for _ in ()).throw(AssertionError("no embedding in links mode"))
+    app.extensions["pb"].store.add_event("launch", "coder crashed: out of memory", level="error")
+    mem.sync()
+    assert mem.burst() == 0
+    hits = client.post("/api/assistant/memory/search", json={"q": "coder out of memory"}).get_json()["results"]
+    assert hits and "meaning" not in hits[0]["matched_by"]

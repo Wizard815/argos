@@ -39,6 +39,36 @@ RRF_K = 60
 TOKEN = re.compile(r"[a-z0-9][a-z0-9_.\-]+")
 
 
+
+class EmbedBursts:
+    """When the background embedding runs: in bursts, never while a model is working.
+
+    Once when Argos starts, and once each time things go quiet: when no model has had a request for
+    ``quiet_s`` (a minute). A model reading a long prompt or writing an answer is not slowed by it, and an embedder
+    that is not needed is not kept busy; the records that came in during the busy spell wait for the next quiet.
+    """
+
+    def __init__(self, quiet_s: float = 60.0):
+        self.quiet_s = quiet_s
+        self.started = False      # the burst at start has run
+        self.quiet_since: Optional[float] = None
+        self.done_this_quiet = False
+
+    def due(self, now: float, busy: bool) -> bool:
+        if busy:
+            self.quiet_since, self.done_this_quiet = None, False
+            return False
+        if not self.started:
+            self.started = self.done_this_quiet = True
+            self.quiet_since = now
+            return True
+        if self.quiet_since is None:
+            self.quiet_since = now
+        if not self.done_this_quiet and now - self.quiet_since >= self.quiet_s:
+            self.done_this_quiet = True
+            return True
+        return False
+
 class MemoryError_(Exception):
     pass
 
@@ -105,7 +135,20 @@ class Memory:
 
     def vectors_on(self) -> bool:
         c = self.config()
-        return bool(c.get("enabled") and c.get("endpoint") and c.get("model"))
+        # "links": the link graph instead of the embedding model, which then never runs
+        return bool(c.get("enabled") and c.get("search_by", "embed") != "links" and c.get("endpoint") and c.get("model"))
+
+    def burst(self, budget: int = 512, step: int = 64) -> int:
+        """Embed the records that never change, in steps, until they are done or ``budget`` is reached."""
+        done = 0
+        while done < budget and self.vectors_on():
+            with self._lock:
+                n = self._embed_pending(min(step, budget - done), self.STABLE_SOURCES)
+            if not n:
+                break
+            done += n
+            self._matrix = None
+        return done
 
     # ----- what gets remembered ----------------------------------------------------------
     def collect(self) -> list[tuple[str, str, float, str]]:
@@ -228,7 +271,8 @@ class Memory:
 
     # ----- the link graph (memory_links): records joined by what they share, no model needed ----------------
     def links_on(self) -> bool:
-        return bool(self.config().get("enabled") and self.config().get("links", True))
+        c = self.config()
+        return bool(c.get("enabled") and (c.get("links", True) or c.get("search_by") == "links"))
 
     def _models(self) -> list[str]:
         try:
