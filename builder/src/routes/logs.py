@@ -60,7 +60,10 @@ def gpu_latest():
     c = ctx()
     latest = c.store.gpu_latest()
     note_cards(latest)
-    return ok(latest=latest)
+    cpu = c.store.cpu_latest() or {}
+    fresh = cpu.get("ts") and time.time() - cpu["ts"] < 60
+    return ok(latest=latest, cpu={"power_w": cpu.get("power_w") if fresh else None, "util": cpu.get("util") if fresh else None,
+                                  "models": list(c.schedule_state.get("cpu_models") or [])})
 
 
 @bp.get("/api/debug/threads")

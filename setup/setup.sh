@@ -296,6 +296,9 @@ backup docker-compose.override.yaml
   [[ -n "$CFGD_DIR" ]] && echo "      - $CFGD_DIR:/app/config.d"
   for v in "${VOLS[@]+"${VOLS[@]}"}"; do echo "      - $v"; done
   [[ "$MODE" == 2 ]] && echo "      - /var/run/docker.sock:/var/run/docker.sock"
+  # CPU power for the header's watts counter: Docker hides these counters from containers; read-only, and
+  # harmless where the folder does not exist (no RAPL: a VM, or not Linux)
+  [[ -d /sys/devices/virtual/powercap ]] && echo "      - /sys/devices/virtual/powercap:/host/powercap:ro"
   if [[ "$MODE" == 3 ]]; then
     # The remote-llama wrapper is deliberately NOT mounted. The image ships it
     # at /app/bin/remote-llama with its execute bit; mounting a script from a

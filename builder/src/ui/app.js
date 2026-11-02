@@ -2841,7 +2841,28 @@ async function loadGpuBars() {
       h("span", { class: "gpu-bar-label" }, `GPU${g.gpu}`),
       h("span", { class: "gpu-bar-track" }, h("i", { style: `width:${pct.toFixed(1)}%` })),
       h("span", { class: "gpu-bar-num" }, gb(used)));
-  }));
+  }), ...wattsMeter(rows, d.cpu || {}));
+}
+
+/** The header's power counter: every GPU's draw added up, and the CPU's while a model runs on it. */
+function wattsMeter(gpus, cpu) {
+  const withW = gpus.filter((g) => g.power_w != null);
+  const out = [];
+  const gpuW = withW.reduce((a, g) => a + (g.power_w || 0), 0);
+  if (withW.length) {
+    out.push(h("span", { class: "gpu-bar watts", title: `GPU power now: ${withW.map((g) => `GPU${g.gpu} ${Math.round(g.power_w)} W`).join(" · ")}${withW.length < gpus.length ? " (some GPUs report none)" : ""}` },
+      h("span", { class: "gpu-bar-label" }, "⚡ GPU"), h("span", { class: "gpu-bar-num" }, `${Math.round(gpuW)} W`)));
+  }
+  if ((cpu.models || []).length) {
+    const on = cpu.models.join(", ");
+    out.push(h("span", { class: "gpu-bar watts", title: cpu.power_w != null
+      ? `CPU package power now (RAPL), shown while a model runs on the CPU: ${on}`
+      : `A model runs on the CPU (${on}), but this machine reports no CPU power: no RAPL counters under /sys/class/powercap (a VM, or a container that hides them)` },
+      h("span", { class: "gpu-bar-label" }, "⚡ CPU"), h("span", { class: "gpu-bar-num" }, cpu.power_w != null ? `${Math.round(cpu.power_w)} W` : "—")));
+    if (cpu.power_w != null && withW.length) out.push(h("span", { class: "gpu-bar watts", title: "GPUs and CPU together" },
+      h("span", { class: "gpu-bar-label" }, "Σ"), h("span", { class: "gpu-bar-num" }, `${Math.round(gpuW + cpu.power_w)} W`)));
+  }
+  return out;
 }
 
 // ── Logs: GPU charts ─────────────────────────────────────────

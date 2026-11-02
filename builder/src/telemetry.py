@@ -20,6 +20,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 
 from . import gputools
@@ -173,6 +174,54 @@ def read_local_cpu(prev: Optional[tuple] = None) -> tuple[Optional[dict], Option
              "load1": os.getloadavg()[0] if hasattr(os, "getloadavg") else None}, (idle, total))
 
 
+# Where the RAPL counters are: Docker 25+ hides /sys/devices/virtual/powercap inside containers, so setup.sh
+# mounts it at /host/powercap (read-only); ARGOS_RAPL_DIR names another place.
+RAPL_DIRS = ("/sys/class/powercap", "/host/powercap")
+
+
+def _rapl_domains(root: str) -> dict[str, str]:
+    """Package domain name -> its folder, directly under root or one folder down (powercap/intel-rapl/...)."""
+    out: dict[str, str] = {}
+    for base in [root] + sorted(glob.glob(os.path.join(root, "*"))):
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue
+        for n in names:
+            if re.fullmatch(r"(intel|amd)-rapl:\d+", n) and n not in out:
+                out[n] = os.path.join(base, n)
+    return out
+
+
+def read_cpu_power(prev: Optional[dict] = None, root: str = "", now: Optional[float] = None) -> tuple[Optional[float], dict]:
+    """The CPU packages' power in watts, from their RAPL energy counters (Intel, and AMD Zen on Linux 5.8+):
+    the energy used between two readings over the time between them, so the first reading has none.
+    Only the package domains (intel-rapl:0, :1 ...) are summed: their sub-domains (cores, uncore, dram) are
+    inside them. Returns (watts or None, the counters to pass next time). None also when the counters cannot be
+    read: no RAPL (a VM, Windows), or a container that does not see /sys/class/powercap."""
+    now = time.time() if now is None else now
+    counters: dict = {"t": now}
+    roots = [root] if root else [os.environ.get("ARGOS_RAPL_DIR") or "", *RAPL_DIRS]
+    domains: dict[str, str] = {}
+    for r in roots:
+        if r and not domains:
+            domains = _rapl_domains(r)
+    for n, path in sorted(domains.items()):
+        energy = _num(_read(os.path.join(path, "energy_uj")))
+        if energy is None:
+            continue
+        counters[n] = (energy, _num(_read(os.path.join(path, "max_energy_range_uj"))) or 0)
+    if not prev or len(counters) < 2 or now <= prev.get("t", now):
+        return None, counters
+    used = 0.0
+    for n, (energy, top) in ((k, v) for k, v in counters.items() if k != "t"):
+        if n not in prev:
+            return None, counters
+        before = prev[n][0]
+        used += energy - before if energy >= before else energy + (top - before)  # the counter wrapped
+    return round(used / 1e6 / (now - prev["t"]), 1), counters
+
+
 def fetch_activity(base_url: str, after_id: int, limit: int = 999, order: str = "asc") -> list[dict]:
     """Argos activity rows with id > after_id as ``requests`` rows (oldest first by default)."""
     qs = urllib.parse.urlencode({"min_id": after_id + 1, "limit": limit, "sort": "id", "order": order})
@@ -322,6 +371,9 @@ class Collector:
         cpu = self.last_cpu
         if cpu is None:
             cpu, self._cpu_prev = read_local_cpu(self._cpu_prev)
+        watts, self._rapl_prev = read_cpu_power(getattr(self, "_rapl_prev", None), now=now)
+        if cpu is not None and watts is not None:
+            cpu = {**cpu, "power_w": watts}
         if cpu and (cpu.get("util") is not None or cpu.get("mem_total_mb")):
             self.store.add_cpu_sample({**cpu, "ts": now})
         note_cards(rows)  # AMD or NVIDIA, for the Builder's GPU pick
