@@ -192,6 +192,24 @@ def inflight(base_url: str, timeout: float = 3.0) -> list[dict]:
             for r in rows or [] if isinstance(r, dict)]
 
 
+def inflight_and_gone(base_url: str, timeout: float = 3.0) -> tuple[list[dict], list[dict]]:
+    """``inflight`` plus the requests whose client hung up before the answer (the engine's ``gone``: model, src,
+    at), so a slot still working on one can say so. An engine from before ``gone`` lists none."""
+    try:
+        data = _get(base_url.rstrip("/") + "/api/inflight", timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return [], []
+        raise
+    rows = data.get("requests") if isinstance(data, dict) else None
+    running = [{"id": r.get("id"), "model": r.get("model") or "", "path": r.get("req_path") or "", "src": r.get("remote_ip") or "",
+                "elapsed_ms": r.get("elapsed_ms") or 0, "resp_bytes": r.get("resp_bytes") or 0,
+                "held": (r.get("metadata") or {}).get("held") or ""}
+               for r in rows or [] if isinstance(r, dict)]
+    gone = [g for g in (data.get("gone") if isinstance(data, dict) else None) or [] if isinstance(g, dict)]
+    return running, gone
+
+
 def model_launch(base_url: str, model_id: str, timeout: float = 3.0) -> dict:
     """{"cmd", "env"} the engine starts ``model_id`` with, from its /v1/models listing; {} when it is not listed."""
     data = _get(base_url.rstrip("/") + "/v1/models", timeout)

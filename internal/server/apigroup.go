@@ -525,7 +525,7 @@ func (s *Server) handleAPICapture(w http.ResponseWriter, r *http.Request) {
 // a dashboard can show a request while it works instead of once it finishes.
 func (s *Server) handleAPIInflight(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"requests": s.inflight.Current().Requests})
+	json.NewEncoder(w).Encode(map[string]any{"requests": s.inflight.Current().Requests, "gone": s.inflight.Gone(10 * time.Minute)})
 }
 
 // handleAPICancelInflight cancels an active model-dispatched request by its

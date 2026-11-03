@@ -56,6 +56,7 @@ type inflightTracker struct {
 	requests map[string]*inflightRequest
 
 	updates          chan swaputil.InFlightRequestsEvent
+	gone             []goneRequest // clients that hung up before their answer, newest last
 	needsSnapshot    atomic.Bool
 	publisherRunning atomic.Bool
 	publish          func(swaputil.InFlightRequestsEvent)
@@ -106,6 +107,43 @@ func (t *inflightTracker) Add(r *http.Request, cancel context.CancelFunc) string
 	t.enqueueLocked(upsertInflightEvent(req.entry))
 	t.mu.Unlock()
 	return id
+}
+
+// goneRequest is a request whose client hung up before its answer was done.
+// llama-server notices only once it starts sending, so a slot can keep reading
+// the prompt for minutes after; Schedule -> Live says so for that slot.
+type goneRequest struct {
+	Model string    `json:"model"`
+	Src   string    `json:"src"`
+	Path  string    `json:"path"`
+	At    time.Time `json:"at"`
+}
+
+// NoteGone records that request id's client hung up (before it is removed).
+func (t *inflightTracker) NoteGone(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	req, ok := t.requests[id]
+	if !ok || req.entry.Model == "" {
+		return
+	}
+	t.gone = append(t.gone, goneRequest{Model: req.entry.Model, Src: req.entry.RemoteIP, Path: req.entry.ReqPath, At: time.Now()})
+	if len(t.gone) > 50 {
+		t.gone = t.gone[len(t.gone)-50:]
+	}
+}
+
+// Gone lists the hang-ups of the last window, oldest first.
+func (t *inflightTracker) Gone(window time.Duration) []goneRequest {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := make([]goneRequest, 0, len(t.gone))
+	for _, g := range t.gone {
+		if time.Since(g.At) <= window {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 func (t *inflightTracker) Remove(id string) {
@@ -403,12 +441,18 @@ func CreateInflightMiddleware(t *inflightTracker, cfg config.Config) chain.Middl
 				return
 			}
 
-			ctx, cancel := context.WithCancel(r.Context())
+			client := r.Context() // done when the client hangs up (not when Argos cancels it)
+			ctx, cancel := context.WithCancel(client)
 			defer cancel()
 
 			r = r.WithContext(ctx)
 			id := t.Add(r, cancel)
 			defer t.Remove(id)
+			defer func() {
+				if client.Err() != nil {
+					t.NoteGone(id)
+				}
+			}()
 			defer scheduler.Marks.Forget(id)
 			// the scheduler knows the request by this id: a hold from Schedule -> Live reaches it
 			r = r.WithContext(scheduler.WithRequestID(r.Context(), id))

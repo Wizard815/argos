@@ -451,6 +451,20 @@ func main() {
 			proxyLog.Infof("reload: carried over %d running model(s) whose config did not change", len(carried))
 		}
 
+		// The models restarted for new settings save their slots' prompt caches
+		// first (those run with --slot-save-path), to load back once they are up.
+		restarting := map[string]bool{}
+		for id := range old.RunningModels() {
+			was, hadOld := oldCfg.Models[id]
+			now, hasNew := newCfg.Models[id]
+			if hadOld && hasNew && !config.ModelConfigEqual(was, now) {
+				restarting[id] = true
+			}
+		}
+		if len(restarting) > 0 {
+			old.SaveSlotsBeforeRestart(restarting)
+		}
+
 		if err := old.Shutdown(shutdownTimeout); err != nil {
 			proxyLog.Warnf("error shutting down old server during reload: %v", err)
 		}

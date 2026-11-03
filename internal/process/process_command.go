@@ -137,6 +137,20 @@ type ProcessCommand struct {
 
 var _ Process = (*ProcessCommand)(nil)
 
+// readyHook runs when a model has passed its health check, before it is marked
+// ready and given its first request (the server restores saved slot caches
+// there). It gets the model id, its proxy URL and its command.
+var readyHook atomic.Pointer[func(id, proxy, cmd string)]
+
+// SetReadyHook installs the hook (nil removes it).
+func SetReadyHook(fn func(id, proxy, cmd string)) {
+	if fn == nil {
+		readyHook.Store(nil)
+		return
+	}
+	readyHook.Store(&fn)
+}
+
 func New(
 	parentCtx context.Context,
 	id string,
@@ -607,6 +621,11 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 			return prematureExit()
 		case <-time.After(time.Second):
 		}
+	}
+
+	// up and healthy, not yet given a request: the moment to put a saved prompt cache back
+	if hook := readyHook.Load(); hook != nil {
+		(*hook)(p.id, p.config.Proxy, p.config.Cmd)
 	}
 
 	return startResult{cmd: cmd, cmdDone: cmdDone, cancel: cmdCancel, handlerFn: handlerFn}

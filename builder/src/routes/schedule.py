@@ -242,24 +242,39 @@ def schedule_live():
     url = ctx().settings.get("integrations")["engine_url"]
     if not url:
         return ok(connected=False, error="the engine is not running", pool=None)
+    took: dict[str, float] = {}  # seconds each part took: the page shows the total, and the slowest on hover
+    t0 = time.monotonic()
+
+    def lap(name: str, since: float) -> float:
+        now = time.monotonic()
+        took[name] = round(now - since, 3)
+        return now
+
     try:
+        t = time.monotonic()
         real = {str(g["gpu"]): round((g.get("mem_used_mb") or 0) / 1024, 2) for g in ctx().store.gpu_latest()}
         activity = [{"ts": e["ts"], "level": e["level"], "message": e["message"]}
                     for e in ctx().store.list_events(kind="schedule", limit=40)]
+        t = lap("database", t)
         runners = {}
         try:  # which runner serves each model; anything not listed is llama.cpp
             runners = {mid: e.get("metadata", {}).get("argos", {}) for mid, e in ctx().runners.entries().items()}
         except Exception:  # noqa: BLE001 - the column falls back to llama.cpp
             pass
+        t = lap("runners", t)
         try:  # the requests the GPUs are working on, newest first, straight from the engine
             requests = recent_requests(url, max(1, min(request.args.get("requests", 25, type=int), 200)))
         except Exception:  # noqa: BLE001 - the feed is empty rather than the page broken
             requests = []
+        t = lap("requests", t)
+        gone: list = []
         try:  # and the ones still running, so they show while they work, not once they finish
-            running_now = engine_api.inflight(url)
+            running_now, gone = engine_api.inflight_and_gone(url)
         except Exception:  # noqa: BLE001
             running_now = []
+        t = lap("running requests", t)
         pool = engine_api.pool_state(url)
+        t = lap("engine pool", t)
         procs, proc_errors = {}, {}
         if any(m.get("on_cpu") and m.get("state") != "stopped" for m in pool.get("models") or []):
             try:  # what each model on the CPU really uses: its own process's RAM and cores busy
@@ -267,11 +282,13 @@ def schedule_live():
                 proc_errors = dict(_model_procs.errors)
             except Exception as exc:  # noqa: BLE001 - the card shows the estimate then
                 procs, proc_errors = {}, {"*": f"could not read the processes: {exc}"}
+            t = lap("CPU model processes", t)
+        took["total"] = round(time.monotonic() - t0, 3)
         return ok(connected=True, error="", pool=pool, at=time.time(), real_gib=real, activity=activity,
                   cpu=ctx().store.cpu_latest(), procs=procs, proc_errors=proc_errors, embedder=_embedder_now(),
-                  runners=runners, requests=requests, running=running_now)
+                  runners=runners, requests=requests, running=running_now, gone=gone, took=took)
     except Exception as exc:  # noqa: BLE001
-        return ok(connected=False, error=str(exc), pool=None)
+        return ok(connected=False, error=str(exc), pool=None, took={"total": round(time.monotonic() - t0, 3)})
 
 
 @bp.get("/api/guard")
