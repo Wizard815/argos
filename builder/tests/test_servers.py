@@ -1,5 +1,6 @@
 """Servers: Local plus SSH machines, keys, Check, seeding from a file, importing from Odysseus."""
 import json
+import os
 import subprocess
 
 import pytest
@@ -40,7 +41,7 @@ class FakeSSH:
 
     def __call__(self, argv, stdin, timeout):
         self.calls.append((list(argv), stdin))
-        if argv[0] == "ssh-keygen" and "-y" not in argv:  # -y (derive a .pub) answers from the queue
+        if argv[0] == "ssh-keygen" and "-t" in argv:  # making a key; -y (derive a .pub) and -R answer from the queue
             path = argv[argv.index("-f") + 1]
             open(path, "w").write("PRIVATE")
             open(path + ".pub", "w").write("ssh-ed25519 AAAATEST argos-test\n")
@@ -401,3 +402,26 @@ def test_check_lists_the_kv_cache_pairs_the_build_compiled(tmp_path):
 def test_parse_facts_kv_pairs_unknown_build():
     assert parse_facts("argos=ok\nllama_server=/app/llama-server\nkv_probe=1\n")["kv_pairs"] == []
     assert parse_facts("argos=ok\nkv_pair=8-8\nkv_pair=99-8\nkv_pair=x\n")["kv_pairs"] == ["q8_0-q8_0"]
+
+
+def test_Servers_a_changed_host_key_says_so_and_can_be_forgotten(sclient, sapp, fake, tmp_path, monkeypatch):
+    s = add(sclient, port=2222)
+    sclient.post(f"/api/servers/{s['id']}/key")
+    fake.replies = [(255, "", "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.\n")]
+    r = sclient.post(f"/api/servers/{s['id']}/check").get_json()["server"]
+    assert r["status"] == "failed" and "Forget host key" in r["last_error"]
+
+    servers = sapp.extensions["pb"].servers
+    os.makedirs(servers.ssh_dir, exist_ok=True)
+    open(servers.known_hosts(), "w").write("[mx-llama]:2222 ssh-ed25519 OLD\n")
+    launch = tmp_path / "ssh_known_hosts"
+    launch.write_text("[mx-llama]:2222 ssh-ed25519 OLD\n")
+    monkeypatch.setattr(servers, "LAUNCH_KNOWN_HOSTS", str(launch))
+    fake.replies = [(0, "# Host [mx-llama]:2222 found: line 1\n", f"{servers.known_hosts()} updated.\n"), (0, "", ""),
+                    (0, "", f"{launch} updated.\n"), (0, "", ""),
+                    (0, FACTS_ROCM, "")]  # then Check connects
+    out = sclient.post(f"/api/servers/{s['id']}/forget-host-key").get_json()
+    assert out["removed"] == [servers.known_hosts(), str(launch)], "Check's file and the launches' file"
+    removals = [c[0] for c in fake.calls if c[0][:2] == ["ssh-keygen", "-R"]]
+    assert removals[0][2] == "[mx-llama]:2222", "a port other than 22 is saved as [host]:port"
+    assert out["server"]["status"] == "connected"

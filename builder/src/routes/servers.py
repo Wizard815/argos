@@ -77,6 +77,21 @@ def servers_delete(server_id):
     return ok()
 
 
+@bp.post("/api/servers/<int:server_id>/forget-host-key")
+def servers_forget_host_key(server_id):
+    """Drop the server's saved SSH host key (Check's and the launches'), then Check again: the new key is saved."""
+    c = ctx()
+    s = c.store.get_server(server_id)
+    if not s:
+        return err("not found", 404)
+    try:
+        removed = c.servers.forget_host_key(s)
+    except ServerError as exc:
+        return err(str(exc))
+    c.event("server", f"forgot the saved host key of {s['name']}" + (f" ({', '.join(removed)})" if removed else " (none was saved)"))
+    return ok(removed=removed, server=_public(c.servers.check(server_id)))
+
+
 @bp.post("/api/servers/<int:server_id>/default")
 def servers_default(server_id):
     c = ctx()
