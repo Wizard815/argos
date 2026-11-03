@@ -142,6 +142,27 @@ function keepFocus(fn) {
 // A call that is legitimately slow (a benchmark, a load measurement) passes 0.
 const API_TIMEOUT_MS = 180000;
 
+// The server's clock against this browser's, in seconds (server - browser), from each response's Date header.
+// Every "ago" counts from the server's time: a browser or server clock set wrong (UTC read as local) would
+// otherwise make what just happened read "4h ago".
+let CLOCK_SKEW = 0;
+const serverNow = () => Date.now() / 1000 + CLOCK_SKEW;
+function noteServerClock(res) {
+  const d = Date.parse(res.headers.get("Date") || "");
+  if (!Number.isFinite(d)) return;
+  const skew = (d - Date.now()) / 1000;
+  // the header has whole seconds and the reply took time: only a real difference counts
+  CLOCK_SKEW = Math.abs(skew) < 3 ? 0 : skew;
+  const warn = document.getElementById("clockWarn");
+  if (warn) {
+    warn.hidden = Math.abs(skew) < 120;
+    if (!warn.hidden) {
+      const hrs = Math.abs(skew) / 3600;
+      warn.textContent = `⚠ clocks differ by ${hrs >= 1 ? `${hrs.toFixed(1)} h` : `${Math.round(Math.abs(skew) / 60)} min`}`;
+      warn.title = `The Argos server's clock is ${skew > 0 ? "ahead of" : "behind"} this computer's by ${Math.round(Math.abs(skew) / 60)} minutes. "Ago" times count from the server's clock, so they stay right; set both clocks to the real time (NTP) to fix the cause.`;
+    }
+  }
+}
 async function api(method, path, body, timeoutMs = API_TIMEOUT_MS) {
   const opts = { method, headers: {} };
   if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
@@ -151,6 +172,7 @@ async function api(method, path, body, timeoutMs = API_TIMEOUT_MS) {
   let res;
   try {
     res = await fetch(path, opts);
+    noteServerClock(res);
   } catch (e) {
     if (e && e.name === "AbortError") {
       throw new Error(`${method} ${path} did not answer within ${Math.round(timeoutMs / 1000)}s. The app is busy or stuck — a restart usually clears it.`);
@@ -219,7 +241,7 @@ function num(v, digits = 1) {
 }
 function ago(ts) {
   if (!ts) return DASH;
-  const s = Date.now() / 1000 - ts;
+  const s = serverNow() - ts;
   if (s < 45) return "just now";
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`;
@@ -227,7 +249,7 @@ function ago(ts) {
   return new Date(ts * 1000).toLocaleDateString();
 }
 function uptime(ts) {
-  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  const s = Math.max(0, Math.round(serverNow() - ts));
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 function settingChips(s) {
@@ -1558,7 +1580,7 @@ function renderProfiles() {
   const rows = S.profiles.filter((p) => (!m || (p.model_id || p.base_model) === m)
     && (!q || `${p.name} ${p.base_model} ${p.model_id} ${p.launch_command} ${p.source}`.toLowerCase().includes(q)));
   // starred profiles, then the few used last, sit open at the top; everything else is grouped by model family
-  const recent = new Set(S.profiles.filter((p) => !p.favorite && p.last_used_at && Date.now() / 1000 - p.last_used_at < RECENT_S)
+  const recent = new Set(S.profiles.filter((p) => !p.favorite && p.last_used_at && serverNow() - p.last_used_at < RECENT_S)
     .sort((a, b) => b.last_used_at - a.last_used_at).slice(0, RECENT_N).map((p) => p.profile_id));
   const pinned = { [FAV_GROUP]: 0, [RECENT_GROUP]: 1 };
   renderTable($("#pTable"), [
@@ -2982,7 +3004,7 @@ function renderDownloads() {
           : d.status !== "done" ? btn("Resume", async () => { await api("POST", `/api/downloads/${d.id}/retry`).catch(fail); loadDownloads(); }, "sm") : null),
       h("div", { class: `progress${d.status === "done" ? " done" : ""}` }, h("i", { style: `width:${pct.toFixed(1)}%` })),
       h("div", { class: "muted mono-sm" }, `${size(d.bytes_done || 0)} of ${size(d.bytes_total || 0)}`,
-        running && d.speed ? ` · ${size(d.speed)}/s` : "", eta != null ? ` · ${uptime(Date.now() / 1000 - eta)} left` : ""),
+        running && d.speed ? ` · ${size(d.speed)}/s` : "", eta != null ? ` · ${uptime(serverNow() - eta)} left` : ""),
       // Anything that did not finish says why, in its own block: the one-line
       // summary above is too easy to miss, and "it stopped" without a reason is
       // what makes a failed download look like nothing happened.
@@ -3053,7 +3075,7 @@ const G = { range: (() => { try { const r = localStorage.getItem("gpuRange"); re
 function gpuView() {
   if (!G.meta) return null;
   const [span, bucket] = RANGE_SPAN[G.range];
-  const end = Math.max(Date.now() / 1000, ...G.buf.slice(-1).map((r) => r.t)), since = end - span;
+  const end = Math.max(serverNow(), ...G.buf.slice(-1).map((r) => r.t)), since = end - span;
   const groups = new Map();
   for (const r of G.buf) {
     if (r.t < since) continue;
@@ -3249,7 +3271,7 @@ async function loadGpu() {
       // the first time the whole hour, then only the buckets from the newest one kept onward (it may have grown)
       const last = G.buf.length ? G.buf[G.buf.length - 1].t : null;
       const d = await api("GET", `/api/gpu/series?range=1h&bucket=${BUF_BUCKET}${last != null ? `&since=${last}` : ""}${live ? "&live=1" : ""}`);
-      const cut = Date.now() / 1000 - BUF_SPAN;
+      const cut = serverNow() - BUF_SPAN;
       G.buf = G.buf.filter((r) => r.t >= cut && (last == null || r.t < last)).concat(d.rows);
       G.cbuf = (G.cbuf || []).filter((r) => r.t >= cut && (last == null || r.t < last)).concat(d.cpu || []);
       G.meta = { latest: d.latest, collector: d.collector, cpu_models: d.cpu_models || [], cpu_latest: d.cpu_latest };
@@ -3453,7 +3475,7 @@ function watchProc(pid) {
     let r;
     try { r = (await api("GET", `/api/gpu/processes/${pid}`)).process; } catch (e) { fill($("#oaWatch"), h("div", { class: "card" }, h("div", { class: "empty" }, `PID ${pid}: ${e.message}`))); clearInterval(OW.timer); return; }
     const I = r.info || {}, V = r.server;
-    const up = I.started_at ? dur(Date.now() / 1000 - I.started_at) : DASH;
+    const up = I.started_at ? dur(serverNow() - I.started_at) : DASH;
     fill($("#oaWatch"), h("div", { class: "card" },
       h("div", { class: "card-head" }, h("h2", {}, `Watching PID ${r.host_pid || r.pid} · ${r.name}`),
         h("span", { class: `pill ${I.alive === false ? "bad" : "ok"}` }, I.alive === false ? "gone" : "running"),
@@ -5431,7 +5453,7 @@ function requestsCard(rows, inFlight, opts = {}) {
     h("td", { class: "muted", title: "Argos is not serving a request for this slot: a client sent it straight to the llama-server port, or hung up while the model kept working on it" }, "not through Argos"),
     h("td", { class: "num" }, s.total ? num(s.total, 0) : DASH), h("td", { class: "num" }, s.generated ? num(s.generated, 0) : DASH),
     h("td", { class: "num" }, s.tokens_per_second ? num(s.tokens_per_second, 0) : DASH), h("td", { class: "num" }, s.gen_tokens_per_second ? num(s.gen_tokens_per_second, 1) : DASH),
-    h("td", { class: "num", "data-run-start": String(Date.parse(s.started)) }, runClock(Date.now() - Date.parse(s.started))),
+    h("td", { class: "num", "data-run-start": String(Date.parse(s.started) - CLOCK_SKEW * 1000) }, runClock(serverNow() * 1000 - Date.parse(s.started))),
     h("td", { class: "nowrap" }, (([label, why]) => h("span", { class: "pill warn", title: why }, label))(slotLabel(s)), h("span", { class: "muted mono-sm", style: "margin-left:6px" }, `slot ${s.id}`))));
   const live = (opts.running || []).map((r) => h("tr", { class: "req-running" },
     h("td", { class: "muted" }, "now"),
@@ -5581,7 +5603,7 @@ function prefillCard(models) {
   return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Working now"), h("span", { class: "spacer" }),
     h("span", { class: "hint" }, "each llama-server slot busy with a request, from the model's log · two chats on one model are two slots")),
   h("div", { class: "table-wrap" }, simpleTable(["Model", "Slot", "Doing", "Progress", "Tokens", "Speed", "Running", "Left"], busy.map(({ m, sl }) => {
-    const started = Date.parse(sl.started), pre = sl.phase === "prefill";
+    const started = Date.parse(sl.started) - CLOCK_SKEW * 1000, pre = sl.phase === "prefill";  // in this browser's clock
     const left = pre && sl.tokens_per_second > 0 && sl.total ? (sl.total - sl.tokens) / sl.tokens_per_second : null;
     return [h("span", { class: "strong" }, m.id), String(sl.id),
       h("span", { class: `pill ${pre ? "warn" : "ok"}` }, pre ? "reading the prompt" : "generating"),
