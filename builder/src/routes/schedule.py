@@ -283,7 +283,7 @@ def guard_state():
     blocked = set()
     if url:
         try:
-            blocked = {f"ip:{b['src']}|{b['model']}" for b in engine_api.guard_blocks(url)}
+            blocked = {f"ip:{b['src']}|{b.get('client') or ''}|{b['model']}" for b in engine_api.guard_blocks(url)}
         except Exception:  # noqa: BLE001 - what the builder knows
             blocked = {k for k, v in state.items() if v.get("status") == "stopped"}
     for k, v in state.items():  # an engine restart lifts its blocks
@@ -298,10 +298,10 @@ def guard_state():
 def guard_act(action):
     """{src, model}: "stop" its requests now, "allow" (let it run, and do not flag the same loop again), "forget"."""
     c, d = ctx(), body()
-    src, model = str(d.get("src") or ""), str(d.get("model") or "")
-    key = f"{src}|{model}"
+    src, model, app = str(d.get("src") or ""), str(d.get("model") or ""), str(d.get("client") or "")
+    key = f"{src}|{app}|{model}"
     state = c.schedule_state.setdefault("loops", {})
-    entry = state.setdefault(key, {"src": src, "model": model, "in": 0, "out": 0, "count": 0, "last": time.time()})
+    entry = state.setdefault(key, {"src": src, "client": app, "model": model, "in": 0, "out": 0, "count": 0, "last": time.time()})
     url = c.settings.get("integrations").get("engine_url") or ""
     if not src.startswith("ip:"):
         return err("only a client known by its address can be stopped")
@@ -309,11 +309,11 @@ def guard_act(action):
         if action == "stop":
             if not url:
                 return err("the engine is not running")
-            engine_api.guard_block(url, src[3:], model, entry.get("reason") or "stopped from Schedule -> Live")
+            engine_api.guard_block(url, src[3:], model, entry.get("reason") or "stopped from Schedule -> Live", client=app)
             entry["status"] = "stopped"
         elif action in ("allow", "forget"):
             if url:
-                engine_api.guard_lift(url, src[3:], model)
+                engine_api.guard_lift(url, src[3:], model, client=app)
             if action == "forget":
                 state.pop(key, None)
             else:
@@ -322,7 +322,7 @@ def guard_act(action):
             return err("action must be stop, allow or forget", 404)
     except Exception as exc:  # noqa: BLE001
         return err(f"the engine did not take it: {exc}", 502)
-    c.event("schedule", f"loop guard: {action} {src} to {model}")
+    c.event("schedule", f"loop guard: {action} {src}{f' ({app})' if app else ''} to {model}")
     return ok(loop=state.get(key))
 
 

@@ -232,6 +232,8 @@ def fetch_activity(base_url: str, after_id: int, limit: int = 999, order: str = 
         rows.append({
             "source_id": e.get("id"), "ts": _ts(e.get("timestamp")), "model": e.get("model"),
             "src": e.get("src"), "path": e.get("req_path"), "status": e.get("resp_status_code"),
+            # the app on that address (its User-Agent): two agents on one machine share the address
+            "client": ((e.get("metadata") or {}).get("client") or "")[:80],
             "input_tokens": t.get("input_tokens"), "output_tokens": t.get("output_tokens"),
             "cache_tokens": t.get("cache_tokens"), "draft_tokens": t.get("draft_tokens"),
             "draft_acc_tokens": t.get("draft_acc_tokens"), "prompt_per_second": t.get("prompt_per_second"),
