@@ -251,10 +251,10 @@ func TestWatcher_LogsRecoveryAfterPersistentStatError(t *testing.T) {
 	require.NoError(t, os.MkdirAll(blocker, 0o755))
 	require.NoError(t, os.WriteFile(path, []byte("a"), 0o644))
 
-	time.Sleep(testInterval * 5)
+	require.Eventually(t, func() bool {
+		return strings.Contains(buf.String(), "recovered")
+	}, 2*time.Second, testInterval, "should have logged recovery:\n%s", buf.String())
 	stop()
-
-	require.Contains(t, buf.String(), "recovered")
 }
 
 func TestWatcher_ContextCancelStopsRun(t *testing.T) {

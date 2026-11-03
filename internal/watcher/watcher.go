@@ -80,7 +80,9 @@ func stat(path string, lastErrMsg *string) snapshot {
 		}
 	}
 	if errors.Is(err, fs.ErrNotExist) {
-		*lastErrMsg = ""
+		// Keep lastErrMsg: recovering from a persistent error often passes
+		// through "does not exist" (path being recreated), and recovery must
+		// still be logged once the file appears.
 		return snapshot{}
 	}
 	if msg := err.Error(); msg != *lastErrMsg {
