@@ -423,6 +423,10 @@ def create_app(config: dict | None = None) -> Flask:
         if took > SLOW_REQUEST_S:
             app.logger.warning("slow request: %s %s answered %s after %.1fs", request.method, request.full_path.rstrip("?"),
                                resp.status_code, took)
+        # the page measures the server's clock from this, so "ago" stays right when the two clocks disagree
+        if "Date" not in resp.headers:
+            from email.utils import formatdate
+            resp.headers["Date"] = formatdate(usegmt=True)
         return resp
 
     @app.errorhandler(404)
