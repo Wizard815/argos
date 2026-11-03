@@ -4659,6 +4659,14 @@ function serverCard(s, index) {
       svSmall(svStatusText(s)),
       h("span", { class: "spacer" }),
       isNew ? null : small("Check", check, "check"),
+      !local && !isNew && /host key/i.test(s.last_error || "") ? small("Forget host key", async () => {
+        if (!(await confirmBox(`Forget the saved SSH host key of “${s.name}” and save the one it shows now? Do this when you know its container was recreated; a key that changed for no reason can mean something else is answering at that address.`, "Forget and check"))) return;
+        try {
+          const r = await api("POST", `/api/servers/${s.id}/forget-host-key`);
+          toast(r.server.status === "connected" ? `${s.name}: new host key saved, connected.` : `${s.name}: ${r.server.last_error || r.server.status}`, r.server.status === "connected" ? "ok" : "err");
+          await loadServers();
+        } catch (x) { fail(x); }
+      }, "key") : null,
       !local && !isNew ? small("Key", toggleKey, "key", SV.keyOpen.has(s.id) ? "on" : "") : null,
       isNew ? small("Cancel", del, "x") : h("span", { class: `sv-default${s.is_default ? " on" : ""}`, title: s.is_default ? "Default server" : "Make this the default server", onclick: makeDefault },
         s.is_default ? h("span", { class: "sv-tick" }, "✓") : null, "default")),

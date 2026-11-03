@@ -82,3 +82,14 @@ Odysseus' keys stay in Odysseus, so each imported server needs its own key from 
 - The Argos image has `ssh` and `ssh-keygen`. The Dockerfile installs `openssh-client` if the base image lacks it.
 - The server runs sshd and accepts key login.
 - Argos and the server are on a Docker network that can reach each other, if the server is another container.
+
+## "Host key verification failed"
+
+The server's SSH host key changed since Argos first saved it. A llama.cpp container that is recreated (an update, a
+rebuild) makes new host keys unless they are kept on a volume, and ssh then refuses it, for Check and for model
+launches alike. On the server's card, **Forget host key** removes the saved key from both (`known_hosts` in
+`ARGOS_SSH_DIR`, and `/data/ssh_known_hosts` that `remote-llama` uses) and checks again, saving the new one.
+
+To stop it coming back, keep the container's host keys on a volume, e.g. `- ./llama-ssh-keys:/etc/ssh/keys` with
+sshd's `HostKey` lines pointing there (or mount the whole `/etc/ssh`). A key that changes when nothing was recreated
+can mean something else is answering at that address: check before you forget it.

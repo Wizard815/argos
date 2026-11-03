@@ -375,6 +375,32 @@ class Servers:
     def known_hosts(self) -> str:
         return os.path.join(self.ssh_dir, "known_hosts")
 
+    # remote-llama (model launches) keeps its own known hosts file; a changed host key locks out both
+    LAUNCH_KNOWN_HOSTS = os.environ.get("REMOTE_KNOWN_HOSTS") or "/data/ssh_known_hosts"
+
+    def forget_host_key(self, server: dict) -> list[str]:
+        """Drop the host key saved for this server, so the next connection saves the one it has now.
+
+        A llama.cpp container that is recreated (an update, a rebuild) makes new host keys unless they are kept on
+        a volume, and ssh then refuses it: "Host key verification failed". Returns the files it was removed from."""
+        if server["kind"] == LOCAL or not server.get("host"):
+            raise ServerError("Local has no host key")
+        host = str(server["host"]).rpartition("@")[2]
+        port = int(server.get("port") or 22)
+        names = [host] if port == 22 else [f"[{host}]:{port}", host]
+        done = []
+        for path in (self.known_hosts(), self.LAUNCH_KNOWN_HOSTS):
+            if not os.path.exists(path):
+                continue
+            for name in names:
+                try:
+                    proc = self.run(["ssh-keygen", "-R", name, "-f", path], "", 10)
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                if proc.returncode == 0 and "updated" in ((proc.stdout or "") + (proc.stderr or "")).lower() and path not in done:
+                    done.append(path)
+        return done
+
     def has_key(self, server_id: int) -> bool:
         return os.path.exists(self.key_path(server_id)) and os.path.exists(self.key_path(server_id) + ".pub")
 
@@ -442,6 +468,9 @@ class Servers:
         latency = round((time.time() - started) * 1000, 1)
         if proc.returncode != 0 or "argos=ok" not in (proc.stdout or ""):
             msg = ((proc.stderr or "").strip().splitlines() or ["connection failed"])[-1]
+            if "host key verification failed" in (proc.stderr or "").lower() or "remote host identification has changed" in (proc.stderr or "").lower():
+                msg = ("Host key verification failed: the server's SSH host key changed since Argos first saved it, "
+                       "usually because its container was recreated. Forget host key, then Check.")
             self.store.set_server_check(server_id, "failed", None, msg, {})
         else:
             engines = parse_facts(proc.stdout)
