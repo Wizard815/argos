@@ -226,7 +226,7 @@ func TestProcessCommand_StopReapsForkedGrandchild(t *testing.T) {
 	}
 	gone := false
 	for i := 0; i < 100; i++ {
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
+		if err := proc.Signal(syscall.Signal(0)); err != nil || isZombie(childPID) {
 			gone = true
 			break
 		}
@@ -259,4 +259,18 @@ func killChildFromPidFile(pidFile string) {
 		return
 	}
 	_ = proc.Kill()
+}
+
+// isZombie reports whether pid has exited but not been reaped. In containers
+// whose PID 1 does not reap orphans, a killed grandchild lingers as a zombie
+// and still answers signal 0. Always false where /proc is unavailable.
+func isZombie(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	// Format: "pid (comm) state ..."; comm may contain spaces or parens.
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	return i >= 0 && i+2 < len(s) && s[i+2] == 'Z'
 }
