@@ -1,26 +1,32 @@
 """Spot a client stuck in a loop: the same request, over and over.
 
 An agent that keeps repeating a tool call (and getting the same error back) sends one request after another of
-the same size and gets the same short answer: 67 tokens in and 22 out, 1,240 times in an hour. Real work does not
-look like that for long: prompts and answers change size. So a run of ``repeats`` requests in a row from one
-client to one model, every one within ``tolerance`` tokens of the last in both what it read and what it wrote, is
-called a loop. Embeddings are left out (the same text embedded again is normal), and so are requests that wrote
-nothing.
+about the same size and gets the same short answer: 67 tokens in and 22 out, 1,240 times in an hour; or 70-83 in
+(a counter in the tool result moves) and exactly 61 out, every 6 seconds. Real work does not look like that for
+long: answers change size. So ``repeats`` requests from one client to one model that all wrote within a few tokens
+of the same answer size, and read about the same (within a quarter), is called a loop. A few other requests in
+between (another chat of the same client on the model's other slot) do not end the run. Embeddings are left out
+(the same text embedded again is normal), and so are requests that wrote nothing.
 """
 from __future__ import annotations
 
 from typing import Optional
 
+IN_SHARE = 0.25   # what a request read may differ by this share of the last one's
+OUT_SHARE = 0.05  # what it wrote, by this share: an answer of the same size is the loop's mark
+
 
 def _same(a: dict, b: dict, tol: int) -> bool:
-    return (abs((a.get("input_tokens") or 0) - (b.get("input_tokens") or 0)) <= tol
-            and abs((a.get("output_tokens") or 0) - (b.get("output_tokens") or 0)) <= tol)
+    ai, bi = a.get("input_tokens") or 0, b.get("input_tokens") or 0
+    ao, bo = a.get("output_tokens") or 0, b.get("output_tokens") or 0
+    return abs(ai - bi) <= max(tol, IN_SHARE * bi) and abs(ao - bo) <= max(tol, OUT_SHARE * bo)
 
 
 def find_loops(rows: list[dict], repeats: int = 25, tolerance: int = 3, now: Optional[float] = None,
                fresh_s: float = 300) -> list[dict]:
     """Loops still going in ``rows`` (the request history, any order): one per client and model, as
-    {"src", "model", "in", "out", "count", "since", "last"}. A run that ended more than ``fresh_s`` ago is not."""
+    {"src", "model", "in", "in_low", "in_high", "out", "count", "since", "last"}. A run that ended more than
+    ``fresh_s`` ago is not."""
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
         if not r.get("src") or not r.get("model") or "embedding" in (r.get("path") or ""):
@@ -30,25 +36,32 @@ def find_loops(rows: list[dict], repeats: int = 25, tolerance: int = 3, now: Opt
     newest = now if now is not None else max((r.get("ts") or 0 for r in rows), default=0)
     for (src, model), rs in groups.items():
         rs.sort(key=lambda r: r.get("ts") or 0)
-        last = rs[-1]
-        if not (last.get("output_tokens") or 0) or newest - (last.get("ts") or 0) > fresh_s:
+        # the newest request that wrote something is the shape to match (the other chat may have just finished)
+        tail = [r for r in rs[-6:] if r.get("output_tokens")]
+        if not tail or newest - (rs[-1].get("ts") or 0) > fresh_s:
             continue
-        run = 1
-        for r in reversed(rs[:-1]):
-            if not _same(r, last, tolerance):
-                break
-            run += 1
-        if run >= repeats:
-            first = rs[-run]
-            out.append({"src": src, "model": model, "in": last.get("input_tokens") or 0, "out": last.get("output_tokens") or 0,
-                        "count": run, "since": first.get("ts"), "last": last.get("ts")})
+        shape = max(tail, key=lambda r: sum(1 for x in tail if _same(x, r, tolerance)))
+        matched, misses = [], 0
+        for r in reversed(rs):
+            if _same(r, shape, tolerance):
+                matched.append(r)
+            else:
+                misses += 1
+                if misses > 3 + len(matched) // 4:  # mostly something else: the run is over
+                    break
+        if len(matched) >= repeats:
+            ins = [m.get("input_tokens") or 0 for m in matched]
+            out.append({"src": src, "model": model, "in": shape.get("input_tokens") or 0, "in_low": min(ins), "in_high": max(ins),
+                        "out": shape.get("output_tokens") or 0, "count": len(matched),
+                        "since": matched[-1].get("ts"), "last": matched[0].get("ts")})
     return out
 
 
 def describe(loop: dict) -> str:
     minutes = max(1, round(((loop.get("last") or 0) - (loop.get("since") or 0)) / 60))
-    return (f"{loop['count']} requests in a row of {loop['in']} tokens in / {loop['out']} out "
-            f"in {minutes} min, the same each time")
+    lo, hi = loop.get("in_low", loop["in"]), loop.get("in_high", loop["in"])
+    read = f"{loop['in']} tokens in" if lo == hi else f"{lo}-{hi} tokens in"
+    return f"{loop['count']} requests of {read} / {loop['out']} out in {minutes} min, about the same each time"
 
 
 def check(store, settings, engine_url: str, state: dict, event, now: float) -> list[dict]:
