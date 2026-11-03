@@ -31,10 +31,10 @@ def find_loops(rows: list[dict], repeats: int = 25, tolerance: int = 3, now: Opt
     for r in rows:
         if not r.get("src") or not r.get("model") or "embedding" in (r.get("path") or ""):
             continue
-        groups.setdefault((r["src"], r["model"]), []).append(r)
+        groups.setdefault((r["src"], r.get("client") or "", r["model"]), []).append(r)
     out = []
     newest = now if now is not None else max((r.get("ts") or 0 for r in rows), default=0)
-    for (src, model), rs in groups.items():
+    for (src, app, model), rs in groups.items():
         rs.sort(key=lambda r: r.get("ts") or 0)
         # the newest request that wrote something is the shape to match (the other chat may have just finished)
         tail = [r for r in rs[-6:] if r.get("output_tokens")]
@@ -51,7 +51,7 @@ def find_loops(rows: list[dict], repeats: int = 25, tolerance: int = 3, now: Opt
                     break
         if len(matched) >= repeats:
             ins = [m.get("input_tokens") or 0 for m in matched]
-            out.append({"src": src, "model": model, "in": shape.get("input_tokens") or 0, "in_low": min(ins), "in_high": max(ins),
+            out.append({"src": src, "client": app, "model": model, "in": shape.get("input_tokens") or 0, "in_low": min(ins), "in_high": max(ins),
                         "out": shape.get("output_tokens") or 0, "count": len(matched),
                         "since": matched[-1].get("ts"), "last": matched[0].get("ts")})
     return out
@@ -77,7 +77,7 @@ def check(store, settings, engine_url: str, state: dict, event, now: float) -> l
     loops = find_loops(rows, int(g.get("repeats") or 25), int(g.get("tolerance") or 3), now=now)
     going = set()
     for lp in loops:
-        key = f"{lp['src']}|{lp['model']}"
+        key = f"{lp['src']}|{lp.get('client') or ''}|{lp['model']}"
         going.add(key)
         have = state.get(key)
         if have and have.get("status") == "allowed" and _same({"input_tokens": have["in"], "output_tokens": have["out"]},
@@ -93,13 +93,14 @@ def check(store, settings, engine_url: str, state: dict, event, now: float) -> l
         stop = g.get("action", "stop") == "stop" and engine_url and lp["src"].startswith("ip:")
         if stop:
             try:
-                engine_api.guard_block(engine_url, lp["src"][3:], lp["model"], why)
+                engine_api.guard_block(engine_url, lp["src"][3:], lp["model"], why, client=lp.get("client") or "")
                 entry["status"] = "stopped"
             except Exception as exc:  # noqa: BLE001 - flagged at least
                 entry["error"] = str(exc)
-        event("schedule", f"loop guard: {lp['src']} to {lp['model']}: {why}"
+        who = lp["src"] + (f" ({lp['client']})" if lp.get("client") else "")
+        event("schedule", f"loop guard: {who} to {lp['model']}: {why}"
               + ("; stopped its requests (Schedule -> Live -> Loop guard to let it run)" if entry["status"] == "stopped" else ""),
-              level="warn", data={"src": lp["src"], "model": lp["model"]})
+              level="warn", data={"src": lp["src"], "client": lp.get("client") or "", "model": lp["model"]})
     return loops
 
 

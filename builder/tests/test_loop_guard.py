@@ -54,9 +54,9 @@ def test_LoopGuard_stops_the_client_then_lets_it_run(app, client, monkeypatch):
     pb = app.extensions["pb"]
     client.put("/api/settings/integrations", json={"engine_url": "http://engine"})
     calls = []
-    monkeypatch.setattr(engine_api, "guard_block", lambda url, src, model, reason, timeout=5.0: calls.append(("block", src, model, reason)) or {})
-    monkeypatch.setattr(engine_api, "guard_lift", lambda url, src, model, timeout=5.0: calls.append(("lift", src, model)))
-    monkeypatch.setattr(engine_api, "guard_blocks", lambda url, timeout=3.0: [{"src": c[1], "model": c[2]} for c in calls if c[0] == "block"][-1:] if calls[-1:] and calls[-1][0] == "block" else [])
+    monkeypatch.setattr(engine_api, "guard_block", lambda url, src, model, reason, timeout=5.0, client="": calls.append(("block", src, model, reason, client)) or {})
+    monkeypatch.setattr(engine_api, "guard_lift", lambda url, src, model, timeout=5.0, client="": calls.append(("lift", src, model)))
+    monkeypatch.setattr(engine_api, "guard_blocks", lambda url, timeout=3.0: [{"src": c[1], "model": c[2], "client": c[4]} for c in calls if c[0] == "block"][-1:] if calls[-1:] and calls[-1][0] == "block" else [])
     rows = _rows(30, start=time.time() - 200)
     pb.store.add_requests([{**r, "source_id": i + 1} for i, r in enumerate(rows)])
     state = pb.schedule_state.setdefault("loops", {})
@@ -75,4 +75,21 @@ def test_LoopGuard_stops_the_client_then_lets_it_run(app, client, monkeypatch):
     client.put("/api/settings/guard", json={"action": "warn"})
     state.clear()
     loop_guard.check(pb.store, pb.settings, "http://engine", state, pb.event, now + 12)
-    assert sum(1 for c in calls if c[0] == "block") == 1 and state["ip:192.168.20.7|coder"]["status"] == "flagged", "warn only"
+    assert sum(1 for c in calls if c[0] == "block") == 1 and state["ip:192.168.20.7||coder"]["status"] == "flagged", "warn only"
+
+
+def test_LoopGuard_two_apps_on_one_address_are_told_apart(app, client, monkeypatch):
+    """Hermes (OpenAI/Python) and Codex (node) on one machine: only the one repeating is flagged and stopped."""
+    pb = app.extensions["pb"]
+    now = time.time()
+    rows = [{**r, "client": "node"} for r in _rows(30, tin=77, tout=61, start=now - 200)]
+    rows += [{"src": "ip:192.168.20.7", "client": "OpenAI/Python 2.24.0", "model": "coder", "path": "/v1/chat/completions",
+              "input_tokens": 61, "output_tokens": 61, "ts": now - 190 + i * 6.4} for i in range(30)]  # same sizes by chance
+    rows[-30:] = [{**r, "output_tokens": 30 + 47 * i} for i, r in enumerate(rows[-30:])]  # but Hermes's answers vary
+    loops = loop_guard.find_loops(rows)
+    assert [(lp["client"], lp["out"]) for lp in loops] == [("node", 61)]
+    calls = []
+    monkeypatch.setattr(engine_api, "guard_block", lambda url, src, model, reason, timeout=5.0, client="": calls.append(client) or {})
+    monkeypatch.setattr(pb.store, "list_requests", lambda since=None, limit=0, model=None: rows)
+    loop_guard.check(pb.store, pb.settings, "http://engine", {}, pb.event, now)
+    assert calls == ["node"], "the block names the app, so Hermes keeps running"

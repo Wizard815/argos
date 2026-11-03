@@ -54,3 +54,29 @@ func TestLoopGuard_StopsOneClientForOneModel(t *testing.T) {
 		t.Fatal("let run again: not stopped")
 	}
 }
+
+// Two agents on one machine share an address: a block for one app (its
+// User-Agent) stops it and leaves the other alone.
+func TestLoopGuard_StopsOneAppOnASharedAddress(t *testing.T) {
+	s := newTestServer(newStubRouter([]string{"m1"}, ""))
+	send := func(ua string) int {
+		w := httptest.NewRecorder()
+		r := chatRequest("m1")
+		r.Header.Set("X-Forwarded-For", "192.168.20.7")
+		r.Header.Set("User-Agent", ua)
+		s.ServeHTTP(w, r)
+		return w.Code
+	}
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/guard",
+		strings.NewReader(`{"src":"192.168.20.7","client":"node","model":"m1","reason":"61 out every time"}`)))
+	if code := send("node"); code != http.StatusTooManyRequests {
+		t.Fatalf("Codex (node): want 429, got %d", code)
+	}
+	if code := send("OpenAI/Python 2.24.0"); code == http.StatusTooManyRequests {
+		t.Fatal("Hermes (OpenAI/Python) on the same address must not be stopped")
+	}
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodDelete, "/api/guard?src=192.168.20.7&client=node&model=m1", nil))
+	if code := send("node"); code == http.StatusTooManyRequests {
+		t.Fatal("lifted")
+	}
+}

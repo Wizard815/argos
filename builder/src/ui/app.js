@@ -3686,7 +3686,7 @@ function guardCard(G) {
   mode.addEventListener("change", save);
   repeats.addEventListener("change", save);
   const act = (l, action) => async () => {
-    try { await api("POST", `/api/guard/${action}`, { src: l.src, model: l.model }); loadLive(); } catch (e) { fail(e); }
+    try { await api("POST", `/api/guard/${action}`, { src: l.src, client: l.client || "", model: l.model }); loadLive(); } catch (e) { fail(e); }
   };
   const status = (l) => l.status === "stopped" ? h("span", { class: "pill bad" }, "stopped")
     : l.status === "allowed" ? h("span", { class: "pill" }, "let run") : h("span", { class: "pill warn" }, "looping");
@@ -3698,8 +3698,8 @@ function guardCard(G) {
     h("p", { class: "hint", style: "margin:0 0 6px" }, "A client sending the same request again and again (an agent stuck repeating a tool call) is a loop: the same answer size every time, and about the same prompt. Another chat of the same client in between does not hide it. "
       + (mode.value === "stop" ? "Argos then refuses that client's requests to that model (HTTP 429 with the reason, which also ends most agent loops) until you let it run. Other clients and models are not touched."
         : mode.value === "warn" ? "Argos only says so, here and in the event log." : "The guard is off.")),
-    loops.length ? h("div", { class: "table-wrap" }, simpleTable(["Client", "Model", "Each request", "In a row", "Since", "Now", ""],
-      loops.map((l) => [l.src.replace(/^ip:/, ""), h("span", { class: "mono-sm" }, l.model), `${l.in_low != null && l.in_low !== l.in_high ? `${l.in_low}–${l.in_high}` : l.in} in / ${l.out} out`, String(l.count),
+    loops.length ? h("div", { class: "table-wrap" }, simpleTable(["Client", "App", "Model", "Each request", "Repeats", "Since", "Now", ""],
+      loops.map((l) => [l.src.replace(/^ip:/, ""), h("span", { class: "mono-sm" }, l.client || DASH), h("span", { class: "mono-sm" }, l.model), `${l.in_low != null && l.in_low !== l.in_high ? `${l.in_low}–${l.in_high}` : l.in} in / ${l.out} out`, String(l.count),
         l.since ? ago(l.since) : DASH, status(l),
         h("div", { class: "row", style: "gap:6px; flex-wrap:nowrap" },
           l.status === "stopped" ? btn("Let it run", act(l, "allow"), "sm") : null,
@@ -5455,7 +5455,7 @@ function requestsCard(rows, inFlight, opts = {}) {
       const n = (v, d) => (v == null || (failed && !v) ? DASH : num(v, d));
       return h("tr", { class: fresh(r) ? "req-new" : "" },
       h("td", { class: "muted", title: new Date(r.ts * 1000).toLocaleString() }, ago(r.ts)),
-      h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
+      h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted", title: r.client ? `app: ${r.client}` : "" }, r.src || DASH, r.client ? h("div", { class: "mono-sm" }, r.client) : null),
       h("td", { class: "num" }, n(r.input_tokens, 0)),
       h("td", { class: "num" }, n(r.output_tokens, 0)),
       failed ? h("td", { class: "num" }, DASH) : prefillCell(r.prompt_per_second, r.prefill_high_tps, r.prefill_low_tps),

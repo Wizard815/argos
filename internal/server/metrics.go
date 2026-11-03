@@ -167,6 +167,13 @@ func (mp *metricsMonitor) record(modelID string, r *http.Request, recorder *resp
 		}
 		tm.Metadata["selector"] = selectorID
 	}
+	// which app on that address sent it: two agents on one machine share the address
+	if app := clientApp(r); app != "" {
+		if tm.Metadata == nil {
+			tm.Metadata = make(map[string]string)
+		}
+		tm.Metadata["client"] = app
+	}
 
 	queueAndEmit := func() {
 		stored, ok := mp.queueMetrics(tm)

@@ -76,8 +76,11 @@ tokens) and read about the same (within a quarter) is a loop. A prompt that
 moves a little each turn (70-83 tokens in, 61 out every time) is still one, and
 a few requests of another chat from the same client in between do not hide it.
 
-One catch: the stop is for that client and model, so another chat from the same
-client to the same model is stopped too. "Only warn" leaves it to you.
+Two apps on one machine share an address, so the guard also tells them apart by
+their User-Agent (Requests shows it under the address): a stop covers one app on
+one address for one model, and Hermes keeps running while Codex is stopped.
+Another chat of that same app on that model is stopped too. "Only warn" leaves
+it to you.
 
 - **Stop** (the default): the engine refuses that client's requests to that
   model with HTTP 429 and the reason, and cancels the ones running. Most agents

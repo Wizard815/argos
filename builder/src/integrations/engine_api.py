@@ -224,17 +224,18 @@ def guard_blocks(base_url: str, timeout: float = 3.0) -> list[dict]:
     return [b for b in (data.get("blocks") if isinstance(data, dict) else None) or [] if isinstance(b, dict)]
 
 
-def guard_block(base_url: str, src: str, model: str, reason: str, timeout: float = 5.0) -> dict:
-    """Stop this client's requests to this model (its running ones are cancelled too)."""
-    body = json.dumps({"src": src, "model": model, "reason": reason}).encode()
+def guard_block(base_url: str, src: str, model: str, reason: str, timeout: float = 5.0, client: str = "") -> dict:
+    """Stop this app's requests to this model (its running ones are cancelled too). ``client`` is the app on
+    that address (its User-Agent); "" stops every app there."""
+    body = json.dumps({"src": src, "client": client, "model": model, "reason": reason}).encode()
     req = urllib.request.Request(base_url.rstrip("/") + "/api/guard", data=body, method="POST",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
         return json.loads(resp.read().decode("utf-8", "replace") or "{}")
 
 
-def guard_lift(base_url: str, src: str, model: str, timeout: float = 5.0) -> None:
-    q = urllib.parse.urlencode({"src": src, "model": model})
+def guard_lift(base_url: str, src: str, model: str, timeout: float = 5.0, client: str = "") -> None:
+    q = urllib.parse.urlencode({"src": src, "client": client, "model": model})
     req = urllib.request.Request(base_url.rstrip("/") + f"/api/guard?{q}", method="DELETE")
     with urllib.request.urlopen(req, timeout=timeout):  # noqa: S310
         pass

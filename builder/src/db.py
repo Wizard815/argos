@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS gpu_hourly (
 
 CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_id INTEGER, ts REAL NOT NULL, model TEXT, src TEXT, path TEXT, status INTEGER,
+    source_id INTEGER, ts REAL NOT NULL, model TEXT, src TEXT, client TEXT, path TEXT, status INTEGER,
     input_tokens INTEGER, output_tokens INTEGER, cache_tokens INTEGER, draft_tokens INTEGER,
     draft_acc_tokens INTEGER, prompt_per_second REAL, tokens_per_second REAL,
     duration_ms INTEGER, error TEXT, prefill_high_tps REAL, prefill_low_tps REAL,
@@ -264,7 +264,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 PROFILE_FIELDS = ("name", "base_model", "model_id", "source", "launch_command", "notes")
 GPU_FIELDS = ("ts", "gpu", "name", "util", "mem_used_mb", "mem_total_mb", "temp_c", "power_w", "source")
-REQUEST_FIELDS = ("source_id", "ts", "model", "src", "path", "status", "input_tokens", "output_tokens",
+REQUEST_FIELDS = ("source_id", "ts", "model", "src", "client", "path", "status", "input_tokens", "output_tokens",
                   "cache_tokens", "draft_tokens", "draft_acc_tokens", "prompt_per_second",
                   "tokens_per_second", "duration_ms", "error", "prefill_high_tps", "prefill_low_tps")
 
@@ -300,6 +300,7 @@ class Store:
             self._add_missing_columns("profiles", PROFILE_COLUMNS)
             self._add_missing_columns("requests", {"prefill_high_tps": "REAL", "prefill_low_tps": "REAL"})
             self._add_missing_columns("cpu_samples", {"power_w": "REAL"})
+            self._add_missing_columns("requests", {"client": "TEXT"})
             self._add_missing_columns("servers", {"env_kind": "TEXT DEFAULT 'none'", "env_value": "TEXT DEFAULT ''",
                                                  "color": "TEXT DEFAULT ''", "download_dir": "TEXT DEFAULT ''"})
             self._add_missing_columns("notes", {"x": "REAL", "y": "REAL", "w": "REAL", "h": "REAL", "collapsed": "INTEGER DEFAULT 0"})
