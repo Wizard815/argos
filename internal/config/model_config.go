@@ -76,20 +76,20 @@ type CompatConfig struct {
 }
 
 type ModelConfig struct {
-	Cmd           string   `yaml:"cmd"`
-	CmdStop       string   `yaml:"cmdStop"`
-	Proxy         string   `yaml:"proxy"`
-	Aliases       []string `yaml:"aliases"`
-	Env           []string `yaml:"env"`
+	Cmd     string   `yaml:"cmd"`
+	CmdStop string   `yaml:"cmdStop"`
+	Proxy   string   `yaml:"proxy"`
+	Aliases []string `yaml:"aliases"`
+	Env     []string `yaml:"env"`
 	// Cwd is the folder the model's process starts in. Empty: the engine's own.
 	// Servers installed from source (Kokoro, ComfyUI) find their files relative
 	// to their own folder, so they need it.
-	Cwd string `yaml:"cwd"`
-	CheckEndpoint string   `yaml:"checkEndpoint"`
-	UnloadAfter   int      `yaml:"ttl"`
-	UnloadTimeout int      `yaml:"unloadTimeout"`
-	Unlisted      bool     `yaml:"unlisted"`
-	UseModelName  string   `yaml:"useModelName"`
+	Cwd           string `yaml:"cwd"`
+	CheckEndpoint string `yaml:"checkEndpoint"`
+	UnloadAfter   int    `yaml:"ttl"`
+	UnloadTimeout int    `yaml:"unloadTimeout"`
+	Unlisted      bool   `yaml:"unlisted"`
+	UseModelName  string `yaml:"useModelName"`
 
 	// #179 for /v1/models
 	Name        string `yaml:"name"`
