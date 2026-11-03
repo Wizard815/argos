@@ -93,3 +93,15 @@ def test_LoopGuard_two_apps_on_one_address_are_told_apart(app, client, monkeypat
     monkeypatch.setattr(pb.store, "list_requests", lambda since=None, limit=0, model=None: rows)
     loop_guard.check(pb.store, pb.settings, "http://engine", {}, pb.event, now)
     assert calls == ["node"], "the block names the app, so Hermes keeps running"
+
+
+def test_ScheduleLive_says_how_long_it_took_and_which_clients_hung_up(app, client, monkeypatch):
+    from src.routes import schedule as sched
+    client.put("/api/settings/integrations", json={"engine_url": "http://engine"})
+    monkeypatch.setattr(sched, "recent_requests", lambda url, n: [])
+    gone = [{"model": "coder", "src": "192.168.20.7", "path": "/v1/chat/completions", "at": "2026-11-03T10:00:00Z"}]
+    monkeypatch.setattr(engine_api, "inflight_and_gone", lambda url, timeout=3.0: ([], gone))
+    monkeypatch.setattr(engine_api, "pool_state", lambda url, timeout=3.0: {"enabled": True, "models": []})
+    d = client.get("/api/schedule/live").get_json()
+    assert d["connected"] and d["gone"] == gone
+    assert {"database", "requests", "running requests", "engine pool", "total"} <= set(d["took"])

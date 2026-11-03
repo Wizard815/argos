@@ -65,6 +65,23 @@ request has buttons:
 - **Cancel** stops it: the client gets an error and the model stops working
   on it.
 
+### Keep the prompt cache across a restart
+
+A model restarted for new settings (a profile edit) loses every slot's cache,
+and each chat then reads its whole conversation again: 100k tokens is minutes,
+longer with two chats reading at once. Run the model with
+`--slot-save-path /tmp` (Builder -> Context & chats -> **Keep cache**) and
+Argos has llama-server save each slot to a file there before the restart, then
+loads it back once the model is up, before its first request.
+
+It is only loaded when nothing that shapes the cache changed: the model file,
+context, cache types, RoPE, `--parallel` and KV unified. A sampling change
+(temperature, top-k) keeps it; a RoPE change starts empty, because a cache
+built with other RoPE settings loads without error and answers wrong. The path
+is inside the llama.cpp container, and each file is as big as that slot's
+cache (hundreds of MB at 100k tokens). In Mode 2 every load is a new container,
+so mount a folder there for it.
+
 ### Loop guard
 
 A client stuck in a loop (an agent repeating the same tool call and getting the
