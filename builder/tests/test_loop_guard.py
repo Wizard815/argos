@@ -15,7 +15,27 @@ def test_LoopGuard_finds_a_client_repeating_the_same_request():
              "output_tokens": 50 + (i * 37) % 400, "ts": 900.0 + i} for i in range(40)]
     loops = loop_guard.find_loops(work + _rows(30), repeats=25)
     assert [(lp["src"], lp["in"], lp["out"], lp["count"]) for lp in loops] == [("ip:192.168.20.7", 19, 24, 30)]
-    assert "30 requests in a row of 19 tokens in / 24 out" in loop_guard.describe(loops[0])
+    assert "30 requests of 19 tokens in / 24 out" in loop_guard.describe(loops[0])
+
+
+def test_LoopGuard_catches_a_loop_whose_prompt_moves_beside_another_chat():
+    """The second loop seen: 70-83 tokens in (a counter in the tool result moves) and exactly 61 out every ~6.6 s,
+    while the same client's other chat writes long answers on the model's other slot."""
+    ins = [78, 80, 77, 72, 71, 74, 70, 77, 76, 81, 75, 78, 77, 70, 81, 74, 77, 83, 74, 77, 81, 72, 70, 78, 80, 83, 76]
+    rows = [{"src": "ip:192.168.20.7", "model": "coder", "path": "/v1/chat/completions", "input_tokens": n, "output_tokens": 61,
+             "ts": 1000.0 + i * 6.6} for i, n in enumerate(ins)]
+    rows += [{"src": "ip:192.168.20.7", "model": "coder", "path": "/v1/chat/completions", "input_tokens": 9000 + i, "output_tokens": 1600 + 37 * i,
+              "ts": 1003.0 + i * 60} for i in range(3)]  # the real task on slot 0, finishing now and then
+    (lp,) = loop_guard.find_loops(rows, repeats=25)
+    assert lp["out"] == 61 and lp["count"] == len(ins) and (lp["in_low"], lp["in_high"]) == (70, 83)
+    assert "70-83 tokens in / 61 out" in loop_guard.describe(lp)
+
+
+def test_LoopGuard_an_agent_doing_real_work_is_not_a_loop():
+    """Tool calls with small results look alike in what they read; what they write changes, so they are not."""
+    rows = [{"src": "ip:a", "model": "m", "input_tokens": 70 + (i * 7) % 15, "output_tokens": 40 + (i * 53) % 300, "ts": float(i)}
+            for i in range(60)]
+    assert loop_guard.find_loops(rows) == []
 
 
 def test_LoopGuard_leaves_real_work_embeddings_and_old_runs_alone():

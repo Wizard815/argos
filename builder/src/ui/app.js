@@ -3695,11 +3695,11 @@ function guardCard(G) {
       going.length ? h("span", { class: "pill bad", style: "margin-left:8px" }, `${going.length} loop${going.length > 1 ? "s" : ""}`) : null,
       h("span", { class: "spacer" }), mode, h("span", { class: "hint", style: "margin:0 4px" }, "after"), repeats,
       h("span", { class: "hint", style: "margin:0" }, "same requests in a row")),
-    h("p", { class: "hint", style: "margin:0 0 6px" }, "A client sending the same request again and again, the same tokens in and out each time (an agent stuck repeating a tool call), is a loop. "
+    h("p", { class: "hint", style: "margin:0 0 6px" }, "A client sending the same request again and again (an agent stuck repeating a tool call) is a loop: the same answer size every time, and about the same prompt. Another chat of the same client in between does not hide it. "
       + (mode.value === "stop" ? "Argos then refuses that client's requests to that model (HTTP 429 with the reason, which also ends most agent loops) until you let it run. Other clients and models are not touched."
         : mode.value === "warn" ? "Argos only says so, here and in the event log." : "The guard is off.")),
     loops.length ? h("div", { class: "table-wrap" }, simpleTable(["Client", "Model", "Each request", "In a row", "Since", "Now", ""],
-      loops.map((l) => [l.src.replace(/^ip:/, ""), h("span", { class: "mono-sm" }, l.model), `${l.in} in / ${l.out} out`, String(l.count),
+      loops.map((l) => [l.src.replace(/^ip:/, ""), h("span", { class: "mono-sm" }, l.model), `${l.in_low != null && l.in_low !== l.in_high ? `${l.in_low}–${l.in_high}` : l.in} in / ${l.out} out`, String(l.count),
         l.since ? ago(l.since) : DASH, status(l),
         h("div", { class: "row", style: "gap:6px; flex-wrap:nowrap" },
           l.status === "stopped" ? btn("Let it run", act(l, "allow"), "sm") : null,

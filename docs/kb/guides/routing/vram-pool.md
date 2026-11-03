@@ -70,8 +70,14 @@ request has buttons:
 A client stuck in a loop (an agent repeating the same tool call and getting the
 same error back) sends the same request again and again: the same tokens in and
 out every time, for as long as nobody notices. Schedule -> Live -> **Loop guard**
-watches for it: 25 requests in a row (Settings: `guard.repeats`) from one client
-to one model, each within 3 tokens (`guard.tolerance`) of the last, is a loop.
+watches for it: 25 requests (Settings: `guard.repeats`) from one client to one
+model that wrote the same size of answer (within 5%, at least `guard.tolerance`
+tokens) and read about the same (within a quarter) is a loop. A prompt that
+moves a little each turn (70-83 tokens in, 61 out every time) is still one, and
+a few requests of another chat from the same client in between do not hide it.
+
+One catch: the stop is for that client and model, so another chat from the same
+client to the same model is stopped too. "Only warn" leaves it to you.
 
 - **Stop** (the default): the engine refuses that client's requests to that
   model with HTTP 429 and the reason, and cancels the ones running. Most agents
