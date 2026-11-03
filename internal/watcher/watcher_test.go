@@ -185,6 +185,11 @@ func TestWatcher_FileMissingThenReturns(t *testing.T) {
 // mount keeps failing the same way).
 func blockingParentPath(t *testing.T, dir string) (blocker, path string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		// Windows reports a file used as a parent directory as "not found",
+		// which the watcher deliberately never logs; there is no ENOTDIR.
+		t.Skip("needs a persistent non-NotExist stat error (ENOTDIR)")
+	}
 	blocker = filepath.Join(dir, "blocker")
 	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o644))
 	return blocker, filepath.Join(blocker, "config.yaml")
