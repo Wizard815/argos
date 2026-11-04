@@ -3108,15 +3108,28 @@ async function loadGpuBars() {
   let d;
   gpuBarsBusy = true;
   try { d = await api("GET", "/api/gpu/latest"); } catch (e) { return; } finally { gpuBarsBusy = false; }
-  const rows = (d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0);
+  const sensors = d.sensors || {};
+  const rows = (d.latest || []).filter((g) => g && (g.mem_total_mb || 0) > 0)
+    .map((g) => { const s = sensors[String(g.gpu)] || {}; return { ...g, power_w: g.power_w ?? s.power_w ?? null, sensors: s }; });
   const gb = (mb) => `${(mb / 1024).toFixed(1)}G`;
   box.replaceChildren(...rows.map((g) => {
     const used = g.mem_used_mb || 0, total = g.mem_total_mb || 1;
     const pct = Math.max(0, Math.min(100, (used / total) * 100));
-    return h("span", { class: "gpu-bar", title: `${g.name || "GPU " + g.gpu} — ${gb(used)} / ${gb(total)} used (${pct.toFixed(0)}%)` },
+    const s = g.sensors;
+    // the hottest sensor: an MI50's junction runs well above its edge, and it is the one that throttles
+    const hot = [s.junction, s.mem, s.edge ?? g.temp_c].filter((x) => x != null);
+    const temp = hot.length ? Math.max(...hot) : null;
+    const which = temp == null ? "" : temp === s.junction ? "junction" : temp === s.mem ? "memory" : "edge";
+    const sensorsText = [["edge", s.edge ?? g.temp_c], ["junction", s.junction], ["memory", s.mem]].filter(([, v]) => v != null)
+      .map(([k, v]) => `${k} ${Math.round(v)}°C`).join(" · ");
+    const title = `${g.name || "GPU " + g.gpu} — ${gb(used)} / ${gb(total)} used (${pct.toFixed(0)}%)`
+      + (sensorsText ? `\n${sensorsText}` : "") + (g.power_w != null ? `\n${Math.round(g.power_w)} W` : "")
+      + (s.source ? `\n(read with ${s.source})` : "");
+    return h("span", { class: "gpu-bar", title },
       h("span", { class: "gpu-bar-label" }, `GPU${g.gpu}`),
       h("span", { class: "gpu-bar-track" }, h("i", { style: `width:${pct.toFixed(1)}%` })),
-      h("span", { class: "gpu-bar-num" }, gb(used)));
+      h("span", { class: "gpu-bar-num" }, gb(used)),
+      temp != null ? h("span", { class: `gpu-bar-num gpu-temp${temp >= 95 ? " hot" : temp >= 85 ? " warm" : ""}`, title: `${which} ${Math.round(temp)}°C, the hottest sensor` }, `${Math.round(temp)}°`) : null);
   }), ...wattsMeter(rows, d.cpu || {}));
 }
 

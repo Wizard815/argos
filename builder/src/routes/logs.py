@@ -62,8 +62,14 @@ def gpu_latest():
     note_cards(latest)
     cpu = c.store.cpu_latest() or {}
     fresh = cpu.get("ts") and time.time() - cpu["ts"] < 60
-    return ok(latest=latest, cpu={"power_w": cpu.get("power_w") if fresh else None, "util": cpu.get("util") if fresh else None,
-                                  "models": list(c.schedule_state.get("cpu_models") or [])})
+    try:  # edge, junction and memory temperature per card, read now (rocm-smi, else sysfs)
+        from ..telemetry import gpu_sensors
+        sensors = {str(k): v for k, v in gpu_sensors().items()}
+    except Exception:  # noqa: BLE001 - the header shows the stored temperature then
+        sensors = {}
+    return ok(latest=latest, sensors=sensors,
+              cpu={"power_w": cpu.get("power_w") if fresh else None, "util": cpu.get("util") if fresh else None,
+                   "models": list(c.schedule_state.get("cpu_models") or [])})
 
 
 @bp.get("/api/debug/threads")

@@ -79,6 +79,90 @@ def read_amd_sysfs(root: str = DRM) -> list[dict]:
     return out
 
 
+# ----- temperature sensors, for the header: edge, junction (the hot spot) and memory per AMD card -----------
+# sysfs temp1 is only the edge sensor; an MI50's junction runs 15-25 C hotter, and HBM has its own. rocm-smi
+# reports all three (and the package power); sysfs has them too, under hwmon's temp*_label.
+_SENSOR_NAMES = {"edge": "edge", "junction": "junction", "hotspot": "junction", "mem": "mem", "memory": "mem", "hbm": "mem"}
+
+
+def parse_rocm_smi_sensors(text: str) -> dict[int, dict]:
+    """``rocm-smi --showtemp --showpower --json``: {card index: {"edge", "junction", "mem" (deg C), "power_w"}}. The
+    keys differ between ROCm versions ("Temperature (Sensor junction) (C)", "Average Graphics Package Power (W)",
+    "Current Socket Graphics Package Power (W)"), so they are matched loosely."""
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
+        return {}
+    out: dict[int, dict] = {}
+    for card, vals in (data.items() if isinstance(data, dict) else []):
+        m = re.fullmatch(r"card(\d+)", str(card))
+        if not m or not isinstance(vals, dict):
+            continue
+        row: dict = {}
+        for k, v in vals.items():
+            num = _num(re.sub(r"[^0-9.]", "", str(v))) if re.search(r"\d", str(v)) else None
+            if num is None:
+                continue
+            t = re.search(r"temperature \(sensor (\w+)\)", k, re.IGNORECASE)
+            if t and t.group(1).lower() in _SENSOR_NAMES:
+                row[_SENSOR_NAMES[t.group(1).lower()]] = num
+            elif re.search(r"power \(w\)", k, re.IGNORECASE) and "power_w" not in row:
+                row["power_w"] = num
+        if row:
+            out[int(m.group(1))] = {**row, "source": "rocm-smi"}
+    return out
+
+
+def read_rocm_smi_sensors(run=None) -> dict[int, dict]:
+    from .gputools import env, tool
+    exe = tool("rocm-smi")
+    if not exe:
+        return {}
+    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=6, env=env(), check=False).stdout)
+    try:
+        return parse_rocm_smi_sensors(run([exe, "--showtemp", "--showpower", "--json"]))
+    except (OSError, subprocess.SubprocessError):
+        return {}
+
+
+def read_sysfs_sensors(root: str = DRM) -> dict[int, dict]:
+    """The same from sysfs: each AMD card's hwmon temp*_input with its temp*_label, and its power."""
+    out: dict[int, dict] = {}
+    cards = sorted((c for c in glob.glob(os.path.join(root, "card*")) if os.path.basename(c)[4:].isdigit()),
+                   key=lambda c: int(os.path.basename(c)[4:]))
+    for card in cards:
+        dev = os.path.join(card, "device")
+        if not _num(_read(os.path.join(dev, "mem_info_vram_total"))):
+            continue
+        hwmon = (glob.glob(os.path.join(dev, "hwmon", "hwmon*")) or [""])[0]
+        row: dict = {}
+        for path in sorted(glob.glob(os.path.join(hwmon, "temp*_input"))) if hwmon else []:
+            label = (_read(path.replace("_input", "_label")) or "").strip().lower() or ("edge" if path.endswith("temp1_input") else "")
+            val = _num(_read(path))
+            if label in _SENSOR_NAMES and val is not None:
+                row[_SENSOR_NAMES[label]] = round(val / 1000, 1)
+        power = (_num(_read(os.path.join(hwmon, "power1_average"))) or _num(_read(os.path.join(hwmon, "power1_input")))) if hwmon else None
+        if power is not None:
+            row["power_w"] = round(power / 1e6, 1)
+        if row:
+            out[len(out)] = {**row, "source": "sysfs"}
+    return out
+
+
+_sensors_cache: tuple[float, dict] = (0.0, {})
+
+
+def gpu_sensors(max_age: float = 3.0) -> dict[int, dict]:
+    """Each AMD card's temperatures and power now: rocm-smi when it is here, sysfs for what it does not give."""
+    global _sensors_cache
+    if time.time() - _sensors_cache[0] < max_age:
+        return _sensors_cache[1]
+    smi, fs = read_rocm_smi_sensors(), read_sysfs_sensors()
+    out = {i: {**fs.get(i, {}), **smi.get(i, {})} for i in sorted(set(smi) | set(fs))}
+    _sensors_cache = (time.time(), out)
+    return out
+
+
 NVIDIA_QUERY = "index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
 
 
