@@ -101,7 +101,8 @@ function attachCombo(input, options) {
     items = options().map((o) => (typeof o === "string" ? { value: o } : o))
       .filter((o) => !q || `${o.value} ${o.label || ""} ${o.sub || ""}`.toLowerCase().includes(q)).slice(0, 300);
     fill(list, items.length ? items.map((o, i) => h("div", { class: `combo-item${i === active ? " on" : ""}`, role: "option",
-      onmousedown: (e) => { e.preventDefault(); pick(o); } }, h("span", {}, o.label || o.value || "default"), o.sub ? h("span", { class: "muted mono-sm" }, o.sub) : null))
+      onmousedown: (e) => { e.preventDefault(); if (o.action) { o.action(); active = -1; render(); } else pick(o); } },
+      h("span", {}, o.label || o.value || "default"), o.sub ? h("span", { class: "muted mono-sm" }, o.sub) : null))
       : h("div", { class: "combo-empty" }, input.value ? "No match. Press Enter to keep what you typed." : "Nothing to choose from yet."));
     const on = list.querySelector(".on");
     if (on) on.scrollIntoView({ block: "nearest" });
@@ -118,7 +119,10 @@ function attachCombo(input, options) {
       active = Math.max(0, Math.min(items.length - 1, active + (e.key === "ArrowDown" ? 1 : -1)));
       render(); e.preventDefault();
     } else if (e.key === "Enter") {
-      if (!list.hidden && active >= 0 && items[active]) { e.preventDefault(); pick(items[active]); } else close();
+      if (!list.hidden && active >= 0 && items[active]) {
+        e.preventDefault();
+        if (items[active].action) { items[active].action(); active = -1; render(); } else pick(items[active]);
+      } else close();
     } else if (e.key === "Escape") close();
   });
   toggle.addEventListener("mousedown", (e) => { e.preventDefault(); if (list.hidden) { input.focus(); open(true); } else close(); });
@@ -607,7 +611,65 @@ function fillImportSelect() {
 }
 
 // ── Builder ──────────────────────────────────────────────────
-const KV_TYPES = ["", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "turbo4", "turbo3", "turbo2"];
+const KV_TYPES = ["", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "turbo6", "turbo5", "turbo4", "turbo3", "turbo2"];
+// The KV cache types most commands use, largest to smallest; "Show all" lists everything.
+const KV_MAIN = ["", "f16", "q8_0", "q5_0", "q4_0", "turbo3"];
+// Approximate KV cache size per value vs f16, for the hint next to each choice.
+const KV_SIZE = { f16: 16, bf16: 16, q8_0: 8.5, q5_1: 6, q5_0: 5.5, q4_1: 5, q4_0: 4.5, iq4_nl: 4.5,
+  turbo6: 6.125, turbo5: 5.125, turbo4: 4.25, turbo3: 3.25, turbo2: 2.25 };
+/** The VRAM card's KV table rows: the main types (plus the command's own), or with "Show all" every type.
+ *  When the default server's build was probed, a type whose K=V pair has no compiled FlashAttention
+ *  decode kernel is marked (it runs, but converts the cache to f16 every token). */
+function kvTableTypes(types, e) {
+  const all = lsGet("argos.kvAll") === "1";
+  const server = (KVC.servers || []).find((s) => s.is_default);
+  const pairs = (server && server.engines && server.engines.kv_pairs) || [];
+  const keep = (t) => all || KV_MAIN.includes(t.type) || t.type === e.cache_k || t.type === e.cache_v;
+  return types.filter(keep).map((t) => (pairs.length && !pairs.includes(`${t.type}-${t.type}`)
+    ? { ...t, note: `no fast FlashAttention kernel for ${t.type} in ${server.name}'s build: it runs, but slowly` } : t));
+}
+
+/** The KV cache field's choices: the main few, or with "Show all" every pair the default server's build
+ *  compiled (mixed pairs as "k / v"), or every type when the build could not be read. Each choice says
+ *  its size and whether the build has a fast FlashAttention kernel for it. */
+function kvOptions() {
+  const all = lsGet("argos.kvAll") === "1";
+  if (!KVC.servers) kvServers();  // first open: the compiled pairs show from the next one
+  const server = (KVC.servers || []).find((s) => s.is_default);
+  const pairs = (server && server.engines && server.engines.kv_pairs) || [];
+  const size = (k, v) => {
+    const bits = ((KV_SIZE[k] || 16) + (KV_SIZE[v] || 16)) / 2;
+    return `${Math.round(bits / 16 * 100)}% of f16`;
+  };
+  const opt = (value) => {
+    if (!value) return { value: "", label: "default", sub: "f16" };
+    const [k, v] = value.includes(" / ") ? value.split(" / ") : [value, value];
+    const known = pairs.length ? pairs.includes(`${k === "f32" ? "f16" : k}-${v === "f32" ? "f16" : v}`) : null;
+    const flag = known === false ? " · not compiled (slow)" : "";
+    return { value, label: value, sub: size(k, v) + flag };
+  };
+  let values;
+  if (!all) {
+    values = KV_MAIN.slice();
+  } else if (pairs.length) {
+    const order = (t) => { const i = KV_TYPES.indexOf(t); return i < 0 ? 99 : i; };
+    const named = pairs.map((p) => p.split("-")).filter(([k, v]) => KV_SIZE[k] && KV_SIZE[v])
+      .sort((a, b) => order(a[0]) - order(b[0]) || order(a[1]) - order(b[1]))
+      .map(([k, v]) => (k === v ? k : `${k} / ${v}`));
+    values = ["", ...new Set(named)];
+  } else {
+    values = KV_TYPES.slice();
+  }
+  const cur = kvShown();
+  if (cur && !values.includes(cur)) values.push(cur);  // keep what the command already uses selectable
+  for (const v of SEEN.cache_type || []) if (all && v && !values.includes(v)) values.push(v);
+  const out = values.map(opt);
+  const where = server ? ` on ${server.name}` : "";
+  out.push(all
+    ? { value: "", label: "▴ Show main choices", sub: "", action: () => lsSet("argos.kvAll", "0") }
+    : { value: "", label: "▾ Show all", sub: pairs.length ? `every pair compiled${where} (${pairs.length})` : "every type", action: () => lsSet("argos.kvAll", "1") });
+  return out;
+}
 // values seen in the inventory (your custom cache types, split modes…) join the built-in choices
 const SEEN = { cache_type: [], split_mode: [], load_mode: [], spec_type: [] };
 const seenOpts = (kind, base) => [...new Set([...base, ...SEEN[kind]])].map((v) => ({ value: v, label: v || "default", sub: v && !base.includes(v) ? "seen in your runs" : "" }));
@@ -627,7 +689,7 @@ const SETTINGS = [
   { name: "n-cpu-moe", label: "MoE layers on CPU", flag: "-ncmoe", type: "number", ph: "0" },
   { name: "port", label: "Port", flag: "--port", ph: "8080 or ${PORT}" },
   { name: "host", label: "Host", flag: "--host", ph: "127.0.0.1" },
-  { name: "cache-type", label: "KV cache", flag: "-ctk / -ctv", combo: () => seenOpts("cache_type", KV_TYPES) },
+  { name: "cache-type", label: "KV cache", flag: "-ctk / -ctv", combo: kvOptions },
   { name: "load-mode", label: "Load mode", flag: "-lm", ph: "dio", combo: () => seenOpts("load_mode", ["", "dio", "mmap"]) },
   { name: "split-mode", label: "Split mode", flag: "-sm", combo: () => seenOpts("split_mode", ["", "none", "layer", "row", "tensor"]) },
   { name: "flash-attn", label: "Flash attention", flag: "-fa", seg: [["", "default"], ["on", "on"], ["off", "off"], ["auto", "auto"]] },
@@ -751,7 +813,12 @@ function buildField(f) {
     control = h("input", { type: f.type || "text", placeholder: f.ph || (f.combo ? "default" : ""), dataset: { fk: f.name }, list: f.list || null, spellcheck: "false" });
     const commit = () => {
       const val = control.value.trim();
-      if (f.name === "cache-type") { if (val !== kvShown()) edit({ "cache-type-k": val || null, "cache-type-v": val || null }); return; }
+      if (f.name === "cache-type") {
+        if (val === kvShown()) return;
+        const [k, v] = val.includes("/") ? val.split("/").map((x) => x.trim()) : [val, val];
+        edit({ "cache-type-k": k || null, "cache-type-v": v || null });
+        return;
+      }
       if (val !== (argValue(f.name) ?? "")) edit({ [f.name]: val || null });
     };
     control.addEventListener("change", commit);
@@ -1277,6 +1344,7 @@ function contextBox(e) {
 }
 function renderEstimate(e) {
   const box = $("#bVram");
+  if (!KVC.servers) kvServers().then(() => { if (e && e.ok) renderEstimate(e); });  // compiled pairs for the KV table
   if (!e || !e.ok) {
     fill($("#bCtx"), h("p", { class: "hint", style: "margin:0" }, "Pick a model to see how its context splits between chats."));
     return fill(box, h("p", { class: "hint", style: "margin:0" }, (e && e.error) || "Pick a model to see its size."));
@@ -1296,16 +1364,21 @@ function renderEstimate(e) {
     ` + ${num(e.kv_gib, 1)} KV cache (${ctxLabel(e.ctx)} context, ${cache}) + ${num(e.overhead_gib, 1)} buffers`);
   const notes = [...(e.notes || [])].filter(Boolean);
   let table = null;
+  const kvAll = lsGet("argos.kvAll") === "1";
+  const kvToggle = e.compare ? h("button", { type: "button", class: "btn sm ghost", style: "margin-left:8px",
+    title: kvAll ? "Show only the main cache types" : "List every cache type, with the ones the default server's llama.cpp build has a fast kernel for",
+    onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); lsSet("argos.kvAll", kvAll ? "0" : "1"); renderEstimate(e); } },
+    kvAll ? "Main types" : `Show all (${e.compare.types.length})`) : null;
   if (e.compare) {
     const C = e.compare;
     const ropeCol = (c) => e.train_ctx && perChat(c, e) > e.train_ctx;
     table = h("details", { class: "vram-compare", open: true }, h("summary", { class: "hint" }, "KV cache size (GiB) by cache type and total context · click a size to use it"
-      + (C.ctx.some(ropeCol) ? " · * = each chat longer than the model was trained on" : "")),
+      + (C.ctx.some(ropeCol) ? " · * = each chat longer than the model was trained on" : ""), kvToggle),
       h("div", { class: "table-wrap" }, h("table", { class: "dense" },
         h("thead", {}, h("tr", {}, h("th", {}, "cache"), C.ctx.map((c) => h("th", { class: "num pick", style: c === e.ctx ? "color:var(--strong)" : "",
           title: `Use ${ctxLabel(c)} context (${ctxLabel(perChat(c, e))} per chat)${ropeCol(c) ? ": past the trained context, turn RoPE on" : ""}`, onclick: () => useContext(c, null, e) },
           ctxLabel(c), ropeCol(c) ? h("span", { class: "muted", style: "font-weight:400" }, "*") : null)))),
-        h("tbody", {}, C.types.map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", {}, t.type),
+        h("tbody", {}, kvTableTypes(C.types, e).map((t) => h("tr", { class: t.type === e.cache_k ? "sel" : "" }, h("td", { title: t.note || "" }, t.type, t.note ? h("span", { class: "muted" }, " ·") : null),
           t.kv_gib.map((v, i) => v == null ? h("td", { class: "num" }, DASH) : h("td", { class: "num pick",
             style: C.ctx[i] === e.ctx && t.type === e.cache_k ? "font-weight:700;color:var(--strong)" : "",
             title: `Use ${ctxLabel(C.ctx[i])} context with a ${t.type} cache (${num(v, 2)} GiB)`, onclick: () => useContext(C.ctx[i], t.type, e) }, num(v, 2)))))))));
@@ -4263,7 +4336,7 @@ const SETTINGS_FORM = [
     { k: "cuda_path", label: "CUDA location", ph: "/usr/local/cuda-12.4" },
     { k: "rocm_smi", label: "rocm-smi to use", ph: "/opt/rocm-gfx906/bin/rocm-smi", hint: "blank = the one in the ROCm location, else on PATH" },
     { k: "nvidia_smi", label: "nvidia-smi to use", ph: "/usr/bin/nvidia-smi", hint: "blank = on PATH" }] },
-  { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
+  { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo6 (6.125) turbo5 (5.125) turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
     { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
   { group: "playground", title: "Playground", fields: [
     { k: "llama_bench", label: "llama-bench tab", type: "check", hint: "llama.cpp's own benchmark in the Playground, run where your llama-server runs. Off hides the tab." }] },
