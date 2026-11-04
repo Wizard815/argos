@@ -692,3 +692,8 @@ pre.log.logs-big { max-height: 70dvh; min-height: 320px; }
 .slot-table td:first-child, .slot-table th:first-child { width: 2.5em; }
 
 .warn-text { color: var(--yellow, #e5c07b); }
+
+/* the header's GPU temperature: yellow from 85 C, red from 95 C (an MI50 throttles near 100 C junction) */
+.gpu-temp { margin-left: 2px; }
+.gpu-temp.warm { color: var(--yellow, #e5c07b); }
+.gpu-temp.hot { color: var(--danger, #e06c75); font-weight: 700; }

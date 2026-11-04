@@ -54,3 +54,36 @@ def test_Power_reads_the_mounted_powercap_folder(tmp_path):
     _, prev = read_cpu_power(None, str(tmp_path), now=0.0)
     _rapl(nested, "intel-rapl:0", 90_000_000)
     assert read_cpu_power(prev, str(tmp_path), now=1.0)[0] == 90.0
+
+
+ROCM_SMI = """{"card0": {"Temperature (Sensor edge) (C)": "58.0", "Temperature (Sensor junction) (C)": "81.0",
+ "Temperature (Sensor memory) (C)": "74.0", "Average Graphics Package Power (W)": "212.0"},
+ "card1": {"Temperature (Sensor edge) (C)": "55.0", "Temperature (Sensor junction) (C)": "77.0",
+ "Temperature (Sensor memory) (C)": "N/A", "Current Socket Graphics Package Power (W)": "189.0"}, "system": {"Driver version": "6.8"}}"""
+
+
+def test_Sensors_rocm_smi_gives_edge_junction_memory_and_power():
+    from src.telemetry import parse_rocm_smi_sensors
+    got = parse_rocm_smi_sensors(ROCM_SMI)
+    assert got[0] == {"edge": 58.0, "junction": 81.0, "mem": 74.0, "power_w": 212.0, "source": "rocm-smi"}
+    assert got[1]["junction"] == 77.0 and "mem" not in got[1] and got[1]["power_w"] == 189.0, "N/A is left out; either power key"
+    assert parse_rocm_smi_sensors("not json") == {}
+
+
+def test_Sensors_sysfs_reads_the_labelled_hwmon_temps(tmp_path):
+    from src.telemetry import read_sysfs_sensors
+    dev = tmp_path / "card0" / "device"
+    hw = dev / "hwmon" / "hwmon3"
+    hw.mkdir(parents=True)
+    (dev / "mem_info_vram_total").write_text(str(32 * 2**30))
+    for n, (label, milli) in enumerate((("edge", 58000), ("junction", 81000), ("mem", 74000)), start=1):
+        (hw / f"temp{n}_input").write_text(str(milli))
+        (hw / f"temp{n}_label").write_text(label)
+    (hw / "power1_average").write_text("212000000")
+    assert read_sysfs_sensors(str(tmp_path)) == {0: {"edge": 58.0, "junction": 81.0, "mem": 74.0, "power_w": 212.0, "source": "sysfs"}}
+
+
+def test_Sensors_reach_the_header(app, client, monkeypatch):
+    from src import telemetry
+    monkeypatch.setattr(telemetry, "gpu_sensors", lambda max_age=3.0: {0: {"edge": 58.0, "junction": 81.0, "source": "rocm-smi"}})
+    assert client.get("/api/gpu/latest").get_json()["sensors"] == {"0": {"edge": 58.0, "junction": 81.0, "source": "rocm-smi"}}
