@@ -260,7 +260,7 @@ def _remote_path(path: str) -> str:
 # ggml_type numbers of the KV cache types llama.cpp accepts for -ctk/-ctv, as they
 # appear in the FlashAttention kernel names (turbo* are the TurboQuant forks' types).
 KV_TYPE_NUMBERS = {0: "f32", 1: "f16", 2: "q4_0", 3: "q4_1", 6: "q5_0", 7: "q5_1", 8: "q8_0", 20: "iq4_nl",
-                   30: "bf16", 43: "turbo3", 44: "turbo4", 45: "turbo2"}
+                   30: "bf16", 43: "turbo3", 44: "turbo4", 45: "turbo2", 46: "turbo5", 47: "turbo6"}
 
 
 def parse_facts(text: str) -> dict:

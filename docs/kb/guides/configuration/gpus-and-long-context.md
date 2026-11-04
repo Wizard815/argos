@@ -41,6 +41,15 @@ The Builder's **VRAM** card has a table of the KV cache alone, by cache type and
 context. Click a cell to use that context and that cache type (`-c`, `-ctk`,
 `-ctv`); click a column heading to change only the context.
 
+The table shows the main cache types (f16, q8_0, q5_0, q4_0, turbo3, plus the
+one your command uses). **Show all** lists every type, including bf16, q5_1,
+q4_1, iq4_nl and turbo2/4/5/6; **Main types** goes back. Once the default server
+has been **Check**ed, a type its llama.cpp build has no fast FlashAttention kernel
+for is marked with `·` (hover for why): it runs, but every generated token
+converts the whole cache to f16 first. The **KV cache** field in Settings works
+the same way: its list ends with **Show all**, which lists every K/V pair the
+build compiled, mixed ones too (for example `q8_0 / turbo5`).
+
 # Stretching to 1M with RoPE
 
 For a model trained on less than 1M tokens the table has a last column, **1M
