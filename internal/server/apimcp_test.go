@@ -203,8 +203,9 @@ func TestServer_APIMCP_RejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// A client on an older revision opens with `initialize`. Telling it which
-// version we speak is far more useful than "method not found".
+// A revision this server does not speak gets told which ones it does: far
+// more useful than "method not found". The 2025 handshake revisions are served
+// (see TestServer_APIMCP_Handshake*), so only unknown ones land here.
 func TestServer_APIMCP_RejectsUnsupportedProtocolVersion(t *testing.T) {
 	s := newMCPServer()
 
@@ -214,11 +215,8 @@ func TestServer_APIMCP_RejectsUnsupportedProtocolVersion(t *testing.T) {
 		method  string
 		body    string
 	}{
-		{"missing version header", "", "tools/list", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
-		{"older revision", "2025-06-18", "tools/list", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
 		{"newer revision", "2027-01-01", "tools/list", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
-		{"legacy initialize", "2025-11-25", "initialize", `{"jsonrpc":"2.0","id":0,"method":"initialize"}`},
-		{"initialize with no headers at all", "", "", `{"jsonrpc":"2.0","id":0,"method":"initialize"}`},
+		{"revision older than the handshakes served", "2024-11-05", "initialize", `{"jsonrpc":"2.0","id":0,"method":"initialize"}`},
 	}
 
 	for _, tt := range tests {
@@ -248,8 +246,8 @@ func TestServer_APIMCP_RejectsUnsupportedProtocolVersion(t *testing.T) {
 			if err := json.Unmarshal(env.Error.Data, &data); err != nil {
 				t.Fatalf("decoding error data: %v", err)
 			}
-			if len(data.Supported) != 1 || data.Supported[0] != mcpProtocolVersion {
-				t.Errorf("supported = %v, want [%s]", data.Supported, mcpProtocolVersion)
+			if strings.Join(data.Supported, ",") != strings.Join(mcpSupportedVersions, ",") {
+				t.Errorf("supported = %v, want %v", data.Supported, mcpSupportedVersions)
 			}
 			if data.Requested != tt.version {
 				t.Errorf("requested = %q, want %q", data.Requested, tt.version)
@@ -910,5 +908,93 @@ func TestServer_APIMCP_TolerantArgumentTypes(t *testing.T) {
 	}
 	if callToolRPC(t, s, "docs__get_doc", `{"id":"guides/routing/unloading","max_lines":"5"}`).IsError {
 		t.Error("stringified max_lines rejected")
+	}
+}
+
+// Clients that open with the 2025 initialize handshake (the official SDKs'
+// default connect, and Pondering Orb) are served on the same stateless route:
+// the revision is negotiated, nothing is remembered, and no Mcp-Method or
+// Mcp-Name header is required.
+func TestServer_APIMCP_HandshakeInitialize(t *testing.T) {
+	s := newMCPServer()
+
+	tests := []struct {
+		name, header, offered, want string
+	}{
+		{"no header, as every handshake starts", "", "2025-06-18", "2025-06-18"},
+		{"header and offer agree", "2025-11-25", "2025-11-25", "2025-11-25"},
+		{"offer we do not speak gets our newest handshake", "", "2024-11-05", "2025-11-25"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			body := `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"` + tt.offered +
+				`","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}`
+			s.ServeHTTP(w, mcpRequest(body, tt.header, "", ""))
+			var env rpcEnvelope
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("decode: %v (body=%q)", err, w.Body.String())
+			}
+			if env.Error != nil {
+				t.Fatalf("initialize failed: %+v", env.Error)
+			}
+			var result initializeResult
+			if err := json.Unmarshal(env.Result, &result); err != nil {
+				t.Fatalf("decode result: %v", err)
+			}
+			if result.ProtocolVersion != tt.want {
+				t.Errorf("protocolVersion = %q, want %q", result.ProtocolVersion, tt.want)
+			}
+			if result.ServerInfo.Name != "argos" || result.Capabilities.Tools == nil || result.Instructions == "" {
+				t.Errorf("result = %+v, want serverInfo, tools capability and instructions", result)
+			}
+			if got := w.Header().Get(headerMCPProtocolVersion); got != tt.want {
+				t.Errorf("%s header = %q, want %q", headerMCPProtocolVersion, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServer_APIMCP_HandshakeToolsWithoutHeaders(t *testing.T) {
+	s := newMCPServer()
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, mcpRequest(`{"jsonrpc":"2.0","method":"notifications/initialized"}`, "2025-06-18", "", ""))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("notifications/initialized status = %d, want 202", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, "2025-06-18", "", ""))
+	var env rpcEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil || env.Error != nil {
+		t.Fatalf("tools/list: err=%v rpcErr=%+v", err, env.Error)
+	}
+	if !strings.Contains(string(env.Result), "docs__list_docs") {
+		t.Errorf("tools/list result is missing the docs tools: %s", env.Result)
+	}
+
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"docs__list_docs","arguments":{}}}`, "2025-06-18", "", ""))
+	env = rpcEnvelope{}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil || env.Error != nil {
+		t.Fatalf("tools/call: err=%v rpcErr=%+v", err, env.Error)
+	}
+	var result callToolResult
+	if err := json.Unmarshal(env.Result, &result); err != nil || result.IsError || len(result.Content) == 0 {
+		t.Fatalf("tools/call result = %s (err=%v)", env.Result, err)
+	}
+}
+
+// A misspelled or invented argument is refused rather than dropped: with
+// "key" instead of "path" the schema lookup used to answer for the top level.
+func TestServer_APIMCP_UnknownArgumentIsAToolError(t *testing.T) {
+	s := newMCPServer()
+	result := callToolRPC(t, s, "docs__get_config_schema", `{"key":"models"}`)
+	if !result.IsError {
+		t.Fatalf("want IsError, got %+v", result)
+	}
+	if !strings.Contains(result.Content[0].Text, "does not take key; it takes: path") {
+		t.Errorf("text = %q", result.Content[0].Text)
 	}
 }

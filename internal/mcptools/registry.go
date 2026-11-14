@@ -168,11 +168,67 @@ func (r *Registry) Call(ctx context.Context, name string, args map[string]json.R
 		return Result{}, false, nil
 	}
 
+	if refused, ok := unknownArguments(ctx, provider, local, args); ok {
+		return refused, true, nil
+	}
+
 	result, err := provider.Call(ctx, local, args)
 	if err != nil {
 		return Result{}, true, err
 	}
 	return result, true, nil
+}
+
+// unknownArguments refuses argument names a tool's schema closes off with
+// additionalProperties: false. Providers read only the names they know, so a
+// misspelled or invented one was dropped silently: unload_models given
+// {"models": [...]} unloaded every model, and get_config_schema given "key"
+// instead of "path" answered for the top level as if that were the key asked.
+func unknownArguments(ctx context.Context, provider Provider, local string, args map[string]json.RawMessage) (Result, bool) {
+	if len(args) == 0 {
+		return Result{}, false
+	}
+	tools, err := provider.Tools(ctx)
+	if err != nil {
+		// Listing failed; let the call itself report what is wrong.
+		return Result{}, false
+	}
+	for _, tool := range tools {
+		if tool.Name != local {
+			continue
+		}
+		// Only a schema that closes itself off is enforced; an open one lets
+		// a provider accept extras on purpose.
+		if open, isBool := tool.InputSchema["additionalProperties"].(bool); !isBool || open {
+			return Result{}, false
+		}
+		known, _ := tool.InputSchema["properties"].(map[string]any)
+		var unknown []string
+		for name := range args {
+			if _, ok := known[name]; !ok {
+				unknown = append(unknown, name)
+			}
+		}
+		if len(unknown) == 0 {
+			return Result{}, false
+		}
+		sort.Strings(unknown)
+		accepted := make([]string, 0, len(known))
+		for name := range known {
+			accepted = append(accepted, name)
+		}
+		sort.Strings(accepted)
+		takes := "takes no arguments"
+		if len(accepted) > 0 {
+			takes = "takes: " + strings.Join(accepted, ", ")
+		}
+		return Result{
+			Content: fmt.Sprintf("Error: %s does not take %s; it %s. Nothing was done.",
+				local, strings.Join(unknown, ", "), takes),
+			IsError: true,
+		}, true
+	}
+	return Result{}, false
 }
 
 // Shutdown releases every provider's resources.

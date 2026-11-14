@@ -92,9 +92,10 @@ func readOnlyStableAnnotations() *mcptools.Annotations {
 
 // Selecting a profile and unloading models both change the running server, so
 // neither is read-only. Both are idempotent: repeating the call reaches the
-// same state.
-func writeAnnotations() *mcptools.Annotations {
-	return &mcptools.Annotations{ReadOnlyHint: false, IdempotentHint: true}
+// same state. Unloading is also destructive: it stops every loaded model,
+// including ones serving a request right now; selecting a profile is not.
+func writeAnnotations(destructive bool) *mcptools.Annotations {
+	return &mcptools.Annotations{ReadOnlyHint: false, IdempotentHint: true, DestructiveHint: mcptools.Hint(destructive)}
 }
 
 func (p *Provider) Tools(context.Context) ([]mcptools.Tool, error) {
@@ -122,7 +123,7 @@ func (p *Provider) Tools(context.Context) ([]mcptools.Tool, error) {
 				"loaded keeps the command it was started with until it is unloaded or its TTL expires. Pass an " +
 				"empty name to clear the selection and fall back to no profile. An unknown name is reported as " +
 				"an error and nothing changes.",
-			Annotations: writeAnnotations(),
+			Annotations: writeAnnotations(false),
 			Tags:        []string{"profiles", "routing", "models"},
 			InputSchema: map[string]any{
 				"type": "object",
@@ -171,7 +172,7 @@ func (p *Provider) Tools(context.Context) ([]mcptools.Tool, error) {
 			Description: "Unload every loaded model immediately, freeing the GPU memory they hold. Argos also " +
 				"unloads on each model's TTL; use this to free memory now, for example before starting a " +
 				"larger model by hand. Models reload on their next request.",
-			Annotations: writeAnnotations(),
+			Annotations: writeAnnotations(true),
 			Tags:        []string{"models", "unload", "memory"},
 			InputSchema: map[string]any{
 				"type":                 "object",

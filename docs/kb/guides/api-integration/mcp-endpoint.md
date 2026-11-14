@@ -4,7 +4,7 @@ summary: Point any MCP client at /api/mcp to read Argos's documentation, its run
 category: guides
 tags: [mcp, tools, agent, api, integration, models, profiles]
 config_keys: [apiKeys]
-updated: 2026-10-12
+updated: 2026-11-14
 ---
 
 # Connecting an MCP client to Argos
@@ -20,23 +20,38 @@ http://localhost:8080/api/mcp
 
 ## Requirements
 
-The endpoint speaks **MCP revision 2026-07-28 and nothing else.** That is the
-revision which removed the `initialize`/`initialized` handshake and the
-`Mcp-Session-Id` header, which is what lets Argos serve MCP from a single
-stateless POST route with no session bookkeeping.
+The endpoint is built around **MCP revision 2026-07-28**, the revision that
+removed the `initialize`/`initialized` handshake and the `Mcp-Session-Id`
+header, which is what lets Argos serve MCP from a single stateless POST route
+with no session bookkeeping. A 2026-07-28 client opens with `server/discover`
+and sends the `Mcp-Method` (and, for `tools/call`, `Mcp-Name`) headers.
 
-A client pinned to an older revision gets a clear JSON-RPC error rather than
-mysterious behaviour:
+Clients that open with the `initialize` handshake are served too: revisions
+**2025-11-25, 2025-06-18 and 2025-03-26**. That covers the official SDKs'
+default connect, Claude Desktop, Hermes and Pondering Orb. Argos answers
+`initialize` with the revision the client offered (or 2025-11-25 if it offered
+one Argos does not know), needs no `Mcp-Method` header from them, and still
+remembers nothing between requests: it never issues an `Mcp-Session-Id`.
+
+Any other revision gets a clear JSON-RPC error naming what is supported:
 
 ```json
 {"jsonrpc":"2.0","id":0,"error":{
   "code":-32022,
-  "message":"unsupported protocol version; this server speaks MCP 2026-07-28 only",
-  "data":{"supported":["2026-07-28"],"requested":"2025-06-18"}}}
+  "message":"unsupported protocol version; this server speaks MCP 2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26",
+  "data":{"supported":["2026-07-28","2025-11-25","2025-06-18","2025-03-26"],"requested":"2024-11-05"}}}
 ```
 
-If you see that, the client needs updating; there is nothing to configure on
-the Argos side.
+## Tool arguments
+
+Every tool's input schema is closed (`additionalProperties: false`), and Argos
+enforces it: an argument name a tool does not take is refused with an error
+that lists the names it does take, and the tool does not run. This matters
+most for `models__unload_models`, which takes no arguments and unloads every
+loaded model: `{"models": ["qwen3"]}` is refused rather than read as "unload
+everything". `models__unload_models` is marked `destructiveHint: true` and
+`models__set_active_profile` `destructiveHint: false`, so clients can ask for
+confirmation only where it matters.
 
 ## Authentication
 
