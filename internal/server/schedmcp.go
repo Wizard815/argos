@@ -66,7 +66,8 @@ func (p *scheduleProvider) Tools(context.Context) ([]mcptools.Tool, error) {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+					"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100,
+						"description": "How many of the most recent requests to return, newest first (1-100)."},
 				},
 				"additionalProperties": false,
 			},

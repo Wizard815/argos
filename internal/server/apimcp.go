@@ -11,14 +11,34 @@ import (
 	"github.com/Wizard815/Argos/internal/mcptools"
 )
 
-// mcpProtocolVersion is the only MCP revision this endpoint speaks.
+// mcpProtocolVersion is the MCP revision this endpoint is built around.
 //
 // 2026-07-28 is the revision that removed the initialize/initialized handshake
 // and the Mcp-Session-Id header, making every request self-contained. That is
 // what lets this be a stateless POST route rather than a session manager.
-// Clients pinned to an older revision are told so explicitly, via a
-// CodeUnsupportedProtocolVersion error naming what is supported.
 const mcpProtocolVersion = "2026-07-28"
+
+// mcpHandshakeVersions are the older revisions also served, newest first.
+//
+// Most clients still open with the initialize handshake, including the
+// official SDKs' default connect, so a 2026-07-28-only server turned them away.
+// These revisions let a server skip Mcp-Session-Id, so they fit the same
+// stateless route: initialize is answered and nothing is remembered. A request
+// with no Mcp-Protocol-Version header is one of them (the spec says to assume
+// 2025-03-26), which is how every handshake begins.
+var mcpHandshakeVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26"}
+
+// mcpSupportedVersions is every revision named in an unsupported-version error.
+var mcpSupportedVersions = append([]string{mcpProtocolVersion}, mcpHandshakeVersions...)
+
+func isHandshakeVersion(v string) bool {
+	for _, known := range mcpHandshakeVersions {
+		if v == known {
+			return true
+		}
+	}
+	return false
+}
 
 // Standard MCP headers, introduced in 2026-07-28 so proxies can route without
 // parsing the JSON-RPC body.
@@ -227,16 +247,20 @@ func (s *Server) handleAPIMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Version first: a client on an older revision opens with `initialize`, and
-	// answering "unsupported protocol version" is far more useful than "method
-	// not found".
-	if version := r.Header.Get(headerMCPProtocolVersion); version != mcpProtocolVersion {
+	// Version first: answering "unsupported protocol version" is far more
+	// useful than "method not found" for a revision this server does not know.
+	version := r.Header.Get(headerMCPProtocolVersion)
+	if version == "" || isHandshakeVersion(version) {
+		s.handleHandshakeMCP(w, r, req)
+		return
+	}
+	if version != mcpProtocolVersion {
 		data, _ := json.Marshal(map[string]any{
-			"supported": []string{mcpProtocolVersion},
+			"supported": mcpSupportedVersions,
 			"requested": version,
 		})
 		writeRPCError(w, req.ID, codeUnsupportedProtocolVersion,
-			fmt.Sprintf("unsupported protocol version; this server speaks MCP %s only", mcpProtocolVersion), data)
+			fmt.Sprintf("unsupported protocol version; this server speaks MCP %s", strings.Join(mcpSupportedVersions, ", ")), data)
 		return
 	}
 
@@ -263,6 +287,67 @@ func (s *Server) handleAPIMCP(w http.ResponseWriter, r *http.Request) {
 		s.mcpToolsList(w, r, req)
 	case "tools/call":
 		s.mcpToolsCall(w, r, req)
+	case "ping":
+		writeRPCResult(w, req.ID, struct{}{})
+	default:
+		writeRPCError(w, req.ID, codeMethodNotFound, fmt.Sprintf("unknown method %q", req.Method), nil)
+	}
+}
+
+// initializeResult answers the handshake revisions' initialize.
+type initializeResult struct {
+	ProtocolVersion string            `json:"protocolVersion"`
+	Capabilities    mcpCapabilities   `json:"capabilities"`
+	ServerInfo      mcpImplementation `json:"serverInfo"`
+	Instructions    string            `json:"instructions,omitempty"`
+}
+
+// handleHandshakeMCP serves a client on a pre-2026-07-28 revision. Those
+// revisions have no Mcp-Method or Mcp-Name headers, so neither is required; the
+// tools and their results are the same as for 2026-07-28.
+func (s *Server) handleHandshakeMCP(w http.ResponseWriter, r *http.Request, req rpcRequest) {
+	if isNotification(req.ID) {
+		// notifications/initialized and friends: nothing to remember.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	switch req.Method {
+	case "initialize":
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(req.Params, &params)
+		// The spec's negotiation: the client's revision when supported, else our newest.
+		negotiated := mcpHandshakeVersions[0]
+		if isHandshakeVersion(params.ProtocolVersion) {
+			negotiated = params.ProtocolVersion
+		}
+		discover := s.mcpDiscover()
+		w.Header().Set(headerMCPProtocolVersion, negotiated)
+		writeRPCResult(w, req.ID, initializeResult{
+			ProtocolVersion: negotiated,
+			Capabilities:    discover.Capabilities,
+			ServerInfo:      mcpImplementation{Name: "argos", Version: s.build.Version},
+			Instructions:    discover.Instructions,
+		})
+	case "server/discover":
+		writeRPCResult(w, req.ID, s.mcpDiscover())
+	case "tools/list":
+		s.mcpToolsList(w, r, req)
+	case "tools/call":
+		var params callToolParams
+		if len(req.Params) > 0 {
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				writeRPCError(w, req.ID, codeInvalidRequest, "params must be an object with a name", nil)
+				return
+			}
+		}
+		if params.Name == "" {
+			writeRPCError(w, req.ID, codeInvalidRequest, "params.name is required", nil)
+			return
+		}
+		s.mcpRunTool(w, r, req, params)
 	case "ping":
 		writeRPCResult(w, req.ID, struct{}{})
 	default:
@@ -325,6 +410,10 @@ func (s *Server) mcpToolsCall(w http.ResponseWriter, r *http.Request, req rpcReq
 		return
 	}
 
+	s.mcpRunTool(w, r, req, params)
+}
+
+func (s *Server) mcpRunTool(w http.ResponseWriter, r *http.Request, req rpcRequest, params callToolParams) {
 	// r.Context() carries client cancellation, which matters once a provider
 	// does I/O rather than reading an in-memory index.
 	result, found, err := s.tools.Call(r.Context(), params.Name, params.Arguments)
@@ -366,7 +455,10 @@ func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message 
 
 func writeRPC(w http.ResponseWriter, response rpcResponse) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set(headerMCPProtocolVersion, mcpProtocolVersion)
+	// A handshake answer has already set the revision it negotiated.
+	if w.Header().Get(headerMCPProtocolVersion) == "" {
+		w.Header().Set(headerMCPProtocolVersion, mcpProtocolVersion)
+	}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		// The response has already started; there is nothing useful left to do.
 		return

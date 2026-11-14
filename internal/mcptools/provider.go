@@ -50,7 +50,14 @@ type Tool struct {
 type Annotations struct {
 	ReadOnlyHint   bool `json:"readOnlyHint"`
 	IdempotentHint bool `json:"idempotentHint"`
+	// DestructiveHint matters only when ReadOnlyHint is false. MCP clients
+	// treat an absent value as true, so a write that only changes a setting
+	// must say false or every call gets the confirmation a delete would.
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
 }
+
+// Hint wraps a bool for the optional hints.
+func Hint(v bool) *bool { return &v }
 
 // Result is a tool's outcome.
 //

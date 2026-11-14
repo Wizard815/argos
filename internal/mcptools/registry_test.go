@@ -403,3 +403,54 @@ func TestSplitName(t *testing.T) {
 		})
 	}
 }
+
+// A closed schema refuses names it does not list, before the provider runs:
+// unload_models given {"models": [...]} used to unload every model.
+func TestRegistry_RefusesUnknownArguments(t *testing.T) {
+	closed := Tool{Name: "unload", Description: "unload", InputSchema: map[string]any{
+		"type": "object", "properties": map[string]any{}, "additionalProperties": false}}
+	withPath := Tool{Name: "schema", Description: "schema", InputSchema: map[string]any{
+		"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "additionalProperties": false}}
+	open := Tool{Name: "open", Description: "open", InputSchema: map[string]any{"type": "object"}}
+	p := &fakeProvider{id: "m", tools: []Tool{closed, withPath, open}, result: Result{Content: "ran"}}
+	r, err := New(p)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	args := func(s string) map[string]json.RawMessage {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	tests := []struct {
+		name, tool, args, want string
+		ran                    bool
+	}{
+		{"no arguments taken", "m__unload", `{"models":["a"]}`, "unload does not take models; it takes no arguments", false},
+		{"wrong name", "m__schema", `{"key":"models"}`, "schema does not take key; it takes: path", false},
+		{"known name", "m__schema", `{"path":"models"}`, "ran", true},
+		{"open schema", "m__open", `{"anything":1}`, "ran", true},
+		{"no arguments sent", "m__unload", `{}`, "ran", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p.calledName = ""
+			result, found, err := r.Call(context.Background(), tt.tool, args(tt.args))
+			if err != nil || !found {
+				t.Fatalf("Call: found=%v err=%v", found, err)
+			}
+			if !strings.Contains(result.Content, tt.want) {
+				t.Errorf("content = %q, want it to contain %q", result.Content, tt.want)
+			}
+			if result.IsError == tt.ran {
+				t.Errorf("IsError = %v, want %v", result.IsError, !tt.ran)
+			}
+			if (p.calledName != "") != tt.ran {
+				t.Errorf("provider ran = %v, want %v", p.calledName != "", tt.ran)
+			}
+		})
+	}
+}
