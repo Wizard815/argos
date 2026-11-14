@@ -65,7 +65,8 @@ COPY builder/src /app/builder/src
 # was not in the image and the documented command could not work.
 COPY builder/scripts /app/builder/scripts
 COPY setup/argos-migrate.sh /app/bin/argos-migrate
-RUN chmod 755 /app/bin/argos-migrate
+COPY setup/argos-password.sh /app/bin/argos-password
+RUN chmod 755 /app/bin/argos-migrate /app/bin/argos-password
 COPY docker/argos.config.yaml /app/config.yaml
 COPY docker/argos-entrypoint.sh /app/argos-entrypoint.sh
 

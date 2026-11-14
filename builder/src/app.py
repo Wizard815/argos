@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import atexit
 import logging
+import json
 import os
+import urllib.parse
 import signal
 import sys
 import threading
 import time
 
-from flask import Flask, request, send_from_directory
+from flask import Flask, redirect, request, send_from_directory
 
 if __package__ in (None, ""):  # `python src/app.py`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,6 +43,7 @@ from . import engine_proxy, readcache  # noqa: E402
 from .log_analyzer import parse_log_text  # noqa: E402
 from .routes import assistant as assistant_routes  # noqa: E402
 from .routes import runners as runners_routes  # noqa: E402
+from .routes import security as security_routes  # noqa: E402
 from .routes import bench as bench_routes, core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
 from .measure import Measurer  # noqa: E402
 from .runner import Runner  # noqa: E402
@@ -375,6 +378,51 @@ def create_app(config: dict | None = None) -> Flask:
         )
         for name, work in prewarm:
             threading.Thread(target=work, name=name, daemon=True).start()
+
+    # who may use Argos: the web page password and API keys (Settings -> Security), checked before anything else
+    from .security import MODEL_API_PREFIXES, OPEN_PATHS, SESSION_DAYS, Security, key_from
+    from datetime import timedelta
+    security = Security(store)
+    app.extensions["security"] = security
+    app.secret_key = security.session_secret()
+    app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                      PERMANENT_SESSION_LIFETIME=timedelta(days=SESSION_DAYS), SESSION_COOKIE_NAME="argos_session")
+    app.register_blueprint(security_routes.bp)
+
+    @app.before_request
+    def _who_may():
+        path = request.path
+        # inside the container (the engine calling back, docker exec ... curl) passes; a reverse proxy on the same
+        # host also connects from 127.0.0.1, but says who it is forwarding for, so that does not count
+        inside = (request.remote_addr or "") in ("127.0.0.1", "::1") and not (
+            request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP") or request.headers.get("Forwarded"))
+        if path in OPEN_PATHS or path.startswith("/static/") or inside:
+            return None
+        need_login, need_key = security.password_set(), security.require_key()
+        if not need_login and not need_key:
+            return None
+        proxied = (request.endpoint or "").startswith("engine_proxy.")
+        model_api = proxied and path.startswith(MODEL_API_PREFIXES)
+        # what this request needs: the page and the engine's admin paths need a login when a password is set;
+        # the model API needs a key when keys are required. A logged-in browser or a valid key is enough for either.
+        if model_api and not need_key:
+            return None
+        if not model_api and not need_login:
+            return None
+        if security_routes.logged_in():
+            return None
+        key = key_from(request.headers)
+        if key and security.check_key(key):
+            return None
+        if model_api:
+            msg = ("Argos needs an API key for the model API: send Authorization: Bearer <key> (Settings -> Security makes one)"
+                   if not key else "that API key is not valid (revoked, or mistyped)")
+            return app.response_class(json.dumps({"error": {"message": msg, "type": "invalid_request_error", "code": "invalid_api_key"}}),
+                                      status=401, mimetype="application/json")
+        if path.startswith("/api/") or proxied:
+            return app.response_class(json.dumps({"ok": False, "error": "log in to Argos first", "login": True}),
+                                      status=401, mimetype="application/json")
+        return redirect("/login?next=" + urllib.parse.quote(request.full_path.rstrip("?")))
 
     for bp in (bench_routes.bp, core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp,
                runners_routes.bp):

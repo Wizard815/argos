@@ -187,6 +187,10 @@ async function api(method, path, body, timeoutMs = API_TIMEOUT_MS) {
   }
   const isJson = (res.headers.get("content-type") || "").includes("json");
   const data = isJson ? await res.json() : await res.text();
+  if (res.status === 401 && isJson && data.login) {  // logged out (a password set or changed): log in, then back here
+    location.href = `/login?next=${encodeURIComponent("/" + location.hash)}`;
+    throw new Error("log in to Argos first");
+  }
   if (!res.ok || (isJson && data.ok === false)) throw new Error((isJson && data.error) || `${res.status} ${res.statusText}`);
   return data;
 }
@@ -416,7 +420,9 @@ const onShow = {
   servers: () => { loadServers(); if (lsGet("argos.tab.servers") === "local") loadLocal(); },
   integrations: () => loadIntegrations(),
   settings: () => loadSettings().then(renderSettings).then(loadIntegrations).then(() => {
-    if ($(".tabs[data-tabs=settings] button.on")?.dataset.pane === "assistant") loadSettingsAssistant();
+    const pane = $(".tabs[data-tabs=settings] button.on")?.dataset.pane;
+    if (pane === "assistant") loadSettingsAssistant();
+    else if (pane === "security") loadSecurity();
   }),
   playground: () => {
     if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect();
@@ -4098,6 +4104,74 @@ async function sendChat() {
   input.focus();
 }
 
+// ── Settings -> Security: the web page password, API keys for apps ─────────────
+async function loadSecurity() {
+  let st;
+  try { st = await api("GET", "/api/security"); } catch (e) { fill($("#sSecurity"), h("p", { class: "hint" }, e.message)); return; }
+  const base = `${location.origin}/v1`;
+  const field = (label, input, hint, wide) => h("label", { class: `field${wide ? " wide" : ""}` }, h("span", {}, label), input, hint ? h("span", { class: "muted mono-sm" }, hint) : null);
+  // the password
+  const cur = h("input", { type: "password", autocomplete: "current-password", placeholder: "current password" });
+  const pw1 = h("input", { type: "password", autocomplete: "new-password", placeholder: "new password (8 characters or more)" });
+  const pw2 = h("input", { type: "password", autocomplete: "new-password", placeholder: "the new password again" });
+  const savePw = async (remove) => {
+    if (!remove && pw1.value !== pw2.value) return toast("The two new passwords differ.", "err");
+    if (remove && !(await confirmBox("Remove the password? Anyone who can reach Argos can then use it without logging in.", "Remove"))) return;
+    try {
+      await api("PUT", "/api/security/password", { current: cur.value, new: remove ? "" : pw1.value });
+      toast(remove ? "Password removed: Argos opens without logging in." : "Password saved. Other browsers are signed out; this one stays logged in.", "ok");
+      loadSecurity();
+    } catch (e) { fail(e); }
+  };
+  const pwCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Web page password"), h("span", { class: "spacer" }),
+      h("span", { class: `pill ${st.password_set ? "ok" : "warn"}` }, st.password_set ? "set" : "none: anyone who can reach Argos can use it"),
+      st.password_set ? btn("Log out", () => { location.href = "/logout"; }, "sm ghost") : null),
+    h("p", { class: "hint" }, `For people in a browser: Argos asks for it once and stays logged in for ${st.session_days} days. It guards the whole page and its /api, including starting and stopping models. Changing it signs every other browser out.`),
+    h("div", { class: "fields" },
+      st.password_set ? field("Current password", cur, "", true) : null,
+      field(st.password_set ? "New password" : "Password", pw1, "", true), field("Again", pw2, "", true),
+      h("div", { class: "row wide", style: "gap:8px" }, btn(st.password_set ? "Change password" : "Set password", () => savePw(false), "sm primary", "save"),
+        st.password_set ? btn("Remove password", () => savePw(true), "sm ghost danger") : null)),
+    h("p", { class: "hint", style: "margin-top:8px" }, "Forgot it? On the server: ", h("code", {}, "docker compose exec argos argos-password clear"), " removes it, then set a new one here."));
+  // API keys
+  const name = h("input", { type: "text", placeholder: "who it is for: Hermes, Codex, Odysseus…", style: "flex:1" });
+  const make = async () => {
+    try {
+      const r = await api("POST", "/api/security/keys", { name: name.value.trim() });
+      const k = r.key.key;
+      const box = h("input", { type: "text", value: k, readonly: true, style: "width:100%", onfocus: (e) => e.target.select() });
+      modal(`Key for ${r.key.name}`, h("div", { class: "stack" },
+        h("p", { class: "hint", style: "margin:0" }, h("b", {}, "Copy it now: "), "Argos keeps only a fingerprint of it and cannot show it again."), box,
+        btn("Copy", () => navigator.clipboard?.writeText(k).then(() => toast("Copied.", "ok"), () => box.select()), "sm"),
+        h("p", { class: "hint" }, "Give it to the app as its OpenAI API key, with Argos as the base URL:"),
+        h("pre", { class: "pre" }, `OPENAI_BASE_URL=${base}\nOPENAI_API_KEY=${k}\n\n# or as a header\nAuthorization: Bearer ${k}`)),
+        [{ label: "Done", run: (c) => c() }]);
+      name.value = "";
+      loadSecurity();
+    } catch (e) { fail(e); }
+  };
+  const revoke = (k) => async () => {
+    if (!(await confirmBox(`Revoke the key for ${k.name} (${k.prefix}…)? Anything using it gets "not valid" from now on.`, "Revoke"))) return;
+    try { await api("DELETE", `/api/security/keys/${k.id}`); loadSecurity(); } catch (e) { fail(e); }
+  };
+  const req = h("input", { type: "checkbox", checked: st.require_key, disabled: !st.keys.length && !st.require_key });
+  req.addEventListener("change", async () => {
+    try { await api("PUT", "/api/security/require-key", { on: req.checked }); toast(req.checked ? "The model API now needs a key." : "The model API is open again.", "ok"); loadSecurity(); }
+    catch (e) { req.checked = !req.checked; fail(e); }
+  });
+  const keyCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "API keys"), h("span", { class: "spacer" }),
+      h("span", { class: `pill ${st.require_key ? "ok" : ""}` }, st.require_key ? "required for the model API" : "not required")),
+    h("p", { class: "hint" }, "For apps: one per app, so one can be revoked without touching the others. An app sends it as its OpenAI API key (Authorization: Bearer, or x-api-key). It also opens Argos's /api for scripts and dashboards, but never this Security tab."),
+    h("label", { class: "check wide" }, req, "Require a key for the model API (", h("code", {}, base), " and every other engine path)",
+      !st.keys.length && !st.require_key ? h("span", { class: "muted" }, " · make a key first") : null),
+    h("p", { class: "hint", style: "margin:2px 0 8px" }, "A browser logged in to Argos (the Playground, the assistant) does not need one."),
+    st.keys.length ? h("div", { class: "table-wrap" }, simpleTable(["Name", "Starts with", "Made", "Last used", ""],
+      st.keys.map((k) => [k.name, h("code", {}, `${k.prefix}…`), ago(k.created_at), k.last_used_at ? ago(k.last_used_at) : "never",
+        btn("Revoke", revoke(k), "sm ghost danger")]))) : h("div", { class: "muted mono-sm" }, "No keys yet."),
+    h("div", { class: "row", style: "gap:8px; margin-top:10px; flex-wrap:nowrap" }, name, btn("Make a key", make, "sm primary", "plus")));
+  fill($("#sSecurity"), pwCard, keyCard);
+}
+
 // ── Assistant settings: its own page ─────────────────────────
 // The chat model and the embedding model are picked from what Argos has: your profiles, the models in the library,
 // and anything else the engine lists. Another OpenAI-compatible server is under Advanced, for the rare case.
@@ -6490,6 +6564,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
     else if (bar.dataset.tabs === "playground" && b.dataset.pane === "bench") loadBenchTab();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "assistant") loadSettingsAssistant();
+    else if (bar.dataset.tabs === "settings" && b.dataset.pane === "security") loadSecurity();
   }));
 }
 

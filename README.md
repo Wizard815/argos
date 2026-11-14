@@ -67,6 +67,6 @@ It also asks for the **backend** (ROCm, CUDA or both), the **scheduler** (the GP
 - **Settings:** [docs/configuration.md](docs/configuration.md). **Servers over SSH:** [docs/servers.md](docs/servers.md). **Without Docker:** [docs/development.md](docs/development.md).
 - **Postgres** (optional, for many writers at once): set `POSTGRES_PASSWORD` in `.env`, run `docker compose exec argos argos-migrate`, then set `ARGOS_DATABASE_URL`. Step by step in [docs/postgres.md](docs/postgres.md).
 
-**Security:** there is no login, and the Playground runs whatever command you give it. Only expose Argos to people you trust.
+**Security:** off until you set it, in **Settings → Security**: a **password** for the web page (a browser logs in once, for 30 days) and **API keys** for apps (one per app, sent as the OpenAI API key; switch on "require a key" for the model API). A forgotten password: `docker compose exec argos argos-password clear`. Even logged in, the Playground runs whatever command you give it: only give the password to people you trust.
 
 Argos started as a fork of [llama-swap](https://github.com/mostlygeek/llama-swap) by Benson Wong (MIT, see [LICENSE.md](LICENSE.md)).
