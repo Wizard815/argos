@@ -21,6 +21,7 @@ Everything here can also be set on the **Settings** page. Environment variables 
 | `ROCM_IMAGE` / `CUDA_IMAGE`, `ROCM_BIN` / `CUDA_BIN` | Modes 1 and 2: the llama.cpp image per backend and the `llama-server` path in it. Mode 2's `docker-llama` starts a container from them per model, with `HOST_MODELS_DIR` (the models folder on the host) at `/app/models`. |
 | `ARGOS_SSH_DIR` | Where each server's SSH key is kept. Default: an `ssh` folder next to `ARGOS_DB`. |
 | `ARGOS_RAPL_DIR` | Where the CPU's RAPL energy counters are, for the header's CPU watts. Default: `/sys/class/powercap`, else `/host/powercap`, where setup.sh mounts `/sys/devices/virtual/powercap` (Docker 25+ hides it from containers). No counters (a VM): the CPU watts show `—`. |
+| Security | Not an environment variable: **Settings → Security** sets the web page password and makes API keys (kept hashed in the builder's database; a key is shown once). With a password set, the page, its `/api` and the engine's own paths need a login or a key; with "require a key" on, so does the model API (`/v1`, `/upstream`, …). Requests from inside the container pass. `docker compose exec argos argos-password clear` removes a forgotten password. |
 | `ARGOS_TELEMETRY` | `0` turns the background GPU collector off. |
 | `ARGOS_PORT` | The one host port for Argos: web page, OpenAI API and engine endpoints. Default `8080`. |
 | `HOST` / `PORT` | Where the builder listens inside the container. Docker sets `8080`; running bare it defaults to `0.0.0.0:7861`. |
