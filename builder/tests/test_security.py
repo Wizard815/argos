@@ -86,3 +86,39 @@ def test_Security_argos_password_clear(app, client, monkeypatch, tmp_path):
     assert security.main(["clear"]) == 0
     sec._cache = (0.0, {})
     assert not sec.password_set()
+
+
+def _fresh(tmp_path, **cfg):
+    from src.app import create_app
+    a = create_app({"DB": str(tmp_path / "s.db"), "RUNS_DIR": str(tmp_path / "r"), "TELEMETRY": False, "BACKGROUND": False, **cfg})
+    return a, _from(a, OUT)
+
+
+def test_Security_a_new_install_starts_with_admin_unless_told_otherwise(tmp_path):
+    a, c = _fresh(tmp_path, UI_PASSWORD=None)  # no ARGOS_UI_PASSWORD at all
+    sec = a.extensions["security"]
+    assert sec.password_set() and sec.default_password()
+    assert c.get("/api/settings").status_code == 401
+    assert c.post("/login", data={"password": "admin"}).status_code == 302
+    assert c.get("/api/auth/status").get_json()["default_password"] is True, "the page warns"
+    assert c.put("/api/security/password", json={"current": "admin", "new": "my own one"}).status_code == 200
+    assert not sec.default_password()
+    # a restart does not bring "admin" back: only the first start reads ARGOS_UI_PASSWORD
+    a2, _ = _fresh(tmp_path, UI_PASSWORD=None)
+    assert a2.extensions["security"].password_set() and not a2.extensions["security"].default_password()
+
+
+def test_Security_an_empty_ARGOS_UI_PASSWORD_is_no_login(tmp_path):
+    a, c = _fresh(tmp_path, UI_PASSWORD="")
+    assert not a.extensions["security"].password_set() and c.get("/api/settings").status_code == 200
+
+
+def test_Security_ARGOS_UI_PASSWORD_sets_your_own(tmp_path):
+    a, c = _fresh(tmp_path, UI_PASSWORD="kettle-orbit-73")
+    assert not a.extensions["security"].default_password()
+    assert c.post("/login", data={"password": "kettle-orbit-73"}).status_code == 302
+
+
+def test_Security_setup_none_means_no_login(tmp_path):
+    a, _ = _fresh(tmp_path, UI_PASSWORD="none")
+    assert not a.extensions["security"].password_set()

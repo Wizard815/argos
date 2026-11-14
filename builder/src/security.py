@@ -24,6 +24,7 @@ import time
 from typing import Any, Optional
 
 STATE_KEY = "_security"
+DEFAULT_PASSWORD = "admin"
 SESSION_DAYS = 30
 KEY_PREFIX = "argos-"
 # the paths a browser can reach before it has logged in
@@ -99,13 +100,33 @@ class Security:
         return hashlib.sha256((self.state().get("password_hash") or "").encode()).hexdigest()[:16]
 
     # ----- the password -------------------------------------------------------------------------------------
+    def first_start(self, env_value) -> str:
+        """The password a new install starts with, once, from ARGOS_UI_PASSWORD: not set at all is "admin", set
+        but empty ("none" in setup.sh) is no login, anything else is that password. After the first start only
+        Settings -> Security changes it. Returns what was done, for the log ("" when it was decided before)."""
+        if self.state().get("initialized"):
+            return ""
+        pw = DEFAULT_PASSWORD if env_value is None else str(env_value)
+        if pw.strip().lower() == "none":
+            pw = ""
+        self._save(initialized=True, password_hash=_hash_password(pw) if pw else "", default_password=pw == DEFAULT_PASSWORD)
+        if not pw:
+            return "no web page password (ARGOS_UI_PASSWORD is empty): Argos opens without logging in"
+        if pw == DEFAULT_PASSWORD:
+            return 'the web page password is the default, "admin": change it in Settings -> Security'
+        return "the web page password is the one ARGOS_UI_PASSWORD gave"
+
+    def default_password(self) -> bool:
+        """Still the "admin" a new install started with: the page warns until it is changed."""
+        return self.password_set() and bool(self.state().get("default_password"))
+
     def set_password(self, new: str, current: str = "") -> None:
         have = self.state().get("password_hash")
         if have and not _check_password(current, have):
             raise PermissionError("the current password is wrong")
         if new and len(new) < 8:
             raise ValueError("use at least 8 characters")
-        self._save(password_hash=_hash_password(new) if new else "")
+        self._save(password_hash=_hash_password(new) if new else "", default_password=False)
 
     def check_password(self, password: str, addr: str = "") -> bool:
         """With a pause and a limit (10 a minute from one address) against guessing."""
@@ -120,7 +141,7 @@ class Security:
         return ok
 
     def clear_password(self) -> None:
-        self._save(password_hash="")
+        self._save(password_hash="", default_password=False, initialized=True)
 
     # ----- API keys --------------------------------------------------------------------------------------------
     def create_key(self, name: str) -> dict:
@@ -158,8 +179,8 @@ class Security:
         self._save(require_key=bool(on))
 
     def status(self) -> dict:
-        return {"password_set": self.password_set(), "require_key": self.require_key(), "keys": self.list_keys(),
-                "session_days": SESSION_DAYS}
+        return {"password_set": self.password_set(), "default_password": self.default_password(),
+                "require_key": self.require_key(), "keys": self.list_keys(), "session_days": SESSION_DAYS}
 
 
 def key_from(headers) -> str:

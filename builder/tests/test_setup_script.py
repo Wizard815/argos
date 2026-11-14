@@ -177,3 +177,13 @@ def test_SetupScript_a_rerun_with_fewer_backends_drops_the_old_server(tmp_path):
     run_setup(work, answers("2", "rocm"))
     _, servers = argos_servers(tmp_path, container_env(work))
     assert set(servers) == {"Local", "llama.cpp ROCm"}
+
+
+@pytest.mark.parametrize("reply,want", [("", "admin"), ("none", ""), ("kettle-orbit-73", "kettle-orbit-73")])
+def test_SetupScript_asks_for_the_web_page_password(tmp_path, reply, want):
+    """Enter is "admin", "none" is no login (an empty ARGOS_UI_PASSWORD), anything else is that password."""
+    work = tmp_path / "repo"
+    work.mkdir()
+    out = run_setup(work, answers("2", "rocm") + [reply])
+    assert dotenv(work)["ARGOS_UI_PASSWORD"] == want
+    assert ("The web page has no login" in out) == (want == "") and ('"admin"' in out) == (want == "admin")

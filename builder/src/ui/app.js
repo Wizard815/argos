@@ -4105,6 +4105,17 @@ async function sendChat() {
 }
 
 // ── Settings -> Security: the web page password, API keys for apps ─────────────
+/** The header's "default password" warning, while the password is still the "admin" a new install starts with. */
+async function checkDefaultPassword() {
+  try {
+    const st = await api("GET", "/api/auth/status");
+    const w = $("#pwWarn");
+    if (w) {
+      w.hidden = !st.default_password;
+      w.onclick = () => { setTimeout(() => $(".tabs[data-tabs=settings] button[data-pane=security]")?.click(), 50); };
+    }
+  } catch (e) { /* not logged in yet */ }
+}
 async function loadSecurity() {
   let st;
   try { st = await api("GET", "/api/security"); } catch (e) { fill($("#sSecurity"), h("p", { class: "hint" }, e.message)); return; }
@@ -4120,11 +4131,12 @@ async function loadSecurity() {
     try {
       await api("PUT", "/api/security/password", { current: cur.value, new: remove ? "" : pw1.value });
       toast(remove ? "Password removed: Argos opens without logging in." : "Password saved. Other browsers are signed out; this one stays logged in.", "ok");
-      loadSecurity();
+      loadSecurity(); checkDefaultPassword();
     } catch (e) { fail(e); }
   };
   const pwCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Web page password"), h("span", { class: "spacer" }),
-      h("span", { class: `pill ${st.password_set ? "ok" : "warn"}` }, st.password_set ? "set" : "none: anyone who can reach Argos can use it"),
+      h("span", { class: `pill ${st.default_password ? "bad" : st.password_set ? "ok" : "warn"}` },
+        st.default_password ? "still the default, admin: change it" : st.password_set ? "set" : "none: anyone who can reach Argos can use it"),
       st.password_set ? btn("Log out", () => { location.href = "/logout"; }, "sm ghost") : null),
     h("p", { class: "hint" }, `For people in a browser: Argos asks for it once and stays logged in for ${st.session_days} days. It guards the whole page and its /api, including starting and stopping models. Changing it signs every other browser out.`),
     h("div", { class: "fields" },
@@ -6647,6 +6659,7 @@ function boot() {
   loadNotes();
   loadGpuBars();
   setInterval(loadGpuBars, 8000);
+  checkDefaultPassword();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) loadGpuBars(); });
   initBuilder();
   initPlayground();

@@ -83,7 +83,8 @@ def logout():
 
 @bp.get("/api/auth/status")
 def auth_status():
-    return ok(password_set=sec().password_set(), logged_in=logged_in() or not sec().password_set())
+    return ok(password_set=sec().password_set(), default_password=sec().default_password(),
+              logged_in=logged_in() or not sec().password_set())
 
 
 # ----- Settings -> Security: only a logged-in browser (or one with no password set yet), never an API key ---------

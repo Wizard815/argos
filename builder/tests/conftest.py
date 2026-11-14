@@ -66,6 +66,7 @@ def app(tmp_path):
         "HF_ENDPOINT": "http://127.0.0.1:9",  # tests that need the Hub start a fake one
         "TELEMETRY": False,
         "BACKGROUND": False,
+        "UI_PASSWORD": "",  # no login: tests that need one set it
     })
     yield app
     app.extensions["runner"].stop_all()

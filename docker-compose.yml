@@ -35,6 +35,9 @@ services:
       # Set it in .env AFTER running scripts/migrate_to_postgres.py:
       #   ARGOS_DATABASE_URL=postgresql://argos:YOUR_PASSWORD@postgres:5432/argos
       - ARGOS_DATABASE_URL=${ARGOS_DATABASE_URL:-}
+      # The web page password of a new install, read on its first start only (then Settings -> Security).
+      # No line in .env: "admin". A line left empty (ARGOS_UI_PASSWORD=): no login. Anything else: that password.
+      - ARGOS_UI_PASSWORD=${ARGOS_UI_PASSWORD-admin}
     depends_on:
       postgres:
         condition: service_healthy

@@ -48,6 +48,8 @@ PREV_ROCM_IMG_BIN="$(env_get ROCM_BIN)"; PREV_CUDA_IMG_BIN="$(env_get CUDA_BIN)"
 # Carried over rather than regenerated: changing it would leave the running
 # Postgres on the old password and the app unable to reach it.
 PREV_PG_PASSWORD="$(env_get POSTGRES_PASSWORD)"
+PREV_UI_PASSWORD_SET=0; [[ -f .env ]] && grep -q '^ARGOS_UI_PASSWORD=' .env && PREV_UI_PASSWORD_SET=1
+PREV_UI_PASSWORD="$(env_get ARGOS_UI_PASSWORD)"
 
 if [[ -f .env ]]; then
   # what the last run chose, as far as .env records it
@@ -232,6 +234,11 @@ pick_port() {  # $1 label, $2 default
   if port_busy "$REPLY"; then echo "  warning: host port $REPLY is in use now; 'docker compose up' will fail until it is free"; fi
 }
 pick_port "HOST port for Argos (web page and OpenAI API, one port)" "${PREV_PORT:-8080}"; API_PORT="$REPLY"; UI_PORT="$API_PORT"
+echo "  The web page password (Argos asks for it in the browser; change it later in Settings -> Security)."
+echo "  Enter = admin (change it after), none = no login (only on a network you trust), or type your own."
+UI_DEFAULT="admin"; [[ "$PREV_UI_PASSWORD_SET" == 1 ]] && UI_DEFAULT="${PREV_UI_PASSWORD:-none}"
+ask "Web page password" "$UI_DEFAULT"; UI_PASSWORD="$REPLY"
+[[ "${UI_PASSWORD,,}" == none ]] && UI_PASSWORD=""
 [[ "$MODE" == 2 ]] && echo "  Mode 2 note: --network container:argos requires container_name 'argos' and no host networking."
 
 # ---------------------------------------------------------------- write files
@@ -275,6 +282,9 @@ backup .env
   # placeholder is never what a real install runs on.
   echo "# Postgres (used when ARGOS_DATABASE_URL is set)"
   echo "POSTGRES_PASSWORD=$PG_PASSWORD"
+  # The web page password a new install starts with (its first start only; Settings -> Security after).
+  # Empty: no login.
+  echo "ARGOS_UI_PASSWORD=$UI_PASSWORD"
   if [[ "$SCHED" == pool ]]; then
     echo "# starting values for the Schedule page; what you save there wins"
     echo "ARGOS_SCHEDULE_POOL=1"
@@ -471,6 +481,10 @@ Next steps
   2. curl -X POST http://localhost:$API_PORT/api/models/rescan     (repeat if config.d is incomplete)
   3. grep -hE '^  [a-z0-9]' config.d/models.*.generated.yaml | sort | uniq -d     (must print nothing)
 EOF
+if [[ -z "${UI_PASSWORD-}" ]]; then echo "  -  The web page has no login. Set a password in Settings -> Security if anyone else can reach it."
+elif [[ "$UI_PASSWORD" == admin ]]; then echo "  -  Log in with the password \"admin\", then change it in Settings -> Security."
+else echo "  -  Log in with the web page password you typed (saved in .env as ARGOS_UI_PASSWORD; change it in Settings -> Security)."
+fi
 if [[ "$SCHED" == pool ]]; then cat <<EOF
   4. http://$HOSTNAME_HINT:$UI_PORT/#schedule -> Plan: check the cards${CARDS:+ ($CARDS GiB)}, Save. Keep 'routing:' in config.yaml
      commented out: saving the plan writes it to config.d. Watch it work under Live.
