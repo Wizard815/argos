@@ -112,6 +112,8 @@ def _env_config() -> dict:
         "SERVERS_JSON": env("ARGOS_SERVERS", ""),
         "TELEMETRY": (env("ARGOS_TELEMETRY") or env("PROFILEBUILDER_TELEMETRY", "1")) not in ("0", "false", "off"),
         "BACKGROUND": True,  # tests turn the background thread off and drive it by hand
+        # the web page password of a new install (first start only): unset = "admin", empty = no login
+        "UI_PASSWORD": env("ARGOS_UI_PASSWORD"),
     }
 
 
@@ -384,6 +386,9 @@ def create_app(config: dict | None = None) -> Flask:
     from datetime import timedelta
     security = Security(store)
     app.extensions["security"] = security
+    said = security.first_start(cfg.get("UI_PASSWORD"))
+    if said:
+        logging.getLogger("argos.security").warning(said)
     app.secret_key = security.session_secret()
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                       PERMANENT_SESSION_LIFETIME=timedelta(days=SESSION_DAYS), SESSION_COOKIE_NAME="argos_session")
