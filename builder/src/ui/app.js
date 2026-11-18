@@ -1273,6 +1273,28 @@ function useContext(c, type, e) {
   if (ropeOn() && e.train_ctx && one > e.train_ctx) Object.assign(edits, ropeEdits(one, e.train_ctx));
   edit(edits);
 }
+/** The model's own facts from its header: the context it was trained on, and how its layers use the KV cache.
+ *  Fixed by the model: -c, the cache type and --parallel change the cache's size, not which layers keep it. */
+function layoutFacts(e) {
+  const L = e.layout;
+  if (!L) return null;
+  const parts = [];
+  if (L.full_layers === L.layers) parts.push(`all ${L.layers} layers keep every token (full attention)`);
+  else {
+    parts.push(`${L.full_layers} of ${L.layers} layers keep every token`);
+    if (L.swa_layers) parts.push(`${L.swa_layers} keep only the last ${L.swa_window.toLocaleString()} (sliding window)`);
+    if (L.no_cache_layers) parts.push(`${L.no_cache_layers} keep a fixed-size state and no cache (linear)`);
+  }
+  const cache = e.cache_k === e.cache_v ? e.cache_k : `${e.cache_k}/${e.cache_v}`;
+  const why = L.full_layers === L.layers
+    ? "Every layer stores every token, so a long context costs the most on this kind of model."
+    : "Only the full layers grow with -c, so a long context costs much less than on a model whose every layer keeps every token.";
+  return h("div", { class: "model-facts", style: "margin:0 0 8px" },
+    h("div", {}, h("b", {}, "Model"), ` · trained for ${L.train_ctx ? ctxLabel(L.train_ctx) : "an unknown length"} · `, parts.join(", "),
+      ` · ${num(L.kv_per_token_kib, 1)} KiB per token of context (${cache})`),
+    h("p", { class: "hint", style: "margin:2px 0 0" }, `${why} The layers are fixed by the model: -c, the cache type and --parallel change the cache's size, not which layers keep it.`));
+}
+
 /** The context box: total, chats and each chat's share, the trained length, and one RoPE on/off button. */
 function contextBox(e) {
   const [n, shared] = chatSlots(e);
@@ -1282,6 +1304,8 @@ function contextBox(e) {
     : shared ? `${n} chats share one ${total} pool (--parallel ${n} --kv-unified)`
     : `${n} chats with ${ctxLabel(one)} each (--parallel ${n})`;
   const lines = [h("div", { class: "vram-sum", style: "margin:0" }, h("b", {}, `Context ${total}`), ` · ${chats}`)];
+  const facts = layoutFacts(e);
+  if (facts) lines.unshift(facts);
   // the two switches on one row, each saying its state
   const uni = argValue("kv-unified") != null, on = ropeOn();
   const scale = parseFloat(argValue("rope-scale")) || 0;
