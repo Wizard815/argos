@@ -98,6 +98,11 @@ def env_defaults(cfg: dict) -> dict:
             # the launch fails and the health check answers from Argos itself.
             "port": "${PORT}",
             "ngl": "99",
+            # a model with a separate MTP head (a small "...mtp...gguf" beside it, or attached by hand) drafts with it:
+            # {file} is the head; env goes in front. As llama.cpp builds take it: the RaidLab build reads
+            # LLAMA_ENABLE_MTP_OPT and --spec-type draft-mtp; a plain build drafts with -md and --spec-type draft
+            "mtp_args": "-md {file} --spec-type draft-mtp --spec-draft-n-max 3",
+            "mtp_env": "LLAMA_ENABLE_MTP_OPT=1",
             "ctx": "32768",
             "flash_attn": "on",
             "cache_type": "q8_0",
