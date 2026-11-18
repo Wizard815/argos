@@ -52,8 +52,18 @@ def quant_of(name: str) -> str:
     return m.group(1).upper() if m else ""
 
 
-def is_mmproj(name: str) -> bool:
-    return "mmproj" in os.path.basename(name).lower()
+PROJECTOR_ARCHS = ("clip", "mmproj")
+
+
+def is_mmproj(name: str, read_header: bool = False) -> bool:
+    """A vision/audio projector: "mmproj" in its name, or (with ``read_header``, ``name`` a path) a projector's
+    architecture in its GGUF header, whatever the file is called."""
+    if "mmproj" in os.path.basename(name).lower():
+        return True
+    if read_header and name.lower().endswith(".gguf"):
+        from .gguf import read_architecture
+        return read_architecture(name) in PROJECTOR_ARCHS
+    return False
 
 
 # ----- helper files: what is added onto a main model's command, not run on their own -------------------------------
@@ -109,7 +119,7 @@ def helper_files(models_dir: str) -> dict:
                 continue
             path = os.path.join(root, f)
             rel = os.path.relpath(path, models_dir)
-            if is_mmproj(f):
+            if is_mmproj(path, read_header=True):
                 out["mmproj"].append(rel)
             elif is_mtp_head(path):
                 out["mtp"].append(rel)
@@ -243,10 +253,10 @@ def _scan_models(models_dir: str) -> list[dict]:
     for root, dirs, files in os.walk(models_dir, followlinks=True):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
-            if f.lower().endswith(".gguf") and not f.startswith(".")                     and not media_kind(os.path.relpath(os.path.join(root, f), models_dir)):
+            if f.lower().endswith(".gguf") and not f.startswith(".") and not media_kind(os.path.relpath(os.path.join(root, f), models_dir)):
                 group = by_dir.setdefault(root, {"models": [], "mmproj": [], "mtp": []})
                 path = os.path.join(root, f)
-                group["mmproj" if is_mmproj(f) else "mtp" if is_mtp_head(path) else "models"].append(path)
+                group["mmproj" if is_mmproj(path, read_header=True) else "mtp" if is_mtp_head(path) else "models"].append(path)
     all_heads = [p for g in by_dir.values() for p in g["mtp"]]
     attached = read_helpers_file(models_dir)
 

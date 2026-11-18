@@ -18,13 +18,14 @@ file:
   small draft model.
 
 Argos treats both as **helpers** of the main model. They are not listed as
-models of their own.
+models of their own: neither on the Models page nor in the engine's
+`modelScan` list (`/v1/models`), so they do not inflate the model count.
 
 ## How a file is recognised
 
 | file | rule |
 | --- | --- |
-| vision projector | `mmproj` in the file name |
+| vision projector | `mmproj` in the file name, or `clip` as the architecture in its GGUF header |
 | MTP head | `mtp` (or `nextn`) in the name **and** 1–4 layers in its GGUF header |
 
 A full model with `mtp` in its name (MTP built into the file, 40+ layers)

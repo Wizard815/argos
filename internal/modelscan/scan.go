@@ -120,7 +120,7 @@ var shardSuffix = regexp.MustCompile(`(?i)-([0-9]+)-of-([0-9]+)$`)
 // shard other than the first of a split GGUF. A split model is one model spread
 // over several files: llama.cpp finds the remaining shards given the first, so
 // any other shard registered as its own model produces an entry that can never
-// load. Same reasoning as the mmproj skip in Scan.
+// load. Same reasoning as the helper-file skip in Scan.
 func isNonFirstShard(base string) bool {
 	m := shardSuffix.FindStringSubmatch(base)
 	if m == nil {
@@ -199,11 +199,10 @@ func Scan(opts Options) ([]byte, []string, error) {
 			}
 			base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 
-			// mmproj files are vision-projector weights meant to be passed
-			// via llama-server's --mmproj flag alongside a main model's -m,
-			// not run standalone — skip them so they don't show up as
-			// selectable models of their own.
-			if strings.Contains(strings.ToLower(base), "mmproj") {
+			// Projectors (--mmproj) and MTP heads (-md) only work added onto
+			// a main model: skip them so they don't show up as selectable
+			// models of their own (see helpers.go).
+			if IsHelperFile(path, base) {
 				return nil
 			}
 
