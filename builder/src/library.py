@@ -56,6 +56,75 @@ def is_mmproj(name: str) -> bool:
     return "mmproj" in os.path.basename(name).lower()
 
 
+# ----- helper files: what is added onto a main model's command, not run on their own -------------------------------
+# A vision projector (mmproj-*.gguf, --mmproj) and an MTP head: a small GGUF with a model's multi-token-prediction
+# layers alone, used to draft tokens for it. A file named "...mtp..." can also be a whole model with its MTP layers
+# inside (Qwen3.6-35B-A3B-MTP), so a head is told apart by its header: a few layers only.
+HELPERS_FILE = ".argos-helpers.json"
+MTP_NAME = re.compile(r"(?i)(^|[^a-z])(mtp|nextn)([^a-z]|$)")
+MTP_HEAD_MAX_LAYERS = 4
+_NAME_NOISE = re.compile(r"(?i)(-\d{5}-of-\d{5})|\.gguf$|(^|[-_.])(mtp|nextn|draft|head|mmproj|ud|imatrix|i?q\d[\w]*|bf16|f16|f32|fp16)(?=$|[-_.])")
+
+
+def _name_key(path: str) -> str:
+    """A file's model name without quant, shard, "mtp" and separators: what a helper and its model share."""
+    base = os.path.basename(path)
+    for _ in range(3):  # the noise words can sit next to each other
+        base = _NAME_NOISE.sub("", base)
+    return re.sub(r"[^a-z0-9]", "", base.lower())
+
+
+def is_mtp_head(path: str, layers: Optional[int] = None) -> bool:
+    """A separate MTP head: "mtp" (or "nextn") in its name and only a few layers in its header."""
+    if not MTP_NAME.search(os.path.basename(path)):
+        return False
+    if layers is None:
+        from .gguf import read_arch
+        arch = read_arch(path) or {}
+        layers = arch.get("layers")
+    return bool(layers) and layers <= MTP_HEAD_MAX_LAYERS
+
+
+def read_helpers_file(models_dir: str) -> dict:
+    """{model path relative to the models folder: {"mtp": rel path or "", "mmproj": rel path or ""}}: helpers attached
+    by hand (Models -> a model -> Helpers). "" detaches one that was paired on its own."""
+    import json
+    try:
+        with open(os.path.join(models_dir, HELPERS_FILE), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def helper_files(models_dir: str) -> dict:
+    """Every file that can be added onto a model, relative to the models folder: {"mmproj": [...], "mtp": [...]}."""
+    out: dict[str, list[str]] = {"mmproj": [], "mtp": []}
+    if not models_dir or not os.path.isdir(models_dir):
+        return out
+    for root, dirs, files in os.walk(models_dir, followlinks=True):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in files:
+            if not f.lower().endswith(".gguf") or f.startswith("."):
+                continue
+            path = os.path.join(root, f)
+            rel = os.path.relpath(path, models_dir)
+            if is_mmproj(f):
+                out["mmproj"].append(rel)
+            elif is_mtp_head(path):
+                out["mtp"].append(rel)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def write_helpers_file(models_dir: str, data: dict) -> None:
+    import json
+    tmp = os.path.join(models_dir, HELPERS_FILE + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({k: v for k, v in sorted(data.items()) if v}, f, indent=2)
+    os.replace(tmp, os.path.join(models_dir, HELPERS_FILE))
+    forget_scans()
+
+
 def kind_of(name: str, has_mmproj: bool) -> str:
     base = os.path.basename(name).lower()
     if RERANK.search(base):
@@ -175,8 +244,33 @@ def _scan_models(models_dir: str) -> list[dict]:
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
             if f.lower().endswith(".gguf") and not f.startswith(".")                     and not media_kind(os.path.relpath(os.path.join(root, f), models_dir)):
-                group = by_dir.setdefault(root, {"models": [], "mmproj": []})
-                group["mmproj" if is_mmproj(f) else "models"].append(os.path.join(root, f))
+                group = by_dir.setdefault(root, {"models": [], "mmproj": [], "mtp": []})
+                path = os.path.join(root, f)
+                group["mmproj" if is_mmproj(f) else "mtp" if is_mtp_head(path) else "models"].append(path)
+    all_heads = [p for g in by_dir.values() for p in g["mtp"]]
+    attached = read_helpers_file(models_dir)
+
+    def heads_for(path: str, root: str) -> list[str]:
+        """Its MTP heads: in its own folder, else ones named like it anywhere under the models folder."""
+        here = by_dir[root]["mtp"]
+        key = _name_key(path)
+        if len(here) == 1 and len(by_dir[root]["models"]) == 1:
+            return list(here)
+        pool = here or all_heads
+        same = [h for h in pool if _name_key(h) and _name_key(h) == key]  # GLM-4.6-MTP for GLM-4.6: any length
+        if same:
+            return same
+        # a longer or shorter name of the same model; at least 6 letters, so "qwen-mtp" does not take every Qwen
+        return [h for h in pool if len(_name_key(h)) >= 6 and len(key) >= 6 and (key.startswith(_name_key(h)) or _name_key(h).startswith(key))]
+
+    def by_hand(path: str, which: str):
+        """A helper attached (path) or detached ("") by hand, or None when nothing was said."""
+        rel = os.path.relpath(path, models_dir)
+        if rel not in attached or which not in (attached[rel] or {}):
+            return None
+        v = attached[rel][which]
+        return os.path.join(models_dir, v) if v else ""
+
     out = []
     for root, group in by_dir.items():
         mmprojs = sorted(group["mmproj"], key=lambda p: (quant_of(p) not in ("F16", "BF16"), p))
@@ -193,10 +287,15 @@ def _scan_models(models_dir: str) -> list[dict]:
                 if len(present) < total:
                     shards = -total  # incomplete split: flagged in the UI
             name = display_name(path, re.sub(r"\.gguf$", "", os.path.basename(path), flags=re.IGNORECASE))
+            vision = by_hand(path, "mmproj")
+            its_mmproj = mmprojs if vision is None else ([vision] if vision else [])
+            head = by_hand(path, "mtp")
+            heads = heads_for(path, root) if head is None else ([head] if head else [])
             out.append({
                 "id": swap_model_id(path), "name": name, "path": path,
                 "dir": os.path.relpath(root, models_dir), "size": size, "shards": shards,
-                "quant": quant_of(path), "mmproj": mmprojs, "kind": kind_of(path, bool(mmprojs)),
+                "quant": quant_of(path), "mmproj": its_mmproj, "kind": kind_of(path, bool(its_mmproj)),
+                "mtp_head": heads, "helpers_by_hand": sorted(k for k in ("mtp", "mmproj") if by_hand(path, k) is not None),
                 "mtime": _mtime(path),
             })
     return sorted(out, key=lambda m: m["name"].lower())
@@ -323,6 +422,10 @@ def prefab_command(model: dict, prefab: dict, port: Optional[str] = None) -> Lau
     if kind == "mtp":
         env.append("LLAMA_ENABLE_MTP_OPT=1")
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
+    if model.get("mtp_head") and kind not in ("embedding", "reranker", "mtp"):
+        # a separate MTP head drafts for this model: the template says how this build takes one
+        env += _env_lines(prefab.get("mtp_env", ""))
+        args += [a.replace("{file}", shlex.quote(model["mtp_head"][0])) for a in shlex.split(prefab.get("mtp_args") or "")]
     if model.get("mmproj") and kind != "embedding":
         args += ["--mmproj", shlex.quote(model["mmproj"][0]), "--image-max-tokens", "1024"]
     extra = (prefab.get("extra") or "").strip()

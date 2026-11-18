@@ -573,9 +573,14 @@ async function loadSettings() {
 }
 async function loadCatalog() {
   S.catalog = (await api("GET", "/api/catalog")).files;
+  let helpers = { mmproj: [], mtp: [] };
+  try { helpers = (await api("GET", "/api/library/helpers")).files; } catch (e) { /* the catalog alone */ }
+  const root = (S.settings && S.settings.paths && S.settings.paths.models_dir) || "";
+  const abs = (p) => (root ? `${root.replace(/[\\/]$/, "")}/${p}` : p);
   for (const kind of ["mmproj", "draft"]) {
     fill($(`#list-${kind}`), S.catalog.filter((f) => f.kind === kind && f.file_path)
-      .map((f) => h("option", { value: f.file_path }, `${f.base_model} · ${f.name}`)));
+      .map((f) => h("option", { value: f.file_path }, `${f.base_model} · ${f.name}`)),
+      (kind === "draft" ? helpers.mtp : helpers.mmproj).map((p) => h("option", { value: abs(p) }, kind === "draft" ? `MTP head · ${p}` : p)));
   }
   if (S.view === "models") renderCatalog();
 }
@@ -2378,7 +2383,7 @@ function exportCsv() {
 // ── Catalog ──────────────────────────────────────────────────
 const CATALOG = [
   { kind: "mmproj", title: "Vision projectors", flag: "--mmproj", hint: "Projectors kept outside the model's folder. (One beside the model is found automatically.)" },
-  { kind: "draft", title: "Draft models", flag: "-md", hint: "Small models for speculative decoding with a bigger one. (MTP needs no file: it is --spec-type draft-mtp.)" },
+  { kind: "draft", title: "Draft models", flag: "-md", hint: "Small models for speculative decoding with a bigger one. A separate MTP head is found on its own (or picked under a model's ⋯ → Helpers); a model with its MTP layers inside needs no file." },
 ];
 function renderCatalog() {
   const models = () => ((S.library && S.library.models) || []).map((m) => ({ value: m.id, label: m.name, sub: m.quant }));
@@ -2938,9 +2943,45 @@ function modelMenu(btnEl, m) {
   popMenu(btnEl, [
     { label: "Rename…", icon: "pencil", run: () => renameModel(m) },
     { label: "Move to group…", icon: "layers", run: () => newGroupBox(m) },
+    m.listed_only ? null : { label: "Helpers (vision, MTP)…", icon: "plug", run: () => helpersBox(m) },
     g ? { label: `Take out of ${g.name}`, icon: "x", run: () => saveGroups(ML.groups.map((x) => ({ name: x.name, models: x.models.filter((id) => id !== m.id) }))) } : null,
     { label: "Delete from disk…", icon: "trash", danger: true, run: () => deleteModel(m) },
   ]);
+}
+
+/** The files added onto a model's command: its vision projector (--mmproj) and its MTP head. Automatic is the one
+ * beside it (or named like it, for an MTP head); a file picked here, or none, is kept in the models folder. */
+async function helpersBox(m) {
+  let files;
+  try { files = (await api("GET", "/api/library/helpers")).files; } catch (e) { return fail(e); }
+  const root = (S.library && S.library.models_dir) || "";
+  const rel = (p) => (p && root && p.startsWith(root) ? p.slice(root.length).replace(/^[\\/]/, "") : p || "");
+  const byHand = new Set(m.helpers_by_hand || []);
+  const pick = (which, list, now) => {
+    const sel = h("select", {}, h("option", { value: "@auto" }, `Automatic${!byHand.has(which) && now ? ` (now ${now.split(/[\\/]/).pop()})` : !byHand.has(which) ? " (none found)" : ""}`),
+      h("option", { value: "" }, "None"), list.map((f) => h("option", { value: f }, f)));
+    sel.value = byHand.has(which) ? rel(now) : "@auto";
+    return sel;
+  };
+  const vis = pick("mmproj", files.mmproj, (m.mmproj || [])[0]);
+  const mtp = pick("mtp", files.mtp, (m.mtp_head || [])[0]);
+  const tmpl = (S.settings && S.settings.prefab) || {};
+  modal(`Helpers for ${m.name}`, h("div", { class: "stack" },
+    h("p", { class: "hint", style: "margin:0" }, "Files added onto this model's command when Argos builds it (a new profile, the prefab). Automatic finds one in the model's own folder; an MTP head can also be anywhere under the models folder if it is named like the model."),
+    h("label", { class: "field" }, h("span", {}, "Vision projector (--mmproj)"), vis),
+    h("label", { class: "field" }, h("span", {}, "MTP head (a small …mtp….gguf with the model's multi-token-prediction layers)"), mtp),
+    h("p", { class: "hint", style: "margin:0" }, "An MTP head is added as ", h("code", {}, tmpl.mtp_args || "-md {file} --spec-type draft-mtp --spec-draft-n-max 3"),
+      tmpl.mtp_env ? [" with ", h("code", {}, tmpl.mtp_env)] : null, ". Change that for your llama.cpp build in Settings → Prefab (MTP head arguments)."),
+    files.mtp.length ? null : h("p", { class: "hint", style: "margin:0" }, "No MTP heads found: a head is a GGUF with \"mtp\" in its name and only a few layers. A whole model with its MTP layers inside stays a model.")), [
+    { label: "Cancel", run: (c) => c() },
+    { label: "Save", cls: "primary", icon: "save", run: async (c) => {
+      const v = (sel) => (sel.value === "@auto" ? null : sel.value);
+      try {
+        await api("PUT", "/api/library/helpers", { path: m.path, mmproj: v(vis), mtp: v(mtp) });
+        c(); toast("Saved. New profiles and the prefab use them; existing profiles keep their own command.", "ok");
+        await loadLibrary(); renderLibrary();
+      } catch (e) { fail(e); }
+    } }]);
 }
 
 function renderLibrary() {
@@ -2996,6 +3037,7 @@ function renderLibrary() {
     { label: "Files", cell: (m) => h("div", { class: "chips" },
       m.shards < 0 ? h("span", { class: "pill bad" }, `incomplete ${-m.shards} parts`) : m.shards > 1 ? h("span", { class: "chip" }, `${m.shards} parts`) : null,
       m.mmproj.length ? h("span", { class: "chip", title: m.mmproj.join("\n") }, "mmproj") : null,
+      (m.mtp_head || []).length ? h("span", { class: "chip", title: `MTP head: ${m.mtp_head.join("\n")}` }, "MTP head") : null,
       m.format && m.format !== "gguf" ? h("span", { class: "chip" }, m.format) : null) },
     { key: "profiles", label: "Profiles", num: true, cell: (m) => (m.profiles
       ? h("button", { class: "btn sm ghost", onclick: () => showProfilesFor(m.id) }, String(m.profiles)) : DASH) },
@@ -4429,7 +4471,9 @@ const SETTINGS_FORM = [
     { k: "split_mode", label: "Split mode", type: "select", options: [["", "default"], ["none", "none"], ["layer", "layer"], ["row", "row"]] },
     { k: "jinja", label: "--jinja for chat models", type: "check" },
     { k: "env", label: "Environment (KEY=VALUE per line)", type: "textarea", ph: "HIP_VISIBLE_DEVICES=0" },
-    { k: "extra", label: "Extra flags", ph: "--no-warmup" }] },
+    { k: "extra", label: "Extra flags", ph: "--no-warmup" },
+    { k: "mtp_args", label: "MTP head arguments", ph: "-md {file} --spec-type draft-mtp --spec-draft-n-max 3", hint: "added for a model with a separate MTP head; {file} is the head. A plain llama.cpp build: -md {file} --spec-type draft" },
+    { k: "mtp_env", label: "MTP head environment", ph: "LLAMA_ENABLE_MTP_OPT=1", hint: "set in front of a model with an MTP head; blank for none" }] },
   { group: "gpu", title: "GPU tools", hint: "Where the GPU toolkits are. Blank uses whatever is on PATH inside Argos, which is all most setups need. For a custom ROCm (a TheRock build for gfx906, say) or a second CUDA: mount its folder into the Argos container (a volume in docker-compose, e.g. /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro), then put the mounted path here. Runner builds then use its compiler, and runners started by the engine use its libraries.", fields: [
     { k: "rocm_path", label: "ROCm location", ph: "/opt/rocm-gfx906" },
     { k: "cuda_path", label: "CUDA location", ph: "/usr/local/cuda-12.4" },

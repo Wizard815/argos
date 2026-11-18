@@ -8,7 +8,7 @@ from flask import Blueprint, request
 
 from ..downloader import DownloadError, fit
 from ..integrations import engine_api
-from ..library import forget_scans, library_with_profiles, prefab_command, prefab_with_launcher, scan_media, scan_models, NAMES_KEY, with_names
+from ..library import forget_scans, helper_files, library_with_profiles, read_helpers_file, write_helpers_file, prefab_command, prefab_with_launcher, scan_media, scan_models, NAMES_KEY, with_names
 from ..telemetry import read_amd_sysfs, read_engine, read_nvidia_smi
 from ..web import body, check_id, ctx, err, ok
 from .core import _render
@@ -183,6 +183,45 @@ def library_groups_save():
         groups.append({"name": name, "models": models})
     ctx().store.set_setting(GROUPS_KEY, {"groups": groups})
     return ok(groups=groups)
+
+
+@bp.get("/api/library/helpers")
+def library_helpers():
+    """The files that can be added onto a model (vision projectors, MTP heads), relative to the models folder."""
+    return ok(files=helper_files(ctx().settings.get("paths")["models_dir"]))
+
+
+@bp.put("/api/library/helpers")
+def library_helpers_set():
+    """{path: the model file, mtp / mmproj: a helper's path relative to the models folder, "" for none, or null for
+    automatic (one beside it, or named like it)}. Kept in the models folder's .argos-helpers.json."""
+    d = body()
+    root = ctx().settings.get("paths")["models_dir"]
+    path = str(d.get("path") or "")
+    rel = os.path.relpath(path, root) if os.path.isabs(path) else path
+    if rel.startswith("..") or not os.path.isfile(os.path.join(root, rel)):
+        return err("no such model file in the models folder", 404)
+    data = read_helpers_file(root)
+    entry = dict(data.get(rel) or {})
+    for which in ("mtp", "mmproj"):
+        if which not in d:
+            continue
+        v = d[which]
+        if v is None:
+            entry.pop(which, None)
+        else:
+            v = str(v)
+            if v and (v.startswith("..") or os.path.isabs(v) or not os.path.isfile(os.path.join(root, v))):
+                return err(f"{which}: no such file in the models folder: {v}", 404)
+            entry[which] = v
+    data[rel] = entry
+    try:
+        write_helpers_file(root, data)
+    except OSError as exc:
+        return err(f"could not save {root}/.argos-helpers.json: {exc}", 500)
+    ctx().event("library", f"helpers of {rel}: " + ", ".join(f"{k} {v or 'none'}" for k, v in entry.items()) if entry else f"helpers of {rel}: automatic")
+    m = next((x for x in scan_models(root) if x["path"] == os.path.join(root, rel)), None)
+    return ok(model=m)
 
 
 @bp.post("/api/library/prefab")
