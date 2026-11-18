@@ -66,6 +66,9 @@ def _with_always(out: dict, cmd, fmt: str) -> dict:
     out["always_env"] = add_env
     out["always_args"] = [{"flag": a.flag, "name": a.name, "value": a.value} for a in add_args]
     out["always_added"] = [f"{k}={v}" for k, v in add_env.items()] + [" ".join(a.tokens()) for a in add_args]
+    # companion flags a combination needs (MTP draft + --split-mode tensor), added at launch and export
+    from ..always import combo_fixes
+    out["auto_added"] = combo_fixes(parse_command(cmd.to_string()))
     full, added = apply_always(cmd.to_string(), ctx().settings.get("always"))
     run = _render(parse_command(full), fmt) if added or linked else out
     out["run_command"], out["run_multiline"] = run["command"], run["multiline"]

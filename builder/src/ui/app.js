@@ -1202,7 +1202,8 @@ function renderBuilder() {
   const p = B.parsed;
   renderDirty();
   fillPresetSelect();
-  fill($("#bAlways"), (p.always_added || []).length ? p.always_added.map((x) => h("span", { class: "chip", title: "added at launch and export" }, x))
+  const autoChips = (p.auto_added || []).map((x) => h("span", { class: "chip warn", title: "Added automatically at launch and export: an MTP draft with --split-mode tensor crashes llama.cpp's flash attention when the draft is split too, so the draft runs whole on one card (and keeps an f16 cache when the main one is quantised). Set the flag yourself to choose a different value." }, `auto: ${x}`));
+  fill($("#bAlways"), (p.always_added || []).length || autoChips.length ? [...(p.always_added || []).map((x) => h("span", { class: "chip", title: "added at launch and export" }, x)), ...autoChips]
     : h("span", { class: "muted mono-sm" }, "Nothing. Set env vars or flags every model needs with Edit."));
   for (const f of [...SETTINGS, ...FILES]) {
     const c = B.controls[f.name];
