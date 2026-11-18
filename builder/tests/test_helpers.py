@@ -83,3 +83,11 @@ def test_Helpers_a_projector_is_known_by_its_header_whatever_its_name(tmp_path):
     models = _scan(tmp_path)
     assert list(models) == ["gemma-3-12b-Q4_K_M"], "the projector is a helper, not a model of its own"
     assert models["gemma-3-12b-Q4_K_M"]["mmproj"] == [str(tmp_path / "gemma" / "gemma-3-12b-vision-f16.gguf")]
+
+
+def test_Helpers_several_quants_of_one_head_use_q8_first(tmp_path):
+    _gguf(tmp_path / "q" / "Qwen3-Coder-Next-Q5_K_S.gguf", 48, size=10_000_000)
+    _gguf(tmp_path / "q" / "Qwen3-Coder-Next-MTP-BF16.gguf", 1)
+    _gguf(tmp_path / "q" / "Qwen3-Coder-Next-MTP-Q8_0.gguf", 1)
+    heads = _scan(tmp_path)["Qwen3-Coder-Next-Q5_K_S"]["mtp_head"]
+    assert [os.path.basename(h) for h in heads] == ["Qwen3-Coder-Next-MTP-Q8_0.gguf", "Qwen3-Coder-Next-MTP-BF16.gguf"]
