@@ -1,4 +1,4 @@
-"""An MTP draft with --split-mode tensor gets its companion flags at launch: the draft whole on one card, f16 draft cache."""
+"""An MTP draft with --split-mode tensor gets its companion flag at launch: the draft whole on one card."""
 from src.always import apply_always, combo_fixes
 from src.command import parse_command
 
@@ -11,13 +11,12 @@ def run(command: str) -> tuple[str, list[str]]:
     return apply_always(command, {})
 
 
-def test_TensorMtp_the_gemma_preset_gets_the_draft_on_one_card_with_an_f16_cache():
+def test_TensorMtp_the_gemma_preset_gets_the_draft_on_one_card_and_no_draft_cache_type():
     full, added = run(GEMMA)
     cmd = parse_command(full)
     assert cmd.get("device-draft") == "ROCm0"
-    assert cmd.get("cache-type-k-draft") == "f16" and cmd.get("cache-type-v-draft") == "f16"
-    assert cmd.get("cache-type-k") == "q8_0", "the main model's cache is left as it was"
-    assert added == ["--device-draft ROCm0", "--cache-type-k-draft f16", "--cache-type-v-draft f16"]
+    assert cmd.get("cache-type-k-draft") is None, "Gemma 4's draft shares the main cache: a different type fails to load"
+    assert added == ["--device-draft ROCm0"]
 
 
 def test_TensorMtp_built_in_mtp_layers_count_too():
@@ -26,14 +25,8 @@ def test_TensorMtp_built_in_mtp_layers_count_too():
 
 
 def test_TensorMtp_what_you_set_yourself_wins_and_is_recognised_in_either_spelling():
-    full, added = run(GEMMA + " -devd ROCm1 -ctkd q8_0 -ctvd q8_0")
-    cmd = parse_command(full)
-    assert added == [] and cmd.get("device-draft") == "ROCm1" and cmd.get("cache-type-k-draft") == "q8_0"
-
-
-def test_TensorMtp_an_unquantised_cache_needs_no_draft_cache_flag():
-    _, added = run(GEMMA.replace("q8_0", "f16"))
-    assert added == ["--device-draft ROCm0"]
+    full, added = run(GEMMA + " -devd ROCm1")
+    assert added == [] and parse_command(full).get("device-draft") == "ROCm1"
 
 
 def test_TensorMtp_layer_split_or_no_mtp_is_left_alone():

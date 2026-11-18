@@ -17,8 +17,12 @@ import (
 // kernel for some of the shapes that gives (Gemma 4's 512-wide heads with one KV
 // head per card, a quantised cache, the draft's 2-4 token batches), so the
 // server aborts mid-request (fattn.cu "fatal error" under draft_mtp). The draft
-// goes whole on one card (--device-draft) and, when the main cache is
-// quantised, keeps an f16 cache of its own. Flags the command sets win.
+// goes whole on one card (--device-draft). Flags the command sets win.
+//
+// Not added: an f16 cache for the draft (--cache-type-k/v-draft). Gemma 4's MTP
+// draft shares the main model's KV cache, so a draft cache type that differs
+// from the main one fails to load under tensor split (ggml-backend-meta.cpp
+// GGML_ASSERT ... SPLIT_AXIS_MIRRORED), seen on a real Gemma4-26B MTP preset.
 
 // devicePresent reports whether a device node exists; a variable so tests can
 // pretend to be an AMD or an NVIDIA host.
@@ -26,8 +30,6 @@ var devicePresent = func(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
-
-var unquantisedCache = map[string]bool{"f16": true, "bf16": true, "f32": true}
 
 // flagValue finds a flag in either spelling, as "--flag value" or
 // "--flag=value". found is true for a flag that is present without a value.
@@ -98,21 +100,6 @@ func CompanionFlags(args []string) []string {
 		if dev := draftDevice(args); dev != "" {
 			out = append(out, "--device-draft", dev)
 		}
-	}
-	k, _ := flagValue(args, "-ctk", "--cache-type-k")
-	v, vset := flagValue(args, "-ctv", "--cache-type-v")
-	k = strings.ToLower(strings.TrimSpace(k))
-	if k == "" {
-		k = "f16"
-	}
-	v = strings.ToLower(strings.TrimSpace(v))
-	if !vset || v == "" {
-		v = k
-	}
-	_, kd := flagValue(args, "-ctkd", "--cache-type-k-draft")
-	_, vd := flagValue(args, "-ctvd", "--cache-type-v-draft")
-	if (!unquantisedCache[k] || !unquantisedCache[v]) && !kd && !vd {
-		out = append(out, "--cache-type-k-draft", "f16", "--cache-type-v-draft", "f16")
 	}
 	return out
 }

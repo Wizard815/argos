@@ -101,9 +101,6 @@ def parse_always(always: dict) -> tuple[dict[str, str], list]:
 
 
 # ----- combinations that need a companion flag ------------------------------------------------------
-UNQUANTISED = {"f16", "bf16", "f32"}
-
-
 def _mtp_draft(cmd: LaunchCommand) -> bool:
     """Speculative decoding with an MTP head: --spec-type draft-mtp, or a draft file named like one."""
     return "mtp" in (cmd.get("spec-type") or "").lower() or "mtp" in os.path.basename(cmd.get("model-draft") or "").lower()
@@ -125,7 +122,10 @@ def combo_fixes(cmd: LaunchCommand) -> list[str]:
     and llama.cpp's flash attention has no kernel for some of the shapes that gives (Gemma 4's 512-wide heads
     with one KV head per card, a quantised cache, the draft's 2-4 token batches), so the server aborts in the
     middle of a request (fattn.cu "fatal error" from draft_mtp). So the draft goes whole on one card
-    (--device-draft) and, when the main cache is quantised, keeps an f16 cache of its own: a fraction of a GiB."""
+    (--device-draft). The engine adds the same at launch (internal/config/companion_flags.go).
+
+    No f16 cache for the draft: Gemma 4's MTP draft shares the main model's KV cache, and a draft cache type
+    that differs from the main one fails to load under tensor split (ggml-backend-meta GGML_ASSERT)."""
     if (cmd.get("split-mode") or "").strip().lower() != "tensor" or not _mtp_draft(cmd):
         return []
     added = []
@@ -133,12 +133,6 @@ def combo_fixes(cmd: LaunchCommand) -> list[str]:
         dev = _first_device(cmd)
         cmd.set("device-draft", dev)
         added.append(f"--device-draft {dev}")
-    k = (cmd.get("cache-type-k") or "f16").strip().lower()
-    v = (cmd.get("cache-type-v") or cmd.get("cache-type-k") or "f16").strip().lower()
-    if (k not in UNQUANTISED or v not in UNQUANTISED) and not cmd.has("cache-type-k-draft") and not cmd.has("cache-type-v-draft"):
-        cmd.set("cache-type-k-draft", "f16")
-        cmd.set("cache-type-v-draft", "f16")
-        added += ["--cache-type-k-draft f16", "--cache-type-v-draft f16"]
     return added
 
 
