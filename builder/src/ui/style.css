@@ -697,3 +697,9 @@ pre.log.logs-big { max-height: 70dvh; min-height: 320px; }
 .gpu-temp { margin-left: 2px; }
 .gpu-temp.warm { color: var(--yellow, #e5c07b); }
 .gpu-temp.hot { color: var(--danger, #e06c75); font-weight: 700; }
+
+/* Models: a model expanded to its own file and add-ons */
+.file-caret { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 6px 0 0; font: inherit; }
+.file-caret:hover { color: var(--fg); }
+tr.model-file-row td { background: var(--hl-bg); border-top: 0; padding-top: 4px; padding-bottom: 4px; }
+tr.model-file-row .file-tree { color: var(--muted); margin: 0 8px 0 14px; }

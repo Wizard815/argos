@@ -40,8 +40,12 @@ stays a normal model of kind `mtp`.
 3. An MTP head can be anywhere under the models folder, so a separate
    `mtp/` folder works if it is named like the model.
 
-The Models page shows an **MTP head** or **mmproj** chip in the Files column
-when a helper is attached.
+On the Models page a model with helpers is one row: its size is the model
+plus the helpers it uses, and the Files column shows an **MTP head** or
+**mmproj** chip (×2 when there are several). The ▸ in front of its name opens
+its files: the model itself and each helper with its own size. The one in use
+says so; another can be picked there with **Use this**. Edit, Prefab and
+Launch stay on the model's own row.
 
 ## Attaching by hand
 

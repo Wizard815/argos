@@ -247,6 +247,17 @@ def scan_media(models_dir: str) -> list[dict]:
 
 
 
+def _helper_rows(mmproj: list, heads: list, mmproj_found: list, heads_found: list) -> list[dict]:
+    """A model's helper files for its expanded row: the ones in use (the first of each kind), then the other matches,
+    each with its size."""
+    rows = []
+    for kind, now, found in (("mmproj", mmproj, mmproj_found), ("mtp", heads, heads_found)):
+        for i, path in enumerate(dict.fromkeys(list(now) + list(found))):
+            rows.append({"kind": kind, "path": path, "name": os.path.basename(path), "quant": quant_of(path),
+                         "size": _size(path), "used": i == 0 and path in now})
+    return rows
+
+
 def _scan_models(models_dir: str) -> list[dict]:
     """GGUF models llama-server can run. Audio and image models are in ``scan_media``."""
     if not models_dir or not os.path.isdir(models_dir):
@@ -313,8 +324,11 @@ def _scan_models(models_dir: str) -> list[dict]:
                 "mtp_head": heads, "helpers_by_hand": sorted(k for k in ("mtp", "mmproj") if by_hand(path, k) is not None),
                 # what Automatic finds for it, whatever was picked by hand: offered first in Helpers
                 "helper_matches": {"mmproj": list(mmprojs), "mtp": found},
+                "helpers": _helper_rows(its_mmproj, heads, mmprojs, found),
                 "mtime": _mtime(path),
             })
+    for m in out:  # the model with the helpers it runs with: what it takes on disk and to load
+        m["total_size"] = m["size"] + sum(h["size"] for h in m["helpers"] if h["used"])
     return sorted(out, key=lambda m: m["name"].lower())
 
 

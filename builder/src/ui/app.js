@@ -347,6 +347,8 @@ function renderTable(table, cols, rows, state, emptyMsg, opts = {}) {
     class: [opts.onRow && "clickable", opts.rowClass && opts.rowClass(r)].filter(Boolean).join(" "),
     onclick: opts.onRow ? (e) => { if (!e.target.closest("button, a, input, select")) opts.onRow(r); } : null,
   }, cols.map((c) => { const v = c.cell(r); return v instanceof HTMLTableCellElement ? v : h("td", { class: c.num ? "num" : "" }, v); }));
+  // opts.subRows(r): rows shown under it (an expanded model's files), [] when closed
+  const withSubs = (r) => [rowEl(r), ...(opts.subRows ? opts.subRows(r) || [] : [])];
   let body;
   if (!rows.length) body = [h("tr", {}, h("td", { colspan: cols.length }, h("div", { class: "empty" }, emptyMsg)))];
   else if (opts.group) {
@@ -361,9 +363,9 @@ function renderTable(table, cols, rows, state, emptyMsg, opts = {}) {
         onclick: (e) => { if (!e.target.closest("button, a, input, select") && opts.onToggle) opts.onToggle(g.key); } },
         h("td", { colspan: cols.length }, h("span", { class: "group-caret" }, closed ? "▸" : "▾"), h("span", { class: "group-name" }, g.label),
           h("span", { class: "group-count" }, String(g.rows.length)), opts.groupExtra ? opts.groupExtra(g) : null));
-      return [headRow, ...(closed ? [] : g.rows.map(rowEl))];
+      return [headRow, ...(closed ? [] : g.rows.flatMap(withSubs))];
     });
-  } else body = rows.map(rowEl);
+  } else body = rows.flatMap(withSubs);
   fill(table, h("thead", {}, head), h("tbody", {}, body));
 }
 
@@ -2829,7 +2831,7 @@ async function openPrefab(m, launchIt = false) {
 // The library is a tree: grouped by kind, family (all Qwen together), folder, or your own groups, and every group
 // collapses. Where you left it (grouping, closed groups) is remembered in this browser.
 // grouped by name (Qwen, Gemma, …) with every group closed until opened
-const ML = { groups: [], by: "family", g: openGroups("argos.models.open") };
+const ML = { groups: [], by: "family", g: openGroups("argos.models.open"), files: new Set() /* models expanded to their files */ };
 try { ML.by = localStorage.getItem("argos.models.groupby") || "family"; } catch (e) { /* private window: defaults */ }
 const mlSave = () => { try { localStorage.setItem("argos.models.groupby", ML.by); } catch (e) { /* ignore */ } };
 const KIND_GROUPS = [["chat", "Chat"], ["vision", "Vision"], ["mtp", "MTP / draft"], ["embedding", "Embedding"], ["reranker", "Reranker"], ["audio", "Audio"], ["image", "Image"]];
@@ -3020,7 +3022,7 @@ function renderLibrary() {
     group: libraryGroupOf, groupOrder: libraryGroupOrder, collapsed: q ? ALL_OPEN : ML.g.collapsed,
     onToggle: (k) => { ML.g.toggle(k); renderLibrary(); },
     groupExtra: (g) => {
-      const total = g.rows.reduce((a, m) => a + (m.size || 0), 0);
+      const total = g.rows.reduce((a, m) => a + (m.total_size || m.size || 0), 0);
       const mine = ML.by === "mine" && g.key !== "g:" ? ML.groups.find((x) => `g:${x.name}` === g.key) : null;
       return [h("span", { class: "group-meta" }, size(total)), mine ? h("span", { class: "group-actions" },
         iconBtn("pencil", "Rename group", () => {
@@ -3034,12 +3036,16 @@ function renderLibrary() {
     },
   };
   renderTable($("#mTable"), [
-    { key: "name", label: "Model", cell: (m) => h("td", { class: "trunc", title: m.path }, h("span", { class: "strong" }, m.name),
+    { key: "name", label: "Model", cell: (m) => h("td", { class: "trunc", title: m.path },
+      (m.helpers || []).length ? h("button", { class: "file-caret", title: ML.files.has(m.path) ? "Hide its files" : "Show the model file and its add-ons, with their sizes",
+        "aria-expanded": String(ML.files.has(m.path)), onclick: () => { ML.files.has(m.path) ? ML.files.delete(m.path) : ML.files.add(m.path); renderLibrary(); } },
+      ML.files.has(m.path) ? "▾" : "▸") : null, h("span", { class: "strong" }, m.name),
       h("div", { class: "muted mono-sm" }, m.dir === "." ? m.id : `${m.dir} · ${m.id}`)) },
     { key: "kind", label: "Kind", cell: (m) => h("td", {}, h("span", { class: `pill${m.kind === "chat" ? "" : m.listed_only ? ` media-${m.kind}` : " accent"}` }, m.kind),
       m.task ? h("div", { class: "muted mono-sm" }, m.task) : null) },
     { key: "quant", label: "Quant", cell: (m) => (m.quant ? h("span", { class: "chip" }, m.quant) : DASH) },
-    { key: "size", label: "Size", num: true, cell: (m) => size(m.size) },
+    { key: "size", label: "Size", num: true, sort: (m) => m.total_size || m.size, cell: (m) => (m.total_size && m.total_size !== m.size
+      ? h("td", { class: "num", title: `${size(m.size)} model + ${size(m.total_size - m.size)} add-ons in use` }, size(m.total_size)) : size(m.size)) },
     { label: "Files", cell: (m) => h("div", { class: "chips" },
       m.shards < 0 ? h("span", { class: "pill bad" }, `incomplete ${-m.shards} parts`) : m.shards > 1 ? h("span", { class: "chip" }, `${m.shards} parts`) : null,
       m.mmproj.length ? h("span", { class: "chip", title: `Vision projector (the first is used):\n${m.mmproj.join("\n")}` }, m.mmproj.length > 1 ? `mmproj ×${m.mmproj.length}` : "mmproj") : null,
@@ -3055,7 +3061,28 @@ function renderLibrary() {
         : h("td", { class: "actions" }, btn("Edit", () => editModel(m), "sm primary", "pencil"), btn("Prefab", () => openPrefab(m), "sm", "sliders"),
           iconBtn("play", "Launch the prefab", () => openPrefab(m, true)), more);
     } },
-  ], rows, librarySort, empty, groupOpts);
+  ], rows, librarySort, empty, { ...groupOpts, subRows: (m) => (ML.files.has(m.path) ? modelFileRows(m) : []) });
+}
+
+/** An expanded model: its own file, then each add-on with its size. The model's row above is still the one that is
+ * run; an add-on that is not in use can be switched to here. */
+function modelFileRows(m) {
+  const label = { mmproj: "vision", mtp: "MTP head" };
+  const cell = (...c) => h("td", {}, ...c);
+  const row = (name, kind, quant, bytes, tail, title) => h("tr", { class: "model-file-row" },
+    h("td", { class: "trunc", title }, h("span", { class: "file-tree" }, "└"), h("span", { class: "mono-sm" }, name)),
+    cell(h("span", { class: "pill" }, kind)), cell(quant ? h("span", { class: "chip" }, quant) : DASH),
+    h("td", { class: "num" }, size(bytes)), h("td", { colspan: 3 }, tail));
+  const use = (hp) => async () => {
+    try {
+      await api("PUT", "/api/library/helpers", { path: m.path, [hp.kind]: hp.path.slice((S.library.models_dir || "").length).replace(/^[\\/]/, "") });
+      toast(`${hp.name} is now used with ${m.name}.`, "ok");
+      await loadLibrary(); renderLibrary();
+    } catch (e) { fail(e); }
+  };
+  return [row(m.path.split(/[\\/]/).pop(), "model", m.quant, m.size, h("span", { class: "muted mono-sm" }, m.shards > 1 ? `${m.shards} parts` : "the model itself"), m.path),
+    ...m.helpers.map((hp) => row(hp.name, label[hp.kind] || hp.kind, hp.quant, hp.size,
+      hp.used ? h("span", { class: "pill ok" }, "in use") : btn("Use this", use(hp), "sm ghost"), hp.path))];
 }
 
 // ── Models: Hugging Face downloader ──────────────────────────
