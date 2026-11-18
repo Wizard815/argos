@@ -19,8 +19,8 @@ func companion(t *testing.T, cmd string) []string {
 	return CompanionFlags(args)
 }
 
-func TestCompanionFlags_TensorAndMTPDraftGetsDraftOnOneCardWithF16Cache(t *testing.T) {
-	want := []string{"--device-draft", "ROCm0", "--cache-type-k-draft", "f16", "--cache-type-v-draft", "f16"}
+func TestCompanionFlags_TensorAndMTPDraftGetsDraftOnOneCard(t *testing.T) {
+	want := []string{"--device-draft", "ROCm0"}
 	if got := companion(t, gemmaTensorMTP); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -28,17 +28,16 @@ func TestCompanionFlags_TensorAndMTPDraftGetsDraftOnOneCardWithF16Cache(t *testi
 
 func TestCompanionFlags_BuiltInMTPLayersAndEqualsSpellingCount(t *testing.T) {
 	got := companion(t, "/app/bin/remote-llama rocm --model /m/Qwen3.8-27B-MTP-Q8_0.gguf --spec-type=draft-mtp -sm=tensor -ctk q4_0 -ctv q4_0")
-	if len(got) != 6 || got[1] != "ROCm0" {
+	if len(got) != 2 || got[1] != "ROCm0" {
 		t.Fatalf("got %v", got)
 	}
 }
 
 func TestCompanionFlags_WhatTheCommandSetsWins(t *testing.T) {
-	if got := companion(t, gemmaTensorMTP+" -devd ROCm1 -ctkd q8_0"); got != nil {
-		t.Fatalf("set by hand, nothing to add: got %v", got)
-	}
-	if got := companion(t, gemmaTensorMTP+" --device-draft=ROCm1"); !reflect.DeepEqual(got, []string{"--cache-type-k-draft", "f16", "--cache-type-v-draft", "f16"}) {
-		t.Fatalf("got %v", got)
+	for _, own := range []string{" -devd ROCm1", " --device-draft=ROCm1"} {
+		if got := companion(t, gemmaTensorMTP+own); got != nil {
+			t.Fatalf("%q set by hand, nothing to add: got %v", own, got)
+		}
 	}
 }
 
@@ -52,8 +51,8 @@ func TestCompanionFlags_NotNeededIsNotAdded(t *testing.T) {
 			t.Fatalf("%q: got %v", cmd, got)
 		}
 	}
-	if got := companion(t, strings.ReplaceAll(gemmaTensorMTP, "q8_0", "f16")); !reflect.DeepEqual(got, []string{"--device-draft", "ROCm0"}) {
-		t.Fatalf("unquantised cache needs no draft cache flag: got %v", got)
+	if got := companion(t, gemmaTensorMTP); len(got) != 2 {
+		t.Fatalf("no draft cache type is ever added (Gemma 4's draft shares the main cache): got %v", got)
 	}
 }
 
@@ -82,11 +81,11 @@ func TestCompanionFlags_SanitizedCommandCarriesThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tail := strings.Join(args[len(args)-6:], " ")
-	if tail != "--device-draft ROCm0 --cache-type-k-draft f16 --cache-type-v-draft f16" {
+	tail := strings.Join(args[len(args)-2:], " ")
+	if tail != "--device-draft ROCm0" {
 		t.Fatalf("argv ends with %q", tail)
 	}
-	if got := m.CompanionFlags(); len(got) != 6 {
+	if got := m.CompanionFlags(); len(got) != 2 {
 		t.Fatalf("CompanionFlags: %v", got)
 	}
 }
