@@ -91,3 +91,17 @@ def test_Helpers_several_quants_of_one_head_use_q8_first(tmp_path):
     _gguf(tmp_path / "q" / "Qwen3-Coder-Next-MTP-Q8_0.gguf", 1)
     heads = _scan(tmp_path)["Qwen3-Coder-Next-Q5_K_S"]["mtp_head"]
     assert [os.path.basename(h) for h in heads] == ["Qwen3-Coder-Next-MTP-Q8_0.gguf", "Qwen3-Coder-Next-MTP-BF16.gguf"]
+
+
+def test_Helpers_a_model_counts_the_add_ons_it_uses_in_its_size(tmp_path):
+    _gguf(tmp_path / "q" / "Qwen3-Coder-Next-Q5_K_S.gguf", 48, size=10_000_000)
+    _gguf(tmp_path / "q" / "Qwen3-Coder-Next-MTP-Q8_0.gguf", 1, size=1_000_000)
+    _gguf(tmp_path / "q" / "Qwen3-Coder-Next-MTP-BF16.gguf", 1, size=2_000_000)
+    m = _scan(tmp_path)["Qwen3-Coder-Next-Q5_K_S"]
+    assert m["size"] == 10_000_000 and m["total_size"] == 11_000_000, "the model plus the head in use, not both heads"
+    assert [(h["name"], h["used"], h["size"]) for h in m["helpers"]] == [
+        ("Qwen3-Coder-Next-MTP-Q8_0.gguf", True, 1_000_000), ("Qwen3-Coder-Next-MTP-BF16.gguf", False, 2_000_000)]
+    write_helpers_file(str(tmp_path), {"q/Qwen3-Coder-Next-Q5_K_S.gguf": {"mtp": "q/Qwen3-Coder-Next-MTP-BF16.gguf"}})
+    m = _scan(tmp_path)["Qwen3-Coder-Next-Q5_K_S"]
+    assert m["total_size"] == 12_000_000 and [h["used"] for h in m["helpers"]] == [True, False]
+    assert m["helpers"][0]["name"] == "Qwen3-Coder-Next-MTP-BF16.gguf", "the one picked by hand is in use"
