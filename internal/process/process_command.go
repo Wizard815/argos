@@ -470,6 +470,9 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 	if err != nil {
 		return startResult{err: fmt.Errorf("unable to get sanitized command: %w", err)}
 	}
+	if extra := p.config.CompanionFlags(); len(extra) > 0 {
+		p.proxyLogger.Infof("<%s> added for an MTP draft with --split-mode tensor: %s", p.id, strings.Join(extra, " "))
+	}
 
 	proxyURL, err := url.Parse(p.config.Proxy)
 	if err != nil {
