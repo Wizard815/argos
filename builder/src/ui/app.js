@@ -2957,9 +2957,15 @@ async function helpersBox(m) {
   const root = (S.library && S.library.models_dir) || "";
   const rel = (p) => (p && root && p.startsWith(root) ? p.slice(root.length).replace(/^[\\/]/, "") : p || "");
   const byHand = new Set(m.helpers_by_hand || []);
+  const found = m.helper_matches || {};
   const pick = (which, list, now) => {
+    // the files matched to this model first; every other one is still there, for a file named otherwise
+    const mine = (found[which] || []).map(rel), rest = list.filter((f) => !mine.includes(f));
+    const opts = (files) => files.map((f) => h("option", { value: f }, f));
     const sel = h("select", {}, h("option", { value: "@auto" }, `Automatic${!byHand.has(which) && now ? ` (now ${now.split(/[\\/]/).pop()})` : !byHand.has(which) ? " (none found)" : ""}`),
-      h("option", { value: "" }, "None"), list.map((f) => h("option", { value: f }, f)));
+      h("option", { value: "" }, "None"),
+      mine.length ? h("optgroup", { label: mine.length > 1 ? `Matches this model (${mine.length}, first one used)` : "Matches this model" }, opts(mine)) : null,
+      rest.length ? h("optgroup", { label: "Other files in the models folder" }, opts(rest)) : null);
     sel.value = byHand.has(which) ? rel(now) : "@auto";
     return sel;
   };
@@ -3036,8 +3042,8 @@ function renderLibrary() {
     { key: "size", label: "Size", num: true, cell: (m) => size(m.size) },
     { label: "Files", cell: (m) => h("div", { class: "chips" },
       m.shards < 0 ? h("span", { class: "pill bad" }, `incomplete ${-m.shards} parts`) : m.shards > 1 ? h("span", { class: "chip" }, `${m.shards} parts`) : null,
-      m.mmproj.length ? h("span", { class: "chip", title: m.mmproj.join("\n") }, "mmproj") : null,
-      (m.mtp_head || []).length ? h("span", { class: "chip", title: `MTP head: ${m.mtp_head.join("\n")}` }, "MTP head") : null,
+      m.mmproj.length ? h("span", { class: "chip", title: `Vision projector (the first is used):\n${m.mmproj.join("\n")}` }, m.mmproj.length > 1 ? `mmproj ×${m.mmproj.length}` : "mmproj") : null,
+      (m.mtp_head || []).length ? h("span", { class: "chip", title: `MTP head (the first is used):\n${m.mtp_head.join("\n")}` }, m.mtp_head.length > 1 ? `MTP head ×${m.mtp_head.length}` : "MTP head") : null,
       m.format && m.format !== "gguf" ? h("span", { class: "chip" }, m.format) : null) },
     { key: "profiles", label: "Profiles", num: true, cell: (m) => (m.profiles
       ? h("button", { class: "btn sm ghost", onclick: () => showProfilesFor(m.id) }, String(m.profiles)) : DASH) },

@@ -73,6 +73,8 @@ def is_mmproj(name: str, read_header: bool = False) -> bool:
 HELPERS_FILE = ".argos-helpers.json"
 MTP_NAME = re.compile(r"(?i)(^|[^a-z])(mtp|nextn)([^a-z]|$)")
 MTP_HEAD_MAX_LAYERS = 4
+# several quants of one MTP head: Q8_0 drafts as well as BF16 at half the memory
+HEAD_QUANT_ORDER = {"Q8_0": 0, "BF16": 1, "F16": 2}
 _NAME_NOISE = re.compile(r"(?i)(-\d{5}-of-\d{5})|\.gguf$|(^|[-_.])(mtp|nextn|draft|head|mmproj|ud|imatrix|i?q\d[\w]*|bf16|f16|f32|fp16)(?=$|[-_.])")
 
 
@@ -261,17 +263,20 @@ def _scan_models(models_dir: str) -> list[dict]:
     attached = read_helpers_file(models_dir)
 
     def heads_for(path: str, root: str) -> list[str]:
-        """Its MTP heads: in its own folder, else ones named like it anywhere under the models folder."""
+        """Its MTP heads, the one used first: in its own folder, else ones named like it anywhere under the models
+        folder. Several (the same head in other quants) are ordered Q8_0, BF16, F16, then the rest."""
         here = by_dir[root]["mtp"]
-        key = _name_key(path)
         if len(here) == 1 and len(by_dir[root]["models"]) == 1:
             return list(here)
-        pool = here or all_heads
-        same = [h for h in pool if _name_key(h) and _name_key(h) == key]  # GLM-4.6-MTP for GLM-4.6: any length
-        if same:
-            return same
-        # a longer or shorter name of the same model; at least 6 letters, so "qwen-mtp" does not take every Qwen
-        return [h for h in pool if len(_name_key(h)) >= 6 and len(key) >= 6 and (key.startswith(_name_key(h)) or _name_key(h).startswith(key))]
+        key = _name_key(path)
+        for pool in (here, all_heads):
+            same = [h for h in pool if _name_key(h) and _name_key(h) == key]  # GLM-4.6-MTP for GLM-4.6: any length
+            # else a longer or shorter name of the same model; 6+ letters, so "qwen-mtp" does not take every Qwen
+            same = same or [h for h in pool if len(_name_key(h)) >= 6 and len(key) >= 6
+                            and (key.startswith(_name_key(h)) or _name_key(h).startswith(key))]
+            if same:
+                return sorted(same, key=lambda h: (HEAD_QUANT_ORDER.get(quant_of(h), 9), h))
+        return []
 
     def by_hand(path: str, which: str):
         """A helper attached (path) or detached ("") by hand, or None when nothing was said."""
@@ -299,13 +304,15 @@ def _scan_models(models_dir: str) -> list[dict]:
             name = display_name(path, re.sub(r"\.gguf$", "", os.path.basename(path), flags=re.IGNORECASE))
             vision = by_hand(path, "mmproj")
             its_mmproj = mmprojs if vision is None else ([vision] if vision else [])
-            head = by_hand(path, "mtp")
-            heads = heads_for(path, root) if head is None else ([head] if head else [])
+            head, found = by_hand(path, "mtp"), heads_for(path, root)
+            heads = found if head is None else ([head] if head else [])
             out.append({
                 "id": swap_model_id(path), "name": name, "path": path,
                 "dir": os.path.relpath(root, models_dir), "size": size, "shards": shards,
                 "quant": quant_of(path), "mmproj": its_mmproj, "kind": kind_of(path, bool(its_mmproj)),
                 "mtp_head": heads, "helpers_by_hand": sorted(k for k in ("mtp", "mmproj") if by_hand(path, k) is not None),
+                # what Automatic finds for it, whatever was picked by hand: offered first in Helpers
+                "helper_matches": {"mmproj": list(mmprojs), "mtp": found},
                 "mtime": _mtime(path),
             })
     return sorted(out, key=lambda m: m["name"].lower())
