@@ -171,8 +171,14 @@ func (m *ModelConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
+// SanitizedCommand is the argv a model launches with: its cmd, plus the
+// companion flags some flag combinations need (companion_flags.go).
 func (m *ModelConfig) SanitizedCommand() ([]string, error) {
-	return SanitizeCommand(m.Cmd)
+	args, err := SanitizeCommand(m.Cmd)
+	if err != nil {
+		return nil, err
+	}
+	return append(args, CompanionFlags(args)...), nil
 }
 
 // ModelFilters embeds Filters and adds legacy support for strip_params field
