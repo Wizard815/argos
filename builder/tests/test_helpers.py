@@ -4,7 +4,7 @@ import os
 from src import library
 from src.library import prefab_command, scan_models, write_helpers_file
 
-from .ggufs import llama_kvs, write_gguf
+from .ggufs import kv_str, kv_u32, llama_kvs, write_gguf
 
 
 def _gguf(path, layers, size=10_000):
@@ -74,3 +74,12 @@ def test_Helpers_api_lists_and_attaches(app, client):
     assert client.put("/api/library/helpers", json={"path": "/etc/passwd"}).status_code == 404
     back = client.put("/api/library/helpers", json={"path": model, "mtp": None, "mmproj": None}).get_json()["model"]
     assert back["mtp_head"] == [str(r / "x" / "model-a-mtp-q8.gguf")], "automatic again: named like the model"
+
+
+def test_Helpers_a_projector_is_known_by_its_header_whatever_its_name(tmp_path):
+    _gguf(tmp_path / "gemma" / "gemma-3-12b-Q4_K_M.gguf", 48, size=10_000_000)
+    write_gguf(str(tmp_path / "gemma" / "gemma-3-12b-vision-f16.gguf"),
+               [kv_str("general.architecture", "clip"), kv_u32("clip.block_count", 27)])
+    models = _scan(tmp_path)
+    assert list(models) == ["gemma-3-12b-Q4_K_M"], "the projector is a helper, not a model of its own"
+    assert models["gemma-3-12b-Q4_K_M"]["mmproj"] == [str(tmp_path / "gemma" / "gemma-3-12b-vision-f16.gguf")]
