@@ -1273,6 +1273,28 @@ function useContext(c, type, e) {
   if (ropeOn() && e.train_ctx && one > e.train_ctx) Object.assign(edits, ropeEdits(one, e.train_ctx));
   edit(edits);
 }
+/** The model's own facts from its header: the context it was trained on, and how its layers use the KV cache.
+ *  Fixed by the model: -c, the cache type and --parallel change the cache's size, not which layers keep it. */
+function layoutFacts(e) {
+  const L = e.layout;
+  if (!L) return null;
+  const parts = [];
+  if (L.full_layers === L.layers) parts.push(`all ${L.layers} layers keep every token (full attention)`);
+  else {
+    parts.push(`${L.full_layers} of ${L.layers} layers keep every token`);
+    if (L.swa_layers) parts.push(`${L.swa_layers} keep only the last ${L.swa_window.toLocaleString()} (sliding window)`);
+    if (L.no_cache_layers) parts.push(`${L.no_cache_layers} keep a fixed-size state and no cache (linear)`);
+  }
+  const cache = e.cache_k === e.cache_v ? e.cache_k : `${e.cache_k}/${e.cache_v}`;
+  const why = L.full_layers === L.layers
+    ? "Every layer stores every token, so a long context costs the most on this kind of model."
+    : "Only the full layers grow with -c, so a long context costs much less than on a model whose every layer keeps every token.";
+  return h("div", { class: "model-facts", style: "margin:0 0 8px" },
+    h("div", {}, h("b", {}, "Model"), ` · trained for ${L.train_ctx ? ctxLabel(L.train_ctx) : "an unknown length"} · `, parts.join(", "),
+      ` · ${num(L.kv_per_token_kib, 1)} KiB per token of context (${cache})`),
+    h("p", { class: "hint", style: "margin:2px 0 0" }, `${why} The layers are fixed by the model: -c, the cache type and --parallel change the cache's size, not which layers keep it.`));
+}
+
 /** The context box: total, chats and each chat's share, the trained length, and one RoPE on/off button. */
 function contextBox(e) {
   const [n, shared] = chatSlots(e);
@@ -1282,6 +1304,8 @@ function contextBox(e) {
     : shared ? `${n} chats share one ${total} pool (--parallel ${n} --kv-unified)`
     : `${n} chats with ${ctxLabel(one)} each (--parallel ${n})`;
   const lines = [h("div", { class: "vram-sum", style: "margin:0" }, h("b", {}, `Context ${total}`), ` · ${chats}`)];
+  const facts = layoutFacts(e);
+  if (facts) lines.unshift(facts);
   // the two switches on one row, each saying its state
   const uni = argValue("kv-unified") != null, on = ropeOn();
   const scale = parseFloat(argValue("rope-scale")) || 0;
@@ -5963,7 +5987,7 @@ function renderLive() {
     requestsCard(L.requests, Object.fromEntries(P.models.filter((m) => m.in_flight).map((m) => [m.id, m.in_flight])),
       { running: L.running, gone: L.gone || [], slots: Object.fromEntries(P.models.filter((m) => (m.slots || []).length).map((m) => [m.id, m.slots])) }),
     activity,
-    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap" }, table)));
+    h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Models")), h("div", { class: "table-wrap capped" }, table)));
 }
 function kvTable(rows) {
   return h("table", {}, h("tbody", {}, rows.map(([k, v]) => h("tr", {}, h("td", { class: "muted", style: "width:34%" }, k), h("td", {}, v)))));
@@ -6075,7 +6099,7 @@ This profile cannot start until its --model path is fixed (open it in Builder).`
         h("label", { class: "check" }, only, "profiles only")),
       h("p", { class: "hint" }, "The scheduler decides what fits using these sizes. Estimate is worked out from the file, context length and cache type. Measured is what the GPU really used the last time the model loaded (it is recorded automatically, or with Measure) and replaces the estimate. Type a size in the box only to override both."),
       D.skipped.length ? h("p", { class: "hint" }, "Waiting for the engine to list ", D.skipped.join(", "), ". They join the plan once it does (a new profile appears within a minute).") : null,
-      h("div", { class: "table-wrap" }, table)),
+      h("div", { class: "table-wrap capped" }, table)),
     h("details", { class: "card" }, h("summary", { class: "strong" }, "What the engine reads"),
       h("div", { class: "row", style: "margin:8px 0" }, h("span", { class: "hint", style: "flex:1;margin:0" }, D.known_from
         ? "Model ids are checked against the engine's live list." : "The engine is not answering, so model ids are not checked."), btn("Copy", () => copyText(D.fragment), "sm", "copy")),
@@ -6470,19 +6494,53 @@ function decoratePanels(root) {
     if (card.closest(".modal") || !panelId(card)) return;
     const head = card.querySelector(":scope > .card-head") || card;
     if (head.querySelector(":scope > .grip")) return;
-    const grip = h("span", { class: "grip", title: "Drag to move this panel", draggable: "true" }, "⠿");
+    const grip = h("span", { class: "grip", title: "Drag to move this panel, or click for Move up / down / to the top / to the bottom", draggable: "true", role: "button", tabindex: "0" }, "⠿");
     grip.addEventListener("dragstart", (e) => { LAYOUT.drag = card; card.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", panelId(card)); });
     grip.addEventListener("dragend", () => {
       card.classList.remove("dragging");
       const parent = card.parentElement;
       LAYOUT.drag = null;
-      if (!parent) return;
-      const key = containerKey(parent), order = [...parent.children].filter((c) => c.classList.contains("card")).map(panelId).filter(Boolean);
-      LAYOUT.data[key] = order;
-      api("PUT", "/api/layout", { [key]: order }).catch(() => {});
+      if (parent) savePanelOrder(parent);
     });
+    // A panel taller than the screen cannot be dragged past the others (the page does not scroll while
+    // dragging), so the grip also opens a menu that moves it without dragging.
+    const menu = () => {
+      const [i, n] = panelPlace(card);
+      popMenu(grip, [
+        i > 0 ? { label: "Move up", icon: "arrow-up", run: () => movePanel(card, "up") } : null,
+        i < n - 1 ? { label: "Move down", run: () => movePanel(card, "down") } : null,
+        i > 1 ? { label: "Move to the top", run: () => movePanel(card, "top") } : null,
+        i < n - 2 ? { label: "Move to the bottom", run: () => movePanel(card, "bottom") } : null,
+      ]);
+    };
+    grip.addEventListener("click", menu);
+    grip.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); menu(); } });
     head.prepend(grip);
   });
+}
+/** The panels a card can be moved among (its siblings), and where it is: [index, count]. */
+function panelPlace(card) {
+  const cards = card.parentElement ? [...card.parentElement.children].filter((c) => c.classList.contains("card") && panelId(c)) : [card];
+  return [cards.indexOf(card), cards.length];
+}
+/** Save a container's panel order (the same as after a drag), so it is kept when the page is drawn again. */
+function savePanelOrder(parent) {
+  const key = containerKey(parent), order = [...parent.children].filter((c) => c.classList.contains("card")).map(panelId).filter(Boolean);
+  LAYOUT.data[key] = order;
+  api("PUT", "/api/layout", { [key]: order }).catch(() => {});
+}
+/** Move a panel without dragging: "up", "down", "top" or "bottom" among its sibling panels. */
+function movePanel(card, where) {
+  const parent = card.parentElement;
+  if (!parent) return;
+  const cards = [...parent.children].filter((c) => c.classList.contains("card") && panelId(c));
+  const i = cards.indexOf(card), last = cards.length - 1;
+  const to = where === "top" ? 0 : where === "bottom" ? last : Math.max(0, Math.min(last, i + (where === "up" ? -1 : 1)));
+  if (i < 0 || to === i) return;
+  const rest = cards.filter((c) => c !== card);
+  parent.insertBefore(card, rest[to] || rest[rest.length - 1].nextSibling);
+  savePanelOrder(parent);
+  card.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 function applyLayout(root) {
   const parents = new Set([...root.querySelectorAll(".card")].map((c) => c.parentElement).filter(Boolean));
