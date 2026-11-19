@@ -41,3 +41,12 @@ export function groupModels(models: Model[], capabilities?: string[], matchAny =
 
   return { local: localRest, localMatching };
 }
+
+/** How Argos shows a model id: a profile <base>--<label> by its label (what apps
+ * see too), a multi_model copy <id>--mmN as "<label> · copy N". */
+export function shortModelId(id: string): string {
+  const copy = id.match(/^(.*)--mm(\d+)$/);
+  if (copy) return `${shortModelId(copy[1])} · copy ${copy[2]}`;
+  const at = id.indexOf("--");
+  return at > 0 && at + 2 < id.length ? id.slice(at + 2) : id;
+}

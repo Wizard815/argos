@@ -113,3 +113,12 @@ describe("groupModels", () => {
     expect(result.local).toHaveLength(3);
   });
 });
+
+describe("shortModelId", () => {
+  it("shows a profile by its label and leaves other ids alone", async () => {
+    const { shortModelId } = await import("./modelUtils");
+    expect(shortModelId("qwen3.8-27b-turbo-q8_0--qwen3.8-27b-uncen-mtp-2chat-512k")).toBe("qwen3.8-27b-uncen-mtp-2chat-512k");
+    expect(shortModelId("gemma-3-12b")).toBe("gemma-3-12b");
+    expect(shortModelId("glm--fast--mm1")).toBe("fast · copy 1");
+  });
+});

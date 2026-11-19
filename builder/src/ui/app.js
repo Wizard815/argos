@@ -329,6 +329,16 @@ function openGroups(storeKey) {
 const ALL_OPEN = { has: () => false };  // while searching, every match is shown
 
 /** Sortable table. cols: [{key, label, num?, sort?(row), cell(row)}]; opts: {onRow(row), rowClass(row)} */
+/** A model id as Argos shows it: a profile <base>--<label> by its label (what apps see too), a multi_model copy
+ * <id>--mmN as "<label> · copy N". The full id is kept in titles and values. */
+function mname(id) {
+  const s = String(id || "");
+  const copy = s.match(/^(.*)--mm(\d+)$/);
+  if (copy) return `${mname(copy[1])} · copy ${copy[2]}`;
+  const at = s.indexOf("--");
+  return at > 0 && at + 2 < s.length ? s.slice(at + 2) : s;
+}
+
 function renderTable(table, cols, rows, state, emptyMsg, opts = {}) {
   if (state.key) {
     const col = cols.find((c) => c.key === state.key);
@@ -2021,7 +2031,7 @@ async function launch(command, base_model, profile_name, profile_id) {
       // The engine already serves this model, so nothing runs here: it loads on
       // whichever host the engine launches on, and Schedule → Live shows it.
       if (res.warning) toast(res.warning, "err");
-      else toast(`Asked the engine to load ${res.model}. It shows under Launches once it starts; benchmark it when it is ready.`, "ok");
+      else toast(`Asked the engine to load ${mname(res.model)}. It shows under Launches once it starts; benchmark it when it is ready.`, "ok");
       rememberMine(res.model);
       S.sel = `engine:${res.model}`;
       show("playground");
@@ -2195,7 +2205,7 @@ function drawRefs() {
     LIVE.refs.map((r, i) => h("label", { class: "row nowrap mono-sm" },
       h("input", { type: "checkbox", checked: LIVE.shown.has(r.key), onchange: () => toggle(r) }),
       h("span", { class: "swatch", style: `--c:${seriesColor(i + 1)}` }),
-      h("span", {}, `${r.model || r.key} · ${r.label || ""}`),
+      h("span", { title: r.model || r.key }, `${mname(r.model || r.key)} · ${r.label || ""}`),
       h("span", { class: "muted" }, ` ${num(r.decode)} decode · ${num(r.prefill, 0)} prefill${r.similarity != null ? ` · ${Math.round(r.similarity * 100)}% alike` : ""}`)))) : null);
   reqChart($("#gDecode"), "Decode", "decode", LIVE.rows || [], "decode");
   reqChart($("#gPrefill"), "Prefill", "prefill", LIVE.rows || [], "prefill");
@@ -2327,8 +2337,8 @@ function renderPerf() {
   const live = (S.liveSpeeds || []).filter((r) => !m || r.model === m || String(r.model).split("--")[0] === m);
   const maxLive = Math.max(1, ...live.map((r) => r.tg_max || 0));
   renderTable($("#fLive"), [
-    { key: "model", label: "Model", cell: (r) => h("td", { class: "cell-model", title: r.model }, h("div", { class: "cell-main" }, String(r.model).split("--")[0]),
-      String(r.model).includes("--") ? h("div", { class: "cell-sub" }, String(r.model).split("--").slice(1).join("--")) : null) },
+    { key: "model", label: "Model", cell: (r) => h("td", { class: "cell-model", title: r.model }, h("div", { class: "cell-main" }, mname(r.model)),
+      String(r.model).includes("--") ? h("div", { class: "cell-sub" }, String(r.model).split("--")[0]) : null) },
     { key: "requests", label: "Requests", num: true, cell: (r) => num(r.requests, 0) },
     { key: "pp_avg", label: "Prefill t/s (avg)", num: true, cell: (r) => num(r.pp_avg, 0) },
     { key: "tg_avg", label: "Decode t/s (avg)", num: true, cell: (r) => tpsBar(r.tg_avg, maxLive) },
@@ -3535,7 +3545,7 @@ async function loadSlotUsage(rng, model) {
     models.map((m) => {
       const busy = m.slots.filter((x) => x.busy_s > 0);
       return h("div", { style: "margin:10px 0" },
-        h("div", { class: "row", style: "gap:8px; margin-bottom:4px" }, h("span", { class: "strong mono-sm" }, m.model), h("span", { class: "spacer" }),
+        h("div", { class: "row", style: "gap:8px; margin-bottom:4px" }, h("span", { class: "strong mono-sm", title: m.model }, mname(m.model)), h("span", { class: "spacer" }),
           h("span", { class: "muted mono-sm" }, `${num(m.slots.reduce((a, x) => a + x.busy_s, 0), 0)} s of work`)),
         h("div", { class: "vbar", title: "share of the model's time per slot" }, busy.length
           ? busy.map((x) => h("i", { style: `width:${(x.share || 0) * 100}%; background:${colors[x.id % colors.length]}`, title: `ID ${x.id}: ${num((x.share || 0) * 100, 0)}% · ${num(x.busy_s, 0)} s` }))
@@ -3556,12 +3566,12 @@ async function loadRequests() {
   $("#rHint").textContent = url ? "synced from the engine" : "Request history appears once the engine is running.";
   if (!model) {
     const cur = $("#rModel").value;
-    fill($("#rModel"), h("option", { value: "" }, "All models"), res.stats.map((s) => h("option", { value: s.model }, s.model)));
+    fill($("#rModel"), h("option", { value: "" }, "All models"), res.stats.map((s) => h("option", { value: s.model, title: s.model }, mname(s.model))));
     $("#rModel").value = cur;
   }
   const maxTg = Math.max(1, ...res.stats.map((s) => s.tg_avg || 0));
   renderTable($("#rStats"), [
-    { key: "model", label: "Model", cell: (s) => h("span", { class: "strong" }, s.model || DASH) },
+    { key: "model", label: "Model", cell: (s) => h("span", { class: "strong", title: s.model || "" }, s.model ? mname(s.model) : DASH) },
     { key: "requests", label: "Requests", num: true, cell: (s) => num(s.requests, 0) },
     { key: "tg_avg", label: "Gen t/s avg", num: true, cell: (s) => h("div", { class: "bar-cell" }, num(s.tg_avg, 1), h("span", { class: "bar" }, h("i", { style: `width:${Math.round(((s.tg_avg || 0) / maxTg) * 100)}%` }))) },
     { key: "tg_max", label: "max", num: true, cell: (s) => num(s.tg_max, 1) },
@@ -3786,8 +3796,8 @@ async function loadGpuProcs() {
   // a model the engine started over SSH runs in the llama.cpp container: Argos names it from the cards and
   // memory it holds, and unloads it through the engine (it cannot signal a process it cannot see)
   const unload = async (p) => {
-    if (!(await confirmBox(`Unload ${p.model}? The engine stops it and frees its ${num(p.vram_gib || 0, 1)} GiB.`, "Unload"))) return;
-    try { await api("POST", `/api/schedule/live/${encodeURIComponent(p.model)}/unload`); toast(`Unloading ${p.model}.`, "ok"); } catch (e) { fail(e); }
+    if (!(await confirmBox(`Unload ${mname(p.model)}? The engine stops it and frees its ${num(p.vram_gib || 0, 1)} GiB.`, "Unload"))) return;
+    try { await api("POST", `/api/schedule/live/${encodeURIComponent(p.model)}/unload`); toast(`Unloading ${mname(p.model)}.`, "ok"); } catch (e) { fail(e); }
     setTimeout(loadGpuProcs, 2000);
   };
   renderTable(table, [
@@ -3826,7 +3836,7 @@ function renderServerLogSources() {
   const item = (l, sub) => {
     const [dot] = l.special ? ["", ""] : launchState(l);
     return h("div", { class: `src${l.launch_id === SL.sel ? " sel" : ""}`, onclick: () => { SL.sel = l.launch_id; SL.auto = false; SL.len = -1; renderServerLogSources(); loadServerLogs(true); } },
-      h("span", { class: `dot ${dot}` }), h("div", { style: "min-width:0" }, h("div", { class: "t", title: l.base_model }, l.profile_name || l.base_model || l.launch_id), h("div", { class: "s" }, sub)));
+      h("span", { class: `dot ${dot}` }), h("div", { style: "min-width:0" }, h("div", { class: "t", title: l.base_model }, l.profile_name || mname(l.base_model) || l.launch_id), h("div", { class: "s" }, sub)));
   };
   fill($("#slSources"),
     h("div", { class: "grp" }, "Running in the engine"),
@@ -3937,7 +3947,7 @@ function guardCard(G) {
       + (mode.value === "stop" ? "Argos then refuses that client's requests to that model (HTTP 429 with the reason, which also ends most agent loops) until you let it run. Other clients and models are not touched."
         : mode.value === "warn" ? "Argos only says so, here and in the event log." : "The guard is off.")),
     loops.length ? h("div", { class: "table-wrap" }, simpleTable(["Client", "App", "Model", "Each request", "Repeats", "Since", "Now", ""],
-      loops.map((l) => [l.src.replace(/^ip:/, ""), h("span", { class: "mono-sm" }, l.client || DASH), h("span", { class: "mono-sm" }, l.model), `${l.in_low != null && l.in_low !== l.in_high ? `${l.in_low}–${l.in_high}` : l.in} in / ${l.out} out`, String(l.count),
+      loops.map((l) => [l.src.replace(/^ip:/, ""), h("span", { class: "mono-sm" }, l.client || DASH), h("span", { class: "mono-sm", title: l.model }, mname(l.model)), `${l.in_low != null && l.in_low !== l.in_high ? `${l.in_low}–${l.in_high}` : l.in} in / ${l.out} out`, String(l.count),
         l.since ? ago(l.since) : DASH, status(l),
         h("div", { class: "row", style: "gap:6px; flex-wrap:nowrap" },
           l.status === "stopped" ? btn("Let it run", act(l, "allow"), "sm") : null,
@@ -3954,7 +3964,7 @@ function slotsCard(models) {
   return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Slots"), h("span", { class: "spacer" }),
       h("span", { class: "hint" }, "each ID of a model run with -np, from its log · Logs → per slot for one ID's lines")),
     multi.map((m) => h("div", { style: "margin-bottom:10px" },
-      h("div", { class: "row", style: "gap:8px; margin:4px 0" }, h("span", { class: "swatch", style: `--c:${segColor(m.model)}` }), h("span", { class: "strong mono-sm" }, m.model)),
+      h("div", { class: "row", style: "gap:8px; margin:4px 0" }, h("span", { class: "swatch", style: `--c:${segColor(m.model)}` }), h("span", { class: "strong mono-sm", title: m.model }, mname(m.model))),
       h("div", { class: "table-wrap" }, slotTable(m.slots)))));
 }
 /** "prefill 40%", "generating" or "idle": what a slot is doing as of its log's last line. */
@@ -4076,7 +4086,7 @@ function renderAssistantModels(models) {
         fill(el.querySelector(`[data-m="${which}"] .assist-model-act`), h("span", { class: "muted mono-sm" }, action === "load" ? "loading…" : "unloading…"));
         const r = await api("POST", `/api/assistant/models/${which}/${action}`);
         A.state.models = r.models;
-        toast(`${action === "load" ? "Loaded" : "Unloaded"} ${r.model.model}.`, "ok");
+        toast(`${action === "load" ? "Loaded" : "Unloaded"} ${mname(r.model.model)}.`, "ok");
       } catch (e) { fail(e); }
       renderAssistantModels(A.state.models);
       assistantNav();
@@ -4150,8 +4160,8 @@ function visibleAnswer(t) {
 // performs these itself, so a wrong model id costs a click, not a launch.
 function actionEl(a) {
   const what = a.verb === "keep"
-    ? `${a.on ? "Keep loaded" : "Allow unloading"}: ${a.model}`
-    : `${a.verb === "load" ? "Load" : "Unload"}: ${a.model}`;
+    ? `${a.on ? "Keep loaded" : "Allow unloading"}: ${mname(a.model)}`
+    : `${a.verb === "load" ? "Load" : "Unload"}: ${mname(a.model)}`;
   const btn = h("button", { class: "btn sm" }, "Apply");
   const row = h("div", { class: "assistant-action", style: "display:flex;gap:8px;align-items:center;"
     + "margin-top:6px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;" },
@@ -5387,7 +5397,7 @@ function renderCompare() {
   const picker = (it, i) => {
     const sel = h("select", { "aria-label": `Config ${String.fromCharCode(65 + i)}` }, h("option", { value: "" }, "choose a launch config…"),
       Object.entries(byModel).map(([mid, list]) => h("optgroup", { label: mid }, list.map((o) =>
-        h("option", { value: `${o.model_id}|${o.config}` }, `${o.model_id} › ${o.label}${o.decode ? ` · ${num(o.decode)} t/s` : ""}`)))));
+        h("option", { value: `${o.model_id}|${o.config}` }, `${mname(o.model_id)} › ${o.label}${o.decode ? ` · ${num(o.decode)} t/s` : ""}`)))));
     if (it && it.run_id) sel.append(h("option", { value: cmpKey(it) }, `benchmark run ${it.label || it.run_id}`));
     sel.value = it ? cmpKey(it) : "";
     sel.addEventListener("change", () => {
@@ -5449,7 +5459,7 @@ function renderCompare() {
       h("div", { class: "table-wrap" }, h("table", { class: "dense cmp-table" }, h("thead", {}, resHead), h("tbody", {}, resRows))),
       CMP.answer ? h("div", { class: "answer" }, markdown(CMP.answer)) : null),
     h("details", { class: "card" }, h("summary", { class: "strong" }, "Full launch commands"),
-      R.items.map((it, i) => h("div", { style: "margin-top:8px" }, h("div", { class: "muted mono-sm" }, `${letters[i]} · ${it.model_id}`), h("pre", { class: "pre" }, it.command || "(not recorded)")))));
+      R.items.map((it, i) => h("div", { style: "margin-top:8px" }, h("div", { class: "muted mono-sm" }, `${letters[i]} · ${mname(it.model_id)}`), h("pre", { class: "pre" }, it.command || "(not recorded)")))));
 }
 
 // ----- loads (sessions) --------------------------------------------------------------------
@@ -5760,7 +5770,7 @@ function requestsCard(rows, inFlight, opts = {}) {
     const s = slotFor[r.id];
     if (s) return slotLabel(s);
     if (r.resp_bytes) return ["generating", "sending its answer"];
-    if ((slotsOf[r.model] || []).length) return ["waiting", `every slot of ${r.model} is busy; this one starts when one frees up`];
+    if ((slotsOf[r.model] || []).length) return ["waiting", `every slot of ${mname(r.model)} is busy; this one starts when one frees up`];
     return ["prompt", "reading the prompt; nothing sent back yet"];
   };
   // busy slots no request of ours accounts for
@@ -5779,7 +5789,7 @@ function requestsCard(rows, inFlight, opts = {}) {
     h("td", { class: "nowrap" }, (([label, why]) => h("span", { class: "pill warn", title: why }, g ? `${label} for nobody` : label))(slotLabel(s)), h("span", { class: "muted mono-sm", style: "margin-left:6px" }, `slot ${s.id}`))); });
   const live = (opts.running || []).map((r) => h("tr", { class: "req-running" },
     h("td", { class: "muted" }, "now"),
-    h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
+    h("td", { class: "strong", title: r.model || "" }, r.model ? mname(r.model) : DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted" }, r.src || DASH),
     h("td", { class: "num", title: "the prompt's length, once its slot reports it" }, slotFor[r.id]?.total ? num(slotFor[r.id].total, 0) : DASH),
     h("td", { class: "num", title: "tokens of the answer so far (or bytes sent back)" }, slotFor[r.id]?.generated ? num(slotFor[r.id].generated, 0) : r.resp_bytes ? bytesShort(r.resp_bytes) : DASH),
     slotFor[r.id]?.tokens_per_second ? prefillCell(slotFor[r.id].tokens_per_second, slotFor[r.id].high_tokens_per_second, slotFor[r.id].low_tokens_per_second)
@@ -5799,7 +5809,7 @@ function requestsCard(rows, inFlight, opts = {}) {
       const n = (v, d) => (v == null || (failed && !v) ? DASH : num(v, d));
       return h("tr", { class: fresh(r) ? "req-new" : "" },
       h("td", { class: "muted", title: new Date(r.ts * 1000).toLocaleString() }, ago(r.ts)),
-      h("td", { class: "strong" }, r.model || DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted", title: r.client ? `app: ${r.client}` : "" }, r.src || DASH, r.client ? h("div", { class: "mono-sm" }, r.client) : null),
+      h("td", { class: "strong", title: r.model || "" }, r.model ? mname(r.model) : DASH), h("td", {}, reqKind(r.path)), h("td", { class: "muted", title: r.client ? `app: ${r.client}` : "" }, r.src || DASH, r.client ? h("div", { class: "mono-sm" }, r.client) : null),
       h("td", { class: "num" }, n(r.input_tokens, 0)),
       h("td", { class: "num" }, n(r.output_tokens, 0)),
       failed ? h("td", { class: "num" }, DASH) : prefillCell(r.prompt_per_second, r.prefill_high_tps, r.prefill_low_tps),
@@ -6043,7 +6053,7 @@ function renderPlan() {
     return h("td", { class: "num" }, input);
   };
   renderTable(table, [
-    { key: "name", label: "Model", sort: (r) => r.id, cell: (r) => h("td", { class: "cell-model", title: r.id }, h("span", { class: "swatch", style: `--c:${segColor(r.id)}` }), r.id,
+    { key: "name", label: "Model", sort: (r) => r.id, cell: (r) => h("td", { class: "cell-model", title: r.id }, h("span", { class: "swatch", style: `--c:${segColor(r.id)}` }), mname(r.id),
       r.known === false ? h("span", { class: "pill warn", style: "margin-left:6px", title: "This model is in your files or profiles but the engine has not picked it up yet (it reads its model list from a config file and reloads about every 2 seconds), so the plan skips it until it appears." }, "engine has not loaded its config yet") : null) },
     { key: "kind", label: "Type", sort: (r) => r.kind, cell: (r) => h("span", { class: "chip" }, r.kind === "profile" ? "profile" : r.model_kind) },
     { key: "ctx", label: "Context", num: true, cell: (r) => (r.ctx ? num(r.ctx, 0) : DASH) },
@@ -6210,7 +6220,7 @@ function renderSimResult() {
   const table = h("table");
   renderTable(table, [
     { label: "#", num: true, cell: (r) => r.step },
-    { label: "Step", cell: (r) => (r.op === "wait" ? r.note : `${r.op} ${r.model}`) },
+    { label: "Step", cell: (r) => (r.op === "wait" ? r.note : `${r.op} ${mname(r.model)}`) },
     { label: "Result", cell: (r) => resultPill(r.result) },
     { label: "GPU", cell: (r) => (r.cards && r.cards.length ? r.cards.join(", ") : DASH) },
     { label: "What happened", cell: (r) => [r.op === "wait" ? "" : r.note, ...(r.drained || []).map((d) => ` · then ${d}`)].join("") },
