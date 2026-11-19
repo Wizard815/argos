@@ -15,7 +15,7 @@ from .command import parse_command
 from .cookbook import variant_id
 from .gguf import read_arch
 from .library import SHARD, prefab_command
-from .scheduler import CUSTOM_CACHE, GIB, KV_COMPARE, effective_size, estimate_gib, kv_gib
+from .scheduler import CACHE_BYTES, CUSTOM_CACHE, GIB, KV_COMPARE, cache_bytes, effective_size, estimate_gib, kv_gib
 
 _cache: dict[tuple, object] = {}
 
@@ -74,6 +74,7 @@ def estimate_command(command: str, compare: bool = False, measured: Optional[dic
     ck, cv = s.get("cache_type_k") or "", s.get("cache_type_v") or ""
     out = {"ok": True, "path": path, "ctx": ctx, "cache_k": ck or "f16", "cache_v": cv or ck or "f16",
            "train_ctx": (arch or {}).get("train_ctx"), "extra_gib": round(extra / GIB, 2),
+           "layout": layer_layout(arch, ck, cv),
            **estimate_gib(weights, arch, ctx, ck, cv, extra)}
     # how the context splits between chats: --parallel N gives each slot ctx / N of its own; with
     # --kv-unified (or no --parallel) the slots share it and one chat may use all of it
@@ -94,6 +95,28 @@ def estimate_command(command: str, compare: bool = False, measured: Optional[dic
         out["gib"] = measured["gib"]
         out["measured"] = {"gib": measured["gib"], "at": measured.get("at"), "per_card": measured.get("per_card")}
     return out
+
+
+def layer_layout(arch: Optional[dict], cache_k: str = "", cache_v: str = "") -> Optional[dict]:
+    """How the model's layers use the KV cache, from its header: fixed by the model, not by the command.
+
+    ``full_layers`` keep every token of a chat (the cache grows with -c); ``swa_layers`` keep only the last
+    ``swa_window`` tokens; ``no_cache_layers`` (linear / recurrent layers of hybrid models, Qwen3.5/3.6,
+    Granite 4) keep a fixed-size state and no KV cache at all. ``kv_per_token_kib`` is what one more token
+    of context costs across the full layers at the command's cache type.
+    """
+    if not arch:
+        return None
+    layers, attn = int(arch["layers"]), int(arch["attn_layers"])
+    swa = min(int(arch.get("swa_layers") or 0), attn)
+    full = attn - swa
+    bk = cache_bytes(cache_k or "f16") or CACHE_BYTES["q8_0"]
+    bv = cache_bytes(cache_v or cache_k or "f16") or CACHE_BYTES["q8_0"]
+    per_layer_token = arch["kv_heads"] * (arch["key_len"] * bk + arch["value_len"] * bv)
+    return {"arch": arch.get("arch") or "", "layers": layers, "full_layers": full, "swa_layers": swa,
+            "swa_window": int(arch.get("swa_window") or 0), "no_cache_layers": max(layers - attn, 0),
+            "kv_heads": int(arch["kv_heads"]), "train_ctx": int(arch.get("train_ctx") or 0),
+            "kv_per_token_kib": round(full * per_layer_token / 1024, 1)}
 
 
 def chat_split(ctx: int, parallel: Optional[int], unified: bool) -> dict:
