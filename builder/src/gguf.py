@@ -127,6 +127,31 @@ def read_arch(path: str) -> Optional[dict]:
     return out
 
 
+def read_decision_type(path: str) -> str:
+    """A llama.cpp decision model's ``<arch>.decision.type`` ("openjev", "lev", "kev", "laya", ...), "" for any
+    other model. Decision models answer POST /v1/systemone (classify, score, choose)."""
+    try:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+            if bytes(buf[:4]) != MAGIC:
+                return ""
+            rd = _Reader(buf)
+            rd.pos = 4
+            if rd.take("<I", 4) < 2:
+                return ""
+            rd.take("<Q", 8)
+            for _ in range(rd.take("<Q", 8)):
+                key, vtype = rd.string(), rd.take("<I", 4)
+                if key.endswith(".decision.type"):
+                    v = rd.value(vtype)
+                    return str(v or "decision") if not isinstance(v, int) else f"type-{v}"
+                if key.startswith("tokenizer."):
+                    return ""
+                rd.skip_value(vtype)
+    except (OSError, ValueError, struct.error):
+        pass
+    return ""
+
+
 def read_architecture(path: str) -> str:
     """Only ``general.architecture`` ("llama", "clip" for a projector), "" for a missing or unreadable file."""
     try:

@@ -29,6 +29,30 @@ def library():
     return ok(models_dir=d, exists=os.path.isdir(d), models=models, media=with_names(scan_media(d), names))
 
 
+@bp.get("/api/library/listed")
+def library_listed():
+    """The base models apps see in the model list anyway. Apps see profiles by default, not the bare models."""
+    url = ctx().settings.get("integrations").get("engine_url")
+    try:
+        return ok(listed=engine_api.listed_models(url) if url else [], reachable=bool(url))
+    except Exception as exc:  # noqa: BLE001 - shown as "unknown" in the list
+        return ok(listed=[], reachable=False, error=str(exc))
+
+
+@bp.put("/api/library/listed/<path:model_id>")
+def library_set_listed(model_id):
+    url = ctx().settings.get("integrations").get("engine_url")
+    if not url:
+        return err("no engine configured")
+    on = bool(body().get("listed"))
+    try:
+        engine_api.set_model_listed(url, model_id, on)
+    except Exception as exc:  # noqa: BLE001
+        return err(f"the engine did not take it: {exc}", 502)
+    ctx().event("settings", f"base model {model_id} {'shown to' if on else 'hidden from'} apps")
+    return ok(listed=engine_api.listed_models(url))
+
+
 @bp.put("/api/library/names/<path:model_id>")
 def library_rename(model_id):
     """Show a model under another name, or under its file's name again with an empty one. No file is touched."""

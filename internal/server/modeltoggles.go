@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/Wizard815/Argos/internal/event"
 	"github.com/Wizard815/Argos/internal/swaputil"
@@ -49,7 +50,14 @@ func validModelMode(mode string) bool {
 // standard needs an entry, so a cleared choice is stored by deleting the key.
 type modelTogglesFile struct {
 	Modes map[string]string `json:"modes"`
+	// Listed are the scanned base models shown in the model list anyway
+	// (see publiclist.go). Written by saveListedModels, kept by saveModelToggles.
+	Listed []string `json:"listed,omitempty"`
 }
+
+// togglesFileMu serialises the read-modify-write of the toggles file: the
+// modes and the listed models are saved from different handlers.
+var togglesFileMu sync.Mutex
 
 // multiModelCopyPattern matches the ids applyMultiModel generates for
 // multi_model copies (`<model>--mm0`, `--mm1`, ...). They are derived state, not
@@ -99,7 +107,22 @@ func saveModelToggles(path string, modes map[string]string) error {
 			return fmt.Errorf("creating model toggles dir: %w", err)
 		}
 	}
-	data, err := json.MarshalIndent(modelTogglesFile{Modes: modes}, "", "  ")
+	togglesFileMu.Lock()
+	defer togglesFileMu.Unlock()
+	return writeTogglesFile(path, modelTogglesFile{Modes: modes, Listed: readTogglesFile(path).Listed})
+}
+
+// readTogglesFile is the file as it is, empty when missing or unreadable.
+func readTogglesFile(path string) modelTogglesFile {
+	var tf modelTogglesFile
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &tf)
+	}
+	return tf
+}
+
+func writeTogglesFile(path string, tf modelTogglesFile) error {
+	data, err := json.MarshalIndent(tf, "", "  ")
 	if err != nil {
 		return err
 	}
