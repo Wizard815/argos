@@ -2836,6 +2836,7 @@ const librarySort = { key: null, asc: true };
 async function loadLibrary() {
   try { S.library = await api("GET", "/api/library"); } catch (e) { fail(e); return; }
   try { ML.groups = (await api("GET", "/api/library/groups")).groups; } catch (e) { /* groups are optional */ }
+  try { ML.listed = new Set((await api("GET", "/api/library/listed")).listed); } catch (e) { ML.listed = new Set(); }
   $("#navModels").textContent = S.library.models.length || "";
   fillProfileSelect();
   if (S.view === "models") renderLibrary();
@@ -2855,10 +2856,10 @@ async function openPrefab(m, launchIt = false) {
 // The library is a tree: grouped by kind, family (all Qwen together), folder, or your own groups, and every group
 // collapses. Where you left it (grouping, closed groups) is remembered in this browser.
 // grouped by name (Qwen, Gemma, …) with every group closed until opened
-const ML = { groups: [], by: "family", g: openGroups("argos.models.open"), files: new Set() /* models expanded to their files */ };
+const ML = { groups: [], by: "family", g: openGroups("argos.models.open"), files: new Set() /* models expanded to their files */, listed: new Set() /* base models shown to apps */ };
 try { ML.by = localStorage.getItem("argos.models.groupby") || "family"; } catch (e) { /* private window: defaults */ }
 const mlSave = () => { try { localStorage.setItem("argos.models.groupby", ML.by); } catch (e) { /* ignore */ } };
-const KIND_GROUPS = [["chat", "Chat"], ["vision", "Vision"], ["mtp", "MTP / draft"], ["embedding", "Embedding"], ["reranker", "Reranker"], ["audio", "Audio"], ["image", "Image"]];
+const KIND_GROUPS = [["chat", "Chat"], ["vision", "Vision"], ["mtp", "MTP / draft"], ["classifier", "Classifier (/v1/systemone)"], ["embedding", "Embedding"], ["reranker", "Reranker"], ["audio", "Audio"], ["image", "Image"]];
 const cap1 = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 /** "Qwen" for qwen3.6-35b…, "Hermes" for NousResearch_Hermes-4…, the folder for audio/image models. */
@@ -2970,9 +2971,22 @@ function modelMenu(btnEl, m) {
     { label: "Rename…", icon: "pencil", run: () => renameModel(m) },
     { label: "Move to group…", icon: "layers", run: () => newGroupBox(m) },
     m.listed_only ? null : { label: "Helpers (vision, MTP)…", icon: "plug", run: () => helpersBox(m) },
+    m.listed_only ? null : ML.listed.has(m.id)
+      ? { label: "Hide the base model from apps", icon: "x", run: () => setListed(m, false) }
+      : { label: "Show the base model to apps", icon: "plug", run: () => setListed(m, true) },
     g ? { label: `Take out of ${g.name}`, icon: "x", run: () => saveGroups(ML.groups.map((x) => ({ name: x.name, models: x.models.filter((id) => id !== m.id) }))) } : null,
     { label: "Delete from disk…", icon: "trash", danger: true, run: () => deleteModel(m) },
   ]);
+}
+
+/** Apps (Hermes, Codex, your own) see the profiles in the model list, by their names, not the bare models found on
+ * disk. One can be shown, and called, as it is. */
+async function setListed(m, on) {
+  try {
+    ML.listed = new Set((await api("PUT", `/api/library/listed/${encodeURIComponent(m.id)}`, { listed: on })).listed);
+    toast(on ? `Apps now see ${m.id} in the model list.` : `${m.id} is hidden from apps again; its profiles are still listed.`, "ok");
+    renderLibrary();
+  } catch (e) { fail(e); }
 }
 
 /** The files added onto a model's command: its vision projector (--mmproj) and its MTP head. Automatic is the one
@@ -3019,7 +3033,7 @@ async function helpersBox(m) {
 function renderLibrary() {
   const lib = S.library;
   if (!lib) return;
-  $("#mSub").textContent = `Every model in ${lib.models_dir}. GGUFs get a ready-made prefab command; audio and image models are listed so you can see what you have.`;
+  $("#mSub").textContent = `Every model in ${lib.models_dir}. GGUFs get a ready-made prefab command; audio and image models are listed so you can see what you have. Apps only see the profiles you make (by their names); ⋯ → Show the base model to apps lists a model as it is.`;
   const q = $("#mSearch").value.trim().toLowerCase();
   const media = lib.media || [];
   const all = [...lib.models, ...media];
@@ -3074,7 +3088,9 @@ function renderLibrary() {
       m.shards < 0 ? h("span", { class: "pill bad" }, `incomplete ${-m.shards} parts`) : m.shards > 1 ? h("span", { class: "chip" }, `${m.shards} parts`) : null,
       m.mmproj.length ? h("span", { class: "chip", title: `Vision projector (the first is used):\n${m.mmproj.join("\n")}` }, m.mmproj.length > 1 ? `mmproj ×${m.mmproj.length}` : "mmproj") : null,
       (m.mtp_head || []).length ? h("span", { class: "chip", title: `MTP head (the first is used):\n${m.mtp_head.join("\n")}` }, m.mtp_head.length > 1 ? `MTP head ×${m.mtp_head.length}` : "MTP head") : null,
-      m.format && m.format !== "gguf" ? h("span", { class: "chip" }, m.format) : null) },
+      m.format && m.format !== "gguf" ? h("span", { class: "chip" }, m.format) : null,
+      ML.listed && ML.listed.has(m.id) ? h("span", { class: "pill ok", title: "Apps see this base model in the model list and can call it. ⋯ → Hide the base model from apps." }, "shown to apps") : null,
+      m.decision ? h("span", { class: "chip", title: "A llama.cpp decision model: apps ask it at POST /v1/systemone" }, `decision: ${m.decision}`) : null) },
     { key: "profiles", label: "Profiles", num: true, cell: (m) => (m.profiles
       ? h("button", { class: "btn sm ghost", onclick: () => showProfilesFor(m.id) }, String(m.profiles)) : DASH) },
     { label: "", cell: (m) => {

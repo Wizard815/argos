@@ -249,7 +249,7 @@ describe("api store event handling", () => {
 
     await fetchPlaygroundModels();
 
-    expect(mockFetch).toHaveBeenCalledWith("/v1/models");
+    expect(mockFetch).toHaveBeenCalledWith("/v1/models?all=1");
     expect(get(playgroundModels).map((model) => model.id)).not.toContain("variant");
     expect(get(playgroundModels).find((model) => model.id === "real")).toMatchObject({
       aliases: ["variant", "alternate"],

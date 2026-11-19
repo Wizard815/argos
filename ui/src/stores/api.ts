@@ -362,7 +362,7 @@ interface ModelListRecord {
 
 async function loadPlaygroundModels(request: number): Promise<Model[]> {
   try {
-    const response = await fetch("/v1/models");
+    const response = await fetch("/v1/models?all=1") /* every model, base ones too: this page manages them */;
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }

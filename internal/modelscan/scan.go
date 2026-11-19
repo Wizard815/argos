@@ -89,10 +89,16 @@ type Options struct {
 // fields named here, since Argos parses the generated file with that
 // struct.
 type generatedModel struct {
-	Cmd string   `yaml:"cmd"`
-	Env []string `yaml:"env,omitempty"`
-	TTL *int     `yaml:"ttl,omitempty"`
+	Cmd      string         `yaml:"cmd"`
+	Env      []string       `yaml:"env,omitempty"`
+	TTL      *int           `yaml:"ttl,omitempty"`
+	Metadata map[string]any `yaml:"metadata,omitempty"`
 }
+
+// BaseModelKey marks a model the scan found on disk (a base model), so the
+// server can keep it out of the public model list until a profile is made
+// for it or it is listed by hand.
+const BaseModelKey = "argos_base_model"
 
 type generatedFile struct {
 	Models map[string]generatedModel `yaml:"models"`
@@ -248,9 +254,10 @@ func Scan(opts Options) ([]byte, []string, error) {
 	for _, f := range all {
 		cmd := strings.ReplaceAll(opts.CmdTemplate, "${MODEL_PATH}", f.path)
 		models[f.id] = generatedModel{
-			Cmd: cmd,
-			Env: opts.Env,
-			TTL: opts.TTL,
+			Cmd:      cmd,
+			Env:      opts.Env,
+			TTL:      opts.TTL,
+			Metadata: map[string]any{BaseModelKey: true},
 		}
 		names = append(names, f.id)
 	}

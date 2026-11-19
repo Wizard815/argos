@@ -78,6 +78,11 @@ type Server struct {
 	modelModesMu sync.RWMutex
 	modelModes   map[string]string
 
+	// listed are the base models shown to outside clients anyway (see
+	// publiclist.go), kept in cfg.ModelTogglesFile. Guarded by listedMu.
+	listedMu sync.RWMutex
+	listed   map[string]bool
+
 	// cfgPath and cfgDir are the -config and -config-dir paths, recorded by
 	// main via SetConfigPaths. The Odysseus integration needs them to enumerate
 	// the other config sources when guarding a generated fragment against
@@ -344,6 +349,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 	}
 
 	s.restoreModelToggles(modes)
+	s.restoreListed()
 	// Install the launch-time policy that applies each model's GPU mode. It is
 	// consulted just before an upstream starts, so a mode change takes effect
 	// on the next launch without touching the configured command.
@@ -409,6 +415,7 @@ func (s *Server) routes() {
 		modelMWs = append(modelMWs, CreateConcurrencyLimitMiddleware(s.cfg.GlobalConcurrencyLimit))
 	}
 	modelMWs = append(modelMWs,
+		CreatePublicModelMiddleware(s),
 		CreateProfileMiddleware(s),
 		CreateSelectorMiddleware(s),
 		CreateRequestContextMiddleware(s.cfg),
@@ -489,6 +496,8 @@ func (s *Server) routes() {
 	mux.Handle("PUT /api/odysseus/model/{model}/profile", apiChain.ThenFunc(s.handleAPIOdysseusModelProfile))
 	mux.Handle("PUT /api/models/{model}/mode", apiChain.ThenFunc(s.handleAPIModelMode))
 	mux.Handle("GET /api/models/modes", apiChain.ThenFunc(s.handleAPIModelModes))
+	mux.Handle("PUT /api/models/{model}/listed", apiChain.ThenFunc(s.handleAPIModelListed))
+	mux.Handle("GET /api/models/listed", apiChain.ThenFunc(s.handleAPIModelListed))
 	mux.Handle("GET /api/profiles", apiChain.ThenFunc(s.handleAPIProfiles))
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
 	mux.Handle("GET /api/inflight", apiChain.ThenFunc(s.handleAPIInflight))

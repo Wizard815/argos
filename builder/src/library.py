@@ -247,6 +247,11 @@ def scan_media(models_dir: str) -> list[dict]:
 
 
 
+def read_decision_type(path: str) -> str:
+    from .gguf import read_decision_type as read
+    return read(path)
+
+
 def _helper_rows(mmproj: list, heads: list, mmproj_found: list, heads_found: list) -> list[dict]:
     """A model's helper files for its expanded row: the ones in use (the first of each kind), then the other matches,
     each with its size."""
@@ -316,11 +321,14 @@ def _scan_models(models_dir: str) -> list[dict]:
             vision = by_hand(path, "mmproj")
             its_mmproj = mmprojs if vision is None else ([vision] if vision else [])
             head, found = by_hand(path, "mtp"), heads_for(path, root)
+            decision = read_decision_type(path)
             heads = found if head is None else ([head] if head else [])
             out.append({
                 "id": swap_model_id(path), "name": name, "path": path,
                 "dir": os.path.relpath(root, models_dir), "size": size, "shards": shards,
-                "quant": quant_of(path), "mmproj": its_mmproj, "kind": kind_of(path, bool(its_mmproj)),
+                "quant": quant_of(path), "mmproj": its_mmproj, "kind": "classifier" if decision else kind_of(path, bool(its_mmproj)),
+                # a llama.cpp decision model (OpenJev, Lev, Kev, Laya, Julia-1, Clef): apps ask it at /v1/systemone
+                "decision": decision,
                 "mtp_head": heads, "helpers_by_hand": sorted(k for k in ("mtp", "mmproj") if by_hand(path, k) is not None),
                 # what Automatic finds for it, whatever was picked by hand: offered first in Helpers
                 "helper_matches": {"mmproj": list(mmprojs), "mtp": found},

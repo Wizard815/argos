@@ -67,6 +67,20 @@ def set_model_profile(base_url: str, model_id: str, label: Optional[str], timeou
         return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
 
 
+def listed_models(base_url: str, timeout: float = 3.0) -> list[str]:
+    """The base models shown to apps in the model list anyway (by default only profiles are)."""
+    return list((_get(base_url.rstrip("/") + "/api/models/listed", timeout) or {}).get("listed") or [])
+
+
+def set_model_listed(base_url: str, model_id: str, listed: bool, timeout: float = 10.0) -> Any:
+    """Show a base model to apps in the model list (and let them call it), or hide it again."""
+    req = urllib.request.Request(base_url.rstrip("/") + f"/api/models/{urllib.parse.quote(model_id, safe='')}/listed",
+                                 data=json.dumps({"listed": bool(listed)}).encode(), method="PUT",
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+
+
 def load_model(base_url: str, model_id: str, timeout: float = 900.0) -> None:
     """Make the engine load one model (its /upstream route starts it); other models are not touched."""
     _get(base_url.rstrip("/") + f"/upstream/{urllib.parse.quote(model_id, safe='')}/health", timeout)

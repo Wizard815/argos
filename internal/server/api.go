@@ -208,13 +208,20 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		return rec
 	}
 
+	// an outside client sees the profiles by their labels and no bare base
+	// models (publiclist.go); ?all=1 is the whole list, for the engine's pages
+	outside := fromOutside(r) && r.URL.Query().Get("all") == ""
+	short := map[string]string{}
+	if outside {
+		short = s.shortNames()
+	}
 	for id, mc := range s.cfg.Models {
 		modelIDs[id] = struct{}{}
 		for _, alias := range mc.Aliases {
 			modelIDs[alias] = struct{}{}
 		}
 
-		if mc.Unlisted {
+		if mc.Unlisted || (outside && s.unlistedForOutside(id, mc)) {
 			continue
 		}
 		status := modelStatus(id)
@@ -242,7 +249,13 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			}
 			name = fmt.Sprintf("%s (default: %s)", name, strings.TrimPrefix(target, id+"--"))
 		}
-		data = append(data, newRecord(id, name, mc.Description, mc.Metadata, mc.Capabilities, status, internalMetadata, config.ContextSizeFromCommand(s.effectiveCommand(id, mc.Cmd))))
+		listedAs := id
+		if outside {
+			if listedAs = publicName(id, short); listedAs != id {
+				internalMetadata["model_id"] = id
+			}
+		}
+		data = append(data, newRecord(listedAs, name, mc.Description, mc.Metadata, mc.Capabilities, status, internalMetadata, config.ContextSizeFromCommand(s.effectiveCommand(id, mc.Cmd))))
 
 		if s.cfg.IncludeAliasesInList {
 			for _, alias := range mc.Aliases {
