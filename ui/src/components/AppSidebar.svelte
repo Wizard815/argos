@@ -9,6 +9,7 @@
   import { playgroundActivity, docsAgentStreaming } from "../stores/playgroundActivity";
   import { performanceEnabled, models, tailcatStatus } from "../stores/api";
   import { showUnlistedModels } from "../stores/modelDisplay";
+  import { shortModelId } from "../lib/modelUtils";
   import { modelsMenuOpen } from "../stores/sidebar";
   import type { Model } from "../lib/types";
   import { isComposingKey } from "../lib/ime";
@@ -63,7 +64,7 @@
       {#snippet child({ props })}
         <a href="/models/{encodeURIComponent(model.id)}" use:link {...props}>
           <span class={`size-2 shrink-0 rounded-full ${dotClass[statusDotColor(model)]}`}></span>
-          <span class="flex-1 truncate">{model.id}</span>
+          <span class="flex-1 truncate" title={model.id}>{shortModelId(model.id)}</span>
         </a>
       {/snippet}
     </Sidebar.MenuSubButton>

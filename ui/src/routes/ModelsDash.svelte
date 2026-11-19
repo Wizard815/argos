@@ -21,7 +21,7 @@
   import * as Switch from "$lib/components/ui/switch/index.js";
   import * as Label from "$lib/components/ui/label/index.js";
   import { PowerOff, Loader2, ExternalLink, SquareStack } from "@lucide/svelte";
-  import { modelServerPath } from "../lib/modelUtils";
+  import { modelServerPath, shortModelId } from "../lib/modelUtils";
 
   let unloadingAll = $state(false);
 
@@ -65,7 +65,7 @@
       use:link
       class="min-w-0 flex-1"
     >
-      <div class="truncate text-sm font-medium">{model.name || model.id}</div>
+      <div class="truncate text-sm font-medium">{model.name || shortModelId(model.id)}</div>
       <div class="text-muted-foreground truncate text-xs">
         {model.id}
         {#if model.aliases && model.aliases.length > 0}

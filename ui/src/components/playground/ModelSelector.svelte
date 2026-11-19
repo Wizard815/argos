@@ -1,6 +1,6 @@
 <script lang="ts">
   import { playgroundModels, profileModels, selectorModels } from "../../stores/api";
-  import { groupModels } from "../../lib/modelUtils";
+  import { groupModels, shortModelId } from "../../lib/modelUtils";
   import * as Select from "$lib/components/ui/select/index.js";
 
   interface Props {
@@ -41,7 +41,7 @@
         <Select.Group>
           <Select.Label>Profile</Select.Label>
           {#each $profileModels as model (model.id)}
-            <Select.Item value={model.id}>{model.id}</Select.Item>
+            <Select.Item value={model.id}>{shortModelId(model.id)}</Select.Item>
           {/each}
         </Select.Group>
         <Select.Separator />
@@ -50,7 +50,7 @@
         <Select.Group>
           <Select.Label>Matching Capabilities</Select.Label>
           {#each grouped.localMatching as model (model.id)}
-            <Select.Item value={model.id}>{model.id}</Select.Item>
+            <Select.Item value={model.id}>{shortModelId(model.id)}</Select.Item>
             {#if model.aliases}
               {#each model.aliases as alias (alias)}
                 <Select.Item value={alias}>↳ {alias}</Select.Item>
@@ -64,7 +64,7 @@
         <Select.Group>
           <Select.Label>Selectors</Select.Label>
           {#each $selectorModels as model (model.id)}
-            <Select.Item value={model.id}>{model.id}</Select.Item>
+            <Select.Item value={model.id}>{shortModelId(model.id)}</Select.Item>
           {/each}
         </Select.Group>
         <Select.Separator />
@@ -73,7 +73,7 @@
         <Select.Group>
           <Select.Label>Local</Select.Label>
           {#each grouped.local as model (model.id)}
-            <Select.Item value={model.id}>{model.id}</Select.Item>
+            <Select.Item value={model.id}>{shortModelId(model.id)}</Select.Item>
             {#if model.aliases}
               {#each model.aliases as alias (alias)}
                 <Select.Item value={alias}>↳ {alias}</Select.Item>

@@ -10,7 +10,7 @@
   import ModelActivityTab from "../components/model/ModelActivityTab.svelte";
   import ModelLogsTab from "../components/model/ModelLogsTab.svelte";
   import ModelDetailsTab from "../components/model/ModelDetailsTab.svelte";
-  import { modelServerPath } from "../lib/modelUtils";
+  import { modelServerPath, shortModelId } from "../lib/modelUtils";
 
   let modelId = $derived($params?.id ?? "");
 
@@ -34,7 +34,7 @@
       <Card.Header class="shrink-0 gap-2 border-b px-4 py-3">
         <div class="flex items-center gap-2">
           <span class={`size-2.5 shrink-0 rounded-full ${statusDotColor(model)}`}></span>
-          <Card.Title class="text-lg">{model.name || model.id}</Card.Title>
+          <Card.Title class="text-lg">{model.name || shortModelId(model.id)}</Card.Title>
           <span class="text-muted-foreground text-sm">({model.id})</span>
           <span class="text-muted-foreground text-xs uppercase tracking-wide">{model.state}</span>
           <div class="ml-auto flex items-center gap-2">
