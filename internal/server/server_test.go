@@ -542,3 +542,19 @@ func TestServer_LogStream_UnknownID_Returns400(t *testing.T) {
 		t.Errorf("status=%d want 400", w.Code)
 	}
 }
+
+func TestServer_SystemOneRoutesByModel(t *testing.T) {
+	var path string
+	r := newStubRouter([]string{"openjev"}, "decided")
+	r.serveHTTP = func(w http.ResponseWriter, req *http.Request) { path = req.URL.Path; w.Write([]byte("decided")) }
+	s := newTestServer(r)
+
+	body := `{"model":"openjev","state":"refund please","questions":{"route":{"type":"choice","instructions":"which team?"}}}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || w.Body.String() != "decided" || path != "/v1/systemone" {
+		t.Fatalf("status=%d body=%q path=%q", w.Code, w.Body.String(), path)
+	}
+}

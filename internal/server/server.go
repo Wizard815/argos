@@ -171,6 +171,10 @@ var modelPostJSONRoutes = []string{
 	"/v1/audio/voices",
 	"/v1/images/generations",
 	"/sdapi/v1/txt2img",
+
+	// llama.cpp decision models (Julia-1, Laya, Kev, lev, OpenJev, Clef):
+	// "model" in the body picks one, as in llama-server's router mode
+	"/v1/systemone",
 	"/sdapi/v1/img2img",
 
 	// audio.cpp generic task API
@@ -186,6 +190,7 @@ var modelPostJSONRoutes = []string{
 	"/v/embeddings",
 	"/v/rerank",
 	"/v/reranking",
+	"/v/systemone",
 }
 
 // modelPostFormRoutes are multipart/form-data endpoints with a model id in the form data
