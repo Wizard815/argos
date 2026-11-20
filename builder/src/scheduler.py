@@ -81,7 +81,7 @@ def env_plan() -> dict:
     return out
 
 # bytes per KV element for ggml cache types (block size and header included)
-CACHE_BYTES = {"f32": 4.0, "f16": 2.0, "bf16": 2.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32,
+CACHE_BYTES = {"f32": 4.0, "f16": 2.0, "bf16": 2.0, "f8_e4m3": 1.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32,
                "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32,
                # TurboQuant forks of llama.cpp: about 6.125, 5.125, 4.25, 3.5 and 2.5 bits a value (approximate)
                "turbo6": 6.125 / 8, "turbo5": 5.125 / 8, "turbo4": 4.25 / 8, "turbo3": 3.5 / 8, "turbo2": 2.5 / 8}
@@ -116,7 +116,7 @@ def cache_bytes(name: str) -> Optional[float]:
 
 # The cache types the estimator compares side by side, smallest last. The Builder's VRAM card shows the
 # main ones (KV_MAIN in ui/app.js) and lists the rest under "Show all".
-KV_COMPARE = ("f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
+KV_COMPARE = ("f16", "bf16", "f8_e4m3", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
               "turbo6", "turbo5", "turbo4", "turbo3", "turbo2")
 
 

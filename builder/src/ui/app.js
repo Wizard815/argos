@@ -634,11 +634,11 @@ function fillImportSelect() {
 }
 
 // ── Builder ──────────────────────────────────────────────────
-const KV_TYPES = ["", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "turbo6", "turbo5", "turbo4", "turbo3", "turbo2"];
+const KV_TYPES = ["", "f16", "bf16", "f8_e4m3", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "turbo6", "turbo5", "turbo4", "turbo3", "turbo2"];
 // The KV cache types most commands use, largest to smallest; "Show all" lists everything.
 const KV_MAIN = ["", "f16", "q8_0", "q5_0", "q4_0", "turbo3"];
 // Approximate KV cache size per value vs f16, for the hint next to each choice.
-const KV_SIZE = { f16: 16, bf16: 16, q8_0: 8.5, q5_1: 6, q5_0: 5.5, q4_1: 5, q4_0: 4.5, iq4_nl: 4.5,
+const KV_SIZE = { f16: 16, bf16: 16, f8_e4m3: 8, q8_0: 8.5, q5_1: 6, q5_0: 5.5, q4_1: 5, q4_0: 4.5, iq4_nl: 4.5,
   turbo6: 6.125, turbo5: 5.125, turbo4: 4.25, turbo3: 3.25, turbo2: 2.25 };
 /** The VRAM card's KV table rows: the main types (plus the command's own), or with "Show all" every type.
  *  When the default server's build was probed, a type whose K=V pair has no compiled FlashAttention
@@ -4562,7 +4562,7 @@ const SETTINGS_FORM = [
     { k: "cuda_path", label: "CUDA location", ph: "/usr/local/cuda-12.4" },
     { k: "rocm_smi", label: "rocm-smi to use", ph: "/opt/rocm-gfx906/bin/rocm-smi", hint: "blank = the one in the ROCm location, else on PATH" },
     { k: "nvidia_smi", label: "nvidia-smi to use", ph: "/usr/bin/nvidia-smi", hint: "blank = on PATH" }] },
-  { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo6 (6.125) turbo5 (5.125) turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
+  { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 f8_e4m3 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo6 (6.125) turbo5 (5.125) turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
     { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
   { group: "playground", title: "Playground", fields: [
     { k: "llama_bench", label: "llama-bench tab", type: "check", hint: "llama.cpp's own benchmark in the Playground, run where your llama-server runs. Off hides the tab." }] },
