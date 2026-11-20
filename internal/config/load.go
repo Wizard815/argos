@@ -189,6 +189,10 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			return Config{}, fmt.Errorf("model %s: invalid proxy URL: %w", modelId, err)
 		}
 
+		if modelConfig.DisableKeepAlives == nil {
+			v := config.DisableKeepAlives
+			modelConfig.DisableKeepAlives = &v
+		}
 		if modelConfig.SendLoadingState == nil {
 			v := config.SendLoadingState
 			modelConfig.SendLoadingState = &v

@@ -18,6 +18,7 @@ import (
 	"github.com/Wizard815/Argos/internal/event"
 	"github.com/Wizard815/Argos/internal/logmon"
 	"github.com/Wizard815/Argos/internal/swaputil"
+	"github.com/tidwall/gjson"
 )
 
 var ErrStartAborted = fmt.Errorf("aborted")
@@ -461,6 +462,88 @@ func (p *ProcessCommand) run() {
 	}
 }
 
+// browserHeaderPrefixes are what a browser adds to say which page a request
+// came from. They are for the edge (the builder checks them), not for the
+// model's server: llama-server now refuses or limits browser-origin requests
+// (its CORS and DNS-rebinding checks), so a request a browser made through
+// Argos's page could be turned away there (llama-swap #1215).
+var browserHeaderPrefixes = []string{"Origin", "Referer", "Sec-Fetch-", "Access-Control-Request-"}
+
+func stripBrowserHeaders(h http.Header) {
+	for name := range h {
+		for _, prefix := range browserHeaderPrefixes {
+			if name == prefix || (strings.HasSuffix(prefix, "-") && strings.HasPrefix(name, prefix)) {
+				h.Del(name)
+			}
+		}
+	}
+}
+
+// loadProgress is what a server loading its model says on its health check:
+// llama-server answers 503 with {"error":{"message":"Loading model"}}, and
+// servers that report it add a progress (0-1 or a percentage) (llama-swap
+// #1212).
+type loadProgress struct {
+	seen     bool
+	progress float64
+	message  string
+}
+
+func readLoadProgress(body []byte) loadProgress {
+	if !gjson.ValidBytes(body) {
+		return loadProgress{}
+	}
+	out := loadProgress{}
+	for _, k := range []string{"progress", "error.progress", "load_progress"} {
+		if v := gjson.GetBytes(body, k); v.Exists() && v.Type == gjson.Number {
+			out.progress, out.seen = v.Float(), true
+			break
+		}
+	}
+	for _, k := range []string{"message", "error.message", "status"} {
+		if v := gjson.GetBytes(body, k); v.Exists() && v.Type == gjson.String && v.String() != "" {
+			out.message, out.seen = v.String(), true
+			break
+		}
+	}
+	return out
+}
+
+// movedOn reports whether the server got further than it said before: a
+// higher progress, or a message it had not given yet.
+func (l loadProgress) movedOn(before loadProgress) bool {
+	if !l.seen {
+		return false
+	}
+	return !before.seen || l.progress > before.progress || l.message != before.message
+}
+
+func (l loadProgress) String() string {
+	if l.progress > 0 {
+		return fmt.Sprintf("%g %s", l.progress, l.message)
+	}
+	return l.message
+}
+
+// newUpstreamTransport is how the proxy talks to a model's server.
+func newUpstreamTransport(cfg config.ModelConfig) *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   time.Duration(cfg.Timeouts.Connect) * time.Second,
+			KeepAlive: time.Duration(cfg.Timeouts.KeepAlive) * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   time.Duration(cfg.Timeouts.TLSHandshake) * time.Second,
+		ResponseHeaderTimeout: time.Duration(cfg.Timeouts.ResponseHeader) * time.Second,
+		ExpectContinueTimeout: time.Duration(cfg.Timeouts.ExpectContinue) * time.Second,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       time.Duration(cfg.Timeouts.IdleConn) * time.Second,
+		DisableKeepAlives:     cfg.DisableKeepAlives != nil && *cfg.DisableKeepAlives,
+	}
+}
+
 func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout time.Duration) startResult {
 	if p.config.Proxy == "" {
 		return startResult{err: fmt.Errorf("upstream proxy missing")}
@@ -477,20 +560,12 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 	}
 
 	reverseProxy := httputil.NewSingleHostReverseProxy(proxyURL)
-	reverseProxy.Transport = &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   time.Duration(p.config.Timeouts.Connect) * time.Second,
-			KeepAlive: time.Duration(p.config.Timeouts.KeepAlive) * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   time.Duration(p.config.Timeouts.TLSHandshake) * time.Second,
-		ResponseHeaderTimeout: time.Duration(p.config.Timeouts.ResponseHeader) * time.Second,
-		ExpectContinueTimeout: time.Duration(p.config.Timeouts.ExpectContinue) * time.Second,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		IdleConnTimeout:       time.Duration(p.config.Timeouts.IdleConn) * time.Second,
+	director := reverseProxy.Director
+	reverseProxy.Director = func(r *http.Request) {
+		director(r)
+		stripBrowserHeaders(r.Header)
 	}
+	reverseProxy.Transport = newUpstreamTransport(p.config)
 	reverseProxy.ErrorHandler = newProxyErrorHandler(p.id, p.proxyLogger)
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
 		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
@@ -586,6 +661,7 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 	}
 
 	deadline := time.Now().Add(healthCheckTimeout)
+	var lastProgress loadProgress
 	for {
 		select {
 		case <-startCtx.Done():
@@ -607,6 +683,16 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 		reverseProxy.ServeHTTP(rr, req)
 		resp := rr.Result()
 		resp.Body.Close()
+		// A big model can take longer than the timeout to load. While its
+		// server says it is getting on (a higher progress, a new message), the
+		// countdown starts again; a server that is stuck still runs out of it.
+		if prog := readLoadProgress(rr.Body.Bytes()); prog.movedOn(lastProgress) {
+			if lastProgress.seen {
+				p.proxyLogger.Debugf("<%s> still loading (%s), health check timeout restarted", p.id, prog)
+			}
+			lastProgress = prog
+			deadline = time.Now().Add(healthCheckTimeout)
+		}
 		if resp.StatusCode == http.StatusOK {
 			p.proxyLogger.Infof("<%s> Health check passed on %s%s", p.id, p.config.Proxy, p.config.CheckEndpoint)
 			break

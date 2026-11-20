@@ -168,7 +168,7 @@ func TestDocs_RealConfigExample_SectionKeys(t *testing.T) {
 	want := []string{
 		"healthCheckTimeout", "logLevel", "logTimeFormat", "logToStdout",
 		"metricsMaxInMemory", "captureBuffer", "ui", "performance", "startPort",
-		"sendLoadingState", "includeAliasesInList", "globalTTL", "unloadTimeout",
+		"disableKeepAlives", "sendLoadingState", "includeAliasesInList", "globalTTL", "unloadTimeout",
 		"globalConcurrencyLimit", "macros", "apiKeys", "tailcat", "upstream",
 		"profileStateFile", "profiles", "selectors", "models", "hooks", "routing",
 		"odysseus",

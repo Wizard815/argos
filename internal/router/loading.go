@@ -298,6 +298,12 @@ func (s *loadingWriter) Write(data []byte) (int, error) {
 }
 
 func (s *loadingWriter) WriteHeader(statusCode int) {
+	if swaputil.IsInterimStatus(statusCode) {
+		if !s.hasWritten { // after the real status it would only be noise
+			s.writer.WriteHeader(statusCode)
+		}
+		return
+	}
 	if s.hasWritten {
 		return
 	}

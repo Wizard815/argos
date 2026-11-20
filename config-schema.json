@@ -313,6 +313,11 @@
             "default": 5800,
             "description": "Starting port number for the automatic ${PORT} macro. The ${PORT} macro is incremented for every model that uses it."
         },
+        "disableKeepAlives": {
+            "type": "boolean",
+            "default": false,
+            "description": "Open a new connection to a model for every request instead of reusing one. Turn on if requests fail now and then with 502 \"proxy error: EOF\" right after a streamed answer (llama-server closed the reused connection). Each model can override it."
+        },
         "sendLoadingState": {
             "type": "boolean",
             "default": false,
@@ -583,6 +588,10 @@
                         "minimum": 0,
                         "default": 0,
                         "description": "Model GPU memory footprint in GiB (weights, KV cache, buffers). The pool router uses it to decide what fits. 0 estimates it from the model file size."
+                    },
+                    "disableKeepAlives": {
+                        "type": "boolean",
+                        "description": "Overrides the global disableKeepAlives for this model: a new connection for every request."
                     },
                     "sendLoadingState": {
                         "type": "boolean",

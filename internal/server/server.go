@@ -434,7 +434,7 @@ func (s *Server) routes() {
 	dispatch := http.HandlerFunc(s.modelHandler)
 
 	for _, path := range modelPostJSONRoutes {
-		mux.Handle("POST "+path, modelChain.Then(dispatch))
+		mux.Handle("POST "+path, requireJSONBody(modelChain.Then(dispatch)))
 	}
 	for _, path := range modelPostFormRoutes {
 		mux.Handle("POST "+path, modelChain.Then(dispatch))

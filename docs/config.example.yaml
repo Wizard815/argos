@@ -90,6 +90,12 @@ performance:
 # - it is automatically incremented for every model that uses it
 startPort: 10001
 
+# disableKeepAlives: open a new connection to a model for every request
+# - optional, default: false; each model can override it
+# - turn on if requests fail now and then with 502 "proxy error: EOF" right
+#   after a streamed answer (llama-server closed the reused connection)
+disableKeepAlives: false
+
 # sendLoadingState: inject loading status updates into the reasoning (thinking)
 # field
 # - optional, default: false
