@@ -260,14 +260,24 @@ def _remote_path(path: str) -> str:
 # ggml_type numbers of the KV cache types llama.cpp accepts for -ctk/-ctv, as they
 # appear in the FlashAttention kernel names (turbo* are the TurboQuant forks' types).
 KV_TYPE_NUMBERS = {0: "f32", 1: "f16", 2: "q4_0", 3: "q4_1", 6: "q5_0", 7: "q5_1", 8: "q8_0", 20: "iq4_nl",
-                   30: "bf16", 43: "turbo3", 44: "turbo4", 45: "turbo2", 46: "turbo5", 47: "turbo6"}
+                   30: "bf16", 43: "f8_e4m3", 44: "turbo3", 45: "turbo4", 46: "turbo2", 47: "turbo5", 48: "turbo6"}
+# Builds of the TurboQuant forks from before upstream added F8_E4M3 (ggml type 43, Nov 2026): the turbo types
+# were 43..47 then. Such a build has turbo kernels at 44..47 but none at 48; a current one always has 48.
+KV_TYPE_NUMBERS_OLD_TURBO = {**KV_TYPE_NUMBERS, 43: "turbo3", 44: "turbo4", 45: "turbo2", 46: "turbo5", 47: "turbo6"}
+KV_TYPE_NUMBERS_OLD_TURBO.pop(48)
+
+
+def kv_type_names(numbers: set[int]) -> dict[int, str]:
+    """The ggml type numbering a probed build uses, from the type numbers its FA kernels carry."""
+    old_turbo = 48 not in numbers and any(n in numbers for n in (44, 45, 46, 47))
+    return KV_TYPE_NUMBERS_OLD_TURBO if old_turbo else KV_TYPE_NUMBERS
 
 
 def parse_facts(text: str) -> dict:
     """Turn the detection script's output into the engines dict stored on the server."""
     facts: dict[str, Any] = {}
     cuda, rocm, files, missing = [], [], [], []
-    kv_pairs: set[str] = set()
+    kv_raw: list[tuple[int, int]] = []
     for line in text.splitlines():
         key, sep, val = line.partition("=")
         if not sep:
@@ -281,14 +291,16 @@ def parse_facts(text: str) -> dict:
             missing.append(val)
         elif key == "kv_pair":
             k, _, v = val.partition("-")
-            if k.isdigit() and v.isdigit() and int(k) in KV_TYPE_NUMBERS and int(v) in KV_TYPE_NUMBERS:
-                kv_pairs.add(f"{KV_TYPE_NUMBERS[int(k)]}-{KV_TYPE_NUMBERS[int(v)]}")
+            if k.isdigit() and v.isdigit():
+                kv_raw.append((int(k), int(v)))
         elif key == "gpu_cuda" and val:
             cuda.append(val)
         elif key == "gpu_rocm" and val:
             rocm.append(val)
         else:
             facts[key] = val
+    names = kv_type_names({n for pair in kv_raw for n in pair})
+    kv_pairs = {f"{names[k]}-{names[v]}" for k, v in kv_raw if k in names and v in names}
     has_rocm = bool(rocm or facts.get("rocm_smi") or facts.get("kfd"))
     return {
         "hostname": facts.get("hostname", ""),

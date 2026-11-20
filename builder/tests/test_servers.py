@@ -390,13 +390,26 @@ def test_check_lists_the_kv_cache_pairs_the_build_compiled(tmp_path):
     server.chmod(0o755)
     names = [b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi128EL9ggml_type8ELS0_8EEvR25ggml_backend_cuda_contextP11ggml_tensor",
              b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi256EL9ggml_type8ELS0_8EEvR25ggml_backend_cuda_contextP11ggml_tensor",
-             b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi128EL9ggml_type43ELS0_43EEvR25ggml_backend_cuda_contextP11ggml_tensor",
+             b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi128EL9ggml_type44ELS0_44EEvR25ggml_backend_cuda_contextP11ggml_tensor",
+             b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi128EL9ggml_type48ELS0_48EEvR25ggml_backend_cuda_contextP11ggml_tensor",
              b"_Z33ggml_cuda_flash_attn_ext_vec_caseILi128EL9ggml_type8ELS0_6EEvR25ggml_backend_cuda_contextP11ggml_tensor"]
     (app / "libggml-hip.so").write_bytes(b"\x7fELF\0" + b"\0".join(names) + b"\0")
 
     script = servers_mod.detection_script({"llama_server": str(server)})
     out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=30)
-    assert parse_facts(out.stdout)["kv_pairs"] == ["q8_0-q5_0", "q8_0-q8_0", "turbo3-turbo3"]
+    assert parse_facts(out.stdout)["kv_pairs"] == ["q8_0-q5_0", "q8_0-q8_0", "turbo3-turbo3", "turbo6-turbo6"]
+
+
+def test_parse_facts_kv_pairs_type_numbering():
+    """Upstream gave F8_E4M3 ggml type 43 and the turbo types moved up by one (turbo3 43 -> 44 ... turbo6 47 -> 48)."""
+    # current build: turbo3..turbo6 at 44..48, 43 is f8_e4m3
+    new = "argos=ok\nkv_pair=43-43\nkv_pair=44-44\nkv_pair=46-46\nkv_pair=47-47\nkv_pair=48-48\n"
+    assert parse_facts(new)["kv_pairs"] == ["f8_e4m3-f8_e4m3", "turbo2-turbo2", "turbo3-turbo3", "turbo5-turbo5", "turbo6-turbo6"]
+    # older turbo build: turbo kernels at 43..47, nothing at 48
+    old = "argos=ok\nkv_pair=43-43\nkv_pair=44-44\nkv_pair=45-45\nkv_pair=46-46\nkv_pair=47-47\n"
+    assert parse_facts(old)["kv_pairs"] == ["turbo2-turbo2", "turbo3-turbo3", "turbo4-turbo4", "turbo5-turbo5", "turbo6-turbo6"]
+    # a build without turbo types (stock llama.cpp): 43 is f8_e4m3
+    assert parse_facts("argos=ok\nkv_pair=43-43\nkv_pair=1-1\n")["kv_pairs"] == ["f16-f16", "f8_e4m3-f8_e4m3"]
 
 
 def test_parse_facts_kv_pairs_unknown_build():

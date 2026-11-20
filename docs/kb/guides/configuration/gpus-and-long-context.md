@@ -42,8 +42,8 @@ context. Click a cell to use that context and that cache type (`-c`, `-ctk`,
 `-ctv`); click a column heading to change only the context.
 
 The table shows the main cache types (f16, q8_0, q5_0, q4_0, turbo3, plus the
-one your command uses). **Show all** lists every type, including bf16, q5_1,
-q4_1, iq4_nl and turbo2/4/5/6; **Main types** goes back. Once the default server
+one your command uses). **Show all** lists every type, including bf16,
+f8_e4m3, q5_1, q4_1, iq4_nl and turbo2/4/5/6; **Main types** goes back. Once the default server
 has been **Check**ed, a type its llama.cpp build has no fast FlashAttention kernel
 for is marked with `·` (hover for why): it runs, but every generated token
 converts the whole cache to f16 first. The **KV cache** field in Settings works
