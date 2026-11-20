@@ -117,6 +117,12 @@ type ModelConfig struct {
 	// override global setting
 	SendLoadingState *bool `yaml:"sendLoadingState"`
 
+	// DisableKeepAlives opens a new connection to the model for every
+	// request. llama-server can close a pooled connection after a streamed
+	// answer; the next POST reused it and failed with 502 "proxy error: EOF"
+	// (llama-swap #1211). Overrides the global disableKeepAlives.
+	DisableKeepAlives *bool `yaml:"disableKeepAlives"`
+
 	// Timeout settings for proxy connections
 	Timeouts TimeoutsConfig `yaml:"timeouts"`
 

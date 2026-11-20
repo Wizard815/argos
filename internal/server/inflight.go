@@ -386,6 +386,12 @@ type inflightResponseWriter struct {
 }
 
 func (w *inflightResponseWriter) WriteHeader(statusCode int) {
+	if swaputil.IsInterimStatus(statusCode) {
+		if !w.wroteHeader { // after the real status it would only be noise
+			w.ResponseWriter.WriteHeader(statusCode)
+		}
+		return
+	}
 	if w.wroteHeader {
 		return
 	}

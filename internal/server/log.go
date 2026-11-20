@@ -202,6 +202,12 @@ type statusRecorder struct {
 }
 
 func (sr *statusRecorder) WriteHeader(code int) {
+	if swaputil.IsInterimStatus(code) { // 100 Continue: the real status follows
+		if !sr.wroteHeader { // after the real status it would only be noise
+			sr.ResponseWriter.WriteHeader(code)
+		}
+		return
+	}
 	// net/http commits the first status and ignores every later one, so the
 	// access log has to do the same. Handlers do call WriteHeader after a
 	// response has started — a shutdown or dispatch error arriving once the

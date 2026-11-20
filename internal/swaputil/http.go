@@ -606,3 +606,13 @@ func ExtractAPIKey(r *http.Request) string {
 		return r.Header.Get("x-api-key")
 	}
 }
+
+// IsInterimStatus reports whether code is a 1xx interim response (100
+// Continue, 103 Early Hints) that comes before the real one. httputil's
+// ReverseProxy passes them on with WriteHeader; a wrapper that took one as
+// the final status dropped the upstream's real status, and an upstream 400
+// after "Expect: 100-continue" reached the client as 200 (llama-swap #1319).
+// 101 Switching Protocols is final: it starts a websocket.
+func IsInterimStatus(code int) bool {
+	return code >= 100 && code < 200 && code != 101
+}

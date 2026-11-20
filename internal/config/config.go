@@ -213,6 +213,9 @@ type Config struct {
 	// send loading state in reasoning
 	SendLoadingState bool `yaml:"sendLoadingState"`
 
+	// DisableKeepAlives is every model's default for disableKeepAlives.
+	DisableKeepAlives bool `yaml:"disableKeepAlives"`
+
 	// present aliases to /v1/models OpenAI API listing
 	IncludeAliasesInList bool `yaml:"includeAliasesInList"`
 

@@ -658,6 +658,12 @@ func (w *responseBodyCopier) Write(b []byte) (int, error) {
 }
 
 func (w *responseBodyCopier) WriteHeader(statusCode int) {
+	if swaputil.IsInterimStatus(statusCode) {
+		if !w.wroteHeader { // after the real status it would only be noise
+			w.ResponseWriter.WriteHeader(statusCode)
+		}
+		return
+	}
 	if w.wroteHeader {
 		return
 	}
