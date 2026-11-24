@@ -565,6 +565,7 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 		director(r)
 		stripBrowserHeaders(r.Header)
 	}
+	setUpstreamHost(reverseProxy, proxyURL)
 	reverseProxy.Transport = newUpstreamTransport(p.config)
 	reverseProxy.ErrorHandler = newProxyErrorHandler(p.id, p.proxyLogger)
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
@@ -920,4 +921,19 @@ func (p *ProcessCommand) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.inflight.Add(-1)
 	}()
 	(*fn)(w, r)
+}
+
+// setUpstreamHost sends a remote HTTPS upstream (a hosted API) its own name in
+// the Host header. Without it the request keeps Argos's address, which TLS
+// servers and the proxies in front of them reject. Plain HTTP upstreams keep
+// the client's Host: local servers such as ComfyUI compare it with Origin.
+func setUpstreamHost(rp *httputil.ReverseProxy, target *url.URL) {
+	if target.Scheme != "https" {
+		return
+	}
+	director := rp.Director
+	rp.Director = func(req *http.Request) {
+		director(req)
+		req.Host = target.Host
+	}
 }
