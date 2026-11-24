@@ -147,3 +147,50 @@ func TestPublicList_ShowBaseModelByHand(t *testing.T) {
 		t.Fatalf("saving modes lost the listed models: %+v", tf)
 	}
 }
+
+func putPublicList(t *testing.T, s *Server, body string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, "/api/models/public-list", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT public-list: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPublicList_FullNamesShowTheModelAndTheProfile(t *testing.T) {
+	s, got := publicListServer(t)
+	putPublicList(t, s, `{"names":"full"}`)
+	ids := strings.Join(listIDs(t, s, true, ""), " ")
+	want := "gemma-3-12b--fast glm-4.6--fast " + longBase + "--qwen3.8-27b-uncen-mtp-2chat-512k whisper"
+	if ids != want {
+		t.Fatalf("outside list = %s\nwant          %s", ids, want)
+	}
+	if w := call(s, "qwen3.8-27b-uncen-mtp-2chat-512k", true); w.Code != http.StatusOK || *got != longBase+"--qwen3.8-27b-uncen-mtp-2chat-512k" {
+		t.Fatalf("the label still runs the profile: %d %q", w.Code, *got)
+	}
+}
+
+func TestPublicList_ModelsWithoutAProfileCanBeShown(t *testing.T) {
+	s, _ := publicListServer(t)
+	putPublicList(t, s, `{"bases":"unprofiled"}`)
+	ids := strings.Join(listIDs(t, s, true, ""), " ")
+	if !strings.Contains(ids, "openjev") || strings.Contains(ids, "glm-4.6 ") || strings.Contains(ids, "gemma-3-12b ") {
+		t.Fatalf("only the base model with no profile is added: %s", ids)
+	}
+	if w := call(s, "openjev", true); w.Code != http.StatusOK {
+		t.Fatalf("a shown base model can be called: %d", w.Code)
+	}
+	putPublicList(t, s, `{"bases":"all"}`)
+	if n := len(listIDs(t, s, true, "")); n != 8 {
+		t.Fatalf("all: %d models", n)
+	}
+	// saved, and kept when the GPU modes are saved
+	if err := saveModelToggles(s.cfg.ModelTogglesFile, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if tf := readTogglesFile(s.cfg.ModelTogglesFile); tf.PublicList == nil || tf.PublicList.Bases != "all" {
+		t.Fatalf("saved %+v", tf.PublicList)
+	}
+}

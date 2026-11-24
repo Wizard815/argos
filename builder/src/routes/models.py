@@ -53,6 +53,33 @@ def library_set_listed(model_id):
     return ok(listed=engine_api.listed_models(url))
 
 
+@bp.get("/api/library/public-list")
+def library_public_list():
+    """How apps (Hermes, LiteLLM, ...) see the model list: profile names, and which base models show."""
+    url = ctx().settings.get("integrations").get("engine_url")
+    try:
+        got = engine_api.public_list(url) if url else {}
+    except Exception as exc:  # noqa: BLE001
+        return ok(reachable=False, error=str(exc))
+    return ok(reachable=bool(got), names=got.get("names", "label"), bases=got.get("bases", "profiles"))
+
+
+@bp.put("/api/library/public-list")
+def library_set_public_list():
+    url = ctx().settings.get("integrations").get("engine_url")
+    if not url:
+        return err("no engine configured")
+    d = body()
+    if d.get("names") not in (None, "label", "full") or d.get("bases") not in (None, "profiles", "unprofiled", "all"):
+        return err("names is label or full; bases is profiles, unprofiled or all")
+    try:
+        got = engine_api.set_public_list(url, d)
+    except Exception as exc:  # noqa: BLE001
+        return err(f"the engine did not take it: {exc}", 502)
+    ctx().event("settings", f"apps' model list: names {got.get('names')}, base models {got.get('bases')}")
+    return ok(names=got.get("names"), bases=got.get("bases"))
+
+
 @bp.put("/api/library/names/<path:model_id>")
 def library_rename(model_id):
     """Show a model under another name, or under its file's name again with an empty one. No file is touched."""

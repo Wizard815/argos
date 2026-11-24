@@ -2847,9 +2847,31 @@ async function loadLibrary() {
   try { S.library = await api("GET", "/api/library"); } catch (e) { fail(e); return; }
   try { ML.groups = (await api("GET", "/api/library/groups")).groups; } catch (e) { /* groups are optional */ }
   try { ML.listed = new Set((await api("GET", "/api/library/listed")).listed); } catch (e) { ML.listed = new Set(); }
+  try { ML.publicList = await api("GET", "/api/library/public-list"); } catch (e) { ML.publicList = null; }
+  renderPublicList();
   $("#navModels").textContent = S.library.models.length || "";
   fillProfileSelect();
   if (S.view === "models") renderLibrary();
+}
+// what apps (Hermes, Codex, LiteLLM...) see in /v1/models: how profiles are named, and which base models show
+function renderPublicList() {
+  const box = $("#mPublic");
+  if (!box) return;
+  const P = ML.publicList;
+  if (!P || P.reachable === false) return fill(box, h("span", { class: "hint", style: "margin:0" }, "What apps see: the engine is not reachable."));
+  const pick = (key, opts, title) => {
+    const sel = h("select", { title }, opts.map(([v, l]) => h("option", { value: v, selected: P[key] === v }, l)));
+    sel.addEventListener("change", async () => {
+      try { ML.publicList = { ...P, ...(await api("PUT", "/api/library/public-list", { [key]: sel.value })) }; renderPublicList();
+        toast("Saved. LiteLLM keeps its copy of the list for a few minutes; restart it to see the change now.", "ok"); } catch (e) { fail(e); }
+    });
+    return sel;
+  };
+  fill(box, h("span", { class: "hint", style: "margin:0" }, "What apps see:"),
+    pick("names", [["label", "profiles by their own name"], ["full", "profiles as model--profile"]],
+      "How a profile is named in the list apps get. Either name works when an app calls it."),
+    pick("bases", [["profiles", "only profiles (hide models)"], ["unprofiled", "profiles, plus models with no profile"], ["all", "profiles and every model"]],
+      "Which base models apps see. Models without a profile shown here can also be called. A single model can also be shown from its ⋯ menu."));
 }
 async function editModel(m) {
   if (!(await leaveOk())) return;
