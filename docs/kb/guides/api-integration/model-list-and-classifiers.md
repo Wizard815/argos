@@ -4,7 +4,7 @@ summary: Apps see your profiles by their own names, not the base models on disk;
 category: guides
 tags: [models, v1-models, profiles, aliases, classifier, decision, systemone, openjev]
 config_keys: [modelTogglesFile]
-updated: 2026-11-19
+updated: 2026-11-24
 ---
 
 # What apps see in the model list
@@ -30,6 +30,21 @@ qwen3.8-27b-turbofcfusion-735-882-here-uncen-neo-coder-max-mtp-q8_0--qwen3.8-27b
 Apps see it as `qwen3.8-27b-uncen-mtp-2chat-512k`. If two base models have a
 profile with the same label (`fast`), both keep their full ids, so neither
 name is ambiguous.
+
+## Changing what apps see
+
+Models -> Library -> **What apps see** has two choices, saved in
+`modelTogglesFile`:
+
+| choice | options |
+| --- | --- |
+| names | **profiles by their own name** (`qwen3.8-27b-uncen-mtp-2chat-512k`), or **model--profile** (the full id) |
+| models | **only profiles** (default), **profiles, plus models with no profile** (a model you have not made a profile for yet shows under its own name), or **profiles and every model** |
+
+Either name works when an app calls a profile, so switching names does not
+break an app that saved the other one. A proxy in front of Argos such as
+LiteLLM keeps its copy of the list for a few minutes: restart it to see a
+change at once.
 
 ## Showing a base model anyway
 

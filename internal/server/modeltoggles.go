@@ -53,6 +53,9 @@ type modelTogglesFile struct {
 	// Listed are the scanned base models shown in the model list anyway
 	// (see publiclist.go). Written by saveListedModels, kept by saveModelToggles.
 	Listed []string `json:"listed,omitempty"`
+	// PublicList is how outside clients see the model list (publiclist.go):
+	// profile names and which base models show. Kept by saveModelToggles.
+	PublicList *publicListSettings `json:"public_list,omitempty"`
 }
 
 // togglesFileMu serialises the read-modify-write of the toggles file: the
@@ -109,7 +112,8 @@ func saveModelToggles(path string, modes map[string]string) error {
 	}
 	togglesFileMu.Lock()
 	defer togglesFileMu.Unlock()
-	return writeTogglesFile(path, modelTogglesFile{Modes: modes, Listed: readTogglesFile(path).Listed})
+	old := readTogglesFile(path)
+	return writeTogglesFile(path, modelTogglesFile{Modes: modes, Listed: old.Listed, PublicList: old.PublicList})
 }
 
 // readTogglesFile is the file as it is, empty when missing or unreadable.

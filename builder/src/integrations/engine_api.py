@@ -81,6 +81,19 @@ def set_model_listed(base_url: str, model_id: str, listed: bool, timeout: float 
         return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
 
 
+def public_list(base_url: str, timeout: float = 3.0) -> dict:
+    """How apps see the model list: {"names": "label"|"full", "bases": "profiles"|"unprofiled"|"all"}."""
+    return _get(base_url.rstrip("/") + "/api/models/public-list", timeout) or {}
+
+
+def set_public_list(base_url: str, settings: dict, timeout: float = 10.0) -> Any:
+    req = urllib.request.Request(base_url.rstrip("/") + "/api/models/public-list",
+                                 data=json.dumps({k: settings[k] for k in ("names", "bases") if k in settings}).encode(),
+                                 method="PUT", headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+
+
 def load_model(base_url: str, model_id: str, timeout: float = 900.0) -> None:
     """Make the engine load one model (its /upstream route starts it); other models are not touched."""
     _get(base_url.rstrip("/") + f"/upstream/{urllib.parse.quote(model_id, safe='')}/health", timeout)

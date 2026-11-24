@@ -24,6 +24,45 @@ import (
 //     the label runs it. A label two bases share keeps its full id.
 //
 // Requests from inside (the builder, the engine's own pages) see everything.
+//
+// Two settings change this (PUT /api/models/public-list, saved in
+// modelTogglesFile):
+//
+//   - names "full" lists a profile as <base>--<label> instead of its label;
+//   - bases "unprofiled" also lists each base model that has no profile, under
+//     its own name, and "all" lists every base model.
+
+// publicListSettings is how outside clients see the model list.
+type publicListSettings struct {
+	Names string `json:"names"` // "label" (default) or "full"
+	Bases string `json:"bases"` // "profiles" (default), "unprofiled" or "all"
+}
+
+func (p publicListSettings) normal() publicListSettings {
+	if p.Names != "full" {
+		p.Names = "label"
+	}
+	if p.Bases != "unprofiled" && p.Bases != "all" {
+		p.Bases = "profiles"
+	}
+	return p
+}
+
+func (s *Server) publicSettings() publicListSettings {
+	s.listedMu.RLock()
+	defer s.listedMu.RUnlock()
+	return s.publicList.normal()
+}
+
+// hasProfile reports whether a base model has a profile <base>--<label>.
+func (s *Server) hasProfile(base string) bool {
+	for id := range s.cfg.Models {
+		if strings.HasPrefix(id, base+"--") && !isGeneratedCopy(id) {
+			return true
+		}
+	}
+	return false
+}
 
 // isBaseModel reports whether the model scan generated this model.
 func isBaseModel(mc config.ModelConfig) bool {
@@ -75,7 +114,10 @@ func (s *Server) shortNames() map[string]string {
 }
 
 // publicName is the id a profile is listed under for an outside client.
-func publicName(id string, short map[string]string) string {
+func publicName(id string, short map[string]string, names string) string {
+	if names == "full" {
+		return id
+	}
 	if _, label, ok := strings.Cut(id, "--"); ok && short[label] == id {
 		return label
 	}
@@ -85,7 +127,16 @@ func publicName(id string, short map[string]string) string {
 // unlistedForOutside reports whether an outside client does not see this
 // model in the list: a base model not listed by hand. Its profiles are listed.
 func (s *Server) unlistedForOutside(id string, mc config.ModelConfig) bool {
-	return isBaseModel(mc) && !s.listedBase(id)
+	if !isBaseModel(mc) || s.listedBase(id) {
+		return false
+	}
+	switch s.publicSettings().Bases {
+	case "all":
+		return false
+	case "unprofiled":
+		return s.hasProfile(id)
+	}
+	return true
 }
 
 // hiddenFromOutside reports whether an outside client may not call this model:
@@ -182,6 +233,51 @@ func (s *Server) handleAPIModelListed(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "model": id, "listed": body.Listed})
 }
 
+// handleAPIPublicList reads or changes how outside clients see the model list:
+//
+//	GET /api/models/public-list
+//	PUT /api/models/public-list   body {"names": "label"|"full", "bases": "profiles"|"unprofiled"|"all"}
+func (s *Server) handleAPIPublicList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodPut {
+		cur := s.publicSettings()
+		var body struct {
+			Names *string `json:"names"`
+			Bases *string `json:"bases"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid request body"})
+			return
+		}
+		if body.Names != nil {
+			cur.Names = *body.Names
+		}
+		if body.Bases != nil {
+			cur.Bases = *body.Bases
+		}
+		cur = cur.normal()
+		s.listedMu.Lock()
+		s.publicList = cur
+		s.listedMu.Unlock()
+		if s.cfg.ModelTogglesFile != "" {
+			togglesFileMu.Lock()
+			tf := readTogglesFile(s.cfg.ModelTogglesFile)
+			tf.PublicList = &cur
+			err := writeTogglesFile(s.cfg.ModelTogglesFile, tf)
+			togglesFileMu.Unlock()
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+		}
+		event.Emit(swaputil.ConfigFileChangedEvent{State: swaputil.ReloadingStateEnd})
+	}
+	p := s.publicSettings()
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "names": p.Names, "bases": p.Bases, "saved": s.cfg.ModelTogglesFile != ""})
+}
+
 func (s *Server) listedIDs() []string {
 	s.listedMu.RLock()
 	defer s.listedMu.RUnlock()
@@ -200,6 +296,9 @@ func (s *Server) restoreListed() {
 	s.listed = map[string]bool{}
 	for _, id := range tf.Listed {
 		s.listed[id] = true
+	}
+	if tf.PublicList != nil {
+		s.publicList = tf.PublicList.normal()
 	}
 	s.listedMu.Unlock()
 }

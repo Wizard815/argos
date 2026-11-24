@@ -80,8 +80,9 @@ type Server struct {
 
 	// listed are the base models shown to outside clients anyway (see
 	// publiclist.go), kept in cfg.ModelTogglesFile. Guarded by listedMu.
-	listedMu sync.RWMutex
-	listed   map[string]bool
+	listedMu   sync.RWMutex
+	listed     map[string]bool
+	publicList publicListSettings
 
 	// cfgPath and cfgDir are the -config and -config-dir paths, recorded by
 	// main via SetConfigPaths. The Odysseus integration needs them to enumerate
@@ -498,6 +499,8 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/models/modes", apiChain.ThenFunc(s.handleAPIModelModes))
 	mux.Handle("PUT /api/models/{model}/listed", apiChain.ThenFunc(s.handleAPIModelListed))
 	mux.Handle("GET /api/models/listed", apiChain.ThenFunc(s.handleAPIModelListed))
+	mux.Handle("GET /api/models/public-list", apiChain.ThenFunc(s.handleAPIPublicList))
+	mux.Handle("PUT /api/models/public-list", apiChain.ThenFunc(s.handleAPIPublicList))
 	mux.Handle("GET /api/profiles", apiChain.ThenFunc(s.handleAPIProfiles))
 	mux.Handle("PUT /api/profiles/active", apiChain.ThenFunc(s.handleAPIActiveProfile))
 	mux.Handle("GET /api/inflight", apiChain.ThenFunc(s.handleAPIInflight))

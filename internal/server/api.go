@@ -212,6 +212,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	// models (publiclist.go); ?all=1 is the whole list, for the engine's pages
 	outside := fromOutside(r) && r.URL.Query().Get("all") == ""
 	short := map[string]string{}
+	names := s.publicSettings().Names
 	if outside {
 		short = s.shortNames()
 	}
@@ -251,7 +252,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 		listedAs := id
 		if outside {
-			if listedAs = publicName(id, short); listedAs != id {
+			if listedAs = publicName(id, short, names); listedAs != id {
 				internalMetadata["model_id"] = id
 			}
 		}
