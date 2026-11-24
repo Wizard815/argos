@@ -231,13 +231,13 @@ def problems(ctx: dict, q: str) -> list[str]:
 
 
 def runners_info(ctx: dict, q: str) -> list[str]:
-    """The local runners (Servers -> Local): what is installed, on what, and how a client calls each model."""
+    """The local runners (Servers -> Others): what is installed, on what, and how a client calls each model."""
     runners = ctx.get("runners")
     if runners is None:
         return []
     view = runners.view()
     entries = runners.entries()
-    out = ["LOCAL RUNNERS (Servers -> Local; servers installed inside Argos for models llama-server cannot run):"]
+    out = ["LOCAL RUNNERS (Servers -> Others; servers for models llama-server cannot run, inside Argos or elsewhere):"]
     for r in view["runners"]:
         state = "installed" if r.get("installed") else "not installed"
         if r.get("enabled") is False:

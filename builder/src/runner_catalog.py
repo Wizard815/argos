@@ -1,4 +1,4 @@
-"""The models each local runner can download: the choices in Servers -> Local's dropdowns.
+"""The models each local runner can download: the choices in Servers -> Others's dropdowns.
 
 whisper.cpp reads the ggml builds in ggerganov/whisper.cpp (every size, English-only and quantized); Kokoro
 serves its own model and voices from its own folder; stable-diffusion.cpp loads single-file image models, and

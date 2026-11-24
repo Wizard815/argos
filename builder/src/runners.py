@@ -802,7 +802,7 @@ class Runners:
             return False
         import yaml
         from .scheduler import write_fragment
-        text = ("# Written by Argos from Servers -> Local. Edits are overwritten.\n"
+        text = ("# Written by Argos from Servers -> Others. Edits are overwritten.\n"
                 + yaml.safe_dump({"models": self.entries()}, sort_keys=True, default_flow_style=False, allow_unicode=True))
         changed = write_fragment(path, text)
         if changed:

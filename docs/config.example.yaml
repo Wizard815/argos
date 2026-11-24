@@ -323,7 +323,7 @@ models:
     # cwd: the folder the model's process starts in
     # - optional, default: the engine's own working directory
     # - servers installed from source (Kokoro, ComfyUI) look for their files
-    #   relative to their own folder; Servers -> Local fills this in for you
+    #   relative to their own folder; Servers -> Others fills this in for you
     cwd: /data/runners/kokoro
 
     # proxy: the URL where Argos routes API requests

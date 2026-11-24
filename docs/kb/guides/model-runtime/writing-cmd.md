@@ -141,7 +141,7 @@ The server must listen on `127.0.0.1` and the port Argos gives it. Set
 `vram` for anything that is not a `.gguf`: the size estimate only reads
 model files, and a model with no size runs alone.
 
-You rarely write these by hand: **Servers -> Local** installs whisper.cpp,
+You rarely write these by hand: **Servers -> Others** installs whisper.cpp,
 Kokoro or a server cloned from git into `/data/runners`, and writes their
 models (with `cwd` filled in) to `runners.generated.yaml` beside the
 schedule's file. A wrong `cwd` shows as the server failing to find its own
