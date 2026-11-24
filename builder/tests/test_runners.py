@@ -201,3 +201,66 @@ def test_a_hugging_face_whisper_is_named_as_unusable_with_the_ggml_file_to_get(t
     assert [(m["name"], m["ggml"]) for m in w["skipped"]] == [("whisper-large-v3", "ggml-large-v3.bin")]
     assert whisper_ggml_for("whisper-large-v3-turbo") == "ggml-large-v3-turbo.bin"
     assert whisper_ggml_for("openai/whisper-small.en") == "ggml-small.en.bin"
+
+
+class _ServerStore:
+    def __init__(self, servers):
+        self._s = servers
+
+    def list_servers(self):
+        return self._s
+
+
+class _Servers:
+    def __init__(self, servers):
+        self.store = _ServerStore(servers)
+
+    def key_path(self, sid):
+        return f"/data/ssh/server-{sid}"
+
+    def has_key(self, sid):
+        return True
+
+
+def test_kokoro_as_a_running_service_is_proxied_and_never_started(tmp_path):
+    r = Runners(_Store(), _Settings(str(tmp_path)), lambda *a, **k: None, lambda: "", lambda d: [])
+    rec = r.records()
+    rec["kokoro"]["opts"] = {"where": "url", "url": "http://kokoro:8880/"}
+    r.save(rec)
+    e = r.entries()["kokoro"]
+    assert e["proxy"] == "http://kokoro:8880" and e["cmd"] == "sleep infinity" and "${PORT}" not in e["cmd"]
+    assert e["checkEndpoint"] == "/health" and e["aliases"] == ["tts-1", "tts-1-hd"] and e["vram"] == 0
+    assert r.found(rec["kokoro"])["remote"] == "url"
+
+
+def test_whisper_as_a_running_service_is_one_model_named_whisper(tmp_path):
+    media = [{"id": "ggml-base.en", "name": "ggml-base.en", "path": "/app/models/ggml-base.en.bin", "task": "speech-to-text", "format": "ggml", "size": 10}]
+    r = Runners(_Store(), _Settings(str(tmp_path)), lambda *a, **k: None, lambda: "", lambda d: media)
+    rec = r.records()
+    rec["whisper"]["opts"] = {"where": "url", "url": "http://whisper:8080"}
+    r.save(rec)
+    e = r.entries()
+    assert list(e) == ["whisper"] and e["whisper"]["proxy"] == "http://whisper:8080" and e["whisper"]["aliases"] == ["whisper-1"]
+
+
+def test_whisper_in_another_container_starts_through_remote_llama(tmp_path):
+    media = [{"id": "ggml-base.en", "name": "ggml-base.en", "path": "/app/models/ggml-base.en.bin", "task": "speech-to-text", "format": "ggml", "size": 2 ** 30}]
+    r = Runners(_Store(), _Settings(str(tmp_path)), lambda *a, **k: None, lambda: "", lambda d: media)
+    r.servers = _Servers([{"id": 3, "name": "whisper box", "host": "root@mx-whisper-ssh", "port": 22, "gpu": "rocm", "kind": "ssh"}])
+    rec = r.records()
+    rec["whisper"]["opts"] = {"where": "server", "server": "3", "remote_program": "/app/build/bin/whisper-server"}
+    r.save(rec)
+    e = r.entries()["ggml-base.en"]
+    assert e["cmd"].startswith("/app/bin/remote-llama rocm_srv3 --host 127.0.0.1 --port ${PORT} -m /app/models/ggml-base.en.bin")
+    env = dict(x.split("=", 1) for x in e["env"])
+    assert env["ROCM_SRV3_SSH_HOST"] == "mx-whisper-ssh" and env["ROCM_SRV3_SSH_BIN"] == "/app/build/bin/whisper-server"
+    assert env["REMOTE_SSH_KEY"] == "/data/ssh/server-3" and e["aliases"] == ["whisper-1"]
+    assert r.found(rec["whisper"])["installed"]
+    r.servers = _Servers([])
+    assert r.entries() == {} and not r.found(rec["whisper"])["installed"], "a server removed from the page serves nothing"
+
+
+def test_kokoro_cannot_run_over_ssh_and_stays_here(tmp_path):
+    r = Runners(_Store(), _Settings(str(tmp_path)), lambda *a, **k: None, lambda: "", lambda d: [])
+    assert r.where({"kind": "kokoro", "opts": {"where": "server", "server": "1"}}) == "here"
+    assert r.where({"kind": "whisper", "opts": {"where": "url", "url": ""}}) == "here"

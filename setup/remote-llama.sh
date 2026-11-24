@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # remote-llama: make "start llama-server" mean "start it in ANOTHER container over SSH".
+# The same works for any server program that takes --port or --listen-port (whisper-server, sd-server):
+# <NAME>_SSH_BIN names it.
 #
 #   remote-llama <backend> <llama-server args...>
 #   e.g. remote-llama rocm --host 0.0.0.0 --port 5801 -ngl 99 -m /app/models/x.gguf
@@ -63,8 +65,9 @@ fi
 lport=""; args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   case "${args[i]}" in
-    --port|-p) lport="${args[i+1]:-}" ;;
+    --port|-p|--listen-port) lport="${args[i+1]:-}" ;;
     --port=*)  lport="${args[i]#--port=}" ;;
+    --listen-port=*) lport="${args[i]#--listen-port=}" ;;
   esac
 done
 [[ $bench == 1 || "$lport" =~ ^[0-9]+$ ]] || { echo "remote-llama: no --port <n> in the llama-server args" >&2; exit 2; }

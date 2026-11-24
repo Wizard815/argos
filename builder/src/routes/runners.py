@@ -26,7 +26,7 @@ from ..web import body, ctx, err, ok
 bp = Blueprint("runners", __name__)
 EDITABLE = ("device", "enabled", "label", "folder")
 OPTS = ("args", "repo", "torch_index", "gpu_target", "default_model", "program", "install", "start", "check", "task", "alias", "vram",
-        "models_glob", "model_args")
+        "models_glob", "model_args", "where", "url", "server", "remote_program")
 
 
 def _rec(rid: str) -> tuple[dict, dict]:
@@ -145,6 +145,9 @@ def runners_update(rid):
     if r.get("device") not in DEVICES:
         return err(f"device must be one of {', '.join(DEVICES)}")
     r["opts"] = {**(r.get("opts") or {}), **{k: d["opts"][k] for k in OPTS if k in (d.get("opts") or {})}}
+    url = str(r["opts"].get("url") or "").strip()
+    if url and not re.match(r"^https?://[^\s/]+", url):
+        return err("the service URL must start with http:// or https://, e.g. http://kokoro:8880")
     c.runners.save(rec)
     c.runners.apply()
     return ok(**c.runners.view())

@@ -4735,6 +4735,8 @@ async function checkRunner(r, button) {
 const TASK_LABEL = { "speech-to-text": "speech to text", "text-to-speech": "text to speech", image: "image", "": "—" };
 function runnerCard(r) {
   const pill = r.job && r.job.state === "running" ? h("span", { class: "pill warn" }, `installing ${r.job.step}/${r.job.steps}…`)
+    : r.remote === "url" ? h("span", { class: "pill ok" }, "external service")
+    : r.remote === "server" ? h("span", { class: `pill ${r.installed ? "ok" : "warn"}` }, r.installed ? "over SSH" : "server missing")
     : r.installed ? h("span", { class: "pill ok" }, "installed") : h("span", { class: "pill" }, "not installed");
   const device = h("select", { title: "What it runs on" }, (LC.data.devices || []).map((d) => h("option", { value: d, selected: d === r.device }, d.toUpperCase())));
   device.addEventListener("change", () => saveRunner(r.id, { device: device.value }));
@@ -4747,7 +4749,9 @@ function runnerCard(r) {
     return h("label", { class: "field wide" }, h("span", {}, label), i, hint ? h("small", { class: "hint" }, hint) : null);
   };
   const rocm = r.device === "rocm";
-  const extra = r.addon ? [opt("program", "Use your own ffmpeg instead", "/opt/ffmpeg/bin/ffmpeg", "blank = the one installed here, else ffmpeg on PATH")]
+  const remote = r.remote || "";  // "url" or "server": nothing is installed in Argos
+  const extra = remote ? [r.kind === "whisper" && remote === "server" ? opt("args", "Extra arguments (optional)", "--threads 8 --beam-size 5", "Added to every whisper-server Argos starts there.") : null]
+    : r.addon ? [opt("program", "Use your own ffmpeg instead", "/opt/ffmpeg/bin/ffmpeg", "blank = the one installed here, else ffmpeg on PATH")]
     : r.kind === "kokoro" ? [opt("repo", "Git repository (optional)", "https://github.com/someone/Kokoro-FastAPI-fork", "blank = the official Kokoro-FastAPI"),
       rocm ? torchPicker(r) : null,
       rocm ? opt("torch_index", "…or paste a link to a build", "https://example.org/torch-builds/index.txt",
@@ -4782,7 +4786,7 @@ function runnerCard(r) {
   const details = h("details", { open }, h("summary", { class: "hint" }, "Install steps and log"),
     h("pre", { class: "pre", style: "white-space:pre-wrap" }, (r.steps || []).map((s) => (s.download ? `download ${s.download}` : s.run)).join("\n") || "(none)"), log);
   details.addEventListener("toggle", () => { details.open ? LC.open.add(r.id) : LC.open.delete(r.id); });
-  const actions = [btn(r.installed ? "Reinstall" : "Install", () => installRunner(r), r.installed ? "sm" : "sm primary", "download")];
+  const actions = remote ? [] : [btn(r.installed ? "Reinstall" : "Install", () => installRunner(r), r.installed ? "sm" : "sm primary", "download")];
   if (!r.addon) { const cb = btn("Check", () => checkRunner(r, cb), "sm", "check"); actions.push(cb); }
   if (r.kind === "custom") actions.push(btn("Scan again", async () => { try { await api("POST", `/api/runners/${encodeURIComponent(r.id)}/scan`); loadLocal(); } catch (e) { fail(e); } }, "sm ghost"),
     btn("Remove", async () => { if (!(await confirmBox(`Forget the runner ${r.id}? Its folder stays on disk.`, "Remove"))) return; try { const x = await api("DELETE", `/api/runners/${encodeURIComponent(r.id)}`); toast(`Removed. Files left in ${x.folder}.`, "ok"); loadLocal(); } catch (e) { fail(e); } }, "sm danger"));
@@ -4793,6 +4797,7 @@ function runnerCard(r) {
     h("p", { class: "hint", style: "margin-top:0" }, r.about, r.detail ? ` · found: ${r.detail}` : "", " · ",
       h("span", { title: r.folder, class: "mono-sm" }, `runners/${r.id}`)),
     r.kind === "custom" ? customFields(r) : null,
+    RUNS_ELSEWHERE[r.kind] ? whereFields(r) : null,
     extra.some(Boolean) ? h("div", { class: "fields" }, extra.filter(Boolean)) : null,
     r.addon ? null : h("div", { class: "table-wrap" }, h("table", { class: "dense" },
       h("thead", {}, h("tr", {}, ["Model", "Does", "Also answers to", "Size", "Served by", ...(r.kind === "sdcpp" ? ["Extra arguments"] : [])].map((x) => h("th", {}, x)))),
@@ -4813,6 +4818,36 @@ function runnerCard(r) {
           catch (e) { fail(e); }
         }, "sm primary", "download"))))) : null,
     details);
+}
+// whisper, Kokoro and sd-server can run in a container of their own, so rebuilding Argos does not rebuild them
+const RUNS_ELSEWHERE = { whisper: { ssh: true, prog: "/app/whisper-server", url: "http://whisper:8080" },
+  kokoro: { ssh: false, url: "http://kokoro:8880" }, sdcpp: { ssh: true, prog: "/app/sd-server", url: "http://sdcpp:1234" } };
+function whereFields(r) {
+  const o = r.opts || {}, R = RUNS_ELSEWHERE[r.kind], servers = LC.data.servers || [];
+  const cur = o.where === "url" || (o.where === "server" && R.ssh) ? o.where : "here";
+  const sel = h("select", {}, [["here", "here, installed inside Argos"], ...(R.ssh ? [["server", "in another container, over SSH (like your llama.cpp one)"]] : []),
+    ["url", "a service that is already running (its URL)"]].map(([v, l]) => h("option", { value: v, selected: v === cur }, l)));
+  sel.addEventListener("change", () => saveRunner(r.id, { opts: { where: sel.value } }));
+  const text = (k, label, ph, hint) => {
+    const i = h("input", { type: "text", value: o[k] || "", placeholder: ph, spellcheck: "false" });
+    i.addEventListener("change", () => saveRunner(r.id, { opts: { [k]: i.value.trim() } }));
+    return h("label", { class: "field wide" }, h("span", {}, label), i, hint ? h("small", { class: "hint" }, hint) : null);
+  };
+  const out = [h("label", { class: "field wide" }, h("span", {}, "Where it runs"), sel)];
+  if (cur === "server") {
+    const pick = h("select", {}, h("option", { value: "" }, servers.length ? "pick a server…" : "no SSH server yet: add one on the Servers page"),
+      servers.map((x) => h("option", { value: String(x.id), selected: String(x.id) === String(o.server || "") }, `${x.name} (${x.host})`)));
+    pick.addEventListener("change", () => saveRunner(r.id, { opts: { server: pick.value } }));
+    out.push(h("label", { class: "field wide" }, h("span", {}, "Server (from the Servers page)"), pick,
+      h("small", { class: "hint" }, "Argos starts and stops it there per model over SSH, the same way as llama-server, so VRAM is freed when it unloads. That container needs sshd with Argos's key, and the models folder mounted at the same path as in Argos.")),
+      text("remote_program", "Program in that container", R.prog, `blank = ${r.kind === "whisper" ? "whisper-server" : "sd-server"} on its PATH`));
+  } else if (cur === "url") {
+    out.push(text("url", "Service URL (as Argos reaches it)", R.url,
+      r.kind === "whisper" ? "A whisper-server you run yourself, started with --inference-path /v1/audio/transcriptions. Argos only sends it requests: it never starts or stops it, so its VRAM stays in use."
+        : r.kind === "kokoro" ? "A Kokoro-FastAPI container, e.g. http://kokoro:8880 on the same Docker network. Argos only sends it requests: it never starts or stops it, so its VRAM stays in use."
+        : "An sd-server you run yourself. Argos only sends it requests: it never starts or stops it, so its VRAM stays in use."));
+  }
+  return h("div", { class: "fields" }, out);
 }
 function toolsLine() {
   const t = (LC.torch || {}).tools;
