@@ -41,6 +41,13 @@ def runners_list():
     return ok(**ctx().runners.view())
 
 
+@bp.get("/api/gputools/rocm")
+def gputools_find_rocm():
+    """Every ROCm folder Argos can see, with what each can do (Settings -> GPU tools -> Find ROCm)."""
+    from .. import gputools
+    return ok(found=gputools.find_rocm())
+
+
 @bp.get("/api/runners/torch-builds")
 def runners_torch_builds():
     """Custom PyTorch builds Argos knows of, and the GPU architectures this machine has, for the picker."""

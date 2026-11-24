@@ -171,7 +171,7 @@ def test_a_source_build_checks_its_tools_first(monkeypatch):
     monkeypatch.setattr(runners, "WINDOWS", False)
     steps = runners.install_steps("whisper", "/data/runners/whisper", "rocm", {"repo": "https://x/y", "gpu_target": "gfx906"})
     assert steps[0] == {"needs": ["git", "cmake", "c++", "hipconfig"]}
-    monkeypatch.setattr(runners.shutil, "which", lambda n, path=None: None if n in ("cmake", "hipconfig") else f"/usr/bin/{n}")
+    monkeypatch.setattr(runners.shutil, "which", lambda n, path=None: None if n in ("cmake", "hipconfig", "hipcc") else f"/usr/bin/{n}")
     assert runners.missing_tools(["git", "cmake", "c++", "hipconfig"]) == ["cmake", "hipconfig"]
 
 
