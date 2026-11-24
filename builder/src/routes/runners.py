@@ -1,4 +1,4 @@
-"""Servers -> Local: install, configure and check the runners that live inside Argos (Mode 1)."""
+"""Servers -> Others: install, configure and check the runners that live inside Argos (Mode 1)."""
 from __future__ import annotations
 
 import os
@@ -26,7 +26,7 @@ from ..web import body, ctx, err, ok
 bp = Blueprint("runners", __name__)
 EDITABLE = ("device", "enabled", "label", "folder")
 OPTS = ("args", "repo", "torch_index", "gpu_target", "default_model", "program", "install", "start", "check", "task", "alias", "vram",
-        "models_glob", "model_args", "where", "url", "server", "remote_program")
+        "models_glob", "model_args", "where", "url", "server", "remote_program", "monitor_server", "vram_hint")
 
 
 def _rec(rid: str) -> tuple[dict, dict]:
@@ -129,6 +129,17 @@ def runners_catalog_download(rid):
         c.runners.save(rec)
         c.runners.apply()
     return ok(jobs=jobs, model=mid, args=args)
+
+
+@bp.get("/api/runners/usage")
+def runners_usage():
+    """What each runner outside Argos holds on the GPUs: the last reading (every 30 s), its peak in the last hour."""
+    mon = getattr(ctx(), "others_monitor", None)
+    if mon is None:
+        return ok(at=0, runners={})
+    if not mon.at:
+        mon.tick()
+    return ok(**mon.view())
 
 
 @bp.put("/api/runners/<rid>")

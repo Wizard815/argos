@@ -487,10 +487,10 @@
     <!-- SERVERS -->
     <section class="view" id="view-servers">
       <div class="view-head">
-        <div><h1>Servers</h1><p class="sub">Where models run. setup.sh adds its llama.cpp here: inside Argos (Mode 1), a container per model beside it (Mode 2) or your containers over SSH (Mode 3). The <b>Local</b> tab holds runners inside Argos, such as whisper and Kokoro.</p></div>
+        <div><h1>Servers</h1><p class="sub">Where models run. setup.sh adds its llama.cpp here: inside Argos (Mode 1), a container per model beside it (Mode 2) or your containers over SSH (Mode 3). The <b>Others</b> tab holds everything that is not llama.cpp, such as whisper, Kokoro and sd-server: installed inside Argos, in their own container, or a service already running.</p></div>
       </div>
       <div class="tabs" data-tabs="servers">
-        <button data-pane="remote" class="on">Remote (SSH)</button><button data-pane="local">Local</button>
+        <button data-pane="remote" class="on">Remote (SSH)</button><button data-pane="local">Others</button>
       </div>
       <div class="pane on" data-pane="remote">
         <div class="row" style="margin-bottom:10px"><span class="spacer"></span>

@@ -1,7 +1,7 @@
 """Turn uploaded audio into the WAV whisper reads, before the request reaches the engine.
 
 whisper.cpp reads 16 kHz mono 16-bit WAV. Clients send whatever they recorded: m4a from a phone, webm
-from a browser, mp3, ogg. With the ffmpeg add-on installed (Servers -> Local), the proxy converts the
+from a browser, mp3, ogg. With the ffmpeg add-on installed (Servers -> Others), the proxy converts the
 file in a transcription upload and passes the rest of the form through unchanged. Without ffmpeg, or
 for a file that already is that WAV, the request goes on as it came.
 """

@@ -3809,6 +3809,7 @@ async function loadGpuProcs() {
     { label: "VRAM", num: true, cell: (p) => (p.vram_gib != null ? gib(p.vram_gib) : DASH) },
     { label: "Started by", cell: (p) => (p.self ? "this app" : p.owner
       ? h("span", { class: "pill ok", title: p.matched ? `Argos started it over SSH, in the llama.cpp container: matched ${p.matched}, since its command cannot be read from here` : "" }, p.owner, p.matched ? " · over SSH" : "")
+      : p.seen_on ? h("span", { class: "pill", title: "Seen over SSH in that server's container (same card and memory). Argos did not start it." }, `in ${p.seen_on}`)
       : h("span", { class: "pill warn", title: "Argos does not know this process: another container, a leftover, or something you started by hand." }, "unknown")) },
     { label: "Command", cell: (p) => h("td", { class: "mono-sm", title: p.cmd, style: "max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, p.cmd || DASH) },
     { label: "", cell: (p) => (p.self ? "" : p.matched
@@ -4655,7 +4656,7 @@ const svAuto = (i) => SV_COLORS[1 + (i % (SV_COLORS.length - 1))][0];
 const blankServer = () => ({ id: null, name: "", kind: "ssh", host: "", port: 22, gpu: "auto", env_kind: "none", env_value: "", llama_server: "",
   model_dirs: [], download_dir: "", color: "", status: "unknown", engines: {}, has_key: false, is_default: false });
 
-// ── Servers → Local: runners installed inside Argos (Mode 1) ───────────────
+// ── Servers → Others: whisper, Kokoro, sd-server and custom runners, here or elsewhere ──
 const LC = { data: null, polling: {}, open: new Set(), catalog: {}, pick: {} };
 /** The models a runner can download: a dropdown of every choice (grouped) and a Download button. */
 function catalogRow(r) {
@@ -4699,6 +4700,11 @@ async function loadLocal() {
   if (!LC.torch) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; if (LC.data) renderLocal(); }).catch(() => {});
   try { LC.data = await api("GET", "/api/runners"); } catch (e) { fill($("#lcList"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
   renderLocal();
+  loadOthersUsage();
+  if (!LC.usageTimer) LC.usageTimer = setInterval(() => {
+    const pane = document.querySelector('.pane[data-pane="local"]');
+    if (pane && pane.classList.contains("on") && pane.offsetParent) loadOthersUsage();
+  }, 30000);
   for (const r of LC.data.runners) if (r.job && r.job.state === "running") pollInstall(r.id);
 }
 async function saveRunner(id, patch) {
@@ -4807,7 +4813,7 @@ function runnerCard(r) {
           : r.kind === "sdcpp" ? "No image model yet. Put a .gguf, .safetensors or .ckpt image model in the models folder Argos uses."
           : r.kind === "custom" ? "One model: this runner's start command. Give a model-file pattern and ${MODEL_PATH} in the start command to serve one model per file."
           : r.installed ? "—" : "Install it first.")))))),
-    r.addon ? null : catalogRow(r),
+    r.addon || remote === "url" ? null : catalogRow(r),
     // whisper models it found but cannot read: a Hugging Face copy is not the ggml file whisper.cpp needs
     (r.skipped || []).length ? h("div", { class: "card", style: "margin:10px 0 0;background:var(--bg)" },
       h("p", { class: "hint", style: "margin-top:0" }, "Found in your models folder but not usable by whisper.cpp: these are the Hugging Face (Transformers) copies, and whisper.cpp reads only ggml-*.bin files. The same model as a ggml file comes from ggerganov/whisper.cpp; once it is downloaded it shows up above."),
@@ -4842,12 +4848,39 @@ function whereFields(r) {
       h("small", { class: "hint" }, "Argos starts and stops it there per model over SSH, the same way as llama-server, so VRAM is freed when it unloads. That container needs sshd with Argos's key, and the models folder mounted at the same path as in Argos.")),
       text("remote_program", "Program in that container", R.prog, `blank = ${r.kind === "whisper" ? "whisper-server" : "sd-server"} on its PATH`));
   } else if (cur === "url") {
+    const mon = h("select", {}, h("option", { value: "" }, "none: find it among the GPU processes"),
+      servers.map((x) => h("option", { value: String(x.id), selected: String(x.id) === String(o.monitor_server || "") }, `${x.name} (${x.host})`)));
+    mon.addEventListener("change", () => saveRunner(r.id, { opts: { monitor_server: mon.value } }));
+    out.push(h("label", { class: "field wide" }, h("span", {}, "Measure its VRAM on (optional)"), mon,
+        h("small", { class: "hint" }, "A server from the Servers page that is this service's own container (or runs only it): Argos adds up the GPU memory there over SSH. Without one, Argos looks for its process on the GPUs: by its address when Argos runs with pid: host, else by the size hint, else as the only process left that Argos did not start.")),
+      text("vram_hint", "Size hint (GiB, optional)", "1.5", "About how much VRAM it holds, to tell it apart from other processes outside Argos."));
     out.push(text("url", "Service URL (as Argos reaches it)", R.url,
       r.kind === "whisper" ? "A whisper-server you run yourself, started with --inference-path /v1/audio/transcriptions. Argos only sends it requests: it never starts or stops it, so its VRAM stays in use."
         : r.kind === "kokoro" ? "A Kokoro-FastAPI container, e.g. http://kokoro:8880 on the same Docker network. Argos only sends it requests: it never starts or stops it, so its VRAM stays in use."
         : "An sd-server you run yourself. Argos only sends it requests: it never starts or stops it, so its VRAM stays in use."));
   }
+  if (cur !== "here") out.push(othersUsage(r));
   return h("div", { class: "fields" }, out);
+}
+// what a runner outside Argos holds on the GPUs, read every 30 s (others_vram.Monitor)
+function othersUsage(r) {
+  const u = ((LC.usage || {}).runners || {})[r.id];
+  const box = h("div", { class: "wide hint", style: "margin:0", "data-usage": r.id });
+  if (!u) { box.append("VRAM: measuring… (every 30 s)"); return box; }
+  const cards = Object.entries(u.cards || {}).map(([c, g]) => `GPU ${c} ${gib(g)}`).join(", ");
+  box.append(h("b", {}, "VRAM now: "), u.vram_gib == null ? "unknown" : gib(u.vram_gib), cards ? ` (${cards})` : "",
+    u.peak_gib != null ? ` · peak in the last hour ${gib(u.peak_gib)}` : "",
+    u.server_total_gib != null ? ` · ${u.server} holds ${gib(u.server_total_gib)} in all` : "",
+    ` · ${u.how}`, u.error ? h("span", { class: "warn-text" }, ` · ${u.error}`) : "");
+  return box;
+}
+async function loadOthersUsage() {
+  try { LC.usage = await api("GET", "/api/runners/usage"); } catch { return; }
+  // in place: a full redraw would take the cursor out of a field being typed in
+  for (const el of document.querySelectorAll("[data-usage]")) {
+    const r = ((LC.data || {}).runners || []).find((x) => x.id === el.dataset.usage);
+    if (r) el.replaceWith(othersUsage(r));
+  }
 }
 function toolsLine() {
   const t = (LC.torch || {}).tools;
@@ -4907,7 +4940,7 @@ function renderLocal() {
     catch (e) { fail(e); scanBtn.disabled = false; scanBtn.textContent = "Clone and scan"; }
   }, "primary", "search");
   fill($("#lcList"),
-    h("p", { class: "hint" }, "Runners are servers installed inside Argos for models llama-server cannot run. You never pick one per model: the model's type does (a speech-to-text file goes to whisper, Kokoro serves its own voices), and a model's row lets you change it. Argos writes the engine's entries itself",
+    h("p", { class: "hint" }, "Others are the servers for models llama-server cannot run: installed inside Argos, in a container of their own over SSH, or a service that is already running (Where it runs, on each card). You never pick one per model: the model's type does (a speech-to-text file goes to whisper, Kokoro serves its own voices), and a model's row lets you change it. Argos writes the engine's entries itself",
       D.engine_file ? h("span", { title: D.engine_file }, " (runners.generated.yaml in the engine's config folder).") : ". It cannot here: the engine's config folder is not known (ARGOS_SCHEDULE_FILE)."),
     h("p", { class: "hint" }, "Each runner has its own folder in the ", h("span", { title: D.root, class: "mono-sm" }, "runners"),
       " folder (hover for where). Clients call the usual OpenAI paths on this Argos with the model name, or the standard names: whisper-1 for transcription, tts-1 for speech."),
@@ -6027,7 +6060,7 @@ function renderLive() {
     { label: "Model", cell: (m) => h("td", { class: "cell-model", title: m.id }, h("div", { class: "cell-main" }, h("span", { class: "swatch", style: `--c:${segColor(m.id)}` }), m.id)) },
     { label: "State", cell: (m) => h("div", { class: "row", style: "gap:6px;flex-wrap:nowrap" }, statePill(m.state), workPill(m)) },
     { label: "Runner", cell: (m) => { const r = (L.runners || {})[m.id];
-      return r ? h("span", { class: "chip", title: `${r.task || ""} · ${(r.device || "").toUpperCase()} · Servers → Local` }, `${r.runner}${r.device ? ` · ${r.device}` : ""}`)
+      return r ? h("span", { class: "chip", title: `${r.task || ""} · ${(r.device || "").toUpperCase()} · Servers → Others` }, `${r.runner}${r.device ? ` · ${r.device}` : ""}`)
         : h("span", { class: "chip", title: "llama-server, on the default server" }, "llama.cpp"); } },
     { label: "GPU", cell: (m) => m.cards.length ? m.cards.join(", ") : DASH },
     { label: "Size", num: true, cell: (m) => m.size_known ? gib(m.size_gib) : h("span", { class: "pill warn", title: "no size: this model runs alone" }, "unknown") },

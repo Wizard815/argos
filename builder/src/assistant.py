@@ -201,7 +201,7 @@ class Assistant:
     def __init__(self, store: Store, settings: Settings, runner: Runner, analytics,
                  on_event: Callable[..., None], inventory=None, memory=None, plans=None):
         self.plans = plans
-        self.runners = None  # set by the app once Servers -> Local exists
+        self.runners = None  # set by the app once Servers -> Others exists
         self.inventory = inventory
         self.memory = memory
         self.store = store

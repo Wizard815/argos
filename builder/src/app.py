@@ -350,6 +350,22 @@ def create_app(config: dict | None = None) -> Flask:
         runners=Runners(store, settings, event, lambda: settings.get("paths")["models_dir"], scan_media))
     app.extensions["pb"].assistant.runners = app.extensions["pb"].runners
     app.extensions["pb"].runners.servers = servers  # a runner in another container reaches it like a llama.cpp server
+    from . import others_vram
+
+    def _read_others():
+        """What each runner outside Argos holds on the GPUs (Servers -> Others)."""
+        pb = app.extensions["pb"]
+        rec = pb.runners.records()
+        if not any(r.get("enabled", True) and pb.runners.where(r) != "here" for r in rec.values()):
+            return {}
+        from .routes.logs import gpu_listing_for
+        try:
+            listing = gpu_listing_for(pb)
+        except Exception:  # noqa: BLE001 - measured over SSH all the same
+            listing = None
+        return others_vram.measure(pb.runners, pb.servers, listing)
+
+    app.extensions["pb"].others_monitor = others_vram.Monitor(_read_others)
     memory.pick = lambda: app.extensions["pb"].assistant.pick("embed")  # GPU or CPU embedding model, per moment
     from .bench import Benches, run_rows
 
@@ -381,6 +397,7 @@ def create_app(config: dict | None = None) -> Flask:
         )
         for name, work in prewarm:
             threading.Thread(target=work, name=name, daemon=True).start()
+        app.extensions["pb"].others_monitor.start()
 
     # who may use Argos: the web page password and API keys (Settings -> Security), checked before anything else
     from .security import MODEL_API_PREFIXES, OPEN_PATHS, SESSION_DAYS, Security, key_from

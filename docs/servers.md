@@ -108,7 +108,7 @@ keep the compiler in `llvm/bin`, TheRock builds (the gfx906 ones) in
 
 ## Running whisper, Kokoro or sd-server outside Argos
 
-Each runner card (Servers -> Local) has **Where it runs**. Anything outside
+Each runner card (Servers -> Others) has **Where it runs**. Anything outside
 Argos survives an Argos rebuild, and Argos needs no ROCm SDK for it.
 
 | Where it runs | Who starts it | VRAM | For |
@@ -152,6 +152,27 @@ whisper-server run this way must be started with
 `--inference-path /v1/audio/transcriptions`; it answers as `whisper` and
 `whisper-1`.
 
+### Watching their VRAM
+
+Each card that runs outside Argos shows **VRAM now**, which cards it is on and
+its peak in the last hour, read every 30 seconds. The GPU processes list
+(Logs) names those processes too.
+
+- **Over SSH:** Argos asks that container which processes hold GPU memory
+  (the kernel lists it per process in `/proc/<pid>/fdinfo`; no rocm-smi
+  needed there). The card also shows what the whole container holds. Every
+  server Argos has a key for is asked, so processes in your llama.cpp
+  container that Argos did not start show as "in llamacpp", not "unknown".
+- **A running service:** pick **Measure its VRAM on** if the service's own
+  container (or the machine that only runs it) is a server on this page, and
+  it is measured over SSH. Otherwise Argos finds its process on the GPUs: by
+  its address when Argos runs with `pid: host`, else by the **size hint**,
+  else as the only GPU process left that Argos did not start. With several
+  services and no hints it says it cannot tell them apart.
+
+The engine's pool already plans around memory it did not place (it reads
+the cards), so a running Kokoro is never overbooked; this names it.
+
 What goes wrong:
 
 - **"server missing"** on the card: the server was removed from this page.
@@ -159,8 +180,8 @@ What goes wrong:
 - **Check fails with "no such file"**: the program path is wrong for that
   container, or the model file is not at the same path there. The server's
   **Check** compares the models folders.
-- **Argos's VRAM plan is off with a running service**: Argos does not start or
-  stop it, so it counts it as 0 GiB. Leave room for it.
+- **A running service reads "not found"**: give it a size hint or a server
+  to measure on.
 
 ## "Host key verification failed"
 

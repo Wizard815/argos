@@ -169,9 +169,20 @@ def requests_list():
 
 # ----- what is really on the GPUs ------------------------------------------------------
 def _gpu_listing() -> dict:
+    from .. import others_vram
+    c = ctx()
+    out = gpu_listing_for(c)
+    try:  # name the memory the runners outside Argos hold (Servers -> Others)
+        others_vram.measure(c.runners, c.servers, out)
+    except Exception:  # noqa: BLE001 - the list is still useful without it
+        pass
+    return out
+
+
+def gpu_listing_for(c) -> dict:
+    """Every GPU process, tagged with the engine model or launch that owns it. Needs no request."""
     from .. import gpu_procs
     from ..integrations import engine_api
-    c = ctx()
     running, pool = [], []
     url = c.settings.get("integrations")["engine_url"]
     if url:
