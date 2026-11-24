@@ -37,6 +37,14 @@ RUNNERS_KEY = "_runners"
 FRAGMENT = "runners.generated.yaml"
 
 # task -> the runner type that serves it
+# Runners that can live outside Argos. "url": a service already running (its ready-check path); Argos only sends it
+# requests. "server": another container over SSH, started per model by remote-llama like llama-server (its program
+# there when none is given); the models folder must be mounted at the same path in both containers.
+REMOTE_URL = {"whisper": "/", "kokoro": "/health", "sdcpp": "/"}
+REMOTE_SSH = ("whisper", "sdcpp")
+REMOTE_BIN = {"whisper": "whisper-server", "sdcpp": "sd-server"}
+CAPS = {"whisper": {"in": ["audio"], "out": ["text"]}, "kokoro": {"in": ["text"], "out": ["audio"]},
+        "sdcpp": {"in": ["text"], "out": ["image"]}}
 TASK_RUNNER = {"speech-to-text": "whisper", "text-to-speech": "kokoro", "image": "sdcpp"}
 
 WHISPER_GGML_REPO = "ggerganov/whisper.cpp"  # the ggml builds of every whisper model, for whisper.cpp
@@ -515,11 +523,56 @@ class Runners:
     def save(self, rec: dict) -> None:
         self.store.set_setting(RUNNERS_KEY, rec)
 
+    # ----- where a runner runs: here, in another container over SSH, or a service already running -----
+    servers = None  # the Servers registry, set by the app; needed for "another container over SSH"
+
+    @staticmethod
+    def where(r: dict) -> str:
+        """"here" (installed in Argos), "server" (another container over SSH) or "url" (already running)."""
+        o = r.get("opts") or {}
+        w = str(o.get("where") or "").strip()
+        if w == "url" and r["kind"] in REMOTE_URL and str(o.get("url") or "").strip():
+            return "url"
+        if w == "server" and r["kind"] in REMOTE_SSH and str(o.get("server") or "").strip():
+            return "server"
+        return "here"
+
+    def remote_server(self, r: dict) -> Optional[dict]:
+        sid = str((r.get("opts") or {}).get("server") or "").strip()
+        if not sid or self.servers is None:
+            return None
+        for s in self.servers.store.list_servers():
+            if str(s.get("id")) == sid and s.get("host"):
+                return s
+        return None
+
+    def remote_parts(self, r: dict) -> Optional[dict]:
+        """How remote-llama reaches this runner's server, with the runner's program there as its binary."""
+        from .servers import launch_parts
+        s = self.remote_server(r)
+        if not s:
+            return None
+        parts = launch_parts(s, self.servers.key_path(s["id"]) if self.servers.has_key(s["id"]) else "")
+        if not parts:
+            return None
+        word = parts["program"][-1].upper()
+        parts["env"][f"{word}_SSH_BIN"] = str((r.get("opts") or {}).get("remote_program") or "").strip() or REMOTE_BIN[r["kind"]]
+        return parts
+
     def folder(self, r: dict) -> str:
         return r.get("folder") or os.path.join(self.root(), r["id"])
 
     def found(self, r: dict) -> dict:
         """What is installed for this runner. A program you point at (one you built yourself) is used as it is."""
+        where = self.where(r)
+        if where == "url":
+            return {"installed": True, "program": "", "detail": f"a service already running at {r['opts']['url'].strip()}", "remote": "url"}
+        if where == "server":
+            s = self.remote_server(r)
+            prog = str((r.get("opts") or {}).get("remote_program") or "").strip() or REMOTE_BIN[r["kind"]]
+            if not s:
+                return {"installed": False, "program": "", "detail": "its server is gone from the Servers page", "remote": "server"}
+            return {"installed": True, "program": prog, "detail": f"{prog} on {s.get('name') or s['host']} over SSH", "remote": "server"}
         own = str((r.get("opts") or {}).get("program") or "").strip()
         if own and r["kind"] in ("whisper", "sdcpp"):
             if os.path.isfile(own):
@@ -543,7 +596,9 @@ class Runners:
                         "skipped": [m for m in skipped if m["runner"] == r["kind"]],
                         "steps": install_steps(r["kind"], self.folder(r), r.get("device", "cpu"), r.get("opts") or {})})
         out.sort(key=lambda x: (x.get("addon", False), x["kind"] == "custom", x["id"]))
-        return {"root": self.root(), "runners": out, "engine_file": self.engine_path(), "devices": DEVICES,
+        servers = [{"id": x["id"], "name": x.get("name") or x["host"], "host": x["host"]}
+                   for x in (self.servers.store.list_servers() if self.servers is not None else []) if x.get("host")]
+        return {"root": self.root(), "runners": out, "engine_file": self.engine_path(), "devices": DEVICES, "servers": servers,
                 "types": {k: {"label": v["label"], "about": v["about"]} for k, v in TYPES.items()}}
 
     def ffmpeg(self) -> str:
@@ -567,7 +622,8 @@ class Runners:
         except Exception:  # noqa: BLE001 - a missing models folder is not this page's error
             pass
         w = rec.get("whisper") or {}
-        own = os.path.join(self.folder(w), "models") if w else ""
+        # whisper's own models folder is inside Argos: another container does not see it
+        own = os.path.join(self.folder(w), "models") if w and self.where(w) == "here" else ""
         if own and os.path.isdir(own):
             for f in sorted(os.listdir(own)):
                 if f.startswith("ggml-") and f.endswith(".bin"):
@@ -590,7 +646,7 @@ class Runners:
             runner = overrides.get(m["id"], auto) or ""
             if runner == "kokoro":
                 runner = ""  # Kokoro serves its own model, not files from the folder
-            if runner and runner in rec and rec[runner].get("enabled", True):
+            if runner and runner in rec and rec[runner].get("enabled", True) and self.where(rec[runner]) != "url":
                 out.append({"id": m["id"], "name": m["name"], "runner": runner, "task": m.get("task"), "path": m["path"],
                             "size": m.get("size") or 0, "auto": runner == auto})
         for r in rec.values():  # a custom runner with a model-file pattern serves one model per matching file
@@ -609,8 +665,13 @@ class Runners:
                         out.append({"id": mid, "name": stem, "runner": r["id"], "task": o.get("task", ""), "path": path,
                                     "size": os.path.getsize(path), "auto": True})
         k = rec.get("kokoro")
-        if k and k.get("enabled", True) and detect("kokoro", self.folder(k))["installed"]:
+        if k and k.get("enabled", True) and self.found(k)["installed"]:
             out.append({"id": "kokoro", "name": "Kokoro voices", "runner": "kokoro", "task": "text-to-speech", "path": "", "size": 0, "auto": True})
+        for kind in ("whisper", "sdcpp"):  # a service already running loads its own model: one model, the runner's name
+            r = rec.get(kind)
+            if r and r.get("enabled", True) and self.where(r) == "url" and not any(m["id"] == kind for m in out):
+                out.append({"id": kind, "name": f"{TYPES[kind]['label']} at {r['opts']['url'].strip()}", "runner": kind,
+                            "task": TYPES[kind].get("task", ""), "path": "", "size": 0, "auto": True})
         for r in rec.values():
             o = r.get("opts") or {}
             if r["kind"] == "custom" and o.get("start") and r.get("enabled", True) and "${MODEL_PATH}" not in o["start"]:
@@ -630,6 +691,47 @@ class Runners:
             r = rec[m["runner"]]
             device = r.get("device", "cpu")
             folder = self.folder(r)
+            where = self.where(r)
+            if where == "url" and r["kind"] in REMOTE_URL:
+                # Argos starts nothing: a placeholder process stands for the service while the engine sends it requests
+                e = {"cmd": "sleep infinity", "proxy": r["opts"]["url"].strip().rstrip("/"), "checkEndpoint": REMOTE_URL[r["kind"]],
+                     "vram": 0, "capabilities": CAPS[r["kind"]]}
+                alias = {"whisper": ["whisper-1"], "kokoro": ["tts-1", "tts-1-hd"], "sdcpp": ["dall-e-3"]}[r["kind"]]
+                if not any(set(alias) & set(x.get("aliases") or []) for x in out.values()):
+                    e["aliases"] = alias
+                e["metadata"] = {"argos": {"runner": r["kind"], "runner_id": r["id"], "task": m.get("task") or "", "device": device, "where": "url"}}
+                out[m["id"]] = e
+                continue
+            if where == "server":
+                parts = self.remote_parts(r)
+                if not parts or not m.get("path"):
+                    continue
+                o = r.get("opts") or {}
+                if r["kind"] == "whisper":
+                    args = ["--host", "127.0.0.1", "--port", "${PORT}", "-m", m["path"], "--inference-path", "/v1/audio/transcriptions"]
+                    extra = str(o.get("args") or "").strip()
+                    vram = round(m["size"] / 2 ** 30 * 1.3 + 0.3, 2)
+                    if m["id"] == default_stt:
+                        alias = ["whisper-1"]
+                    else:
+                        alias = []
+                else:  # sdcpp
+                    extra = (o.get("model_args") or {}).get(m["id"], "")
+                    flag = "-m"
+                    if re.search(r"(^|\s)--diffusion-model(?=\s|$)", extra):
+                        flag, extra = "--diffusion-model", re.sub(r"(^|\s)--diffusion-model(?=\s|$)", " ", extra).strip()
+                    args = ["--listen-ip", "127.0.0.1", "--listen-port", "${PORT}", flag, m["path"]]
+                    vram = round(m["size"] / 2 ** 30 * 1.25 + 1.0, 2)
+                    alias = ["dall-e-3"] if m["id"] == o.get("default_model") or not any(
+                        "dall-e-3" in (x.get("aliases") or []) for x in out.values()) else []
+                e = {"cmd": _join([*parts["program"], *args]) + (f" {extra}" if extra else ""), "checkEndpoint": "/",
+                     "env": [f"{k}={v}" for k, v in sorted(parts["env"].items())], "vram": vram, "capabilities": CAPS[r["kind"]]}
+                if alias:
+                    e["aliases"] = alias
+                e["metadata"] = {"argos": {"runner": r["kind"], "runner_id": r["id"], "task": m.get("task") or "", "device": device,
+                                           "where": "server", "server": parts["name"]}}
+                out[m["id"]] = e
+                continue
             if r["kind"] == "whisper":
                 d = self.found(r)
                 if not d["installed"]:

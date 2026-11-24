@@ -106,6 +106,62 @@ Then Settings -> GPU tools -> ROCm location: `/opt/rocm-gfx906`. AMD's packages
 keep the compiler in `llvm/bin`, TheRock builds (the gfx906 ones) in
 `lib/llvm/bin`; Argos uses either.
 
+## Running whisper, Kokoro or sd-server outside Argos
+
+Each runner card (Servers -> Local) has **Where it runs**. Anything outside
+Argos survives an Argos rebuild, and Argos needs no ROCm SDK for it.
+
+| Where it runs | Who starts it | VRAM | For |
+| --- | --- | --- | --- |
+| here, installed inside Argos | Argos, per model | freed on unload | the default |
+| in another container, over SSH | Argos, per model, like llama-server | freed on unload | whisper, sd-server |
+| a service that is already running | you (its own container) | always in use | whisper, Kokoro, sd-server |
+
+**Over SSH** works exactly like your llama.cpp container: pick a server from
+this page and the program's path there. The easiest place is the llama.cpp
+container you already have: it has ROCm and sshd. Build whisper.cpp there once,
+on a volume so a recreated container keeps it:
+
+```bash
+docker exec -it mx-llamacpp-ssh bash
+cd /app/models/.runners   # any folder on a mounted volume
+git clone --depth 1 https://github.com/Wizard815/whisper.cpp-rocm10-gfx906 whisper
+cd whisper && cmake -B build -DGGML_HIP=1 -DAMDGPU_TARGETS=gfx906 -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j --target whisper-server
+```
+
+Then on the whisper card: **Where it runs** -> in another container, server
+`llamacpp`, program `/app/models/.runners/whisper/build/bin/whisper-server`.
+The ggml-*.bin files must be in the models folder both containers mount at the
+same path (whisper's own `runners/whisper/models` folder is inside Argos and is
+not used). sd-server works the same way.
+
+**A service that is already running** is a URL Argos sends requests to, such
+as a Kokoro-FastAPI container on the same Docker network:
+
+```yaml
+services:
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest   # or your GPU build
+    restart: unless-stopped
+```
+
+Kokoro card -> **Where it runs** -> a service that is already running,
+`http://kokoro:8880`. It answers as `kokoro`, `tts-1` and `tts-1-hd`. A
+whisper-server run this way must be started with
+`--inference-path /v1/audio/transcriptions`; it answers as `whisper` and
+`whisper-1`.
+
+What goes wrong:
+
+- **"server missing"** on the card: the server was removed from this page.
+  Pick another.
+- **Check fails with "no such file"**: the program path is wrong for that
+  container, or the model file is not at the same path there. The server's
+  **Check** compares the models folders.
+- **Argos's VRAM plan is off with a running service**: Argos does not start or
+  stop it, so it counts it as 0 GiB. Leave room for it.
+
 ## "Host key verification failed"
 
 The server's SSH host key changed since Argos first saved it. A llama.cpp container that is recreated (an update, a
