@@ -170,8 +170,7 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
         steps = [{"needs": build_needs(device)}]
         steps += [] if os.path.isdir(os.path.join(folder, ".git")) else [{"run": f'git clone --depth 1 "{repo}" "{folder}"', "cwd": os.path.dirname(folder)}]
         # ROCm: point CMake at ROCm's own clang, as whisper.cpp's HIP build expects (an SDK image sets these already)
-        hip = ('if command -v hipconfig >/dev/null 2>&1; then export HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)"; fi; '
-               if device == "rocm" and not WINDOWS else "")
+        hip = (ROCM_CXX if device == "rocm" and not WINDOWS else "")
         return steps + [{"run": f"{hip}cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".strip()},
                         {"run": "cmake --build build -j --config Release --target whisper-server"}]
     if kind == "sdcpp":
@@ -186,12 +185,11 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
         if device == "rocm":
             wanted = str(opts.get("gpu_target") or "").strip() or ",".join(rocm_archs())
             targets = ";".join(t.strip().lower() for t in (wanted or "gfx906").replace(";", ",").split(",") if t.strip())
-            rocm = "${ROCM_PATH:-/opt/rocm}"
             flags = (f'-DSD_HIPBLAS=ON "-DGPU_TARGETS={targets}" "-DAMDGPU_TARGETS={targets}" '
-                     f"-DCMAKE_C_COMPILER={rocm}/llvm/bin/clang -DCMAKE_CXX_COMPILER={rocm}/llvm/bin/clang++")
+                     '-DCMAKE_C_COMPILER="$HIPCXX" -DCMAKE_CXX_COMPILER="${HIPCXX}++"')
         else:
             flags = {"cpu": "", "cuda": "-DSD_CUDA=ON"}[device]
-        return steps + [{"run": f"cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".replace("  ", " ")},
+        return steps + [{"run": f"{ROCM_CXX if device == 'rocm' else ''}cmake -B build {flags} -DCMAKE_BUILD_TYPE=Release".replace("  ", " ")},
                         {"run": "cmake --build build -j --config Release --target sd-server"}]
     if kind == "ffmpeg":
         if WINDOWS:
@@ -203,6 +201,13 @@ def install_steps(kind: str, folder: str, device: str, opts: dict) -> list[dict]
     return []
 
 
+# ROCm's clang for CMake (HIPCXX) and HIP_PATH: from hipconfig when there is one, else from ROCM_PATH (Settings ->
+# GPU tools), where AMD's packages keep clang in llvm/bin and TheRock builds in lib/llvm/bin.
+ROCM_CXX = ('if command -v hipconfig >/dev/null 2>&1; then export HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)"; '
+            'elif [ -n "$ROCM_PATH" ]; then for c in "$ROCM_PATH/llvm/bin/clang" "$ROCM_PATH/lib/llvm/bin/clang"; do '
+            '[ -x "$c" ] && export HIPCXX="$c" HIP_PATH="$ROCM_PATH" && break; done; fi; ')
+
+
 def build_needs(device: str) -> list[str]:
     """What a source build needs on this machine: the build tools, and the GPU compiler for the device."""
     return ["git", "cmake", "c++"] + (["hipconfig"] if device == "rocm" else ["nvcc"] if device == "cuda" else [])
@@ -211,10 +216,28 @@ def build_needs(device: str) -> list[str]:
 APT = {"git": "git", "cmake": "cmake", "c++": "build-essential"}
 
 
+def _rocm_advice() -> str:
+    """What Argos found, and what to do: a ROCm here that can build, one that cannot, or none at all."""
+    from . import gputools
+    found = gputools.find_rocm()
+    builds = [r for r in found if r["can_build"]]
+    if builds:
+        return (f"{builds[0]['path']} has one ({builds[0]['compiler']}): set Settings -> GPU tools -> ROCm location to "
+                f"{builds[0]['path']} and install again")
+    if found:
+        names = ", ".join(r["path"] for r in found)
+        return (f"Argos sees ROCm at {names}, but only its runtime (no clang, hipcc or hipconfig): that runs a build, it "
+                "cannot make one. Mount a full ROCm SDK into Argos (see Settings -> GPU tools -> Find ROCm)")
+    return ("Argos sees no ROCm at all. Mount a ROCm SDK into the Argos container (a volume, e.g. "
+            "/mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro) and set Settings -> GPU tools -> ROCm location to it")
+
+
 def missing_tools(needs: list[str]) -> list[str]:
     from . import gputools
     path = gputools.env().get("PATH")
-    found = {"c++": shutil.which("c++", path=path) or shutil.which("g++", path=path) or shutil.which("clang++", path=path)}
+    found = {"c++": shutil.which("c++", path=path) or shutil.which("g++", path=path) or shutil.which("clang++", path=path),
+             # any ROCm compiler: hipconfig, hipcc, or the configured ROCm's own clang (TheRock has no hipconfig in some builds)
+             "hipconfig": gputools.rocm_compiler()}
     return [n for n in needs if not (found.get(n) if n in found else shutil.which(n, path=path))]
 
 
@@ -328,8 +351,9 @@ class Installer:
                     gpu = [n for n in missing if n not in APT]
                     if gpu:
                         what = "ROCm compiler (hipconfig, hipcc, ROCm's clang)" if "hipconfig" in gpu else "CUDA compiler (nvcc)"
-                        raise RuntimeError(f"no {what} here. Building for this GPU needs the toolkit's SDK, not only its runtime: set "
-                                           "Settings -> GPU tools to an SDK mounted into Argos, or base the Argos image on an SDK image")
+                        raise RuntimeError(f"no {what} here. " + (_rocm_advice() if "hipconfig" in gpu else
+                                           "Building for this GPU needs the toolkit's SDK, not only its runtime: set Settings -> "
+                                           "GPU tools to an SDK mounted into Argos, or base the Argos image on an SDK image"))
                     if "run" not in step:
                         step = {}
                 if "wheels_index" in step:

@@ -83,6 +83,29 @@ Odysseus' keys stay in Odysseus, so each imported server needs its own key from 
 - The server runs sshd and accepts key login.
 - Argos and the server are on a Docker network that can reach each other, if the server is another container.
 
+## Building a runner for ROCm (whisper.cpp, stable-diffusion.cpp)
+
+A runner built from source needs a ROCm **SDK** inside the Argos container: its
+compiler (`clang`, `hipcc` or `hipconfig`), not only the runtime libraries an
+image that only runs llama.cpp has. Settings -> GPU tools -> **Find ROCm**
+lists every ROCm folder Argos can see, whether it has a compiler, rocm-smi or
+amd-smi, and which GPUs (gfx906, ...) its libraries were built for.
+**Use this** sets it as the ROCm location.
+
+One ROCm SDK on the host can serve every container. Keep it in one folder and
+mount it read-only wherever it is needed:
+
+```yaml
+services:
+  argos:
+    volumes:
+      - /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro
+```
+
+Then Settings -> GPU tools -> ROCm location: `/opt/rocm-gfx906`. AMD's packages
+keep the compiler in `llvm/bin`, TheRock builds (the gfx906 ones) in
+`lib/llvm/bin`; Argos uses either.
+
 ## "Host key verification failed"
 
 The server's SSH host key changed since Argos first saved it. A llama.cpp container that is recreated (an update, a

@@ -4595,6 +4595,25 @@ function settingsField(f, val) {
   return { input, el: h("label", { class: `field${wide ? " wide" : ""}` }, h("span", {}, f.label), input, f.hint ? h("span", { class: "muted mono-sm" }, f.hint) : null) };
 }
 
+/** Settings -> GPU tools -> Find ROCm: every ROCm folder Argos can see and what it can do. A runtime-only ROCm (no
+ * compiler) runs builds but cannot make them; a runner install needs one that can. */
+async function findRocm(box, use) {
+  fill(box, h("p", { class: "hint" }, "Looking…"));
+  let found;
+  try { found = (await api("GET", "/api/gputools/rocm")).found; } catch (e) { fill(box, h("p", { class: "hint" }, e.message)); return; }
+  if (!found.length) {
+    fill(box, h("p", { class: "hint" }, "No ROCm folder inside Argos. Mount one into the container (a volume, e.g. /mnt/user/appdata/rocm-gfx906:/opt/rocm-gfx906:ro), restart Argos and look again."));
+    return;
+  }
+  const yes = (v, label) => h("span", { class: `pill ${v ? "ok" : ""}`, title: v || `no ${label}` }, `${v ? "✓" : "✗"} ${label}`);
+  fill(box, found.map((r) => h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center" },
+    h("b", { class: "mono-sm" }, r.path), r.version ? h("span", { class: "muted mono-sm" }, r.version) : null,
+    yes(r.compiler, "compiler (builds)"), yes(r.rocm_smi || r.amd_smi, r.rocm_smi ? "rocm-smi" : r.amd_smi ? "amd-smi" : "rocm-smi"),
+    r.archs.length ? h("span", { class: "chip", title: "the GPUs its math libraries were built for" }, r.archs.slice(0, 6).join(" ") + (r.archs.length > 6 ? " …" : "")) : null,
+    r.configured ? h("span", { class: "pill ok" }, "in use") : btn("Use this", () => use(r.path), "sm ghost"))),
+    found.some((r) => r.can_build) ? null : h("p", { class: "hint" }, "None of these has a compiler: they can run ROCm programs but not build them. A runner install (whisper.cpp, stable-diffusion.cpp) needs a full ROCm SDK mounted into Argos."));
+}
+
 function renderSettings() {
   if (!S.settings) return;
   fill($("#sGrid"), SETTINGS_FORM.map((g) => {
@@ -4614,8 +4633,12 @@ function renderSettings() {
     };
     const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;
     if (tools) api("GET", "/api/runners/torch-builds").then((r) => { LC.torch = r; fill(tools, toolsLine()); }).catch(() => {});
-    return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, g.title), h("span", { class: "spacer" }), btn("Save", save, "sm primary", "save")),
-      g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)), tools);
+    const scan = g.group === "gpu" ? h("div", { class: "stack", style: "margin-top:10px" }) : null;
+    const scanBtn = scan ? btn("Find ROCm", () => findRocm(scan, (path) => {
+      const f = fields.find((x) => x.f.k === "rocm_path"); if (f) f.input.value = path; save();
+    }), "sm", "search") : null;
+    return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, g.title), h("span", { class: "spacer" }), scanBtn, btn("Save", save, "sm primary", "save")),
+      g.hint ? h("p", { class: "hint" }, g.hint) : null, h("div", { class: "fields" }, fields.map((x) => x.el)), tools, scan);
   }));
 }
 

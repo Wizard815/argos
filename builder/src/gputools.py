@@ -8,7 +8,9 @@ into Argos (a volume in docker-compose) and the mounted path goes here.
 """
 from __future__ import annotations
 
+import glob
 import os
+import re
 import shutil
 import sys
 
@@ -41,7 +43,7 @@ def env(base: dict | None = None, device: str = "") -> dict:
     rocm, cuda = _cfg["rocm_path"], _cfg["cuda_path"]
     if rocm and device in ("", "rocm"):
         out["ROCM_PATH"] = out["HIP_PATH"] = rocm
-        prepend("PATH", os.path.join(rocm, "bin"), os.path.join(rocm, "llvm", "bin"))
+        prepend("PATH", os.path.join(rocm, "bin"), os.path.join(rocm, "llvm", "bin"), os.path.join(rocm, "lib", "llvm", "bin"))
         prepend("LD_LIBRARY_PATH", os.path.join(rocm, "lib"), os.path.join(rocm, "lib64"))
     if cuda and device in ("", "cuda"):
         out["CUDA_PATH"] = out["CUDA_HOME"] = cuda
@@ -65,7 +67,74 @@ def status() -> dict:
         return {"path": p, "exists": bool(p) and os.path.exists(p)}
     return {**{k: where(v) for k, v in _cfg.items()},
             "using": {"rocm-smi": tool("rocm-smi"), "nvidia-smi": tool("nvidia-smi"),
-                      "hipconfig": shutil.which("hipconfig", path=env().get("PATH")) or "",
+                      "hipconfig": rocm_compiler(),
                       "nvcc": shutil.which("nvcc", path=env().get("PATH")) or "",
                       "cmake": shutil.which("cmake") or "", "git": shutil.which("git") or "",
                       "c++": shutil.which("c++") or shutil.which("g++") or shutil.which("clang++") or ""}}
+
+
+# ----- finding a ROCm, and what it can do -----------------------------------------------------------------------
+# A ROCm is a folder with bin/ and lib/. Where its compiler is depends on how it was made: AMD's packages put clang in
+# llvm/bin, TheRock builds (the gfx906 ones) in lib/llvm/bin. A runtime-only ROCm (what an image that only runs
+# llama.cpp needs) has no compiler at all: it can run a build, not make one.
+ROCM_GLOBS = ("/opt/rocm*", "/opt/*rocm*", "/opt/therock*", "/usr/local/rocm*", "/app/rocm*", "/data/rocm*",
+              "/mnt/*/rocm*", "/host/opt/rocm*")
+
+
+def rocm_clang(root: str) -> str:
+    """ROCm's own clang under root, "" when it has none."""
+    for rel in ("llvm/bin/clang", "lib/llvm/bin/clang", "bin/amdclang"):
+        p = os.path.join(root, rel)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return ""
+
+
+def rocm_compiler() -> str:
+    """The ROCm compiler a build would use: hipconfig / hipcc on PATH (with the configured ROCm first), else the
+    configured ROCm's clang. "" when there is none."""
+    path = env().get("PATH")
+    for name in ("hipconfig", "hipcc"):
+        found = shutil.which(name, path=path)
+        if found:
+            return found
+    return rocm_clang(_cfg["rocm_path"]) if _cfg["rocm_path"] else ""
+
+
+def describe_rocm(root: str) -> dict:
+    """What one ROCm folder has: its version, a compiler, rocm-smi / amd-smi, and the GPU architectures its math
+    libraries were built for (rocBLAS's Tensile files name them)."""
+    def has(rel: str) -> str:
+        p = os.path.join(root, rel)
+        return p if os.path.exists(p) else ""
+    version = ""
+    for rel in (".info/version", ".info/version-dev", "share/doc/rocm/version"):
+        try:
+            version = open(os.path.join(root, rel), encoding="utf-8").read().strip().splitlines()[0]
+            break
+        except (OSError, IndexError):
+            continue
+    archs = sorted({m for f in glob.glob(os.path.join(root, "lib", "rocblas", "library", "*gfx*"))
+                    for m in re.findall(r"gfx\d+[a-z]?", os.path.basename(f))})
+    clang = rocm_clang(root)
+    hip = has("bin/hipconfig") or has("bin/hipcc")
+    return {"path": root, "version": version, "compiler": clang or hip, "hipconfig": has("bin/hipconfig"),
+            "hipcc": has("bin/hipcc"), "clang": clang, "rocm_smi": has("bin/rocm-smi"), "amd_smi": has("bin/amd-smi"),
+            "archs": archs, "can_build": bool(clang or hip), "configured": os.path.realpath(root) == os.path.realpath(_cfg["rocm_path"] or "/nonexistent")}
+
+
+def find_rocm(extra: tuple[str, ...] = ()) -> list[dict]:
+    """Every ROCm folder Argos can see: the usual places, ROCM_PATH / HIP_PATH, what hipconfig reports, and the
+    configured one. Each described by describe_rocm, the ones that can build first."""
+    seen, out = set(), []
+    candidates = [p for g in ROCM_GLOBS + tuple(extra) for p in sorted(glob.glob(g))]
+    candidates += [os.environ.get("ROCM_PATH", ""), os.environ.get("HIP_PATH", ""), _cfg["rocm_path"]]
+    for root in candidates:
+        if not root or not os.path.isdir(root):
+            continue
+        real = os.path.realpath(root)
+        if real in seen or not (os.path.isdir(os.path.join(root, "bin")) and os.path.isdir(os.path.join(root, "lib"))):
+            continue
+        seen.add(real)
+        out.append(describe_rocm(root))
+    return sorted(out, key=lambda r: (not r["can_build"], not r["configured"], r["path"]))
