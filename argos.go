@@ -267,6 +267,7 @@ func main() {
 	// activeSrv is swapped atomically during hot reload.
 	var activeMu sync.RWMutex
 	activeSrv := initialSrv
+	var activeGen uint64 // counts reloads: a request the old server dropped waits for the next one
 	activeStore := initialStore
 	activeStorePath := initialStorePath
 
@@ -308,10 +309,13 @@ func main() {
 	httpServer := &http.Server{
 		Addr: listenAddr,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			activeMu.RLock()
-			srv := activeSrv
-			activeMu.RUnlock()
-			srv.ServeHTTP(w, r)
+			// a request the old server was still holding when a reload shut it
+			// down is sent to the new one (reload_retry.go)
+			serveRetrying(w, r, func() (http.Handler, uint64) {
+				activeMu.RLock()
+				defer activeMu.RUnlock()
+				return activeSrv, activeGen
+			})
 		}),
 	}
 
@@ -476,6 +480,7 @@ func main() {
 
 		activeMu.Lock()
 		activeSrv = newSrv
+		activeGen++
 		activeStore = newStore
 		activeStorePath = newStorePath
 		activeMu.Unlock()
