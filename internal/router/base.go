@@ -35,8 +35,12 @@ type baseRouter struct {
 	name      string
 	config    config.Config
 	processes map[string]process.Process
-	logger    *logmon.Monitor
-	schedule  scheduler.Scheduler
+	// procMu guards processes: a reload's hand-over adds and removes entries
+	// in the run loop while other goroutines (the share watch, ServeHTTP, a
+	// swap) read it. Write under Lock, read through proc / procList.
+	procMu   sync.RWMutex
+	logger   *logmon.Monitor
+	schedule scheduler.Scheduler
 
 	// shutdownCtx governs the request machinery: cancelling it tells grant()
 	// and ServeHTTP to stop granting and reject callers. It is deliberately
@@ -163,6 +167,7 @@ func (b *baseRouter) run() {
 
 		case req := <-b.handoverCh:
 			detached := make(map[string]process.Process)
+			b.procMu.Lock()
 			for _, id := range req.detach {
 				p, found := b.processes[id]
 				if !found {
@@ -180,6 +185,7 @@ func (b *baseRouter) run() {
 				stopReplaced(b.processes[id], p)
 				b.processes[id] = p
 			}
+			b.procMu.Unlock()
 			req.detached <- detached
 			b.notifyProcessed()
 
@@ -240,7 +246,7 @@ func (b *baseRouter) grant(req scheduler.HandlerReq, resp scheduler.HandlerResp)
 
 // ModelState implements scheduler.Effects.
 func (b *baseRouter) ModelState(modelID string) (process.ProcessState, bool) {
-	p, ok := b.processes[modelID]
+	p, ok := b.proc(modelID)
 	if !ok {
 		var zero process.ProcessState
 		return zero, false
@@ -266,7 +272,7 @@ func (b *baseRouter) GrantError(req scheduler.HandlerReq, err error) {
 // decrement will ever arrive — incrementing would strand the counter at >0 and
 // the router would never again be willing to evict this model.
 func (b *baseRouter) GrantServe(req scheduler.HandlerReq, modelID string) bool {
-	p := b.processes[modelID]
+	p, _ := b.proc(modelID)
 	return b.grant(req, scheduler.HandlerResp{HandleFunc: b.trackedServe(modelID, p)})
 }
 
@@ -275,7 +281,7 @@ func (b *baseRouter) GrantServe(req scheduler.HandlerReq, modelID string) bool {
 func (b *baseRouter) StopProcesses(timeout time.Duration, ids []string) {
 	var wg sync.WaitGroup
 	for _, id := range ids {
-		p, ok := b.processes[id]
+		p, ok := b.proc(id)
 		if !ok {
 			continue
 		}
@@ -323,7 +329,7 @@ func (b *baseRouter) doSwap(modelID string, toStop []string) {
 			if err := p.Stop(timeout); err != nil {
 				b.logger.Warnf("%s: stopping %s failed: %v", b.name, id, err)
 			}
-		}(b.processes[mID], mID)
+		}(b.procOnly(mID), mID)
 	}
 	wg.Wait()
 
@@ -333,7 +339,7 @@ func (b *baseRouter) doSwap(modelID string, toStop []string) {
 	// a TTL unload landing in that window used to leave the swap waiting on a
 	// process nobody was ever going to start (issue #946). EnsureReady makes
 	// the same decision inside the process, where the state is owned.
-	target := b.processes[modelID]
+	target, _ := b.proc(modelID)
 	err := target.EnsureReady(b.shutdownCtx, timeout)
 	if err != nil && b.shutdownCtx.Err() == nil {
 		// Quiet during shutdown: every in-flight swap fails at once there, and
@@ -367,7 +373,7 @@ func (b *baseRouter) handleShutdown(req shutdownReq) {
 	}
 
 	var wg sync.WaitGroup
-	for i, p := range b.processes {
+	for i, p := range b.procList() {
 		wg.Add(1)
 		go func(id string, p process.Process) {
 			defer wg.Done()
@@ -427,23 +433,23 @@ func (b *baseRouter) unloadTimeout(modelID string) time.Duration {
 }
 
 func (b *baseRouter) Handles(model string) bool {
-	_, ok := b.processes[model]
+	_, ok := b.proc(model)
 	return ok
 }
 
 func (b *baseRouter) ProcessLogger(modelID string) (*logmon.Monitor, bool) {
-	if p, ok := b.processes[modelID]; ok {
+	if p, ok := b.proc(modelID); ok {
 		return p.Logger(), true
 	}
 	return nil, false
 }
 
 // RunningModels returns the current state of every process that is not stopped
-// or shut down. The processes map keys are fixed at construction and State()
-// is a snapshot, so this is safe to call without the run loop.
+// or shut down. It reads a copy of the process table (procMu), and State() is
+// a snapshot, so this is safe to call without the run loop.
 func (b *baseRouter) RunningModels() map[string]process.ProcessState {
 	running := make(map[string]process.ProcessState)
-	for id, p := range b.processes {
+	for id, p := range b.procList() {
 		st := p.State()
 		if st == process.StateStopped || st == process.StateShutdown {
 			continue
@@ -477,8 +483,9 @@ func (b *baseRouter) RunningModels() map[string]process.ProcessState {
 func (b *baseRouter) Unload(timeout time.Duration, models ...string) {
 	targets := models
 	if len(targets) == 0 {
-		targets = make([]string, 0, len(b.processes))
-		for id := range b.processes {
+		all := b.procList()
+		targets = make([]string, 0, len(all))
+		for id := range all {
 			targets = append(targets, id)
 		}
 	}
@@ -548,7 +555,7 @@ func (b *baseRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// immediately after this readiness check; dropping that websocket is the
 	// intended tradeoff of opting out of lifecycle tracking.
 	if swaputil.ShouldIgnoreWebsocket(req, b.config) {
-		p, ok := b.processes[data.ModelID]
+		p, ok := b.proc(data.ModelID)
 		if !ok {
 			swaputil.SendError(w, req, scheduler.ErrModelNotFound)
 			return
@@ -603,7 +610,7 @@ func (b *baseRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	isModelReady := false
-	if p, ok := b.processes[data.ModelID]; ok {
+	if p, ok := b.proc(data.ModelID); ok {
 		isModelReady = p.State() == process.StateReady
 	}
 	shouldShowLoading := data.Streaming && data.SendLoadingState && isLoadingPath(req.URL.Path) && !isModelReady
@@ -687,4 +694,30 @@ func (b *baseRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	resp.HandleFunc(w, req)
+}
+
+// proc looks a model's process up under procMu.
+func (b *baseRouter) proc(id string) (process.Process, bool) {
+	b.procMu.RLock()
+	defer b.procMu.RUnlock()
+	p, ok := b.processes[id]
+	return p, ok
+}
+
+// procOnly is proc without the found flag (nil when absent).
+func (b *baseRouter) procOnly(id string) process.Process {
+	p, _ := b.proc(id)
+	return p
+}
+
+// procList is a copy of the process table, safe to range over while a
+// hand-over changes the table.
+func (b *baseRouter) procList() map[string]process.Process {
+	b.procMu.RLock()
+	defer b.procMu.RUnlock()
+	out := make(map[string]process.Process, len(b.processes))
+	for id, p := range b.processes {
+		out[id] = p
+	}
+	return out
 }
