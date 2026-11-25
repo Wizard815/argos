@@ -166,6 +166,24 @@ def test_MoE_the_wait_before_a_reload_is_a_setting(client):
     assert h.pick(old, new, lambda: {"x--fast"}, lambda n: 45.0, idle=40)[0] == new[0], "wait 40: goes"
 
 
+def test_MoE_builder_memory_shows_the_slider_caches_and_what_mlock_pins(client, tmp_path):
+    path = fake_moe(tmp_path / "m.gguf")
+    d = moe.builder_memory(f"llama-server -m {path} -ngl 99 --n-cpu-moe 3 --moe-cache-mib 2048")
+    assert d["moe"]["k"] == 2 and len(d["moe"]["cum_gib"]) == 4, "--n-cpu-moe 3: layers 1 and 2 of the MoE ones"
+    assert d["cpu_weights_gib"] == round(2 * 64 * MIB / 2 ** 30, 2) and d["moe_cache_mib"] == 2048
+    assert d["cache_ram_default"] and d["cache_ram_mib"] == 8192, "no --cache-ram: llama.cpp's own default"
+    assert d["mapped"] and not d["mlock"] and d["mlock_gib"] == d["file_gib"], "a memory map locks the whole file"
+
+    d = moe.builder_memory(f"llama-server -m {path} -lm mlock --cache-ram 32768 --cpu-moe")
+    assert d["mlock"] and not d["mapped"] and d["mlock_gib"] == d["cpu_weights_gib"], "read into buffers: only the CPU's"
+    assert d["moe"]["k"] == 3 and d["cache_ram_mib"] == 32768 and not d["cache_ram_default"]
+    assert moe.builder_memory(f"llama-server -m {path} -lm mmap+mlock")["mlock"]
+    assert moe.builder_memory(f"llama-server -m {path} --mlock")["mlock_flag"], "older builds' --mlock still reads as on"
+
+    r = client.post("/api/builder/memory", json={"command": f"llama-server -m {path} -cram -1"}).get_json()
+    assert r["memory"]["cache_ram_mib"] == -1 and "ram" in r["memory"]
+
+
 def test_MoE_a_quiet_running_model_is_reloaded_with_its_new_command():
     from src import moe as moe_mod
     h = moe_mod.Holder()

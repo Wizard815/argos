@@ -88,6 +88,11 @@ RUN_COLUMNS: dict[str, str] = {
     "gpu_util": "REAL",
     "mem_used_gb": "REAL",
     "temp_c": "REAL",
+    # benchmarks: the GPUs' average watts while the test ran, its speed per watt, and the power setting it ran at
+    "power_w": "REAL",
+    "tokens_per_watt": "REAL",
+    "prompt_per_watt": "REAL",
+    "power_label": "TEXT",
     "note": "TEXT",
     "log_source": "TEXT",
     "success": "INTEGER DEFAULT 1",
@@ -1038,6 +1043,10 @@ class Store:
             "AVG(mem_avg_mb) AS mem_avg_mb, MAX(mem_max_mb) AS mem_max_mb, MAX(mem_total_mb) AS mem_total_mb, "
             "MAX(temp_max) AS temp_max, AVG(power_avg) AS power_avg FROM gpu_hourly WHERE hour>=? AND hour<=? "
             "GROUP BY gpu ORDER BY gpu", (t0 - 3600, t1))
+
+    def gpu_samples_between(self, t0: float, t1: float) -> list[dict]:
+        """The raw GPU readings between two times (empty once they have been rolled up)."""
+        return self._q("SELECT ts, gpu, util, temp_c, power_w FROM gpu_samples WHERE ts>=? AND ts<=? ORDER BY ts, gpu", (t0, t1))
 
     def gpu_latest(self) -> list[dict]:
         return self._q("SELECT * FROM gpu_samples WHERE ts=(SELECT MAX(ts) FROM gpu_samples) ORDER BY gpu")

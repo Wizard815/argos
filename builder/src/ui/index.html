@@ -96,6 +96,7 @@
             <div class="card-head"><h2>Settings</h2><span class="spacer"></span><span class="hint">blank = llama.cpp default</span></div>
             <div class="fields" id="bFields"></div>
           </div>
+          <div class="card"><div class="card-head"><h2>System RAM</h2><span class="spacer"></span><span class="hint">MoE offload, caches and locking</span></div><div class="stack" id="bMem"></div></div>
           <div class="card"><div class="card-head"><h2>Context &amp; chats</h2><span class="spacer"></span><span class="hint">how -c splits between chats, and RoPE</span></div><div id="bCtx"></div></div>
           </div>
           <div>
@@ -148,7 +149,7 @@
         <button class="btn primary" data-action="new"><i data-icon="plus"></i>New</button>
       </div>
       <div class="tabs" data-tabs="profiles">
-        <button data-pane="list" class="on">Profiles</button><button data-pane="defaults">Defaults</button><button data-pane="moe">MoE offload</button>
+        <button data-pane="list" class="on">Profiles</button><button data-pane="defaults">Defaults</button><button data-pane="moe">MoE offload</button><button data-pane="power">Power</button>
       </div>
       <div class="pane on" data-pane="list">
         <div class="card"><div class="table-wrap"><table id="pTable"></table></div></div>
@@ -158,6 +159,9 @@
       </div>
       <div class="pane" data-pane="moe">
         <div id="pMoe"></div>
+      </div>
+      <div class="pane" data-pane="power">
+        <div id="pPower"></div>
       </div>
     </section>
 
@@ -240,6 +244,15 @@
               <div class="fields" id="bnFields"></div>
               <label class="check" style="margin-top:8px" title="llama-bench loads the model itself: models the engine has loaded would leave it no room and slow it down">
                 <input type="checkbox" id="bnUnload" checked> Unload the engine's models first</label>
+              <div class="row" style="margin-top:8px;gap:8px;align-items:center" title="The GPUs' power cap while this runs (Profiles -> Power). Its watts and tokens per watt are saved with the results, so settings can be compared.">
+                <span class="hint" style="margin:0">GPU power</span>
+                <select id="bnPower" style="width:auto" aria-label="GPU power for this benchmark">
+                  <option value="">as the cards are now</option><option value="profile">the profile's power setting</option>
+                  <option value="stock">stock (the card's own cap)</option><option value="180">180 W</option><option value="150">150 W</option>
+                  <option value="125">125 W</option><option value="custom">other…</option>
+                </select>
+                <input type="number" id="bnPowerW" min="50" max="400" placeholder="W" style="width:8ch" hidden aria-label="Power cap in watts">
+              </div>
               <pre class="pre mono-sm" id="bnCmd" style="margin-top:10px;white-space:pre-wrap"></pre>
               <div class="row" style="margin-top:10px">
                 <button class="btn primary" id="bnRun"><i data-icon="zap"></i>Run</button>
