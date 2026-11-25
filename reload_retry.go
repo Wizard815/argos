@@ -18,7 +18,7 @@ import (
 
 const (
 	retryBodyLimit = 64 << 20 // a bigger body is passed through, and not retried
-	retryMaxTries  = 3
+	retryMaxTries  = 10       // reloads one request may follow; each waits for the next server
 	retrySwapWait  = 60 * time.Second
 )
 
