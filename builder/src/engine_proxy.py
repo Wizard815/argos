@@ -19,6 +19,7 @@ import re
 import socket
 import time
 import urllib.parse
+import urllib.request
 
 from flask import Blueprint, Response, abort, current_app, g, request
 
@@ -108,7 +109,19 @@ def _open(url: str, method: str, target: str, body: bytes, headers: dict, wait: 
     parts = urllib.parse.urlsplit(url)
     https = parts.scheme == "https"
     conn_cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
-    conn = conn_cls(parts.hostname, parts.port or (443 if https else 80), timeout=600)
+    host, port = parts.hostname, parts.port or (443 if https else 80)
+    # a server outside (a cloud fallback) is reached through HTTPS_PROXY / HTTP_PROXY when they are set, as curl
+    # and every other tool here would; the engine on 127.0.0.1 never is
+    proxy = urllib.request.getproxies().get(parts.scheme) if not urllib.request.proxy_bypass(host or "") else None
+    if proxy and host not in ("127.0.0.1", "localhost", "::1"):
+        p = urllib.parse.urlsplit(proxy if "://" in proxy else "http://" + proxy)
+        conn = conn_cls(p.hostname, p.port or 80, timeout=600)
+        if https:
+            conn.set_tunnel(host, port)
+        else:
+            target = f"{url.rstrip('/')}{target}"
+    else:
+        conn = conn_cls(host, port, timeout=600)
     try:
         conn.request(method, target, body=body or None, headers=headers)
         if wait and conn.sock:
