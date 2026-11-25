@@ -18,6 +18,12 @@ import (
 // the model config leaves concurrencyLimit unset.
 const defaultConcurrencyLimit = 10
 
+// defaultConcurrencyQueue is how many requests may wait in line for a model
+// that is at its concurrencyLimit, when concurrencyQueue is unset. A request
+// over the limit waits for a slot instead of getting a 429; only one past the
+// line is refused.
+const defaultConcurrencyQueue = 200
+
 // activeSwap tracks one in-flight swap and the callers waiting on it.
 type activeSwap struct {
 	modelID string
@@ -44,11 +50,16 @@ type FIFO struct {
 	effects Effects
 
 	limits     map[string]int
+	lines      map[string]int // how many may wait beyond the limit, per model
 	active     map[string]*activeSwap
 	reserved   map[string]int
 	inFlight   map[string]int
 	prefilling map[string]int // prefills in flight per model, from declared intent
 	queued     []HandlerReq
+	// slotWait holds requests for a model that is ready but serving its
+	// concurrencyLimit already, in arrival order: one is served each time a
+	// request to that model finishes.
+	slotWait map[string][]HandlerReq
 }
 
 // NewFIFO builds a FIFO scheduler. Per-model concurrency limits are derived
@@ -56,12 +67,21 @@ type FIFO struct {
 // when set to a value greater than zero.
 func NewFIFO(name string, logger *logmon.Monitor, planner Swapper, cfg config.FifoConfig, models map[string]config.ModelConfig, eff Effects) *FIFO {
 	limits := make(map[string]int, len(models))
+	lines := make(map[string]int, len(models))
 	for id, mc := range models {
 		limit := defaultConcurrencyLimit
 		if mc.ConcurrencyLimit > 0 {
 			limit = mc.ConcurrencyLimit
 		}
 		limits[id] = limit
+		switch {
+		case mc.ConcurrencyQueue < 0:
+			lines[id] = 0 // no line: over the limit is refused at once
+		case mc.ConcurrencyQueue > 0:
+			lines[id] = mc.ConcurrencyQueue
+		default:
+			lines[id] = defaultConcurrencyQueue
+		}
 	}
 
 	usage, _ := planner.(UsageObserver)
@@ -74,6 +94,8 @@ func NewFIFO(name string, logger *logmon.Monitor, planner Swapper, cfg config.Fi
 		cfg:        cfg,
 		effects:    eff,
 		limits:     limits,
+		lines:      lines,
+		slotWait:   make(map[string][]HandlerReq),
 		active:     make(map[string]*activeSwap),
 		reserved:   make(map[string]int),
 		inFlight:   make(map[string]int),
@@ -203,6 +225,20 @@ func (s *FIFO) OnCancel(req HandlerReq) {
 		s.queued = kept
 	}
 
+	// Prune from the lines waiting for a free slot.
+	for m, line := range s.slotWait {
+		kept := line[:0]
+		for _, w := range line {
+			if w.Respond == req.Respond {
+				removed = true
+				s.release(w.Model)
+				continue
+			}
+			kept = append(kept, w)
+		}
+		s.setLine(m, kept)
+	}
+
 	// Prune from any active swap's waiters.
 	for _, sw := range s.active {
 		filtered := sw.waiters[:0]
@@ -266,6 +302,7 @@ func (s *FIFO) OnServeDone(ev ServeDoneEvent) {
 	if s.usage != nil {
 		s.usage.OnServeDone(ev.ModelID)
 	}
+	s.nextInLine(ev.ModelID)
 	if s.inFlight[ev.ModelID] <= 0 {
 		delete(s.inFlight, ev.ModelID)
 		s.drainQueue()
@@ -311,6 +348,14 @@ func (s *FIFO) OnUnload(targets []string, timeout time.Duration) {
 		s.queued = kept
 	}
 
+	// Requests waiting for a slot on an unloaded model get the same error.
+	for id := range targetSet {
+		for _, w := range s.slotWait[id] {
+			s.grantError(w, unloadErr)
+		}
+		delete(s.slotWait, id)
+	}
+
 	// Stop the targeted processes. Done synchronously so Unload's caller can
 	// rely on "after Unload returns, the process is stopped". inFlight is
 	// intentionally NOT cleared here: each dying handler will fire its tracked
@@ -332,6 +377,12 @@ func (s *FIFO) OnShutdown(err error) {
 	for _, w := range s.queued {
 		s.grantError(w, err)
 	}
+	for _, line := range s.slotWait {
+		for _, w := range line {
+			s.grantError(w, err)
+		}
+	}
+	s.slotWait = make(map[string][]HandlerReq)
 }
 
 // grantHandler hands the caller a tracked handler for modelID and, only if the
@@ -344,6 +395,13 @@ func (s *FIFO) grantHandler(req HandlerReq, modelID string) {
 		s.logger.Debugf("failed to set fifo_priority metadata: %v", err)
 	}
 
+	if s.inFlight[modelID] >= s.limit(modelID) {
+		// at its limit: wait in line for a request to it to finish (nextInLine)
+		s.setLine(modelID, append(s.slotWait[modelID], req))
+		Marks.say(RequestID(req.Ctx), fmt.Sprintf("waiting for a free slot: %s is answering %d requests at once, its limit (concurrencyLimit)", modelID, s.inFlight[modelID]))
+		s.logger.Debugf("%s: request for model %s waits for a slot (%d in line)", s.name, modelID, len(s.slotWait[modelID]))
+		return
+	}
 	Marks.say(RequestID(req.Ctx), "")
 	if s.effects.GrantServe(req, modelID) {
 		s.inFlight[modelID]++
@@ -369,8 +427,12 @@ func (s *FIFO) grantError(req HandlerReq, err error) {
 // one future serving slot until they serve, cancel while waiting, or receive a
 // post-admission error.
 func (s *FIFO) admit(req HandlerReq) bool {
-	if s.reserved[req.Model] >= s.limit(req.Model) {
-		s.rejectAdmission(req, swaputil.ConcurrencyLimitError{})
+	if s.reserved[req.Model] >= s.limit(req.Model)+s.line(req.Model) {
+		msg := "Too many requests"
+		if s.line(req.Model) > 0 {
+			msg = fmt.Sprintf("Too many requests: %d running and %d waiting for %s already", s.limit(req.Model), s.line(req.Model), req.Model)
+		}
+		s.rejectAdmission(req, swaputil.ConcurrencyLimitError{Message: msg})
 		return false
 	}
 	if !sendAdmission(req, nil) {
@@ -426,6 +488,40 @@ func (s *FIFO) limit(modelID string) int {
 		return l
 	}
 	return defaultConcurrencyLimit
+}
+
+// line is how many requests may wait for a free slot on modelID.
+func (s *FIFO) line(modelID string) int {
+	if l, ok := s.lines[modelID]; ok {
+		return l
+	}
+	return defaultConcurrencyQueue
+}
+
+// setLine stores a model's waiting line and tells each waiter its place.
+func (s *FIFO) setLine(modelID string, line []HandlerReq) {
+	if len(line) == 0 {
+		delete(s.slotWait, modelID)
+		return
+	}
+	s.slotWait[modelID] = line
+	broadcastQueuePositions(line)
+}
+
+// nextInLine serves the requests waiting for a slot on modelID while it has
+// free slots, oldest first. The model is ready: it just finished a request.
+func (s *FIFO) nextInLine(modelID string) {
+	for len(s.slotWait[modelID]) > 0 && s.inFlight[modelID] < s.limit(modelID) {
+		next := s.slotWait[modelID][0]
+		s.setLine(modelID, s.slotWait[modelID][1:])
+		if st, ok := s.effects.ModelState(modelID); !ok || st != process.StateReady {
+			// it stopped meanwhile: go through the whole decision again
+			s.enqueue(next)
+			s.drainQueue()
+			continue
+		}
+		s.grantHandler(next, modelID)
+	}
 }
 
 // startSwap records the swap as active and launches it via Effects. running is
@@ -599,6 +695,11 @@ func (s *FIFO) Status() Status {
 	for i, q := range s.queued {
 		st.Queued = append(st.Queued, QueuedStatus{Model: q.Model, Position: i + 1, Waited: now.Sub(q.Arrived)})
 	}
+	for _, line := range s.slotWait {
+		for i, q := range line {
+			st.Queued = append(st.Queued, QueuedStatus{Model: q.Model, Position: len(s.queued) + i + 1, Waited: now.Sub(q.Arrived)})
+		}
+	}
 	for _, sw := range s.active {
 		st.Swaps = append(st.Swaps, SwapStatus{
 			Model: sw.modelID, Evict: append([]string(nil), sw.evict...),
@@ -710,6 +811,11 @@ func (s *FIFO) conflictsWithWork(evict []string, req HandlerReq) bool {
 	serving := req.Model
 	if conflictsWithInFlight(evict, s.inFlight) {
 		return true
+	}
+	for _, m := range evict {
+		if len(s.slotWait[m]) > 0 {
+			return true // requests wait in line for it: unloading it makes them wait for a reload too
+		}
 	}
 	late := s.overdue(req) // it waited its limit: requests that came after it wait their turn
 	for _, q := range s.queued {

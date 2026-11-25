@@ -568,7 +568,7 @@ func TestBaseRouter_ConcurrencyLimitRejectsBeforeLoadingStream(t *testing.T) {
 	conf := config.Config{
 		HealthCheckTimeout: 5,
 		Models: map[string]config.ModelConfig{
-			"a": {ConcurrencyLimit: 2, SendLoadingState: &sendLoading},
+			"a": {ConcurrencyLimit: 2, ConcurrencyQueue: -1, SendLoadingState: &sendLoading},
 			"b": {},
 		},
 	}
@@ -696,5 +696,51 @@ func TestBaseRouter_Shutdown_StopsAllProcesses(t *testing.T) {
 	// Second Shutdown should report already in progress.
 	if err := b.Shutdown(0); err == nil {
 		t.Errorf("second Shutdown returned nil, want error")
+	}
+}
+
+// TestBaseRouter_OverTheLimitWaitsThenServes: with the default line, a request
+// over concurrencyLimit is not refused: it waits and is served once a slot frees.
+func TestBaseRouter_OverTheLimitWaitsThenServes(t *testing.T) {
+	conf := config.Config{
+		HealthCheckTimeout: 5,
+		Models:             map[string]config.ModelConfig{"a": {ConcurrencyLimit: 1}},
+	}
+	a := newFakeProcess("a")
+	a.autoReady = true
+	a.serveBlock = make(chan struct{})
+	b := newTestBaseWithConfig(t, conf, map[string]process.Process{"a": a}, &stubPlanner{})
+
+	codes := make(chan int, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			w := httptest.NewRecorder()
+			b.ServeHTTP(w, newStreamRequest("a"))
+			codes <- w.Code
+		}()
+	}
+	waitSignal(t, a.serveStarted, "first request start")
+	time.Sleep(200 * time.Millisecond)
+	if n := a.serveCalls.Load(); n != 1 {
+		t.Fatalf("serving %d at once, want 1 (the second waits)", n)
+	}
+	select {
+	case c := <-codes:
+		t.Fatalf("a request finished early with %d: the second must wait, not be refused", c)
+	default:
+	}
+	close(a.serveBlock)
+	for i := 0; i < 2; i++ {
+		select {
+		case c := <-codes:
+			if c != http.StatusOK {
+				t.Fatalf("status %d, want 200", c)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the waiting request was never served")
+		}
+	}
+	if n := a.serveCalls.Load(); n != 2 {
+		t.Fatalf("served %d, want 2", n)
 	}
 }

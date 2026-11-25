@@ -184,6 +184,10 @@ def _forward(engine_path: str) -> Response:
         except ValueError:
             parsed = None
     model = _model_of(body, parsed) if request.method == "POST" else ""
+    if engine_path.startswith("/upstream/"):  # the model is the path's first part: /upstream/<model>/...
+        model = urllib.parse.unquote(engine_path[len("/upstream/"):].split("/", 1)[0])
+    elif not model and request.method == "GET" and engine_path.rstrip("/") not in ("/v1/models", "/models"):
+        model = request.args.get("model", "")  # a GET routed by ?model= (voices, a model's props)
 
     # ----- the key's rules (gateway.py) -----
     groups = (store.get_settings().get(gateway.GROUPS_KEY) or {}) if (store is not None and key) else {}

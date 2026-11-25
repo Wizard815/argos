@@ -334,3 +334,11 @@ def test_Gateway_waitress_keeps_the_forwarded_headers():
     import inspect
     from src import app as app_module
     assert "clear_untrusted_proxy_headers=False" in inspect.getsource(app_module.main)
+
+
+def test_Gateway_a_key_cannot_reach_other_models_through_upstream(gw):
+    k = _key(gw, rules={"models": ["fast"]})
+    c = _out(gw, k)
+    assert c.get("/upstream/chat/health").status_code == 403
+    assert c.get("/upstream/fast/health").status_code != 403
+    assert c.get("/v1/models?model=chat").status_code == 200, "a list is not a model call"

@@ -3,14 +3,34 @@ title: Routing capacity and request queues
 summary: Configure concurrencyLimit and globalConcurrencyLimit, and understand queued work while a model is loading or busy.
 category: guides
 tags: [routing, queue, capacity, concurrency, concurrency-limit, max-concurrent-requests, global-concurrency-limit, rate-limit]
-config_keys: [routing, models.*.concurrencyLimit, globalConcurrencyLimit]
-updated: 2026-09-10
+config_keys: [routing, models.*.concurrencyLimit, models.*.concurrencyQueue, globalConcurrencyLimit]
+updated: 2026-11-25
 ---
 
 # Routing capacity and request queues
 
 There is no `models.*.maxConcurrentRequests` setting. The real per-model key
 is `models.*.concurrencyLimit`, which limits active parallel requests.
+
+## Over the limit: wait in line
+
+A model answers `concurrencyLimit` requests at once (10 when unset). The next
+ones wait in a line for that model and are served oldest first as running
+requests finish, so a burst from an agent is slowed down, not failed. The
+line holds `concurrencyQueue` requests (200 when unset); one past it gets an
+HTTP 429. Schedule -> Live lists the waiting requests.
+
+```yaml
+models:
+  qwen-27b:
+    cmd: llama-server --port ${PORT} -m /models/qwen-27b.gguf --parallel 4
+    concurrencyLimit: 4    # what --parallel can really run at once
+    concurrencyQueue: 50   # the rest wait; the 55th at once gets a 429
+```
+
+`concurrencyQueue: -1` brings back the old behaviour: every request over the
+limit gets a 429 at once. A model with requests waiting in line is busy, so
+the pool does not unload it for another model until the line is empty.
 
 The router serializes model swaps and queues requests until the selected model
 is ready. Avoid using many simultaneous client retries as a capacity control:

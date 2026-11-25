@@ -151,23 +151,26 @@ class HttpClient:
         self._post({"jsonrpc": "2.0", "method": "notifications/initialized"}, 15)
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = CALL_TIMEOUT) -> dict:
-        with self.lock:
-            for attempt in (0, 1):
+        # the lock covers the handshake and the ids; the calls themselves run side by side
+        for attempt in (0, 1):
+            with self.lock:
                 if not self.ready:
                     self._init()
                 self.next_id += 1
-                try:
-                    got = self._post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params or {}}, timeout)
-                except _SessionGone:
+                mid = self.next_id
+            try:
+                got = self._post({"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}}, timeout)
+            except _SessionGone:
+                with self.lock:
                     self.ready = False
-                    if attempt:
-                        raise MCPError("the server dropped the session twice") from None
-                    continue
-                if not got:
-                    raise MCPError("no answer")
-                if "error" in got:
-                    raise MCPError(str(got["error"].get("message") if isinstance(got["error"], dict) else got["error"]))
-                return got.get("result") or {}
+                if attempt:
+                    raise MCPError("the server dropped the session twice") from None
+                continue
+            if not got:
+                raise MCPError("no answer")
+            if "error" in got:
+                raise MCPError(str(got["error"].get("message") if isinstance(got["error"], dict) else got["error"]))
+            return got.get("result") or {}
         raise MCPError("no answer")
 
     def close(self) -> None:
@@ -204,6 +207,7 @@ class StdioClient:
         self.cfg = cfg
         self.proc: Optional[subprocess.Popen] = None
         self.lock = threading.Lock()
+        self.wlock = threading.Lock()  # one message at a time on stdin
         self.cond = threading.Condition()
         self.answers: dict[int, dict] = {}
         self.next_id = 0
@@ -224,7 +228,8 @@ class StdioClient:
                                         "clientInfo": {"name": "argos", "version": "1"}}, 60)
         if "error" in got:
             raise MCPError(f"initialize failed: {got['error']}")
-        self._write({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        with self.wlock:
+            self._write({"jsonrpc": "2.0", "method": "notifications/initialized"})
         self.ready = True
 
     def _errs(self, proc) -> None:
@@ -240,8 +245,9 @@ class StdioClient:
             if not isinstance(msg, dict):
                 continue
             if "method" in msg and "id" in msg:  # the server asks something (ping, roots): answer plainly
-                self._write({"jsonrpc": "2.0", "id": msg["id"], "result": {}} if msg["method"] == "ping" else
-                            {"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": "not supported"}})
+                with self.wlock:
+                    self._write({"jsonrpc": "2.0", "id": msg["id"], "result": {}} if msg["method"] == "ping" else
+                                {"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": "not supported"}})
                 continue
             if "id" in msg:
                 with self.cond:
@@ -258,9 +264,11 @@ class StdioClient:
             raise MCPError(f"the server is not running: {exc}") from exc
 
     def _send(self, method: str, params: dict, timeout: float) -> dict:
-        self.next_id += 1
-        mid = self.next_id
-        self._write({"jsonrpc": "2.0", "id": mid, "method": method, "params": params})
+        with self.cond:
+            self.next_id += 1
+            mid = self.next_id
+        with self.wlock:
+            self._write({"jsonrpc": "2.0", "id": mid, "method": method, "params": params})
         deadline = time.time() + timeout
         with self.cond:
             while mid not in self.answers:
@@ -273,10 +281,12 @@ class StdioClient:
             return self.answers.pop(mid)
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = CALL_TIMEOUT) -> dict:
+        # the lock covers starting the server only: requests then run side by side, each answer matched to its
+        # request by id, so a slow tool does not hold up a quick one
         with self.lock:
             if self.proc is None or self.proc.poll() is not None:
                 self._start()
-            got = self._send(method, params or {}, timeout)
+        got = self._send(method, params or {}, timeout)
         if "error" in got:
             e = got["error"]
             raise MCPError(str(e.get("message") if isinstance(e, dict) else e))

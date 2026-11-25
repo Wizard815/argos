@@ -853,7 +853,7 @@ func newFIFOWithLimit(t *testing.T, model string, limit int) (*FIFO, *fakeEffect
 	eff := newFakeEffects()
 	eff.states[model] = process.StateReady
 	models := map[string]config.ModelConfig{
-		model: {ConcurrencyLimit: limit},
+		model: {ConcurrencyLimit: limit, ConcurrencyQueue: -1},
 	}
 	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{}, config.FifoConfig{}, models, eff)
 	return s, eff
@@ -892,7 +892,8 @@ func TestFIFO_ConcurrencyLimit_RejectsOverLimit(t *testing.T) {
 }
 
 // TestFIFO_ConcurrencyLimit_DefaultIsTen verifies that a model without an
-// explicit ConcurrencyLimit gets the default cap of 10.
+// explicit ConcurrencyLimit serves 10 at once, and the 11th waits in line
+// (no 429) until one of them finishes.
 func TestFIFO_ConcurrencyLimit_DefaultIsTen(t *testing.T) {
 	eff := newFakeEffects()
 	eff.states["a"] = process.StateReady
@@ -908,12 +909,123 @@ func TestFIFO_ConcurrencyLimit_DefaultIsTen(t *testing.T) {
 		t.Fatalf("served(a)=%d want 10 (default limit)", got)
 	}
 
-	// 11th request is rejected.
 	r := req("a")
 	s.OnRequest(r)
-	assertAdmission429(t, r)
-	if got := eff.errored("a"); got != 0 {
-		t.Fatalf("errored(a)=%d want 0 (over default limit rejects before grant)", got)
+	assertAdmitted(t, r)
+	if got := eff.served("a"); got != 10 {
+		t.Fatalf("served(a)=%d want 10: the 11th waits", got)
+	}
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+	if got := eff.served("a"); got != 11 {
+		t.Fatalf("served(a)=%d want 11 once a slot frees", got)
+	}
+}
+
+// TestFIFO_ConcurrencyQueue_WaitsInOrderAndRefusesPastTheLine: over the limit a
+// request waits; the line is served oldest first; only past the line is a 429.
+func TestFIFO_ConcurrencyQueue_WaitsInOrderAndRefusesPastTheLine(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	models := map[string]config.ModelConfig{"a": {ConcurrencyLimit: 1, ConcurrencyQueue: 2}}
+	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{}, config.FifoConfig{}, models, eff)
+
+	r1, r2, r3, r4 := req("a"), req("a"), req("a"), req("a")
+	for _, r := range []HandlerReq{r1, r2, r3} {
+		s.OnRequest(r)
+		assertAdmitted(t, r)
+	}
+	s.OnRequest(r4)
+	assertAdmission429(t, r4)
+	if got := len(s.slotWait["a"]); got != 2 {
+		t.Fatalf("line=%d want 2", got)
+	}
+	if st := s.Status(); len(st.Queued) != 2 {
+		t.Fatalf("status shows %d waiting, want 2", len(st.Queued))
+	}
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+	if eff.served("a") != 2 || len(s.slotWait["a"]) != 1 || s.slotWait["a"][0].Respond != r3.Respond {
+		t.Fatalf("after one finished: served=%d line=%d (r2 goes first)", eff.served("a"), len(s.slotWait["a"]))
+	}
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+	if eff.served("a") != 3 || len(s.slotWait) != 0 || len(s.reserved) != 0 {
+		t.Fatalf("all served: served=%d line=%v reserved=%v", eff.served("a"), s.slotWait, s.reserved)
+	}
+}
+
+// TestFIFO_ConcurrencyQueue_CancelLeavesTheLine: a client that gives up while
+// waiting for a slot frees its place and its reservation.
+func TestFIFO_ConcurrencyQueue_CancelLeavesTheLine(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	models := map[string]config.ModelConfig{"a": {ConcurrencyLimit: 1}}
+	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{}, config.FifoConfig{}, models, eff)
+	r1, r2, r3 := req("a"), reqCh("a"), req("a")
+	s.OnRequest(r1)
+	s.OnRequest(r2)
+	s.OnRequest(r3)
+	s.OnCancel(r2)
+	if len(s.slotWait["a"]) != 1 || s.reserved["a"] != 2 {
+		t.Fatalf("after cancel: line=%d reserved=%d", len(s.slotWait["a"]), s.reserved["a"])
+	}
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+	if eff.served("a") != 2 {
+		t.Fatalf("r3 is served next: served=%d", eff.served("a"))
+	}
+}
+
+// TestFIFO_ConcurrencyQueue_SwapWaitersOverTheLimitWait: more callers than the
+// limit join a load; once it is ready the extra ones wait for slots.
+func TestFIFO_ConcurrencyQueue_SwapWaitersOverTheLimitWait(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateStopped
+	models := map[string]config.ModelConfig{"a": {ConcurrencyLimit: 2}}
+	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{}, config.FifoConfig{}, models, eff)
+	rs := []HandlerReq{req("a"), req("a"), req("a"), req("a")}
+	for _, r := range rs {
+		s.OnRequest(r)
+		assertAdmitted(t, r)
+	}
+	eff.states["a"] = process.StateReady
+	s.OnSwapDone(SwapDone{ModelID: "a"})
+	if eff.served("a") != 2 || len(s.slotWait["a"]) != 2 {
+		t.Fatalf("served=%d line=%d", eff.served("a"), len(s.slotWait["a"]))
+	}
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+	s.OnServeDone(ServeDoneEvent{ModelID: "a"})
+	if eff.served("a") != 4 {
+		t.Fatalf("served=%d want 4", eff.served("a"))
+	}
+}
+
+// TestFIFO_ConcurrencyQueue_UnloadFailsTheLine: unloading a model answers the
+// requests waiting for its slots with the unload error.
+func TestFIFO_ConcurrencyQueue_UnloadFailsTheLine(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	models := map[string]config.ModelConfig{"a": {ConcurrencyLimit: 1}}
+	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{}, config.FifoConfig{}, models, eff)
+	s.OnRequest(req("a"))
+	s.OnRequest(req("a"))
+	s.OnUnload([]string{"a"}, time.Second)
+	if eff.errored("a") != 1 || len(s.slotWait) != 0 {
+		t.Fatalf("errored=%d line=%v", eff.errored("a"), s.slotWait)
+	}
+}
+
+// TestFIFO_ConcurrencyQueue_WaitersKeepTheirModelLoaded: a model with requests
+// in line is busy, so another model's load waits rather than unloading it.
+func TestFIFO_ConcurrencyQueue_WaitersKeepTheirModelLoaded(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	eff.states["b"] = process.StateStopped
+	models := map[string]config.ModelConfig{"a": {ConcurrencyLimit: 1}, "b": {}}
+	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{evict: map[string][]string{"b": {"a"}}}, config.FifoConfig{}, models, eff)
+	s.OnRequest(req("a"))
+	s.OnRequest(req("a"))
+	s.OnRequest(req("b"))
+	if eff.startsFor("b") != 0 {
+		t.Fatalf("b must not unload a while requests wait for a")
 	}
 }
 
@@ -947,7 +1059,7 @@ func TestFIFO_ConcurrencyLimit_SwapWaiters(t *testing.T) {
 	eff := newFakeEffects()
 	eff.states["a"] = process.StateStopped
 	models := map[string]config.ModelConfig{
-		"a": {ConcurrencyLimit: 2},
+		"a": {ConcurrencyLimit: 2, ConcurrencyQueue: -1},
 	}
 	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{}, config.FifoConfig{}, models, eff)
 
@@ -986,7 +1098,7 @@ func TestFIFO_ConcurrencyLimit_QueuedWaitersReserveCapacity(t *testing.T) {
 	eff.states["a"] = process.StateStopped
 	eff.states["b"] = process.StateStopped
 	models := map[string]config.ModelConfig{
-		"a": {ConcurrencyLimit: 2},
+		"a": {ConcurrencyLimit: 2, ConcurrencyQueue: -1},
 		"b": {},
 	}
 	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{evict: map[string][]string{"a": {"b"}}}, config.FifoConfig{}, models, eff)
@@ -1032,7 +1144,7 @@ func TestFIFO_ConcurrencyLimit_CancelledQueuedWaiterReleasesReservation(t *testi
 	eff.states["a"] = process.StateStopped
 	eff.states["b"] = process.StateStopped
 	models := map[string]config.ModelConfig{
-		"a": {ConcurrencyLimit: 1},
+		"a": {ConcurrencyLimit: 1, ConcurrencyQueue: -1},
 		"b": {},
 	}
 	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{evict: map[string][]string{"a": {"b"}}}, config.FifoConfig{}, models, eff)

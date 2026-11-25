@@ -1829,3 +1829,13 @@ routing:
 	assert.Equal(t, map[string]float64{"gemma": 20}, cfg.Routing.Router.Settings.Pool.Sizes)
 	assert.Equal(t, []string{"gemma"}, cfg.Routing.Router.Settings.Pool.Persistent)
 }
+
+func TestConfig_ConcurrencyQueue(t *testing.T) {
+	c, err := LoadConfigFromReader(strings.NewReader("models:\n  m:\n    cmd: llama-server --port ${PORT}\n    concurrencyQueue: 50\n"))
+	if err != nil || c.Models["m"].ConcurrencyQueue != 50 {
+		t.Fatalf("got %v %+v", err, c.Models["m"].ConcurrencyQueue)
+	}
+	if _, err := LoadConfigFromReader(strings.NewReader("models:\n  m:\n    cmd: llama-server --port ${PORT}\n    concurrencyQueue: -2\n")); err == nil {
+		t.Fatal("-2 must be refused")
+	}
+}

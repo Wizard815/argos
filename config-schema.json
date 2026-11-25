@@ -581,7 +581,13 @@
                         "type": "integer",
                         "minimum": 0,
                         "default": 0,
-                        "description": "Overrides allowed number of active parallel requests to a model. 0 uses internal default of 10. >0 overrides default. Requests exceeding limit get HTTP 429."
+                        "description": "Overrides allowed number of active parallel requests to a model. 0 uses internal default of 10. >0 overrides default. Requests over the limit wait in line for a free slot (concurrencyQueue)."
+                    },
+                    "concurrencyQueue": {
+                        "type": "integer",
+                        "minimum": -1,
+                        "default": 0,
+                        "description": "How many requests over concurrencyLimit wait in line for a free slot, oldest first. 0 uses the default of 200; -1 refuses them at once with HTTP 429. Past the line a request gets HTTP 429."
                     },
                     "vram": {
                         "type": "number",

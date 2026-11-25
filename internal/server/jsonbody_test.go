@@ -32,3 +32,16 @@ func TestServer_JSONBodyWithoutContentType(t *testing.T) {
 		}
 	}
 }
+
+func TestServer_BrokenJSONIsA400(t *testing.T) {
+	h := requireJSONBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	for _, body := range []string{"{not json", "", "[1,2]", `"text"`, `{"messages":[]}`} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%q: status %d, want 400", body, w.Code)
+		}
+	}
+}

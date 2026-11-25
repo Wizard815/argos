@@ -98,6 +98,11 @@ type ModelConfig struct {
 	// Limit concurrency of HTTP requests to process
 	ConcurrencyLimit int `yaml:"concurrencyLimit"`
 
+	// ConcurrencyQueue is how many requests over ConcurrencyLimit wait in line
+	// for a free slot (0 = the default, 200; -1 = none: refused with a 429 at
+	// once, as before).
+	ConcurrencyQueue int `yaml:"concurrencyQueue"`
+
 	// VRAM is the model's GPU memory footprint in GiB (weights + KV cache +
 	// buffers). The pool router uses it to decide what fits. 0 estimates it
 	// from the model file size.
