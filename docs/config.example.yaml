@@ -449,9 +449,16 @@ models:
     # - useful for limiting the number of active parallel requests a model can process
     # - must be set per model
     # - any number greater than 0 will override the internal default value of 10
-    # - any requests that exceeds the limit will receive an HTTP 429 Too Many Requests response
+    # - requests over the limit wait in line for a free slot (concurrencyQueue)
     # - recommended to be omitted and the default used
     concurrencyLimit: 0
+
+    # concurrencyQueue: how many requests over concurrencyLimit wait in line
+    # - optional, default: 0 (a line of 200)
+    # - they are served oldest first as running requests finish
+    # - a request past the line gets HTTP 429 Too Many Requests
+    # - -1: no line, every request over the limit gets HTTP 429 at once
+    concurrencyQueue: 0
 
     # vram: the model's GPU memory footprint in GiB
     # - optional, default: 0 (estimate from the -m model file size)

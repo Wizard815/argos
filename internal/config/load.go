@@ -135,6 +135,9 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 	for _, modelId := range modelIds {
 		modelConfig := config.Models[modelId]
 		modelConfig.HealthCheckTimeout = config.HealthCheckTimeout
+		if modelConfig.ConcurrencyQueue < -1 {
+			return Config{}, fmt.Errorf("model %s: concurrencyQueue must be -1 (no line), 0 (the default) or more", modelId)
+		}
 		if modelId == ComfyUIModelID {
 			if modelConfig.ConcurrencyLimit < comfyUIConcurrencyLimit {
 				modelConfig.ConcurrencyLimit = comfyUIConcurrencyLimit
