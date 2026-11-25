@@ -435,6 +435,8 @@ const onShow = {
     const pane = $(".tabs[data-tabs=settings] button.on")?.dataset.pane;
     if (pane === "assistant") loadSettingsAssistant();
     else if (pane === "security") loadSecurity();
+    else if (pane === "gateway") loadGateway();
+    else if (pane === "mcp") loadMcp();
   }),
   playground: () => {
     if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect();
@@ -4325,11 +4327,206 @@ async function loadSecurity() {
     h("label", { class: "check wide" }, req, "Require a key for the model API (", h("code", {}, base), " and every other engine path)",
       !st.keys.length && !st.require_key ? h("span", { class: "muted" }, " · make a key first") : null),
     h("p", { class: "hint", style: "margin:2px 0 8px" }, "A browser logged in to Argos (the Playground, the assistant) does not need one."),
-    st.keys.length ? h("div", { class: "table-wrap" }, simpleTable(["Name", "Starts with", "Made", "Last used", ""],
-      st.keys.map((k) => [k.name, h("code", {}, `${k.prefix}…`), ago(k.created_at), k.last_used_at ? ago(k.last_used_at) : "never",
-        btn("Revoke", revoke(k), "sm ghost danger")]))) : h("div", { class: "muted mono-sm" }, "No keys yet."),
+    st.keys.length ? h("div", { class: "table-wrap" }, simpleTable(["Name", "Starts with", "May use", "Limits", "Made", "Last used", ""],
+      st.keys.map((k) => [k.name, h("code", {}, `${k.prefix}…`), keyScope(k.rules), keyLimits(k.rules), ago(k.created_at),
+        k.last_used_at ? ago(k.last_used_at) : "never",
+        h("span", { class: "nowrap" }, btn("Edit", () => editKey(k), "sm ghost", "pencil"), " ", btn("Revoke", revoke(k), "sm ghost danger"))]))) : h("div", { class: "muted mono-sm" }, "No keys yet."),
     h("div", { class: "row", style: "gap:8px; margin-top:10px; flex-wrap:nowrap" }, name, btn("Make a key", make, "sm primary", "plus")));
-  fill($("#sSecurity"), pwCard, keyCard);
+  fill($("#sSecurity"), pwCard, keyCard, await keyUsageCard());
+}
+
+// ── API key rules (gateway.py): models, MCP servers, expiry, limits ──
+function keyScope(r = {}) {
+  const bits = [];
+  if (r.blocked) bits.push(h("span", { class: "pill bad" }, "blocked"));
+  if (r.expires_at) bits.push(h("span", { class: `pill ${r.expires_at * 1000 < Date.now() ? "bad" : ""}` }, `until ${new Date(r.expires_at * 1000).toLocaleDateString()}`));
+  bits.push((r.models || []).length ? h("span", { title: r.models.join(", ") }, `${r.models.length} model rule${r.models.length > 1 ? "s" : ""}`) : "every model");
+  const mm = r.mcp_mode || "all";
+  bits.push(" · ", mm === "all" ? "every MCP" : mm === "none" ? "no MCP" : `${mm === "only" ? "only" : "not"} ${(r.mcps || []).join(", ") || "—"}`);
+  return h("span", { class: "mono-sm" }, ...bits.map((b) => (typeof b === "string" ? b : [b, " "])).flat());
+}
+function keyLimits(r = {}) {
+  const l = [["rpm", "req/min"], ["tpm", "tok/min"], ["parallel", "at once"], ["daily_tokens", "tok/day"], ["monthly_tokens", "tok/month"]]
+    .filter(([k]) => r[k]).map(([k, u]) => `${Number(r[k]).toLocaleString()} ${u}`);
+  return l.length ? h("span", { class: "mono-sm" }, l.join(" · ")) : h("span", { class: "muted" }, "none");
+}
+async function editKey(k) {
+  const r = k.rules || {};
+  let mcps = [];
+  try { mcps = (await api("GET", "/api/mcp/servers")).servers.map((x) => x.name); } catch (e) { /* none yet */ }
+  let groups = {};
+  try { groups = (await api("GET", "/api/gateway")).groups || {}; } catch (e) { /* none */ }
+  const name = h("input", { type: "text", value: k.name });
+  const models = h("textarea", { rows: 3, placeholder: "blank = every model\nqwen3.8-27b-uncen-mtp-2chat-512k\ngemma*\n@coding", spellcheck: "false" }, (r.models || []).join("\n"));
+  const mode = h("select", {}, [["all", "every MCP server"], ["only", "only these"], ["except", "every one except these"], ["none", "no MCP"]]
+    .map(([v, l]) => h("option", { value: v, selected: (r.mcp_mode || "all") === v }, l)));
+  const picks = mcps.map((n) => h("label", { class: "check" }, h("input", { type: "checkbox", value: n, checked: (r.mcps || []).includes(n) }), n));
+  const num = (key, ph) => h("input", { type: "number", min: 0, value: r[key] || "", placeholder: ph });
+  const f = { rpm: num("rpm", "0 = none"), tpm: num("tpm", "0 = none"), parallel: num("parallel", "0 = none"),
+    daily_tokens: num("daily_tokens", "0 = none"), monthly_tokens: num("monthly_tokens", "0 = none") };
+  const exp = h("input", { type: "date", value: r.expires_at ? new Date(r.expires_at * 1000).toISOString().slice(0, 10) : "" });
+  const blocked = h("input", { type: "checkbox", checked: !!r.blocked });
+  const note = h("input", { type: "text", value: r.note || "", placeholder: "what it is for" });
+  const field = (label, el, hint) => h("label", { class: "field wide" }, h("span", {}, label), el, hint ? h("small", { class: "hint" }, hint) : null);
+  modal(`Key ${k.name}`, h("div", { class: "fields" },
+    field("Name", name),
+    field("Models it may use", models, `One per line: a name as apps see it, a pattern with *, or @group (Settings → Gateway${Object.keys(groups).length ? `: ${Object.keys(groups).map((g) => "@" + g).join(", ")}` : ""}). Blank: every model. Apps using it see only these in their model list.`),
+    field("MCP servers it may use", mode, "For the all-in-one /mcp link and MCP tools in chat. A single /mcp/<name> link it may not use answers 403."),
+    picks.length ? h("div", { class: "row wide", style: "gap:10px;flex-wrap:wrap" }, picks) : h("small", { class: "hint wide" }, "No MCP servers yet (Settings → MCP)."),
+    h("label", { class: "field" }, h("span", {}, "Requests a minute"), f.rpm), h("label", { class: "field" }, h("span", {}, "Tokens a minute"), f.tpm),
+    h("label", { class: "field" }, h("span", {}, "Requests at once"), f.parallel), h("label", { class: "field" }, h("span", {}, "Tokens a day"), f.daily_tokens),
+    h("label", { class: "field" }, h("span", {}, "Tokens a month"), f.monthly_tokens), h("label", { class: "field" }, h("span", {}, "Expires on"), exp),
+    field("Note", note), h("label", { class: "check wide" }, blocked, "Blocked: refused until unticked")),
+  [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
+    const rules = { models: models.value, mcp_mode: mode.value, mcps: picks.map((p) => p.querySelector("input")).filter((i) => i.checked).map((i) => i.value),
+      expires_at: exp.value ? new Date(exp.value + "T23:59:59").getTime() / 1000 : 0, blocked: blocked.checked, note: note.value };
+    for (const [key, el] of Object.entries(f)) rules[key] = Number(el.value || 0);
+    try { await api("PUT", `/api/security/keys/${k.id}`, { name: name.value, rules }); close(); toast("Saved: it applies to the next request.", "ok"); loadSecurity(); } catch (e) { fail(e); }
+  } }]);
+}
+async function keyUsageCard() {
+  let u;
+  try { u = await api("GET", "/api/security/usage?days=30"); } catch (e) { return null; }
+  const per = {};
+  for (const r of u.rows) {
+    const p = (per[r.key_id] ||= { requests: 0, input: 0, output: 0, today: 0, models: {} });
+    p.requests += r.requests; p.input += r.input_tokens; p.output += r.output_tokens;
+    if (r.day === new Date().toISOString().slice(0, 10)) p.today += r.input_tokens + r.output_tokens;
+    p.models[r.model] = (p.models[r.model] || 0) + r.input_tokens + r.output_tokens;
+  }
+  const rows = Object.entries(u.keys).map(([id, name]) => {
+    const p = per[id] || { requests: 0, input: 0, output: 0, today: 0, models: {} }, live = u.live[id] || {};
+    const top = Object.entries(p.models).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([m, n]) => `${mname(m)} ${n.toLocaleString()}`).join(", ");
+    return [name, p.requests.toLocaleString(), p.input.toLocaleString(), p.output.toLocaleString(), p.today.toLocaleString(),
+      `${live.requests_last_minute || 0} req · ${(live.tokens_last_minute || 0).toLocaleString()} tok · ${live.in_flight || 0} now`, h("span", { class: "mono-sm" }, top || DASH)];
+  });
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Usage per key"), h("span", { class: "spacer" }), h("span", { class: "hint" }, "last 30 days")),
+    rows.length ? h("div", { class: "table-wrap" }, simpleTable(["Key", "Requests", "Tokens in", "Tokens out", "Today", "Last minute", "Most used"], rows))
+      : h("div", { class: "muted mono-sm" }, "No keys yet."));
+}
+
+// ── Settings → Gateway: model groups, answer cache, cloud fallback ──
+async function loadGateway() {
+  let G;
+  try { G = await api("GET", "/api/gateway"); } catch (e) { fill($("#sGateway"), h("p", { class: "hint" }, e.message)); return; }
+  const groupsText = h("textarea", { rows: 4, spellcheck: "false", placeholder: "coding: qwen*coder*, codex\nsmall: *-4b*, *-1.7b*" },
+    Object.entries(G.groups || {}).map(([n, p]) => `${n}: ${p.join(", ")}`).join("\n"));
+  const saveGroups = async () => {
+    const groups = {};
+    for (const line of groupsText.value.split("\n")) { const [n, rest] = line.split(/:(.*)/s); if (n && n.trim()) groups[n.trim()] = (rest || "").split(",").map((x) => x.trim()).filter(Boolean); }
+    try { await api("PUT", "/api/gateway/groups", { groups }); toast("Groups saved.", "ok"); loadGateway(); } catch (e) { fail(e); }
+  };
+  const groupsCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Model groups")),
+    h("p", { class: "hint" }, "Named sets of models. A key's model list can say @name instead of listing them all. One group a line: name: model, pattern*, …"),
+    groupsText, h("div", { class: "row", style: "margin-top:8px" }, btn("Save groups", saveGroups, "sm primary", "save")));
+
+  const c = G.cache || {};
+  const on = h("input", { type: "checkbox", checked: !!c.enabled });
+  const ttl = h("input", { type: "number", min: 1, value: c.ttl_s || 3600 });
+  const max = h("input", { type: "number", min: 1, value: c.max_entries || 500 });
+  const cm = h("input", { type: "text", value: (c.models || []).join(", "), placeholder: "blank = every model" });
+  const saveCache = async () => { try { await api("PUT", "/api/gateway/cache", { enabled: on.checked, ttl_s: Number(ttl.value), max_entries: Number(max.value), models: cm.value.split(",") }); toast("Saved.", "ok"); loadGateway(); } catch (e) { fail(e); } };
+  const cacheCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Answer cache"), h("span", { class: "spacer" }),
+      h("span", { class: "hint" }, `${c.entries || 0} answers kept · ${c.hits || 0} hits · ${c.misses || 0} misses`)),
+    h("p", { class: "hint" }, "The exact same request asked again is answered from memory without the GPU. Only requests with temperature 0 (the same answer every time anyway) and embeddings, never streamed ones."),
+    h("div", { class: "fields" }, h("label", { class: "check wide" }, on, "Keep answers"), h("label", { class: "field" }, h("span", {}, "Keep for (seconds)"), ttl),
+      h("label", { class: "field" }, h("span", {}, "At most (answers)"), max), h("label", { class: "field wide" }, h("span", {}, "Only these models (comma separated, * allowed)"), cm)),
+    h("div", { class: "row", style: "gap:8px;margin-top:8px" }, btn("Save", saveCache, "sm primary", "save"),
+      btn("Empty it", async () => { try { await api("POST", "/api/gateway/cache/clear"); loadGateway(); } catch (e) { fail(e); } }, "sm ghost")));
+
+  const fbRows = (G.fallbacks || []).map((r) => [r.name, h("code", {}, r.match), h("span", { class: "mono-sm" }, `${r.url}${r.model ? ` · ${r.model}` : ""}`),
+    [r.on_down ? "down" : "", r.on_too_long ? "prompt too long" : "", r.wait_s ? `no answer in ${r.wait_s}s` : ""].filter(Boolean).join(", ") || DASH,
+    r.has_key ? "saved" : "none", h("span", { class: "nowrap" }, btn("Edit", () => editFallback(r), "sm ghost"), " ",
+      btn("Remove", async () => { try { await api("DELETE", `/api/gateway/fallbacks/${encodeURIComponent(r.name)}`); loadGateway(); } catch (e) { fail(e); } }, "sm ghost danger"))]);
+  const fbCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Cloud fallback"), h("span", { class: "spacer" }), btn("Add", () => editFallback(null), "sm primary", "plus")),
+    h("p", { class: "hint" }, "When a local model cannot answer, send the request to another OpenAI-compatible server instead (OpenAI, OpenRouter, another Argos). The app gets the answer as usual, with an X-Argos-Fallback header, and the Logs say so."),
+    fbRows.length ? h("div", { class: "table-wrap" }, simpleTable(["Name", "Models", "Goes to", "When", "Key", ""], fbRows)) : h("div", { class: "muted mono-sm" }, "No fallback: a local model that fails answers with its error."));
+  fill($("#sGateway"), groupsCard, cacheCard, fbCard);
+}
+function editFallback(r) {
+  const v = r || { on_down: true, on_too_long: true, wait_s: 0 };
+  const inp = (val, ph, type = "text") => h("input", { type, value: val ?? "", placeholder: ph, spellcheck: "false" });
+  const name = inp(v.name, "openai"), match = inp(v.match, "qwen* (or one model name)"), url = inp(v.url, "https://api.openai.com/v1");
+  const model = inp(v.model, "gpt-4o-mini (blank = the same name)"), key = inp("", v.has_key ? "saved: leave blank to keep it" : "sk-…", "password");
+  const down = h("input", { type: "checkbox", checked: v.on_down !== false }), long = h("input", { type: "checkbox", checked: v.on_too_long !== false });
+  const wait = inp(v.wait_s || "", "0 = wait as long as it takes", "number");
+  const field = (label, el, hint) => h("label", { class: "field wide" }, h("span", {}, label), el, hint ? h("small", { class: "hint" }, hint) : null);
+  modal(r ? `Fallback ${r.name}` : "Add a cloud fallback", h("div", { class: "fields" },
+    field("Name", name), field("For the models", match, "The name an app asks for, or a pattern with *."), field("Server URL", url, "Its OpenAI-compatible base, ending in /v1."),
+    field("Model there", model), field("API key there", key, "Kept in Argos's database and never shown again."),
+    h("label", { class: "check wide" }, down, "when the local model fails to start or errors (5xx)"),
+    h("label", { class: "check wide" }, long, "when the prompt does not fit the local model's context"),
+    field("…or when it has not started answering after (seconds)", wait, "Covers a model that is still loading or waiting behind others. Blank: never.")),
+  [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
+    try { await api("POST", "/api/gateway/fallbacks", { replace: r ? r.name : "", name: name.value, match: match.value, url: url.value, model: model.value, api_key: key.value,
+      on_down: down.checked, on_too_long: long.checked, wait_s: Number(wait.value || 0) }); close(); loadGateway(); } catch (e) { fail(e); }
+  } }]);
+}
+
+// ── Settings → MCP: the gateway's MCP servers, and the links apps use ──
+async function loadMcp() {
+  let M;
+  try { M = await api("GET", "/api/mcp/servers"); } catch (e) { fill($("#sMcp"), h("p", { class: "hint" }, e.message)); return; }
+  const base = location.origin;
+  const link = (path, what) => h("div", { class: "row", style: "gap:8px;flex-wrap:nowrap" }, h("code", { style: "flex:1;overflow:hidden;text-overflow:ellipsis" }, base + path),
+    btn("Copy", () => copyText(base + path), "sm ghost"), what ? h("span", { class: "hint", style: "margin:0" }, what) : null);
+  const head = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "MCP gateway"), h("span", { class: "spacer" }), btn("Add a server", () => editMcp(null), "sm primary", "plus")),
+    h("p", { class: "hint" }, "Your MCP servers behind Argos, so every app is set up once. Apps send their Argos API key; what a key may reach is set on its Edit (Settings → Security)."),
+    h("p", { class: "hint", style: "margin-bottom:4px" }, h("b", {}, "All in one:"), ` every server, tools named <server>${M.separator}<tool>. Add ?skip=a,b or ?only=a,b to leave some out for one app.`),
+    link("/mcp"),
+    h("p", { class: "hint", style: "margin:10px 0 4px" }, h("b", {}, "In a chat request:"), " Argos runs the tools itself. Add to ", h("code", {}, "tools"), ":"),
+    h("pre", { class: "pre" }, '{"type": "mcp", "server_url": "argos", "require_approval": "never"}\n{"type": "mcp", "server_url": "argos/<server>", "require_approval": "never"}'),
+    h("p", { class: "hint", style: "margin:0" }, "Without require_approval \"never\" the model's tool calls go back to the app to decide. max_tool_rounds (default 5) caps the rounds."));
+  const cards = M.servers.map((s) => {
+    const st = s.status || {};
+    const pill = st.at ? (st.ok ? h("span", { class: "pill ok" }, `${st.tools} tool${st.tools === 1 ? "" : "s"}${st.all_tools !== st.tools ? ` of ${st.all_tools}` : ""} · ${st.ms} ms`) : h("span", { class: "pill bad", title: st.error }, "not answering"))
+      : h("span", { class: "pill" }, "not checked");
+    const out = h("div", { class: "hint" });
+    const test = btn("Test", async () => {
+      test.disabled = true;
+      try { const r = await api("POST", `/api/mcp/servers/${encodeURIComponent(s.name)}/test`); fill(out, r.tools.map((t) => h("div", { class: "mono-sm" }, h("b", {}, t.name), t.description ? ` — ${t.description}` : ""))); }
+      catch (e) { fill(out, h("span", { class: "warn-text" }, e.message)); }
+      test.disabled = false;
+    }, "sm", "check");
+    return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, s.name), pill, h("span", { class: "chip" }, s.transport === "stdio" ? "command" : "URL"),
+        s.enabled ? null : h("span", { class: "pill warn" }, "off"), h("span", { class: "spacer" }), test,
+        btn("Edit", () => editMcp(s), "sm ghost", "pencil"),
+        btn("Remove", async () => { if (!(await confirmBox(`Remove the MCP server ${s.name}?`, "Remove"))) return; try { await api("DELETE", `/api/mcp/servers/${encodeURIComponent(s.name)}`); loadMcp(); } catch (e) { fail(e); } }, "sm ghost danger")),
+      s.description ? h("p", { class: "hint", style: "margin-top:0" }, s.description) : null,
+      h("p", { class: "hint mono-sm", style: "margin-top:0" }, s.transport === "stdio" ? [s.command, ...(s.args || [])].join(" ") : s.url,
+        (s.disabled_tools || []).length ? ` · off: ${s.disabled_tools.join(", ")}` : "", (s.allowed_tools || []).length ? ` · only: ${s.allowed_tools.join(", ")}` : ""),
+      h("p", { class: "hint", style: "margin-bottom:4px" }, h("b", {}, "Its own link:")), link(`/mcp/${s.name}`), out);
+  });
+  fill($("#sMcp"), head, ...(cards.length ? cards : [h("div", { class: "card" }, h("div", { class: "empty" }, "No MCP servers yet. Add one: a command Argos starts (npx, uvx, a script) or the URL of one already running."))]));
+}
+function editMcp(s) {
+  const v = s || { transport: "stdio", enabled: true };
+  const inp = (val, ph) => h("input", { type: "text", value: val ?? "", placeholder: ph, spellcheck: "false" });
+  const name = inp(v.name, "github"), desc = inp(v.description, "what it is for");
+  const transport = h("select", {}, [["stdio", "a command Argos starts (stdio)"], ["http", "a URL (streamable HTTP)"]].map(([x, l]) => h("option", { value: x, selected: v.transport === x }, l)));
+  const cmd = inp(v.command ? [v.command, ...(v.args || [])].map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ") : "", "npx -y @modelcontextprotocol/server-filesystem /data");
+  const url = inp(v.url, "http://mcp-github:8000/mcp");
+  const kv = (obj, ph) => h("textarea", { rows: 2, placeholder: ph, spellcheck: "false" }, Object.entries(obj || {}).map(([k, x]) => `${k}${ph.includes("=") ? "=" : ": "}${x}`).join("\n"));
+  const headers = kv(v.headers, "Authorization: Bearer ${GITHUB_TOKEN}"), env = kv(v.env, "GITHUB_TOKEN=${GITHUB_TOKEN}");
+  const off = inp((v.disabled_tools || []).join(", "), "delete_repo, push"), only = inp((v.allowed_tools || []).join(", "), "blank = every tool");
+  const on = h("input", { type: "checkbox", checked: v.enabled !== false });
+  const field = (label, el, hint) => h("label", { class: "field wide" }, h("span", {}, label), el, hint ? h("small", { class: "hint" }, hint) : null);
+  const stdioBox = h("div", { class: "fields wide" }, field("Command", cmd, "Started by Argos when first used, kept running. It runs inside the Argos container, so the program (npx, uvx, python) must be there."),
+    field("Environment (NAME=value a line)", env, "${NAME} takes the value from Argos's own environment (.env), so a token need not be stored here."));
+  const httpBox = h("div", { class: "fields wide" }, field("URL", url), field("Headers (Name: value a line)", headers, "${NAME} reads Argos's environment. Saved values show as ••••; leave them so to keep them."));
+  const sync = () => { stdioBox.hidden = transport.value !== "stdio"; httpBox.hidden = transport.value !== "http"; };
+  transport.addEventListener("change", sync); sync();
+  const pairs = (t, sep) => Object.fromEntries(t.value.split("\n").map((l) => l.split(sep)).filter((p) => p.length > 1 && p[0].trim()).map(([k, ...r]) => [k.trim(), r.join(sep).trim()]));
+  modal(s ? `MCP server ${s.name}` : "Add an MCP server", h("div", { class: "fields" },
+    field("Name", name, "Lowercase: it is the link /mcp/<name> and the tool prefix."), field("What it is for", desc), field("How Argos reaches it", transport), stdioBox, httpBox,
+    field("Turn off these tools", off, "Comma separated. Small local models do better with fewer tools."), field("Or allow only these tools", only),
+    h("label", { class: "check wide" }, on, "On")),
+  [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
+    const d = { replace: s ? s.name : "", name: name.value, description: desc.value, transport: transport.value, enabled: on.checked,
+      disabled_tools: off.value, allowed_tools: only.value };
+    if (transport.value === "stdio") { d.command = cmd.value; d.env = pairs(env, "="); } else { d.url = url.value; d.headers = pairs(headers, ":"); }
+    try { await api("POST", "/api/mcp/servers", d); close(); toast("Saved. Press Test to see its tools.", "ok"); loadMcp(); } catch (e) { fail(e); }
+  } }]);
 }
 
 // ── Assistant settings: its own page ─────────────────────────
@@ -6851,6 +7048,8 @@ function initTabs() {
     else if (bar.dataset.tabs === "playground" && b.dataset.pane === "bench") loadBenchTab();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "assistant") loadSettingsAssistant();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "security") loadSecurity();
+    else if (bar.dataset.tabs === "settings" && b.dataset.pane === "gateway") loadGateway();
+    else if (bar.dataset.tabs === "settings" && b.dataset.pane === "mcp") loadMcp();
   }));
 }
 

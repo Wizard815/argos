@@ -1,10 +1,10 @@
 ---
 title: API keys, access control, and keeping secrets out of your config
-summary: apiKeys authentication has no per-key rate limits or user permissions; use env macros for secrets.
+summary: The engine's apiKeys are all equal; per-key models, limits and MCP access are Settings -> Security keys. Use env macros for secrets.
 category: guides
 tags: [security, api-keys, auth, secrets, env, rate-limit, users, permissions, access-control]
 config_keys: [apiKeys, macros, models.*.env]
-updated: 2026-08-25
+updated: 2026-11-25
 ---
 
 # API keys and keeping secrets out of your config
@@ -31,9 +31,11 @@ $ printf "sk-%s\n" "$(head -c 48 /dev/urandom | base64)"
 Multiple keys are allowed, which is how you rotate without downtime: add the
 new key, move clients over, remove the old one.
 
-All keys are equivalent. Argos has no per-key rate limiting, user
-accounts, roles, or per-key permissions. Put a reverse proxy or API gateway in
-front of Argos when you need those controls.
+All `apiKeys` are equivalent. For keys with their own model list, MCP servers,
+expiry and limits (requests or tokens a minute, requests at once, tokens a day
+or month), make them in Settings -> Security instead: see "Keys, MCP gateway
+and cloud fallback". Those are checked on Argos's public port, so LiteLLM is
+no longer needed in front for that.
 
 **`apiKeys` is not a substitute for a firewall.** Argos starts processes
 on your machine. Do not expose it to the internet on the strength of a bearer

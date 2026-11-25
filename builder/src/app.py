@@ -43,6 +43,7 @@ from . import engine_proxy, readcache  # noqa: E402
 from .log_analyzer import parse_log_text  # noqa: E402
 from .routes import assistant as assistant_routes  # noqa: E402
 from .routes import runners as runners_routes  # noqa: E402
+from .routes import mcp as mcp_routes  # noqa: E402
 from .routes import security as security_routes  # noqa: E402
 from .routes import bench as bench_routes, core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
 from .measure import Measurer  # noqa: E402
@@ -366,6 +367,9 @@ def create_app(config: dict | None = None) -> Flask:
         return others_vram.measure(pb.runners, pb.servers, listing)
 
     app.extensions["pb"].others_monitor = others_vram.Monitor(_read_others)
+    from .mcp_gateway import Gateway as MCPGateway
+    app.extensions["pb"].mcp = MCPGateway(store)
+    atexit.register(app.extensions["pb"].mcp.close)
     memory.pick = lambda: app.extensions["pb"].assistant.pick("embed")  # GPU or CPU embedding model, per moment
     from .bench import Benches, run_rows
 
@@ -412,9 +416,23 @@ def create_app(config: dict | None = None) -> Flask:
                       PERMANENT_SESSION_LIFETIME=timedelta(days=SESSION_DAYS), SESSION_COOKIE_NAME="argos_session")
     app.register_blueprint(security_routes.bp)
 
+    def _is_model_api(path: str) -> bool:
+        proxied = (request.endpoint or "").startswith("engine_proxy.")
+        return (proxied and path.startswith(MODEL_API_PREFIXES)) or path == "/mcp" or path.startswith("/mcp/")
+
     @app.before_request
     def _who_may():
         path = request.path
+        from flask import g
+        # the key an app sent, with its rules (gateway.py): applied whether or not keys are required
+        g.api_key = None
+        sent = key_from(request.headers) if _is_model_api(path) else ""
+        if sent:
+            g.api_key = security.check_key(sent)
+            if g.api_key is None and security.key_problem(sent):
+                return app.response_class(json.dumps({"error": {"message": security.key_problem(sent),
+                                                                "type": "invalid_request_error", "code": "invalid_api_key"}}),
+                                          status=401, mimetype="application/json")
         # inside the container (the engine calling back, docker exec ... curl) passes; a reverse proxy on the same
         # host also connects from 127.0.0.1, but says who it is forwarding for, so that does not count
         inside = (request.remote_addr or "") in ("127.0.0.1", "::1") and not (
@@ -425,7 +443,7 @@ def create_app(config: dict | None = None) -> Flask:
         if not need_login and not need_key:
             return None
         proxied = (request.endpoint or "").startswith("engine_proxy.")
-        model_api = proxied and path.startswith(MODEL_API_PREFIXES)
+        model_api = _is_model_api(path)
         # what this request needs: the page and the engine's admin paths need a login when a password is set;
         # the model API needs a key when keys are required. A logged-in browser or a valid key is enough for either.
         if model_api and not need_key:
@@ -435,7 +453,7 @@ def create_app(config: dict | None = None) -> Flask:
         if security_routes.logged_in():
             return None
         key = key_from(request.headers)
-        if key and security.check_key(key):
+        if key and (g.api_key if sent else security.check_key(key)):
             return None
         if model_api:
             msg = ("Argos needs an API key for the model API: send Authorization: Bearer <key> (Settings -> Security makes one)"
@@ -448,7 +466,7 @@ def create_app(config: dict | None = None) -> Flask:
         return redirect("/login?next=" + urllib.parse.quote(request.full_path.rstrip("?")))
 
     for bp in (bench_routes.bp, core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp,
-               runners_routes.bp):
+               runners_routes.bp, mcp_routes.bp):
         app.register_blueprint(bp)
     # last: anything the builder does not own goes to the engine (one port for both)
     app.register_blueprint(engine_proxy.bp)

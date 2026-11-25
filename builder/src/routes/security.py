@@ -148,3 +148,132 @@ def security_require_key():
     sec().set_require_key(on)
     current_app.extensions["pb"].event("settings", "model API key " + ("required" if on else "no longer required"))
     return ok(**sec().status())
+
+
+# ----- what each key may do, and the gateway's settings (gateway.py) ----------------------------------------------
+@bp.put("/api/security/keys/<int:key_id>")
+def security_key_rules(key_id):
+    """Body: {name?, rules: {models, mcp_mode, mcps, expires_at, blocked, rpm, tpm, parallel, daily_tokens,
+    monthly_tokens, note}}."""
+    if not _may_change():
+        return err("log in to change keys", 401)
+    d = body()
+    try:
+        k = sec().set_rules(key_id, d.get("rules") or {}, d.get("name"))
+    except ValueError as exc:
+        return err(str(exc))
+    if not k:
+        return err("no such key", 404)
+    current_app.extensions["pb"].event("settings", f"API key {k['name']}: rules changed")
+    return ok(key=k, **sec().status())
+
+
+@bp.get("/api/security/usage")
+def security_usage():
+    """Tokens and requests per key, day and model, and each key's last minute."""
+    if not _may_change():
+        return err("log in to see this", 401)
+    from .. import gateway
+    from ..engine_proxy import limiter
+    days = max(1, min(request.args.get("days", 30, type=int), 400))
+    store = current_app.extensions["pb"].store
+    keys = sec().list_keys()
+    return ok(rows=gateway.usage_report(store, days), days=days,
+              live={k["id"]: limiter().view(k["id"]) for k in keys}, keys={k["id"]: k["name"] for k in keys})
+
+
+def _setting(name, default):
+    return current_app.extensions["pb"].store.get_settings().get(name) or default
+
+
+@bp.get("/api/gateway")
+def gateway_settings():
+    if not _may_change():
+        return err("log in to see this", 401)
+    from .. import gateway
+    from ..engine_proxy import answer_cache
+    store = current_app.extensions["pb"].store
+    return ok(groups=_setting(gateway.GROUPS_KEY, {}), cache={**gateway.cache_settings(store), **answer_cache().view()},
+              fallbacks=[gateway.public_fallback(r) for r in gateway.fallback_rules(store)])
+
+
+@bp.put("/api/gateway/groups")
+def gateway_groups():
+    """Body: {groups: {name: [model patterns]}}: a key's model list can name a group as @name."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import gateway
+    groups = body().get("groups") or {}
+    if not isinstance(groups, dict):
+        return err("groups is {name: [models]}")
+    clean = {}
+    for n, pats in groups.items():
+        n = str(n).strip()
+        if not n or not n.replace("-", "").replace("_", "").isalnum():
+            return err(f"a group name is letters, digits, - and _: {n!r}")
+        if isinstance(pats, str):
+            pats = pats.replace("\n", ",").split(",")
+        clean[n] = [str(p).strip() for p in pats or [] if str(p).strip() and not str(p).strip().startswith("@")]
+    current_app.extensions["pb"].store.set_setting(gateway.GROUPS_KEY, clean)
+    return gateway_settings()
+
+
+@bp.put("/api/gateway/cache")
+def gateway_cache():
+    """Body: {enabled, ttl_s, max_entries, models}."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import gateway
+    d = body()
+    try:
+        s = {"enabled": bool(d.get("enabled")), "ttl_s": max(1.0, float(d.get("ttl_s") or 3600)),
+             "max_entries": max(1, int(d.get("max_entries") or 500)),
+             "models": [m.strip() for m in (d.get("models") or []) if str(m).strip()]}
+    except (TypeError, ValueError):
+        return err("ttl_s and max_entries are numbers")
+    current_app.extensions["pb"].store.set_setting(gateway.CACHE_KEY, s)
+    if not s["enabled"]:
+        from ..engine_proxy import answer_cache
+        answer_cache().clear()
+    return gateway_settings()
+
+
+@bp.post("/api/gateway/cache/clear")
+def gateway_cache_clear():
+    if not _may_change():
+        return err("log in to change this", 401)
+    from ..engine_proxy import answer_cache
+    answer_cache().clear()
+    return gateway_settings()
+
+
+@bp.post("/api/gateway/fallbacks")
+def gateway_fallback_save():
+    """Add or change (``replace``: its old name) a fallback rule. A blank api_key keeps the saved one."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import gateway
+    store = current_app.extensions["pb"].store
+    d = body()
+    rules = gateway.fallback_rules(store)
+    old = next((r for r in rules if r.get("name") == d.get("replace")), None)
+    if old and not d.get("api_key"):
+        d["api_key"] = old.get("api_key", "")
+    try:
+        r = gateway.clean_fallback(d)
+    except ValueError as exc:
+        return err(str(exc))
+    rules = [x for x in rules if x is not old and x.get("name") != r["name"]] + [r]
+    store.set_setting(gateway.FALLBACK_KEY, rules)
+    current_app.extensions["pb"].event("settings", f"fallback {r['name']} saved: {r['match']} -> {r['url']}")
+    return gateway_settings()
+
+
+@bp.delete("/api/gateway/fallbacks/<path:name>")
+def gateway_fallback_delete(name):
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import gateway
+    store = current_app.extensions["pb"].store
+    store.set_setting(gateway.FALLBACK_KEY, [r for r in gateway.fallback_rules(store) if r.get("name") != name])
+    return gateway_settings()

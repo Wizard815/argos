@@ -40,7 +40,8 @@ class Ctx:
     servers: Servers
     runners: Any = None
     benches: Any = None  # llama-bench runs from the Playground
-    others_monitor: Any = None  # VRAM of the runners outside Argos (others_vram.Monitor)
+    others_monitor: Any = None
+    mcp: Any = None  # the MCP gateway (mcp_gateway.Gateway)  # VRAM of the runners outside Argos (others_vram.Monitor)
     export_state: dict = field(default_factory=dict)
     schedule_state: dict = field(default_factory=dict)
 

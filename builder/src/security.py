@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import threading
@@ -153,7 +154,19 @@ class Security:
         return {**row, "key": key}
 
     def list_keys(self) -> list[dict]:
-        return self.store._q("SELECT id, name, prefix, created_at, last_used_at FROM api_keys ORDER BY id")
+        from .gateway import load_rules
+        rows = self.store._q("SELECT id, name, prefix, created_at, last_used_at, rules FROM api_keys ORDER BY id")
+        return [{**r, "rules": load_rules(r.get("rules"))} for r in rows]
+
+    def set_rules(self, key_id: int, rules: dict, name: Optional[str] = None) -> Optional[dict]:
+        """What a key may do (gateway.clean_rules); raises ValueError on a bad value."""
+        from .gateway import clean_rules
+        if not self.store._q("SELECT 1 AS x FROM api_keys WHERE id=?", (key_id,)):
+            return None
+        self.store._x("UPDATE api_keys SET rules=? WHERE id=?", (json.dumps(clean_rules(rules)), key_id))
+        if name is not None and name.strip():
+            self.store._x("UPDATE api_keys SET name=? WHERE id=?", (name.strip()[:60], key_id))
+        return next((k for k in self.list_keys() if k["id"] == key_id), None)
 
     def delete_key(self, key_id: int) -> bool:
         if not self.store._q("SELECT 1 AS x FROM api_keys WHERE id=?", (key_id,)):
@@ -164,16 +177,25 @@ class Security:
     def check_key(self, key: str) -> Optional[dict]:
         if not key:
             return None
-        rows = self.store._q("SELECT id, name FROM api_keys WHERE hash=?", (_key_hash(key),))
+        from .gateway import load_rules, usable
+        rows = self.store._q("SELECT id, name, rules FROM api_keys WHERE hash=?", (_key_hash(key),))
         if not rows:
             return None
-        row = rows[0]
+        row = {**rows[0], "rules": load_rules(rows[0].get("rules"))}
+        if usable(row["rules"]):  # blocked or expired: refused like a wrong key
+            return None
         now = time.time()
         with self._lock:
             if now - self._used.get(row["id"], 0) > 60:
                 self._used[row["id"]] = now
                 self.store._x("UPDATE api_keys SET last_used_at=? WHERE id=?", (now, row["id"]))
         return row
+
+    def key_problem(self, key: str) -> str:
+        """Why a real key is refused (blocked, expired), or "" for a key that is fine or unknown."""
+        from .gateway import load_rules, usable
+        rows = self.store._q("SELECT rules FROM api_keys WHERE hash=?", (_key_hash(key),)) if key else []
+        return usable(load_rules(rows[0].get("rules"))) if rows else ""
 
     def set_require_key(self, on: bool) -> None:
         self._save(require_key=bool(on))
