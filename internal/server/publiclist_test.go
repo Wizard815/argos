@@ -194,3 +194,16 @@ func TestPublicList_ModelsWithoutAProfileCanBeShown(t *testing.T) {
 		t.Fatalf("saved %+v", tf.PublicList)
 	}
 }
+
+func TestPublicList_UpstreamTakesTheShortName(t *testing.T) {
+	s, _ := publicListServer(t)
+	var path string
+	r := s.local.(*stubRouter)
+	r.serveHTTP = func(w http.ResponseWriter, req *http.Request) { path = req.URL.Path; w.Write([]byte("ok")) }
+	req := httptest.NewRequest(http.MethodGet, "/upstream/qwen3.8-27b-uncen-mtp-2chat-512k/health", nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d %s (path %q)", w.Code, w.Body.String(), path)
+	}
+}

@@ -378,3 +378,8 @@ def test_Gateway_family_prefix_is_optional_and_both_names_work(gw):
     c.put("/api/library/family-prefix", json={"on": False})
     assert "gemma--big" in [m["id"] for m in c.get("/v1/models").get_json()["data"]]
     assert len(c.get("/v1/models?all=1").get_json()["data"]) == 3, "?all=1 stays the engine's own list"
+
+
+def test_Gateway_upstream_takes_the_family_prefix_off(gw):
+    c = gw.test_client()
+    assert c.get("/upstream/gemma/gemma--big/health").status_code == c.get("/upstream/gemma--big/health").status_code
