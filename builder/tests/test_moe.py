@@ -87,3 +87,17 @@ def test_MoE_page_and_engine_state(client, app, tmp_path):
 
 def json_cmds(client):
     return {p["label"]: p["cmd"] for p in client.get("/api/cookbook/state").get_json()["presets"]}
+
+
+def test_MoE_default_remembers_the_slider_and_exempt_profiles(client, app, tmp_path):
+    path = fake_moe(tmp_path / "m.gguf")
+    for name in ("a", "b"):
+        client.post("/api/profiles", json={"name": name, "base_model": "m", "launch_command": f"llama-server -m {path}"})
+    ids = {p["name"]: p["profile_id"] for p in app.extensions["pb"].store.list_profiles()}
+    client.put("/api/moe", json={"path": path, "pct": 67, "exempt": [ids["b"]]})
+    m = client.put("/api/moe", json={"path": path, "pct": None, "exempt": [ids["b"]]}).get_json()["models"][0]
+    assert m["pct"] is None and m["last_pct"] == 67 and [p["exempt"] for p in m["profiles"]].count(True) == 1
+    assert all(p["runs_with"] == "all on the GPU" for p in m["profiles"]), "Default: nothing applied"
+    m = client.put("/api/moe", json={"path": path, "pct": 67, "exempt": [ids["b"]]}).get_json()["models"][0]
+    runs = {p["name"]: p["runs_with"] for p in m["profiles"]}
+    assert runs == {"a": "--n-cpu-moe 3", "b": "all on the GPU"}, runs

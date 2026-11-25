@@ -1103,7 +1103,9 @@ def moe_set():
     except ValueError as exc:
         return err(str(exc))
     table = moe.overrides(c.store)
-    if entry["pct"] is None and not entry["exempt"]:
+    if entry["last_pct"] is None and path in table:  # Default with no slider given: keep the one it had
+        entry["last_pct"] = table[path].get("last_pct", table[path].get("pct"))
+    if entry["pct"] is None and entry["last_pct"] is None and not entry["exempt"]:
         table.pop(path, None)
     else:
         table[path] = entry
