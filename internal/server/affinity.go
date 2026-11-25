@@ -81,10 +81,17 @@ type affinityState struct {
 	busySlots func(model string) []router.Slot
 }
 
-func newAffinity() *affinityState {
+func newAffinityState() *affinityState {
 	return &affinityState{copies: map[string]*affinityMap{}, slots: map[string]*affinityMap{},
 		pinned: map[string]map[int]int{}, lastUse: map[string]map[int]uint64{}, busySlots: router.Prefills.Slots}
 }
+
+// sharedAffinity outlives a config reload, which builds a new Server: the
+// models it carries over keep their slots' caches, so their conversations
+// must keep finding them (like router.Prefills).
+var sharedAffinity = newAffinityState()
+
+func newAffinity() *affinityState { return sharedAffinity }
 
 // conversationKey identifies a conversation by its start, or 0 when the
 // request has none to go by.
@@ -112,8 +119,10 @@ func conversationKey(body []byte) uint64 {
 	if p == "" {
 		return 0
 	}
-	if len(p) > 1024 {
-		p = p[:1024]
+	// its start: a prompt that grows (the next turn appends to it) keeps it,
+	// as long as it is longer than this; a shorter one is too small to matter
+	if len(p) > 256 {
+		p = p[:256]
 	}
 	h.Write([]byte(p))
 	return h.Sum64()

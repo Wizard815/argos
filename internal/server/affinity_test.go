@@ -37,6 +37,9 @@ func TestAffinity_AConversationIsKnownByItsStart(t *testing.T) {
 	assert.Equal(t, a, b, "a later turn of the same conversation")
 	assert.NotEqual(t, a, c, "another conversation")
 	assert.Zero(t, conversationKey([]byte(`{"model":"m"}`)))
+	p1 := `{"prompt":"` + strings.Repeat("Once upon a time ", 50) + `"}`
+	p2 := `{"prompt":"` + strings.Repeat("Once upon a time ", 50) + ` and then"}`
+	assert.Equal(t, conversationKey([]byte(p1)), conversationKey([]byte(p2)), "a prompt that grew is the same conversation")
 }
 
 func affinityServer(t *testing.T) (*Server, *[]int, *sync.Mutex) {
@@ -68,9 +71,7 @@ models:
 		w.WriteHeader(http.StatusOK)
 	}
 	s := profileTestServer(t, cfg, stub)
-	if s.affinity == nil {
-		s.affinity = newAffinity()
-	}
+	s.affinity = newAffinityState() // a fresh one per test: the engine's is shared across reloads
 	s.affinity.busySlots = func(string) []router.Slot { return nil }
 	return s, &slots, &mu
 }
@@ -113,7 +114,7 @@ func TestAffinity_OnlyLlamaServerWithSeveralSlotsAndNotWhenTheClientChose(t *tes
 }
 
 func TestAffinity_RequestsAtTheSameMomentGetDifferentSlots(t *testing.T) {
-	a := newAffinity()
+	a := newAffinityState()
 	a.busySlots = func(string) []router.Slot { return nil } // the log has not shown them yet
 	s1, r1 := a.pickSlot("m", 2, 1)
 	s2, r2 := a.pickSlot("m", 2, 2)
@@ -139,4 +140,8 @@ func TestAffinity_AConversationGoesBackToItsCopy(t *testing.T) {
 	strategySpillover("pool", tracker, running, "b")
 	got, _ = strategySpillover("pool", tracker, running, "b")
 	assert.Equal(t, "a", got, "b is full (2 of 2): it spills over as before")
+}
+
+func TestAffinity_SurvivesAReload(t *testing.T) {
+	assert.Same(t, newAffinity(), newAffinity(), "a reload's new server keeps the conversations' slots")
 }
