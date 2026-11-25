@@ -277,3 +277,74 @@ def gateway_fallback_delete(name):
     store = current_app.extensions["pb"].store
     store.set_setting(gateway.FALLBACK_KEY, [r for r in gateway.fallback_rules(store) if r.get("name") != name])
     return gateway_settings()
+
+
+# ----- Settings -> Providers (providers.py) -------------------------------------------------------------------------
+@bp.get("/api/providers")
+def providers_list():
+    if not _may_change():
+        return err("log in to see this", 401)
+    from .. import providers
+    return ok(providers=[providers.public(p) for p in providers.listed(current_app.extensions["pb"].store)])
+
+
+@bp.post("/api/providers")
+def providers_save():
+    """Add or change (``replace``: its old name) a provider. A blank api_key keeps the saved one."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import providers
+    store, d = current_app.extensions["pb"].store, body()
+    have = providers.listed(store)
+    old = next((p for p in have if p["name"] == (d.get("replace") or d.get("name"))), None)
+    try:
+        p = providers.clean(d, old)
+    except ValueError as exc:
+        return err(str(exc))
+    rest = [x for x in have if x is not old and x["name"] != p["name"]]
+    store.set_setting(providers.KEY, rest + [p])
+    current_app.extensions["pb"].event("settings", f"provider {p['name']} saved: {len(p['models'])} model(s) offered")
+    return providers_list()
+
+
+@bp.delete("/api/providers/<name>")
+def providers_delete(name):
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import providers
+    store = current_app.extensions["pb"].store
+    store.set_setting(providers.KEY, [p for p in providers.listed(store) if p["name"] != name])
+    return providers_list()
+
+
+@bp.get("/api/providers/<name>/catalog")
+def providers_catalog(name):
+    """Every model the provider offers, to pick from (?fresh=1 asks again)."""
+    if not _may_change():
+        return err("log in to see this", 401)
+    from .. import providers
+    p = next((x for x in providers.listed(current_app.extensions["pb"].store) if x["name"] == name), None)
+    if not p:
+        return err("no such provider", 404)
+    try:
+        return ok(models=providers.catalog(p, fresh=bool(request.args.get("fresh"))), picked=p["models"])
+    except ValueError as exc:
+        return err(str(exc), 502)
+
+
+@bp.get("/api/library/family-prefix")
+def family_prefix_get():
+    from ..model_groups import PREFIX_KEY
+    return ok(on=bool(current_app.extensions["pb"].store.get_settings().get(PREFIX_KEY)))
+
+
+@bp.put("/api/library/family-prefix")
+def family_prefix_set():
+    """Body: {on}: put each local model's family in front of its name in the list apps see (qwen/<name>)."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from ..model_groups import PREFIX_KEY
+    on = bool(body().get("on"))
+    current_app.extensions["pb"].store.set_setting(PREFIX_KEY, on)
+    current_app.extensions["pb"].event("settings", "apps' model list: family in front of names " + ("on" if on else "off"))
+    return ok(on=on)

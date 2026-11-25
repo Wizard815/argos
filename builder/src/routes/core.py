@@ -1076,8 +1076,46 @@ def cookbook_state() -> dict:
 
     c = ctx()
     always = c.settings.get("always")
-    return build_state(c.store.list_profiles(), c.runner.list(), cookbook_presets(), always if always["on_export"] else None,
+    from .. import moe
+    # each model's MoE offload (Profiles -> MoE offload) goes into its profiles' commands here, not into the saved ones
+    profiles = moe.apply_all(c.store.list_profiles(), moe.overrides(c.store))
+    return build_state(profiles, c.runner.list(), cookbook_presets(), always if always["on_export"] else None,
                        server=c.servers.default_parts())
+
+
+@bp.get("/api/moe")
+def moe_view():
+    """Every MoE model with profiles: its expert layout, its offload setting, each profile's GPU and RAM share."""
+    from .. import moe
+    c = ctx()
+    return ok(models=moe.view(c.store.list_profiles(), moe.overrides(c.store)), ram=moe.memory())
+
+
+@bp.put("/api/moe")
+def moe_set():
+    """Body: {path, pct (0-100, or null for each profile's own), exempt: [profile ids]}. Applied to the engine now."""
+    from .. import moe
+    c, d = ctx(), body()
+    path = str(d.get("path") or "")
+    profiles = c.store.list_profiles()
+    try:
+        entry = moe.clean(d, profiles)
+    except ValueError as exc:
+        return err(str(exc))
+    table = moe.overrides(c.store)
+    if entry["pct"] is None and not entry["exempt"]:
+        table.pop(path, None)
+    else:
+        table[path] = entry
+    c.store.set_setting(moe.KEY, table)
+    c.event("profile", f"MoE offload for {os.path.basename(path)}: "
+            + ("each profile's own" if entry["pct"] is None else f"{entry['pct']}% of expert layers in RAM")
+            + (f", {len(entry['exempt'])} profile(s) exempt" if entry["exempt"] else ""))
+    try:
+        refresh_schedule()
+    except Exception as exc:  # noqa: BLE001 - saved; the engine picks it up on its next poll
+        c.event("profile", f"MoE offload saved, the engine gets it on its next poll: {exc}", level="warn")
+    return ok(models=moe.view(profiles, table), ram=moe.memory())
 
 
 @bp.get("/api/cookbook/state")

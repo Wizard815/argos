@@ -189,6 +189,18 @@ def _forward(engine_path: str) -> Response:
     elif not model and request.method == "GET" and engine_path.rstrip("/") not in ("/v1/models", "/models"):
         model = request.args.get("model", "")  # a GET routed by ?model= (voices, a model's props)
 
+    # ----- a family prefix (qwen/<name>) and the cloud providers (providers.py, model_groups.py) -----
+    from . import model_groups, providers
+    provs = providers.listed(store) if store is not None else []
+    pnames = {p["name"] for p in provs}
+    if model and isinstance(parsed, dict):
+        bare = model_groups.strip_prefix(model, pnames)
+        if bare is not None:
+            parsed["model"] = bare
+            body = json.dumps(parsed).encode()
+            model = bare
+    cloud = providers.resolve(model, provs) if (model and isinstance(parsed, dict)) else None
+
     # ----- the key's rules (gateway.py) -----
     groups = (store.get_settings().get(gateway.GROUPS_KEY) or {}) if (store is not None and key) else {}
     slot = False
@@ -214,7 +226,19 @@ def _forward(engine_path: str) -> Response:
         if engine_path == "/v1/chat/completions" and isinstance(parsed, dict) and pb is not None:
             from . import mcp_chat
             if mcp_chat.wants_mcp(parsed):
-                out, tokens = mcp_chat.run(pb, engine_url, parsed, headers, key)
+                send = None
+                if cloud:
+                    def send(b, _p=cloud[0], _m=cloud[1]):
+                        c2, r2 = _to_fallback({"url": _p["url"], "api_key": _p["api_key"], "model": _m}, engine_path, b, headers)
+                        try:
+                            raw = r2.read()
+                        finally:
+                            c2.close()
+                        try:
+                            return r2.status, json.loads(raw), raw
+                        except ValueError:
+                            return r2.status, {}, raw
+                out, tokens = mcp_chat.run(pb, engine_url, parsed, headers, key, send=send)
                 if key and store is not None:
                     gateway.record_usage(store, key["id"], model, *tokens)
                 done(sum(tokens))
@@ -237,14 +261,21 @@ def _forward(engine_path: str) -> Response:
 
         # ----- the engine, or the cloud fallback -----
         rule = None
-        if isinstance(parsed, dict) and model and store is not None:
+        if isinstance(parsed, dict) and model and store is not None and not cloud:
             rule = gateway.fallback_for(model, gateway.fallback_rules(store))
         if body:
             headers["Content-Length"] = str(len(body))
         conn = resp = None
         fell_back, why_fb = False, ""
+        if cloud:
+            try:
+                conn, resp = _to_fallback({"url": cloud[0]["url"], "api_key": cloud[0]["api_key"], "model": cloud[1]},
+                                          engine_path, parsed, headers)
+            except OSError as exc:
+                return _json(f"the provider {cloud[0]['name']} is unreachable: {exc}", 502)
         try:
-            conn, resp = _open(engine_url, request.method, target, body, headers, (rule or {}).get("wait_s") or 0)
+            if resp is None:
+                conn, resp = _open(engine_url, request.method, target, body, headers, (rule or {}).get("wait_s") or 0)
         except socket.timeout:
             why_fb = f"no answer in {rule['wait_s']:g}s"
         except OSError as exc:
@@ -273,17 +304,25 @@ def _forward(engine_path: str) -> Response:
         out_headers = [(k, v) for k, v in resp.getheaders() if k.lower() not in HOP_BY_HOP]
         if fell_back:
             out_headers.append(("X-Argos-Fallback", rule["name"]))
+        if cloud:
+            out_headers.append(("X-Argos-Provider", cloud[0]["name"]))
         streamed = "text/event-stream" in (resp.getheader("Content-Type") or "")
         status, ctype = resp.status, resp.getheader("Content-Type") or "application/json"
-        filter_models = (key and key["rules"].get("models") and request.method == "GET"
-                         and engine_path.rstrip("/") in ("/v1/models", "/models"))
-        if filter_models:
+        is_list = (request.method == "GET" and engine_path.rstrip("/") in ("/v1/models", "/models")
+                   and not request.args.get("all") and status == 200)
+        if is_list:
+            # the list apps see: the cloud models added, a key's own models only, grouped by family
             data = resp.read()
             conn.close()
             try:
                 listing = json.loads(data)
-                listing["data"] = [m for m in listing.get("data") or []
-                                   if gateway.model_allowed(str(m.get("id") or ""), key["rules"], groups)]
+                if not isinstance(listing.get("data"), list):
+                    raise ValueError("not a model list")
+                rows = list(listing["data"]) + providers.model_entries(provs)
+                if key and key["rules"].get("models"):
+                    rows = [m for m in rows if gateway.model_allowed(str(m.get("id") or ""), key["rules"], groups)]
+                prefix = bool(store.get_settings().get(model_groups.PREFIX_KEY)) if store is not None else False
+                listing["data"] = model_groups.arrange(rows, pnames, prefix)
                 data = json.dumps(listing).encode()
             except (ValueError, AttributeError):
                 pass

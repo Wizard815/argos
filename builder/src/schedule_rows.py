@@ -54,6 +54,20 @@ ROPE_CTX = 1048576  # the context the Builder's RoPE (YaRN) switch stretches a m
 ROPE_STEPS = (262144, 393216, 524288, 786432, ROPE_CTX)
 
 
+def moe_cpu_bytes(cmd, path: str) -> int:
+    """Expert weights this command keeps in system RAM (--cpu-moe: all; --n-cpu-moe N: the first N layers)."""
+    if not path.lower().endswith(".gguf"):
+        return 0
+    n = cmd.get("n-cpu-moe")
+    if not cmd.has("cpu-moe") and not (n and str(n).strip().isdigit() and int(n) > 0):
+        return 0
+    from .gguf import cpu_expert_bytes, read_moe
+    moe = read_moe(path)
+    if not moe:
+        return 0
+    return moe["expert_total"] if cmd.has("cpu-moe") else cpu_expert_bytes(moe, int(n))
+
+
 def estimate_command(command: str, compare: bool = False, measured: Optional[dict] = None) -> dict:
     """What a launch command needs in VRAM: model file + KV cache + buffers.
 
@@ -61,7 +75,8 @@ def estimate_command(command: str, compare: bool = False, measured: Optional[dic
     builder can show "q8_0 at 128K is X GiB, turbo3 is Y".
     """
     try:
-        s = parse_command(command).summary()
+        parsed = parse_command(command)
+        s = parsed.summary()
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     path = s.get("model") or ""
@@ -75,7 +90,7 @@ def estimate_command(command: str, compare: bool = False, measured: Optional[dic
     out = {"ok": True, "path": path, "ctx": ctx, "cache_k": ck or "f16", "cache_v": cv or ck or "f16",
            "train_ctx": (arch or {}).get("train_ctx"), "extra_gib": round(extra / GIB, 2),
            "layout": layer_layout(arch, ck, cv),
-           **estimate_gib(weights, arch, ctx, ck, cv, extra)}
+           **estimate_gib(weights, arch, ctx, ck, cv, extra, moe_cpu_bytes(parsed, path))}
     # how the context splits between chats: --parallel N gives each slot ctx / N of its own; with
     # --kv-unified (or no --parallel) the slots share it and one chat may use all of it
     out.update(chat_split(ctx, s.get("parallel"), s.get("kv_unified")))
@@ -134,16 +149,17 @@ def chat_split(ctx: int, parallel: Optional[int], unified: bool) -> dict:
 def _row(row_id: str, name: str, kind: str, command: str, plan: dict, known: Optional[set[str]],
          extra: dict) -> tuple[dict, str]:
     try:
-        s = parse_command(command).summary()
+        parsed = parse_command(command)
+        s = parsed.summary()
     except ValueError:
-        s = {}
+        parsed, s = None, {}
     path = s.get("model") or ""
     weights = file_bytes(path) if path.lower().endswith(".gguf") else 0
     extra_bytes = sum(file_bytes(p) for p in (s.get("mmproj"), s.get("model_draft")) if p)
     arch = arch_of(path) if weights else None
     ctx = s.get("ctx_size") or (arch or {}).get("train_ctx") or 4096
     est = estimate_gib(weights, arch, ctx, s.get("cache_type_k") or "", s.get("cache_type_v") or "",
-                       extra_bytes) if weights else None
+                       extra_bytes, moe_cpu_bytes(parsed, path) if parsed else 0) if weights else None
     size, source = effective_size(plan, row_id, est["gib"] if est else 0.0)
     row = {
         "id": row_id, "name": name, "kind": kind, "path": path, "ctx": ctx,

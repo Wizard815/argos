@@ -437,6 +437,7 @@ const onShow = {
     else if (pane === "security") loadSecurity();
     else if (pane === "gateway") loadGateway();
     else if (pane === "mcp") loadMcp();
+    else if (pane === "providers") loadProviders();
   }),
   playground: () => {
     if (!S.library) loadLibrary().then(fillProfileSelect); else fillProfileSelect();
@@ -2896,6 +2897,7 @@ async function loadLibrary() {
   try { ML.groups = (await api("GET", "/api/library/groups")).groups; } catch (e) { /* groups are optional */ }
   try { ML.listed = new Set((await api("GET", "/api/library/listed")).listed); } catch (e) { ML.listed = new Set(); }
   try { ML.publicList = await api("GET", "/api/library/public-list"); } catch (e) { ML.publicList = null; }
+  try { ML.familyPrefix = (await api("GET", "/api/library/family-prefix")).on; } catch (e) { ML.familyPrefix = false; }
   renderPublicList();
   $("#navModels").textContent = S.library.models.length || "";
   fillProfileSelect();
@@ -2919,7 +2921,15 @@ function renderPublicList() {
     pick("names", [["label", "profiles by their own name"], ["full", "profiles as model--profile"]],
       "How a profile is named in the list apps get. Either name works when an app calls it."),
     pick("bases", [["profiles", "only profiles (hide models)"], ["unprofiled", "profiles, plus models with no profile"], ["all", "profiles and every model"]],
-      "Which base models apps see. Models without a profile shown here can also be called. A single model can also be shown from its ⋯ menu."));
+      "Which base models apps see. Models without a profile shown here can also be called. A single model can also be shown from its ⋯ menu."),
+    (() => {
+      const box = h("input", { type: "checkbox", checked: !!ML.familyPrefix });
+      box.addEventListener("change", async () => {
+        try { ML.familyPrefix = (await api("PUT", "/api/library/family-prefix", { on: box.checked })).on; toast(box.checked ? "Names now start with their family, e.g. qwen/… (the plain name still works)." : "Plain names again.", "ok"); }
+        catch (e) { box.checked = !box.checked; fail(e); }
+      });
+      return h("label", { class: "check", title: "Open WebUI, Cline and LiteLLM-style pickers group models by the part before the /. The list is always sorted by family, with cloud models last, either way." }, box, "family/ in front (qwen/…)");
+    })());
 }
 async function editModel(m) {
   if (!(await leaveOk())) return;
@@ -4381,6 +4391,86 @@ async function loadSecurity() {
   fill($("#sSecurity"), pwCard, keyCard, await keyUsageCard());
 }
 
+// ── Profiles → MoE offload: one setting per MoE model, for all its profiles but the exempt ones ──
+const MOE = { data: null };
+async function loadMoe() {
+  try { MOE.data = await api("GET", "/api/moe"); } catch (e) { fill($("#pMoe"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
+  renderMoe();
+}
+function moeSplit(m, p, pct) {
+  // what this profile holds on the GPU and in RAM with pct of the MoE layers' experts in RAM
+  const k = Math.round(m.moe_layers * Math.max(0, Math.min(100, pct)) / 100);
+  const moved = m.cum_gib[k] || 0;
+  const gpu = Math.max(0, (p.full_gib || 0) - moved * 1.1); // the buffer estimate is 10% of the weights on the GPU
+  return { gpu, cpu: moved, k };
+}
+function renderMoe() {
+  const D = MOE.data;
+  if (!D.models.length) return fill($("#pMoe"), h("div", { class: "card" }, h("div", { class: "empty" }, "No mixture-of-experts model has a profile yet. Once one does (Qwen3 MoE, GLM, gpt-oss, DeepSeek…), its offload is set here.")));
+  const ram = D.ram || {};
+  fill($("#pMoe"),
+    h("p", { class: "hint" }, "Keep some of a MoE model's expert weights in system RAM to free VRAM, for every profile of that model at once. It is applied where Argos hands profiles to the engine, so your saved profiles do not change; tick a profile to exempt it and keep its own setting. A running model restarts with the new setting: llama-server cannot move experts while it runs. Experts in RAM answer slower; Measure shows how much.",
+      ram.total ? ` This machine: ${ram.available} GiB of ${ram.total} GiB RAM free.` : ""),
+    D.models.map(moeCard));
+}
+function moeCard(m) {
+  const auto = m.pct == null;
+  let pct = auto ? 0 : m.pct;
+  const slider = h("input", { type: "range", min: 0, max: 100, step: 1, value: pct, style: "flex:1", disabled: auto });
+  const out = h("b", { class: "mono-sm", style: "min-width:16ch" });
+  const exempt = new Set(m.profiles.filter((p) => p.exempt).map((p) => p.profile_id));
+  const bars = h("div", { class: "stack", style: "gap:6px" });
+  const ramFree = (MOE.data.ram || {}).available;
+  const draw = () => {
+    const k = Math.round(m.moe_layers * pct / 100);
+    out.textContent = auto ? "each profile's own" : `${pct}% · ${k} of ${m.moe_layers} layers`;
+    const rows = m.profiles.map((p) => {
+      const mine = auto || exempt.has(p.profile_id) ? p.own_pct : pct;
+      const s = moeSplit(m, p, mine);
+      return { p, s, mine };
+    });
+    const max = Math.max(1, ...rows.map((r) => r.s.gpu + r.s.cpu));
+    fill(bars, rows.map(({ p, s, mine }) => {
+      const tag = exempt.has(p.profile_id) ? "exempt: its own" : auto ? "its own" : "this setting";
+      const box = h("input", { type: "checkbox", checked: exempt.has(p.profile_id), title: "Exempt: this profile keeps its own MoE setting" });
+      box.addEventListener("change", () => { box.checked ? exempt.add(p.profile_id) : exempt.delete(p.profile_id); draw(); dirty(); });
+      return h("div", { class: "row", style: "gap:8px;flex-wrap:nowrap;align-items:center" },
+        h("label", { class: "check", style: "min-width:22ch" }, box, h("span", { class: "mono-sm", title: p.name }, p.name)),
+        h("div", { style: "flex:1;display:flex;height:18px;border-radius:4px;overflow:hidden;background:var(--bg)" },
+          h("div", { style: `width:${(s.gpu / max) * 100}%;background:var(--green)`, title: `GPU ${s.gpu.toFixed(1)} GiB` }),
+          h("div", { style: `width:${(s.cpu / max) * 100}%;background:var(--purple, #bd93f9)`, title: `CPU + RAM ${s.cpu.toFixed(1)} GiB` })),
+        h("span", { class: "mono-sm nowrap", style: "min-width:30ch;text-align:right" },
+          p.ok ? `GPU ${s.gpu.toFixed(1)} · RAM ${s.cpu.toFixed(1)} GiB` : p.error, h("span", { class: "muted" }, ` (${mine}%, ${tag})`)));
+    }));
+    const worst = Math.max(0, ...rows.map((r) => r.s.cpu));
+    warn.textContent = ramFree != null && worst > ramFree ? `Needs up to ${worst.toFixed(1)} GiB of RAM, only ${ramFree} GiB is free.` : "";
+  };
+  const warn = h("span", { class: "warn-text" });
+  const save = btn("Apply", async () => {
+    try { MOE.data = await api("PUT", "/api/moe", { path: m.path, pct: auto ? null : pct, exempt: [...exempt] }); toast("Applied: its profiles run with it from their next load.", "ok"); renderMoe(); } catch (e) { fail(e); }
+  }, "sm primary", "save");
+  const dirty = () => { save.disabled = false; };
+  slider.addEventListener("input", () => { pct = Number(slider.value); draw(); dirty(); });
+  const autoBox = h("input", { type: "checkbox", checked: auto });
+  autoBox.addEventListener("change", () => { m.pct = autoBox.checked ? null : pct; moeCardRedraw(m, card); });
+  const reset = btn("Default", async () => {
+    try { MOE.data = await api("PUT", "/api/moe", { path: m.path, pct: null, exempt: [] }); toast("Back to each profile's own setting.", "ok"); renderMoe(); } catch (e) { fail(e); }
+  }, "sm ghost", "refresh");
+  const card = h("div", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", { title: m.path }, m.name), h("span", { class: "chip" }, `${m.moe_layers} MoE layers · ${m.expert_gib} GiB experts · ${m.other_gib} GiB rest`),
+      h("span", { class: "spacer" }), reset, save),
+    h("div", { class: "row", style: "gap:10px;flex-wrap:nowrap;align-items:center;margin:6px 0" },
+      h("label", { class: "check", title: "Each profile keeps its own --n-cpu-moe" }, autoBox, "Default"),
+      h("span", { class: "hint", style: "margin:0" }, "GPU"), slider, h("span", { class: "hint", style: "margin:0" }, "RAM"), out),
+    h("div", { class: "row", style: "gap:12px;margin-bottom:6px" },
+      h("span", { class: "hint", style: "margin:0" }, h("span", { style: "display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px" }), " GPU VRAM"),
+      h("span", { class: "hint", style: "margin:0" }, h("span", { style: "display:inline-block;width:10px;height:10px;background:var(--purple, #bd93f9);border-radius:2px" }), " CPU + RAM"), warn),
+    bars);
+  draw();
+  return card;
+}
+function moeCardRedraw(m, card) { card.replaceWith(moeCard(m)); }
+
 // ── API key rules (gateway.py): models, MCP servers, expiry, limits ──
 function keyScope(r = {}) {
   const bits = [];
@@ -4506,6 +4596,73 @@ function editFallback(r) {
   [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
     try { await api("POST", "/api/gateway/fallbacks", { replace: r ? r.name : "", name: name.value, match: match.value, url: url.value, model: model.value, api_key: key.value,
       on_down: down.checked, on_too_long: long.checked, wait_s: Number(wait.value || 0) }); close(); loadGateway(); } catch (e) { fail(e); }
+  } }]);
+}
+
+// ── Settings → Providers: cloud models served next to the local ones ──
+async function loadProviders() {
+  let P;
+  try { P = await api("GET", "/api/providers"); } catch (e) { fill($("#sProviders"), h("p", { class: "hint" }, e.message)); return; }
+  const head = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Cloud providers"), h("span", { class: "spacer" }),
+      btn("Add a provider", () => editProvider(null), "sm primary", "plus")),
+    h("p", { class: "hint" }, "OpenAI-compatible servers (OpenRouter, OpenAI, Groq, another Argos) whose models Argos offers next to yours, as <provider>/<model>. Key rules, limits, usage per key, the answer cache and MCP tools in chat work for them too. They use no VRAM, and come last in the list apps see."));
+  const cards = P.providers.map((p) => {
+    const pick = btn("Pick models", async () => {
+      pick.disabled = true;
+      let cat;
+      try { cat = await api("GET", `/api/providers/${encodeURIComponent(p.name)}/catalog`); } catch (e) { pick.disabled = false; return fail(e); }
+      pick.disabled = false;
+      providerPicker(p, cat);
+    }, "sm", "search");
+    const drop = async () => {
+      if (!(await confirmBox(`Take ${p.name} and its ${p.models.length} model(s) off Argos?`, "Take off"))) return;
+      try { await api("DELETE", `/api/providers/${encodeURIComponent(p.name)}`); loadProviders(); } catch (e) { fail(e); }
+    };
+    return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, p.name), h("span", { class: "chip mono-sm" }, p.url),
+        p.has_key ? h("span", { class: "pill ok" }, "key saved") : h("span", { class: "pill warn" }, "no key"), p.enabled ? null : h("span", { class: "pill" }, "off"),
+        h("span", { class: "spacer" }), pick, btn("Edit", () => editProvider(p), "sm ghost", "pencil"), btn("Take off", drop, "sm ghost danger")),
+      p.models.length ? h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, p.models.map((m) => h("span", { class: "chip mono-sm" }, `${p.name}/${m}`)))
+        : h("div", { class: "muted mono-sm" }, "No models offered yet: Pick models."));
+  });
+  fill($("#sProviders"), head, ...cards);
+}
+function providerPicker(p, cat) {
+  const picked = new Set(cat.picked || []);
+  const q = h("input", { type: "search", placeholder: `Filter ${cat.models.length} models…`, style: "width:100%" });
+  const onlyTools = h("input", { type: "checkbox" });
+  const list = h("div", { style: "max-height:55dvh;overflow:auto" });
+  const count = h("span", { class: "hint", style: "margin:0" }, `${picked.size} picked`);
+  const price = (v) => (v == null ? "" : v === 0 ? "free" : `$${v}`);
+  const draw = () => {
+    const f = q.value.trim().toLowerCase();
+    const rows = cat.models.filter((m) => (!f || m.id.toLowerCase().includes(f) || (m.name || "").toLowerCase().includes(f)) && (!onlyTools.checked || m.tools)).slice(0, 300);
+    fill(list, rows.map((m) => {
+      const box = h("input", { type: "checkbox", checked: picked.has(m.id) });
+      box.addEventListener("change", () => { box.checked ? picked.add(m.id) : picked.delete(m.id); count.textContent = `${picked.size} picked`; });
+      return h("label", { class: "check", style: "display:flex;gap:8px;padding:3px 0" }, box, h("span", { class: "mono-sm", style: "flex:1" }, m.id),
+        h("span", { class: "muted mono-sm" }, [m.context ? `${Math.round(m.context / 1000)}K` : "", m.tools ? "tools" : "",
+          m.prompt_price != null ? `${price(m.prompt_price)} / ${price(m.completion_price)} per M` : ""].filter(Boolean).join(" · ")));
+    }));
+  };
+  q.addEventListener("input", draw);
+  onlyTools.addEventListener("change", draw);
+  draw();
+  modal(`Models from ${p.name}`, h("div", { class: "stack" }, q, h("div", { class: "row", style: "gap:12px" }, h("label", { class: "check" }, onlyTools, "only ones with tool calling"), count), list),
+    [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
+      try { await api("POST", "/api/providers", { ...p, replace: p.name, api_key: "", models: [...picked] }); close(); toast(`${picked.size} model(s) from ${p.name} offered. Apps that keep the list (LiteLLM) see them after their refresh.`, "ok"); loadProviders(); } catch (e) { fail(e); }
+    } }]);
+}
+function editProvider(p) {
+  const v = p || { enabled: true };
+  const inp = (val, ph, type = "text") => h("input", { type, value: val ?? "", placeholder: ph, spellcheck: "false" });
+  const name = inp(v.name, "openrouter"), url = inp(v.url, "https://openrouter.ai/api/v1"), key = inp("", v.has_key ? "saved: leave blank to keep it" : "sk-…", "password");
+  const on = h("input", { type: "checkbox", checked: v.enabled !== false });
+  const field = (label, el, hint) => h("label", { class: "field wide" }, h("span", {}, label), el, hint ? h("small", { class: "hint" }, hint) : null);
+  modal(p ? `Provider ${p.name}` : "Add a provider", h("div", { class: "fields" },
+    field("Name", name, "Starts each of its models' names: openrouter/tencent/hy4-flash."), field("URL", url, "Its OpenAI-compatible base, ending in /v1 (OpenRouter: https://openrouter.ai/api/v1)."),
+    field("API key", key, "Kept in Argos's database and never shown again."), h("label", { class: "check wide" }, on, "On")),
+  [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
+    try { await api("POST", "/api/providers", { replace: p ? p.name : "", name: name.value, url: url.value, api_key: key.value, enabled: on.checked, models: p ? p.models : [] }); close(); toast("Saved. Now Pick models.", "ok"); loadProviders(); } catch (e) { fail(e); }
   } }]);
 }
 
@@ -7094,11 +7251,13 @@ function initTabs() {
     else if (bar.dataset.tabs === "schedule") { SC.pane = b.dataset.pane; if (SC.pane === "live") loadLive(); else loadSchedule(); }
     else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
+    else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "moe") loadMoe();
     else if (bar.dataset.tabs === "playground" && b.dataset.pane === "bench") loadBenchTab();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "assistant") loadSettingsAssistant();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "security") loadSecurity();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "gateway") loadGateway();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "mcp") loadMcp();
+    else if (bar.dataset.tabs === "settings" && b.dataset.pane === "providers") loadProviders();
   }));
 }
 

@@ -216,3 +216,101 @@ def _summarize(arch: str, found: dict) -> Optional[dict]:
 
 
 __all__ = ["read_arch"]
+
+
+# ----- mixture-of-experts layout --------------------------------------------------------------------------------
+# llama-server's --n-cpu-moe N keeps the expert weights of the first N layers in system RAM; these are those tensors
+# (llama.cpp's own pattern: blk.<i>.ffn_(up|down|gate|gate_up)_(ch)exps). Shared experts (_shexp) stay on the GPU.
+import os as _os
+import re as _re
+
+_EXPS = _re.compile(r"^blk\.(\d+)\.ffn_(?:up|down|gate|gate_up)_(?:ch)?exps\b")
+_SPLIT = _re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", _re.I)
+_moe_cache: dict = {}
+
+
+def _tensor_sizes(path: str) -> Optional[list]:
+    """[(name, bytes)] for every tensor in one GGUF file, from the offsets in its tensor table."""
+    with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+        if bytes(buf[:4]) != MAGIC:
+            return None
+        rd = _Reader(buf)
+        rd.pos = 4
+        if rd.take("<I", 4) < 2:
+            return None
+        n_tensors, n_kv = rd.take("<Q", 8), rd.take("<Q", 8)
+        align = 32
+        for _ in range(n_kv):
+            key = rd.string()
+            vtype = rd.take("<I", 4)
+            if key == "general.alignment":
+                align = int(rd.value(vtype) or 32)
+            else:
+                rd.skip_value(vtype)
+        tensors = []
+        for _ in range(n_tensors):
+            name = rd.string()
+            n_dims = rd.take("<I", 4)
+            rd.pos += 8 * n_dims
+            rd.take("<I", 4)  # type
+            tensors.append((name, rd.take("<Q", 8)))
+        data_start = (rd.pos + align - 1) // align * align
+        end = len(buf) - data_start
+    order = sorted(tensors, key=lambda t: t[1])
+    sizes = {}
+    for i, (name, off) in enumerate(order):
+        nxt = order[i + 1][1] if i + 1 < len(order) else end
+        sizes[name] = max(0, nxt - off)
+    return [(n, sizes[n]) for n, _ in tensors]
+
+
+def _parts(path: str) -> list:
+    """Every file of a split model (model-00001-of-00003.gguf ...), or just this one."""
+    m = _SPLIT.match(_os.path.basename(path))
+    if not m:
+        return [path]
+    d, stem, total = _os.path.dirname(path), m.group(1), m.group(3)
+    parts = [_os.path.join(d, f"{stem}-{i:05d}-of-{total}.gguf") for i in range(1, int(total) + 1)]
+    return [p for p in parts if _os.path.exists(p)]
+
+
+def read_moe(path: str) -> Optional[dict]:
+    """The expert weights per layer of a mixture-of-experts model, or None for a dense model or an unreadable file:
+    ``{"layers": block count, "moe_layers": [i, ...], "expert_bytes": {i: bytes}, "expert_total": bytes,
+    "other_bytes": the rest of the weights}``. Cached per file and modification time."""
+    try:
+        parts = _parts(path)
+        stamp = tuple((p, _os.path.getmtime(p), _os.path.getsize(p)) for p in parts)
+    except OSError:
+        return None
+    if path in _moe_cache and _moe_cache[path][0] == stamp:
+        return _moe_cache[path][1]
+    per_layer: dict[int, int] = {}
+    other, layers = 0, 0
+    try:
+        for p in parts:
+            for name, size in _tensor_sizes(p) or []:
+                m = _EXPS.match(name)
+                if m:
+                    i = int(m.group(1))
+                    per_layer[i] = per_layer.get(i, 0) + size
+                else:
+                    other += size
+                b = _re.match(r"^blk\.(\d+)\.", name)
+                if b:
+                    layers = max(layers, int(b.group(1)) + 1)
+    except (OSError, ValueError, struct.error):
+        return None
+    out = None
+    if per_layer:
+        out = {"layers": layers, "moe_layers": sorted(per_layer), "expert_bytes": per_layer,
+               "expert_total": sum(per_layer.values()), "other_bytes": other}
+    _moe_cache[path] = (stamp, out)
+    return out
+
+
+def cpu_expert_bytes(moe: Optional[dict], n_cpu_moe: int) -> int:
+    """Bytes --n-cpu-moe N moves to system RAM: the experts of layers 0 .. N-1."""
+    if not moe or n_cpu_moe <= 0:
+        return 0
+    return sum(b for i, b in moe["expert_bytes"].items() if i < n_cpu_moe)
