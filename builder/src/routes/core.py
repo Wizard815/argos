@@ -1077,18 +1077,97 @@ def cookbook_state() -> dict:
     c = ctx()
     always = c.settings.get("always")
     from .. import moe
-    # each model's MoE offload (Profiles -> MoE offload) goes into its profiles' commands here, not into the saved ones
-    profiles = moe.apply_all(c.store.list_profiles(), moe.overrides(c.store))
+    # each model's MoE offload (Profiles -> MoE offload) goes into its profiles' commands here, not into the saved
+    # ones; a model that is running and was used in the last 30 s keeps its old command until it is quiet
+    saved = c.store.list_profiles()
+    wanted = moe.apply_all(saved, moe.overrides(c.store)) if moe.enabled(c.store) else saved
+    profiles = moe.HOLD.pick(saved, wanted, _running_ids(c), lambda names: _quiet_for(c, names))
     return build_state(profiles, c.runner.list(), cookbook_presets(), always if always["on_export"] else None,
                        server=c.servers.default_parts())
+
+
+def _running_ids(c):
+    """A function giving the models the engine has running (asked once, and only when needed)."""
+    memo: dict = {}
+
+    def get() -> set:
+        if "ids" not in memo:
+            url = c.settings.get("integrations").get("engine_url")
+            try:
+                memo["ids"] = {m["model"] for m in engine_api.running(url)} if url else set()
+            except Exception:  # noqa: BLE001 - an engine that does not answer has nothing running to protect
+                memo["ids"] = set()
+        return memo["ids"]
+    return get
+
+
+def _quiet_for(c, names: set) -> float:
+    """Seconds since a request for one of these names, from the builder's own view and the engine's request log."""
+    from .. import moe
+    quiet = moe.ACTIVITY.quiet_for(names)
+    now = time.time()
+    try:
+        recent = [r["ts"] for r in c.store.list_requests(since=now - moe.IDLE_S, limit=500) if r.get("model") in names]
+    except Exception:  # noqa: BLE001
+        recent = []
+    if recent:
+        quiet = min(quiet, now - max(recent))
+    return quiet
+
+
+def _moe_payload(c):
+    from .. import moe
+    cookbook_state()  # settles what each profile is served now, and what waits for its model to be quiet
+    return ok(enabled=moe.enabled(c.store), idle_s=moe.IDLE_S,
+              models=moe.view(c.store.list_profiles(), moe.overrides(c.store), moe.enabled(c.store)), ram=moe.memory())
 
 
 @bp.get("/api/moe")
 def moe_view():
     """Every MoE model with profiles: its expert layout, its offload setting, each profile's GPU and RAM share."""
+    return _moe_payload(ctx())
+
+
+@bp.put("/api/moe/enabled")
+def moe_enabled():
+    """Body: {on}: the main switch. Off, no model's setting applies; each profile runs with its own command."""
     from .. import moe
     c = ctx()
-    return ok(models=moe.view(c.store.list_profiles(), moe.overrides(c.store)), ram=moe.memory())
+    on = bool(body().get("on"))
+    c.store.set_setting(moe.ENABLED_KEY, on)
+    c.event("profile", "MoE offload " + ("on" if on else "off: every profile runs with its own setting"))
+    _push(c)
+    return _moe_payload(c)
+
+
+@bp.put("/api/moe/profile")
+def moe_profile_own():
+    """Body: {profile_id, pct}: save a MoE value into the profile's own command (0 or null: none). It is the
+    profile's from then on: it applies when the main switch is off, for an exempt profile, and on Default."""
+    from .. import moe
+    c, d = ctx(), body()
+    p = c.store.get_profile(str(d.get("profile_id") or ""))
+    if not p:
+        return err("no such profile", 404)
+    pct = d.get("pct")
+    try:
+        pct = None if pct in (None, "") else int(round(float(pct)))
+        if pct is not None and not 0 <= pct <= 100:
+            raise ValueError("pct is from 0 to 100")
+        command = moe.set_own(p["launch_command"], pct)
+    except (TypeError, ValueError) as exc:
+        return err(str(exc))
+    c.store.save_profile({**p, "launch_command": command})
+    c.event("profile", f"profile {p['name']}: its own MoE offload is now " + (f"{pct}%" if pct else "none"))
+    _push(c)
+    return _moe_payload(c)
+
+
+def _push(c):
+    try:
+        refresh_schedule()
+    except Exception as exc:  # noqa: BLE001 - saved; the engine picks it up on its next poll
+        c.event("profile", f"MoE offload saved, the engine gets it on its next poll: {exc}", level="warn")
 
 
 @bp.put("/api/moe")
@@ -1113,11 +1192,8 @@ def moe_set():
     c.event("profile", f"MoE offload for {os.path.basename(path)}: "
             + ("each profile's own" if entry["pct"] is None else f"{entry['pct']}% of expert layers in RAM")
             + (f", {len(entry['exempt'])} profile(s) exempt" if entry["exempt"] else ""))
-    try:
-        refresh_schedule()
-    except Exception as exc:  # noqa: BLE001 - saved; the engine picks it up on its next poll
-        c.event("profile", f"MoE offload saved, the engine gets it on its next poll: {exc}", level="warn")
-    return ok(models=moe.view(profiles, table), ram=moe.memory())
+    _push(c)
+    return _moe_payload(c)
 
 
 @bp.get("/api/cookbook/state")

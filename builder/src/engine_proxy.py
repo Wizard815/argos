@@ -229,6 +229,13 @@ def _forward(engine_path: str) -> Response:
         if slot:
             LIMITER.release(key["id"], tokens)
 
+    act: dict = {}
+
+    def act_end() -> None:
+        if act.pop("name", None) is not None:
+            from .moe import ACTIVITY
+            ACTIVITY.end(model)
+
     try:
         # ----- MCP tools run here (mcp_chat.py) -----
         if engine_path == "/v1/chat/completions" and isinstance(parsed, dict) and pb is not None:
@@ -268,6 +275,10 @@ def _forward(engine_path: str) -> Response:
                     return Response(hit[2], hit[0], mimetype=hit[1].split(";")[0], headers={"X-Argos-Cache": "hit"})
 
         # ----- the engine, or the cloud fallback -----
+        if model and not cloud:  # when each model was last used: a new MoE setting waits for it to be quiet (moe.py)
+            from .moe import ACTIVITY
+            ACTIVITY.start(model)
+            act["name"] = model
         rule = None
         if isinstance(parsed, dict) and model and store is not None and not cloud:
             rule = gateway.fallback_for(model, gateway.fallback_rules(store))
@@ -337,6 +348,8 @@ def _forward(engine_path: str) -> Response:
             return Response(data, status=status, headers=[(k, v) for k, v in out_headers if k.lower() != "content-length"])
         held = slot
         slot = False  # the stream below releases it
+        mine = dict(act)
+        act.clear()  # and ends the model's activity
 
         def stream():
             tail, whole = bytearray(), bytearray()
@@ -363,11 +376,15 @@ def _forward(engine_path: str) -> Response:
                 conn.close()
                 if held:
                     LIMITER.release(key["id"], sum(tokens))
+                if mine:
+                    from .moe import ACTIVITY
+                    ACTIVITY.end(model)
 
         return Response(stream(), status=status, headers=out_headers)
     finally:
         if slot:
             done(0)
+        act_end()
 
 
 @bp.route("/engine/<path:subpath>", methods=METHODS)

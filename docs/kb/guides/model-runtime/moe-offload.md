@@ -15,12 +15,21 @@ frees VRAM, so the model fits beside others, for some speed.
 
 **Profiles -> MoE offload** sets it once per model file:
 
+- **The MoE offload switch** at the top turns it all off: every profile then
+  runs with its own command. Your per-model settings stay for when you turn
+  it back on.
+- **On for this model** applies the slider to this model's profiles. Off, the
+  slider and the exempt ticks are kept for next time.
 - **The slider** is the share of the model's MoE layers whose experts go to
   RAM. Argos turns it into `--n-cpu-moe N` (100% is `--cpu-moe`), counting
   only MoE layers, so a model whose first layers are dense still moves the
   share you asked for.
 - **Default** leaves every profile with its own setting.
 - **Exempt** a profile to keep its own command for it.
+- **own % + Save to profile** writes a MoE value into that profile's own
+  command, for good: it is what the profile runs with whenever the model's
+  setting does not apply (exempt, the model switched off, or the main switch
+  off).
 - **The chart** shows each profile's GPU and RAM share as you drag: the
   expert sizes are read from the model file's tensor table, not guessed.
 
@@ -29,9 +38,11 @@ do not change, and the Schedule plans with the GPU share only.
 
 ## What goes wrong
 
-- **The model restarts.** llama-server cannot move experts while it runs: a
-  running model reloads with the new setting (quickly when the file is still
-  in the page cache).
+- **The model reloads, but not mid-chat.** llama-server cannot move experts
+  while it runs. A model that is running and was used in the last 30 seconds
+  keeps its old setting (the row shows "-> new setting once quiet 30 s") until
+  no request has used it for 30 seconds; then Argos unloads it and loads it
+  again with the new one. A model that is not running takes it at once.
 - **It got slower.** Experts in RAM run on the CPU. Measure the profile to see
   by how much; the GPU share is what the slider buys.
 - **"Needs up to N GiB of RAM"** on the chart: the RAM share is more than this
