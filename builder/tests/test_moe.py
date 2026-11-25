@@ -160,3 +160,15 @@ def test_MoE_the_wait_before_a_reload_is_a_setting(client):
     h.pick(old, old, lambda: {"x--fast"}, lambda n: 1e9)
     assert h.pick(old, new, lambda: {"x--fast"}, lambda n: 45.0, idle=90)[0] == old[0], "used 45 s ago, wait 90: waits"
     assert h.pick(old, new, lambda: {"x--fast"}, lambda n: 45.0, idle=40)[0] == new[0], "wait 40: goes"
+
+
+def test_MoE_a_quiet_running_model_is_reloaded_with_its_new_command():
+    from src import moe as moe_mod
+    h = moe_mod.Holder()
+    old = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf"}]
+    new = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf --n-cpu-moe 4"}]
+    h.pick(old, old, lambda: {"x--fast"}, lambda n: 1e9)
+    h.pick(old, new, lambda: {"x--fast"}, lambda n: 60.0)
+    assert h.take_released() == {"p": True}, "running and quiet: goes now, and is loaded again"
+    h.pick(old, old, lambda: set(), lambda n: 0.0)
+    assert h.take_released() == {}, "not running: nothing to load again"
