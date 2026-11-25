@@ -1855,8 +1855,18 @@ function bnBody() {
   delete params.gpus;
   for (const k of Object.keys(params.env)) if (/VISIBLE_DEVICES$/.test(k)) delete params.env[k];
   if (gpus) params.env[bnGpuVar()] = gpus;
-  if (BN.mode === "running") return { running: BN.running, params };
-  return { profile_id: BN.source && BN.source !== "custom" ? BN.source : "", params, server_id: BN.server, unload_first: $("#bnUnload").checked };
+  const power = bnPower();
+  if (BN.mode === "running") return { running: BN.running, params, power };
+  return { profile_id: BN.source && BN.source !== "custom" ? BN.source : "", params, server_id: BN.server, unload_first: $("#bnUnload").checked, power };
+}
+function bnPower() {
+  // the GPUs' power while the benchmark runs: null = as they are, "profile" = its Profiles -> Power setting, or a cap
+  const v = $("#bnPower") ? $("#bnPower").value : "";
+  if (!v) return null;
+  if (v === "profile") return "profile";
+  if (v === "stock") return { cap_w: null };
+  if (v === "custom") return $("#bnPowerW").value ? { cap_w: Number($("#bnPowerW").value) } : null;
+  return { cap_w: Number(v) };
 }
 const bnPreview = debounce(async () => {
   if (BN.mode === "running") {
@@ -1951,6 +1961,7 @@ async function loadBenchTab() {
       renderBench();
       loadBenchRuns();
     };
+    $("#bnPower").onchange = () => { $("#bnPowerW").hidden = $("#bnPower").value !== "custom"; };
     $("#bnStop").onclick = async () => {
       if (!BN.run) return;
       try { await api("POST", `/api/bench/${BN.run.bench_id}/stop`); toast("Stopping llama-bench.", "ok"); } catch (e) { fail(e); }
@@ -2415,6 +2426,9 @@ function renderPerf() {
     { key: "prompt_per_second", label: "Prefill t/s", num: true, cell: (r) => prefillCell(r.prompt_per_second, r.prefill_high_tps, r.prefill_low_tps) },
     { key: "tokens_per_second", label: "Decode t/s", num: true, cell: (r) => tpsBar(r.tokens_per_second, maxTps) },
     { key: "n_ctx", label: "Ctx", num: true, cell: (r) => (r.n_ctx ? `${num(r.n_ctx / 1024, 0)}k` : DASH) },
+    { key: "power_w", label: "Watts · t/W", num: true, cell: (r) => h("td", { class: "num nowrap", title: r.power_w ? "The GPUs' average watts while this test ran, and its speed per watt (tokens per joule)" : "" },
+      r.power_w ? `${num(r.power_w, 0)} W` : DASH,
+      r.power_w ? h("div", { class: "cell-sub" }, [r.tokens_per_watt ? `${num(r.tokens_per_watt, 3)} t/W` : null, r.prompt_per_watt ? `pp ${num(r.prompt_per_watt, 2)} t/W` : null, r.power_label || null].filter(Boolean).join(" · ")) : null) },
     { label: "Settings", cell: (r) => h("td", { class: "settings-cell", title: r.layers_offloaded ? `layers on GPU: ${r.layers_offloaded}` : "" }, h("div", { class: "chips" }, settingChips({ ...r, n_ctx: null }))) },
     { key: "mem_used_gb", label: "VRAM · GPU", num: true, cell: (r) => h("td", { class: "num nowrap" }, r.mem_used_gb ? `${num(r.mem_used_gb, 1)} GiB` : DASH,
       r.gpu_util != null ? h("div", { class: "cell-sub" }, `${num(r.gpu_util, 0)}% busy`) : null) },
@@ -2457,7 +2471,7 @@ function exportCsv() {
   if (!rows.length) { toast("Nothing to export.", "err"); return; }
   const cols = ["created_at", "base_model", "profile_name", "tokens_per_second", "prompt_per_second", "input_tokens", "output_tokens",
     "n_ctx", "gpu_layers", "layers_offloaded", "n_batch", "n_ubatch", "n_threads", "flash_attention", "cache_type_k", "cache_type_v",
-    "mmap", "load_mode", "spec_type", "mmproj_file", "draft_model", "model_id", "draft_acc", "mem_used_gb", "gpu_util", "temp_c", "log_source", "success", "launch_command"];
+    "mmap", "load_mode", "spec_type", "mmproj_file", "draft_model", "model_id", "draft_acc", "mem_used_gb", "gpu_util", "temp_c", "power_w", "tokens_per_watt", "prompt_per_watt", "power_label", "log_source", "success", "launch_command"];
   const esc = (v) => (v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
   const csv = [cols.join(",")].concat(rows.map((r) => cols.map((c) => esc(c === "created_at" ? new Date(r[c] * 1000).toISOString() : r[c])).join(","))).join("\n");
   const a = h("a", { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: "benchmarks.csv" });
@@ -4504,6 +4518,111 @@ function moeCard(m) {
   return card;
 }
 
+// ── Profiles → Power: a power cap (and top clock) per profile, set on the GPUs while it runs ──
+const PW = { data: null, timer: null };
+async function loadPower() {
+  try { PW.data = await api("GET", "/api/power"); } catch (e) { fill($("#pPower"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
+  renderPower();
+}
+const pwTemp = (c) => (c == null ? DASH : `${num(c, 0)} °C`);
+function pwSettingEditor(cur, onApply, applyLabel = "Apply") {
+  // preset + cap (W) + top clock (MHz); "on" off keeps the values for next time
+  const D = PW.data;
+  const st = { on: !!cur.on, cap_w: cur.cap_w ?? null, sclk_mhz: cur.sclk_mhz ?? null };
+  const on = h("input", { type: "checkbox", checked: st.on, "aria-label": "On" });
+  const preset = h("select", { style: "width:auto", "aria-label": "Power preset" },
+    D.presets.map((p) => h("option", { value: p.cap_w == null ? "" : String(p.cap_w) }, p.label)), h("option", { value: "custom" }, "Custom…"));
+  const cap = h("input", { type: "number", min: 50, max: 400, step: 1, placeholder: "W", style: "width:8ch", "aria-label": "Power cap in watts" });
+  const levels = [...new Set(D.cards.flatMap((c) => c.sclk_levels_mhz || []))].sort((a, b) => a - b);
+  const sclk = h("select", { style: "width:auto", "aria-label": "Top core clock" }, h("option", { value: "" }, "all clocks"),
+    levels.slice(0, -1).map((m) => h("option", { value: String(m) }, `≤ ${m} MHz`)));
+  if (st.sclk_mhz != null && !levels.includes(st.sclk_mhz)) sclk.append(h("option", { value: String(st.sclk_mhz) }, `≤ ${st.sclk_mhz} MHz`));
+  sclk.value = st.sclk_mhz == null ? "" : String(st.sclk_mhz);
+  const known = D.presets.some((p) => (p.cap_w ?? null) === st.cap_w);
+  preset.value = known ? (st.cap_w == null ? "" : String(st.cap_w)) : "custom";
+  cap.value = st.cap_w ?? "";
+  const sync = () => { cap.hidden = preset.value !== "custom"; [preset, cap, sclk].forEach((x) => (x.disabled = !on.checked)); };
+  [on, preset, cap, sclk].forEach((x) => x.addEventListener("input", () => { PW.dirty = true; }));
+  preset.addEventListener("change", () => { if (preset.value !== "custom") cap.value = preset.value; sync(); });
+  on.addEventListener("change", sync);
+  sync();
+  const apply = btn(applyLabel, () => onApply({ on: on.checked, cap_w: preset.value === "custom" ? (cap.value === "" ? null : Number(cap.value)) : (preset.value === "" ? null : Number(preset.value)),
+    sclk_mhz: sclk.value === "" ? null : Number(sclk.value) }), "sm primary", "save");
+  return h("div", { class: "row", style: "gap:8px;align-items:center;flex-wrap:wrap" }, h("label", { class: "check" }, on, "on"), preset, cap, sclk, apply);
+}
+function renderPower() {
+  const D = PW.data;
+  clearTimeout(PW.timer);
+  PW.dirty = false;
+  const put = async (path, b, msg) => { try { PW.data = await api("PUT", path, b); toast(msg, "ok"); renderPower(); } catch (e) { fail(e); } };
+  const master = h("input", { type: "checkbox", checked: D.enabled, "aria-label": "Power profiles on" });
+  master.addEventListener("change", () => put("/api/power/enabled", { on: master.checked },
+    master.checked ? "Power profiles on: each running profile's setting applies." : "Power profiles off: the cards go back to stock, then Argos leaves them alone."));
+  const last = D.last || {};
+  const fans = D.fans || {};
+  const fanBy = Object.fromEntries((fans.gpus || []).map((g) => [g.pci, g]));
+  const head = h("div", { class: "card" },
+    h("div", { class: "card-head" }, h("label", { class: "check", style: "font-weight:600" }, master, "GPU power profiles"),
+      h("span", { class: `pill ${D.enabled ? "ok" : ""}` }, D.enabled ? "on" : "off"),
+      h("span", { class: `pill ${D.writable ? "" : "warn"}`, title: "How Argos sets the cards (Settings: power.backend)" }, D.writable ? `writes through ${last.backend || D.source}` : "read only"),
+      D.hold ? h("span", { class: "pill warn" }, `benchmark holds ${D.hold.cap_w ? D.hold.cap_w + " W" : "stock"}`) : null,
+      h("span", { class: "spacer" }), btn("Apply now", async () => { try { PW.data = await api("POST", "/api/power/apply"); renderPower(); } catch (e) { fail(e); } }, "sm ghost", "zap")),
+    h("p", { class: "hint", style: "margin:0" }, "A power cap (and, if you want, a top core clock) for each profile. While a profile runs, its GPUs run at its setting; two running profiles with different settings get the higher one, so neither is slowed by the other. "
+      + "Generation on an MI50 is memory-bound: a lower cap costs little there and mostly slows prompt reading. Run a benchmark at each setting (Playground → llama-bench → GPU power) and compare tokens per watt below. "
+      + "A raise waits while a GPU is hotter than the guard temperature; a cut never waits."),
+    !D.writable ? h("p", { class: "warn-text", style: "margin:6px 0 0" }, "Argos cannot write power settings here. Set Settings → power → fan_bridge_url to fan-bridge (it has the GPUs' sysfs mounted writable), or mount the cards' sysfs read-write, or give Argos a rocm-smi that can write.") : null,
+    last.why ? h("p", { class: "hint", style: "margin:6px 0 0" }, `Now: ${last.why}${last.ts ? ` (checked ${ago(last.ts)})` : ""}`) : null,
+    (last.held || []).concat(last.errors || []).map((x) => h("p", { class: "warn-text", style: "margin:2px 0 0" }, x)),
+    D.error ? h("p", { class: "warn-text" }, D.error) : null);
+  const cards = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "GPUs"), h("span", { class: "spacer" }),
+      fans.error ? h("span", { class: "warn-text", title: fans.error }, "fan monitor not reachable")
+        : fans.phase ? h("span", { class: "chip", title: fans.reason || "" }, `fans: ${fans.phase}${fans.floor_pct != null ? `, floor ${fans.floor_pct}%` : ""}${fans.fan_avg_pct != null ? `, running ${fans.fan_avg_pct}%` : ""}`) : null),
+    D.cards.length ? h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["GPU", "Cap", "Range", "Now", "Clock", "Edge", "Junction", "HBM"].map((x) => h("th", {}, x)))),
+      h("tbody", {}, D.cards.map((c) => {
+        const f = fanBy[c.pci] || {};
+        const junction = f.junction_c ?? c.junction_c;
+        const hot = junction != null && junction >= ((D.settings || {}).guard_c || 95);
+        return h("tr", {},
+          h("td", { class: "mono-sm", title: c.pci }, `${c.card || ""} · ${c.pci}`),
+          h("td", { class: "num" }, c.cap_w != null ? `${num(c.cap_w, 0)} W` : DASH, c.cap_default_w && Math.abs((c.cap_w || 0) - c.cap_default_w) <= 1 ? h("div", { class: "cell-sub" }, "stock") : null),
+          h("td", { class: "num muted" }, c.cap_min_w != null ? `${num(c.cap_min_w, 0)}–${num(c.cap_max_w, 0)} W` : DASH),
+          h("td", { class: "num" }, (f.power_w ?? c.power_w) != null ? `${num(f.power_w ?? c.power_w, 0)} W` : DASH),
+          h("td", { class: "num" }, c.sclk_mhz ? `${c.sclk_mhz} MHz` : DASH, c.sclk_limited ? h("div", { class: "cell-sub" }, c.sclk_limit_mhz ? `≤ ${c.sclk_limit_mhz} MHz` : "limited") : null),
+          h("td", { class: "num" }, pwTemp(f.edge_c ?? c.edge_c)),
+          h("td", { class: `num ${hot ? "warn-text" : ""}`, title: f.junction_c != null ? "from the fan monitor" : "" }, pwTemp(junction)),
+          h("td", { class: "num" }, pwTemp(f.memory_c ?? c.mem_c)));
+      })))) : h("div", { class: "empty" }, "No AMD GPU found to read."));
+  const idleRow = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "While nothing with a setting runs"),
+    h("span", { class: "spacer" }), h("span", { class: "hint", style: "margin:0" }, "off: stock, but only on cards Argos changed")),
+    pwSettingEditor(D.idle || {}, (b) => put("/api/power/idle", b, b.on ? "Idle power saved." : "Idle power off.")));
+  const list = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Profiles")),
+    D.profiles.length ? h("div", { class: "stack", style: "gap:6px" }, D.profiles.map((p) => h("div", { style: "display:grid;grid-template-columns:minmax(16ch,28ch) 1fr;gap:4px 10px;align-items:center" },
+      h("div", {}, h("span", { class: "mono-sm", title: p.base_model }, p.name), p.running ? h("span", { class: "pill ok", style: "margin-left:6px" }, "running") : null,
+        p.label ? h("div", { class: "cell-sub" }, p.label) : (p.cap_w != null || p.sclk_mhz != null) ? h("div", { class: "cell-sub muted" }, "off (kept)") : null),
+      pwSettingEditor(p, (b) => put("/api/power/profile", { profile_id: p.profile_id, ...b }, b.on ? `${p.name}: saved. It applies while ${p.name} runs.` : `${p.name}: off. Its values are kept for next time.`))))) : h("div", { class: "empty" }, "No profiles yet."));
+  const cmp = D.compare || [];
+  const compare = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Compare"), h("span", { class: "spacer" }),
+      h("span", { class: "hint", style: "margin:0" }, "best speed per profile and power setting, from benchmarks with watts")),
+    cmp.length ? h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Profile", "Power", "Gen t/s", "W", "Gen t/W", "Prompt t/s", "Prompt t/W", "Hottest", "Runs"].map((x) => h("th", {}, x)))),
+      h("tbody", {}, cmp.map((g, i) => {
+        const best = !cmp.some((o, j) => j !== i && o.profile === g.profile && (o.tok_per_w || 0) > (g.tok_per_w || 0));
+        return h("tr", {}, h("td", { class: "mono-sm" }, g.profile), h("td", {}, g.power, best && g.tok_per_w ? h("span", { class: "pill ok", style: "margin-left:6px" }, "most per watt") : null),
+          h("td", { class: "num" }, g.tg != null ? num(g.tg, 1) : DASH), h("td", { class: "num" }, g.tg_w != null ? num(g.tg_w, 0) : g.pp_w != null ? num(g.pp_w, 0) : DASH),
+          h("td", { class: "num" }, g.tok_per_w != null ? num(g.tok_per_w, 3) : DASH), h("td", { class: "num" }, g.pp != null ? num(g.pp, 0) : DASH),
+          h("td", { class: "num" }, g.pp_per_w != null ? num(g.pp_per_w, 2) : DASH), h("td", { class: "num" }, pwTemp(g.temp_c)), h("td", { class: "num" }, g.runs));
+      })))) : h("div", { class: "empty" }, "No benchmark with watts yet. Run llama-bench with GPU telemetry on; each result records the watts it drew."));
+  fill($("#pPower"), head, cards, idleRow, list, compare);
+  // the temperatures and caps refresh; not while a setting is being edited
+  const again = async () => {
+    if (!$("#pPower") || !$("#pPower").offsetParent) return;
+    if (PW.dirty) { PW.timer = setTimeout(again, 15000); return; }
+    try { PW.data = await api("GET", "/api/power"); renderPower(); } catch (e) { PW.timer = setTimeout(again, 15000); }
+  };
+  PW.timer = setTimeout(again, 15000);
+}
+
 // ── API key rules (gateway.py): models, MCP servers, expiry, limits ──
 function keyScope(r = {}) {
   const bits = [];
@@ -5023,6 +5142,14 @@ const SETTINGS_FORM = [
   { group: "ttft", title: "Time to first token", hint: "Used by the Builder's TTFT card until a model has measured loads (Argos records each load's time and uses those instead).", fields: [
     { k: "disk_gbps", label: "Model read speed (GB/s)", ph: "2.0", hint: "where your GGUFs live: NVMe behind PCIe 3.0 about 2-3, SATA SSD 0.5, HDD array 0.2" },
     { k: "start_s", label: "Server start (s)", ph: "10", hint: "GPU init, graph reserve and warmup, on top of reading the file" }] },
+  { group: "power", title: "GPU power", hint: "How Profiles → Power sets each card's power cap and top clock. fan-bridge (ilofanmonitorgpu) already has the GPUs' sysfs mounted writable and shows their temperatures here.", fields: [
+    { k: "backend", label: "Write through", type: "select", options: [["auto", "auto (fan-bridge, sysfs, rocm-smi, amd-smi)"], ["fan-bridge", "fan-bridge"], ["sysfs", "sysfs"], ["rocm-smi", "rocm-smi"], ["amd-smi", "amd-smi"]] },
+    { k: "fan_bridge_url", label: "fan-bridge URL", ph: "http://192.168.1.10:5000", hint: "its dashboard address; http://fan-bridge:5000 only if both containers share a Docker network" },
+    { k: "fan_bridge_token", label: "fan-bridge power token", type: "password", hint: "FAN_BRIDGE_POWER_TOKEN, if fan-bridge has one set." },
+    { k: "rocm_smi_path", label: "rocm-smi", ph: "on PATH" },
+    { k: "amd_smi_path", label: "amd-smi", ph: "on PATH" },
+    { k: "guard_c", label: "Guard temperature (°C)", type: "number", hint: "a raise waits while any GPU's junction is this hot; a cut never waits" },
+    { k: "interval_s", label: "Check every (s)", type: "number" }] },
   { group: "playground", title: "Playground", fields: [
     { k: "llama_bench", label: "llama-bench tab", type: "check", hint: "llama.cpp's own benchmark in the Playground, run where your llama-server runs. Off hides the tab." }] },
   { group: "downloads", title: "Downloads", fields: [
@@ -7285,6 +7412,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "moe") loadMoe();
+    else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "power") loadPower();
     else if (bar.dataset.tabs === "playground" && b.dataset.pane === "bench") loadBenchTab();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "assistant") loadSettingsAssistant();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "security") loadSecurity();

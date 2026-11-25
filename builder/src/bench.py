@@ -282,6 +282,7 @@ class Benches:
             ok = True
             try:
                 for kind, p, n, d in tests:
+                    t0 = time.time()  # each test's window, for the watts it drew (gpu_power.add_power)
                     xs = []
                     for i in range(reps):
                         if run.stop_event.is_set():
@@ -289,7 +290,7 @@ class Benches:
                         xs.append(bench.once(kind, p, n, d, i))
                     avg, sd = _stats(xs)
                     r = {"n_prompt": p, "n_gen": n, "n_depth": d, "avg_ts": avg, "stddev_ts": sd, "samples_ts": xs,
-                         "model_filename": model_file, "backends": "running server"}
+                         "model_filename": model_file, "backends": "running server", "t_start": t0, "t_end": time.time()}
                     r["test"], r["kind"] = test_label(r), kind
                     with self._lock:
                         run.results.append(r)
@@ -317,6 +318,9 @@ class Benches:
             r = parse_line(line)
             with self._lock:
                 if r:
+                    # a test's window: from the result before it (or the start: that one includes the load)
+                    r["t_start"] = run.results[-1]["t_end"] if run.results else run.started_at
+                    r["t_end"] = time.time()
                     run.results.append(r)
                 elif len(run.output) < LOG_LIMIT:
                     run.output += line
