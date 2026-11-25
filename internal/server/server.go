@@ -43,6 +43,8 @@ type Server struct {
 	guard *loopGuard
 	// answerFirst holds long new prompts while another chat on the model answers
 	answerFirst *answerFirstState
+	// affinity sends a conversation back to its cached slot and copy
+	affinity *affinityState
 	// gate is the waiting room in front of each model (one at a time, answer first)
 	gate *slotGate
 
@@ -301,6 +303,7 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		inflight:      newInflightTracker(),
 		guard:         newLoopGuard(),
 		answerFirst:   newAnswerFirst(),
+		affinity:      newAffinity(),
 		metrics:       newMetricsMonitor(proxylog, cfg.MetricsMaxInMemory, cfg.CaptureBuffer, st),
 		store:         st,
 		build:         build,
@@ -428,6 +431,8 @@ func (s *Server) routes() {
 		CreateAnswerFirstMiddleware(s),
 		CreateFilterMiddleware(s.cfg),
 		CreateFormFilterMiddleware(s.cfg),
+		// last before the model: the freshest look at which slots are free
+		CreateSlotAffinityMiddleware(s),
 		CreateMetricsMiddleware(s.metrics, s.cfg),
 	)
 	modelChain := chain.New(modelMWs...)
@@ -491,6 +496,7 @@ func (s *Server) routes() {
 
 	// API group (API-key protected) consumed by the UI.
 	mux.Handle("GET /api/pool", apiChain.ThenFunc(s.handleAPIPool))
+	mux.Handle("GET /api/slots/live", apiChain.ThenFunc(s.handleAPISlotsLive))
 	mux.Handle("POST /api/crashes/clear/{model...}", apiChain.ThenFunc(s.handleAPIClearCrashes))
 	mux.Handle("POST /api/models/unload", apiChain.ThenFunc(s.handleAPIUnloadAll))
 	mux.Handle("POST /api/models/unload/{model...}", apiChain.ThenFunc(s.handleAPIUnloadModel))

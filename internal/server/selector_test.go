@@ -133,11 +133,11 @@ func TestServer_SelectorStrategySpillover(t *testing.T) {
 	}
 	tracker := newSelectorSpilloverTracker(cfg)
 
-	first, err := strategySpillover("pool", tracker, nil)
+	first, err := strategySpillover("pool", tracker, nil, "")
 	require.NoError(t, err)
-	second, err := strategySpillover("pool", tracker, nil)
+	second, err := strategySpillover("pool", tracker, nil, "")
 	require.NoError(t, err)
-	third, err := strategySpillover("pool", tracker, nil)
+	third, err := strategySpillover("pool", tracker, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, "a", first)
 	assert.Equal(t, "a", second)
@@ -148,7 +148,7 @@ func TestServer_SelectorStrategySpillover(t *testing.T) {
 		"a": process.StateReady,
 		"b": process.StateReady,
 		"c": process.StateReady,
-	})
+	}, "")
 	require.NoError(t, err)
 	assert.Equal(t, "c", target)
 
@@ -157,7 +157,7 @@ func TestServer_SelectorStrategySpillover(t *testing.T) {
 		"a": process.StateStopping,
 		"b": process.StateStopping,
 		"c": process.StateShutdown,
-	})
+	}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no available spillover targets")
 }

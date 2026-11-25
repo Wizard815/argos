@@ -4,7 +4,7 @@ summary: Put every model in one pool so models load side by side while VRAM fits
 category: guides
 tags: [routing, pool, vram, eviction, swap, gpu, memory, persistent]
 config_keys: [routing, models.*.vram, routing.router.settings.pool.protectWaits, routing.router.settings.pool.protectWaitSeconds, routing.router.settings.pool.maxWaitSeconds, routing.router.settings.pool.answerFirst, routing.router.settings.pool.oneAtATime, routing.router.settings.pool.shareGuard, routing.router.settings.pool.cpuFallback]
-updated: 2026-10-25
+updated: 2026-11-26
 ---
 
 # VRAM-aware pool router
@@ -269,10 +269,18 @@ one or two, until the prompt is read. Neither chat is held; they share the GPU,
 and the answer gets the small share.
 
 Argos cannot split one batch differently or pause a slot inside llama-server,
-but it can choose when a request goes in. With **answer first** on for a model
-(Schedule -> Plan, or Live -> ⋯), a long new prompt waits while another chat on
-that model is answering, then goes as soon as the answer ends (an agent's turns
-leave a gap at every tool call). Live shows it as **held**.
+but it can choose when a request goes in. With **answer first**, a long new
+prompt waits while another chat on that model is answering, then goes as soon
+as the answer ends (an agent's turns leave a gap at every tool call). Live
+shows it as **held**.
+
+It is **on by default for every model with `--parallel` 2 or more** (`auto`),
+and it decides by time, not size: once Argos has seen the model read a few
+prompts (from its log), a new part waits only when reading it would slow the
+answering chats for more than `stallSeconds` (3). Before the speed is known,
+`minPromptTokens` decides. A model auto added waits `autoMaxWaitSeconds` (20)
+at most, a listed one `maxWaitSeconds` (300). `auto: false` keeps it to the
+models listed.
 
 ```yaml
 routing:
@@ -282,9 +290,38 @@ routing:
       pool:
         answerFirst:
           models: ["qwen-coder--2chat"]
-          minPromptTokens: 4000   # shorter new prompts go straight in
-          maxWaitSeconds: 300     # the longest a prompt waits
+          stallSeconds: 3         # wait only if reading it slows answers longer
+          minPromptTokens: 4000   # before the speed is known
+          maxWaitSeconds: 300     # the longest a listed model's prompt waits
+          autoMaxWaitSeconds: 20  # the same for every other --parallel model
 ```
+
+### Each conversation back to its own slot, and its own copy
+
+llama-server keeps each slot's prompt in its cache, so a chat's next turn
+reads only its new part, but only in the slot that read the earlier turns.
+Argos recognizes a conversation by its start (the system prompt and the first
+user message) and sends every turn to the same slot (`id_slot`) while that
+slot is free; a busy slot is never asked for, so a turn never waits behind
+another chat when another slot is free. A model run as one copy per GPU (GPU
+mode: one per GPU) sends a conversation back to the copy that has it, while
+that copy has room. A client that sets `id_slot` itself is left alone.
+
+### Apps take turns in the line
+
+Requests over a model's `concurrencyLimit` wait in line. When a slot frees,
+it goes to the app with the fewest requests running on that model (by API
+key, else address); between equals, the one served longest ago. One agent's
+burst of twenty requests cannot keep Hermes waiting behind all of them.
+
+### Seeing it
+
+Schedule -> Live -> **Chats right now** shows every busy slot: reading a
+prompt (how far, how fast) or writing an answer (tokens a second), and warns
+when a prompt is slowing the answers or the answers are uneven. Profiles ->
+**Tips** says when a profile would do better as one copy per card, with
+another split mode, or with a smaller `-ub` (a prompt is read in chunks of
+`-ub` tokens and every answer waits for each chunk).
 
 Two answers at once can be slow too: on some builds two chats generating
 together run at a quarter of the speed each. **One at a time** (Plan, or Live
