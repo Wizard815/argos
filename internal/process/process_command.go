@@ -78,6 +78,10 @@ const cmdWaitDelay = 10 * time.Second
 // bounds the rare case where a process is still alive when its context is cut.
 const parentCancelGraceTimeout = time.Second
 
+// healthPollInterval is how often a starting server's health endpoint is polled. The server is usable the moment
+// it answers, so a 1 s poll added about half a second to every cold start on average.
+const healthPollInterval = 200 * time.Millisecond
+
 // startReq asks the run loop to bring the process up. Run and EnsureReady share
 // this one request type — and therefore one code path — so there is only ever a
 // single way to start a process. block selects the caller's semantics: Run parks
@@ -706,7 +710,7 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 			return abort(ErrStartAborted)
 		case <-cmdDone:
 			return prematureExit()
-		case <-time.After(time.Second):
+		case <-time.After(healthPollInterval):
 		}
 	}
 
