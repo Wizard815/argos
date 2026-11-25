@@ -145,9 +145,9 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 .empty b { color: var(--fg); font-weight: 400; }
 
 /* ── Form controls ───────────────────────────────────────── */
-label.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-label.field > span { font-size: 11px; color: var(--subheader); display: flex; justify-content: space-between; gap: 6px; }
-label.field > span code { color: var(--hl-keyword); font-size: 10.5px; }
+label.field, div.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+label.field > span, div.field > span:first-child { font-size: 11px; color: var(--subheader); display: flex; justify-content: space-between; gap: 6px; }
+label.field > span code, div.field > span:first-child code { color: var(--hl-keyword); font-size: 10.5px; }
 label.field > .seg { align-self: flex-start; }
 input[type=text], input[type=number], input[type=search], select, textarea {
   width: 100%; min-width: 0; background: var(--input-bg); border: 1px solid var(--line);
