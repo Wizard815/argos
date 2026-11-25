@@ -30,7 +30,17 @@ LITELLM_HEADERS = ("x-litellm-user_api_key_alias", "x-litellm-user_api_key_team_
 _LITELLM_LINE = re.compile(rb"(?im)^(" + b"|".join(re.escape(h.encode()) for h in LITELLM_HEADERS) + rb")(?=[ \t]*:)")
 
 
+def _utf8(v: str) -> str:
+    """A header value as the app wrote it: WSGI hands header bytes over as Latin-1, apps send UTF-8 ("ü" arrives
+    as "Ã¼"). Left as it is when it is not UTF-8."""
+    try:
+        return v.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return v
+
+
 def _clean(v) -> str:
+    v = _utf8(str(v or ""))
     s = re.sub(r"[\x00-\x1f\x7f]+", " ", str(v or "")).strip()
     return s[:MAX_LEN]
 
@@ -85,7 +95,7 @@ def patch_waitress() -> None:
 
 # ----- the apps seen through each key --------------------------------------------------------------------------
 def record(store, key_id: int, app: str, how: str, model: str, tokens_in: int, tokens_out: int,
-           now: float | None = None) -> None:
+           now: float | None = None, cost_usd: float = 0.0) -> None:
     if not app:
         return
     now = now or time.time()
@@ -94,6 +104,14 @@ def record(store, key_id: int, app: str, how: str, model: str, tokens_in: int, t
         n = store._q("SELECT COUNT(*) AS n FROM key_apps WHERE key_id=?", (key_id,))
         if n and int(n[0].get("n") or 0) >= MAX_APPS_PER_KEY:
             return
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    # per day too: an app's own daily quota and budget under the key (gateway.app_rules)
+    store._x("INSERT INTO app_usage (key_id, app, day, requests, input_tokens, output_tokens, cost_usd) "
+             "VALUES (?, ?, ?, 1, ?, ?, ?) ON CONFLICT (key_id, app, day) DO UPDATE SET "
+             "requests = app_usage.requests + 1, input_tokens = app_usage.input_tokens + excluded.input_tokens, "
+             "output_tokens = app_usage.output_tokens + excluded.output_tokens, "
+             "cost_usd = app_usage.cost_usd + excluded.cost_usd",
+             (key_id, app, day, tokens_in, tokens_out, float(cost_usd or 0)))
     store._x("INSERT INTO key_apps (key_id, app, how, requests, input_tokens, output_tokens, first_seen, last_seen, "
              "last_model) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?) ON CONFLICT (key_id, app) DO UPDATE SET "
              "requests = key_apps.requests + 1, input_tokens = key_apps.input_tokens + excluded.input_tokens, "
@@ -112,6 +130,7 @@ def seen(store, key_id: int | None = None) -> list[dict]:
 
 
 def forget(store, key_id: int, app: str | None = None) -> None:
+    """Forget apps seen through a key (their counts; an app's rules stay in the key's rules)."""
     if app is None:
         store._x("DELETE FROM key_apps WHERE key_id=?", (key_id,))
     else:

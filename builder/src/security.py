@@ -173,6 +173,7 @@ class Security:
             return False
         self.store._x("DELETE FROM api_keys WHERE id=?", (key_id,))
         self.store._x("DELETE FROM key_apps WHERE key_id=?", (key_id,))
+        self.store._x("DELETE FROM app_usage WHERE key_id=?", (key_id,))
         return True
 
     def check_key(self, key: str) -> Optional[dict]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from flask import Blueprint, Response, g, request
 
@@ -21,7 +22,10 @@ def _rpc(id_, result=None, error=None) -> dict:
     return out
 
 
-def _handle(msg: dict, one: str, names: list[str]) -> dict | None:
+def _handle(msg: dict, one: str, names: list[str], rules: dict | None = None, key: dict | None = None,
+            app: str = "") -> dict | None:
+    from ..gateway import tool_allowed
+    from ..mcp_gateway import log_call, result_text
     gw = ctx().mcp
     method, mid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
     if mid is None:  # a notification: nothing to answer
@@ -36,16 +40,31 @@ def _handle(msg: dict, one: str, names: list[str]) -> dict | None:
     if method == "ping":
         return _rpc(mid, {})
     if method == "tools/list":
-        tools, _ = gw.all_tools(names, prefixed=not one)
+        tools, _ = gw.all_tools(names, prefixed=True)
+        # the key's (and the app's) tool rules: a tool it may not call is not offered
+        tools = [t for t in tools if tool_allowed(t["name"], rules, app)]
+        if one:
+            tools = [{**t, "name": t["name"].split(SEP, 1)[1]} for t in tools]
         return _rpc(mid, {"tools": tools})
     if method == "tools/call":
         name = str(params.get("name") or "")
+        server, tool = one, name
+        t0 = time.time()
         try:
-            server, tool = (one, name) if one else gw.split(name)
+            if not one:
+                server, tool = gw.split(name)
             if server not in names:
                 raise MCPError(f"no MCP server {server} for this key")
-            return _rpc(mid, gw.call(server, tool, params.get("arguments") or {}))
+            if not tool_allowed(f"{server}{SEP}{tool}", rules, app):
+                raise MCPError(f"this API key{' (app ' + app + ')' if app and (rules or {}).get('apps', {}).get(app) else ''} "
+                               f"may not use the tool {tool} of {server}")
+            res = gw.call(server, tool, params.get("arguments") or {})
+            log_call(ctx().store, key, app, server, tool, "mcp", not res.get("isError"), round((time.time() - t0) * 1000),
+                     result_text(res)[:300] if res.get("isError") else "", params.get("arguments") or {})
+            return _rpc(mid, res)
         except MCPError as exc:
+            log_call(ctx().store, key, app, server or "?", tool or name, "mcp", False, round((time.time() - t0) * 1000),
+                     str(exc), params.get("arguments") or {})
             return _rpc(mid, {"content": [{"type": "text", "text": str(exc)}], "isError": True})
     if method in ("resources/list", "prompts/list"):
         return _rpc(mid, {method.split("/")[0]: []})
@@ -58,7 +77,10 @@ def _serve(one: str = ""):
     if request.method == "DELETE":
         return Response(status=200)
     gw = ctx().mcp
-    rules = (g.get("api_key") or {}).get("rules")
+    key = g.get("api_key")
+    rules = (key or {}).get("rules")
+    from ..apps import identify
+    app = identify(request.headers)[0]
     if one:
         if not gw.server(one):
             return Response(json.dumps(_rpc(None, error={"code": -32001, "message": f"no MCP server {one}"})), 404,
@@ -75,12 +97,12 @@ def _serve(one: str = ""):
     except ValueError:
         return Response(json.dumps(_rpc(None, error={"code": -32700, "message": "not JSON"})), 400, mimetype="application/json")
     if isinstance(msg, list):
-        out = [r for r in (_handle(m, one, names) for m in msg if isinstance(m, dict)) if r]
+        out = [r for r in (_handle(m, one, names, rules, key, app) for m in msg if isinstance(m, dict)) if r]
         return Response(json.dumps(out), 200, mimetype="application/json") if out else Response(status=202)
     if not isinstance(msg, dict):
         return Response(json.dumps(_rpc(None, error={"code": -32600, "message": "not a JSON-RPC message"})), 400,
                         mimetype="application/json")
-    got = _handle(msg, one, names)
+    got = _handle(msg, one, names, rules, key, app)
     return Response(json.dumps(got), 200, mimetype="application/json") if got else Response(status=202)
 
 
@@ -95,6 +117,16 @@ def mcp_one(name):
 
 
 # ----- Settings -> MCP ---------------------------------------------------------------------------------------------
+@bp.get("/api/mcp/calls")
+def mcp_calls():
+    """The latest tool calls through Argos (?server=, ?key_id=, ?limit=): who, which tool, how it went."""
+    if not _may_change():
+        return err("log in to see this", 401)
+    from ..mcp_gateway import calls
+    kid = request.args.get("key_id", type=int)
+    return ok(calls=calls(ctx().store, request.args.get("limit", 200, type=int), request.args.get("server") or "", kid))
+
+
 @bp.get("/api/mcp/servers")
 def mcp_servers():
     return ok(servers=ctx().mcp.view(), separator=SEP)

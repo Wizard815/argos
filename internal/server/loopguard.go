@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wizard815/Argos/internal/chain"
 	"github.com/Wizard815/Argos/internal/swaputil"
@@ -61,7 +62,11 @@ func appLabel(key, app, ua string) string {
 		}
 	}
 	if len(out) > 80 {
-		out = out[:80]
+		cut := 80
+		for cut > 0 && !utf8.RuneStart(out[cut]) { // never half a character
+			cut--
+		}
+		out = out[:cut]
 	}
 	return out
 }

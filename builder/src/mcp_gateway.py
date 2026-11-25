@@ -426,3 +426,39 @@ def result_text(result: dict) -> str:
     if result.get("isError"):
         text = "ERROR: " + text
     return text[:100000]
+
+
+# ----- the tool-call log (Settings -> MCP -> Tool calls) -------------------------------------------------------------
+LOG_KEEP = 5000  # calls kept; older ones are dropped
+
+
+def log_call(store, key: Optional[dict], app: str, server: str, tool: str, via: str, ok: bool, ms: int,
+             error: str = "", args: Any = "") -> None:
+    """Remember one tool call: who (key, app), which tool, how it went. Arguments are kept short (they can hold
+    file contents)."""
+    if store is None:
+        return
+    try:
+        a = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+    except (TypeError, ValueError):
+        a = str(args)
+    try:
+        store._x("INSERT INTO mcp_calls (ts, key_id, key_name, app, server, tool, via, ok, ms, error, args) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (time.time(), key["id"] if key else None, key["name"] if key else "", app or "", server, tool, via,
+                  1 if ok else 0, int(ms), (error or "")[:500], a[:500]))
+        if int(time.time()) % 50 == 0:  # now and then: keep the table small
+            store._x("DELETE FROM mcp_calls WHERE id <= (SELECT MAX(id) FROM mcp_calls) - ?", (LOG_KEEP,))
+    except Exception:  # noqa: BLE001 - the call's answer matters more than its log line
+        pass
+
+
+def calls(store, limit: int = 200, server: str = "", key_id: Optional[int] = None) -> list[dict]:
+    q, args = "SELECT * FROM mcp_calls WHERE 1=1", []
+    if server:
+        q += " AND server=?"
+        args.append(server)
+    if key_id is not None:
+        q += " AND key_id=?"
+        args.append(key_id)
+    return [dict(r) for r in store._q(q + " ORDER BY id DESC LIMIT ?", (*args, max(1, min(limit, 2000))))]

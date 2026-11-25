@@ -63,9 +63,12 @@ def _engine(engine_url: str, body: dict, headers: dict) -> tuple[int, dict, byte
         return resp.status, {}, raw
 
 
-def run(pb, engine_url: str, body: dict, headers: dict, key: Optional[dict], send=None) -> tuple[Response, tuple[int, int]]:
-    """``send(body) -> (status, json, raw)`` asks the model; the engine when None (a cloud provider's model otherwise)."""
-    from .mcp_gateway import MCPError, SEP, result_text
+def run(pb, engine_url: str, body: dict, headers: dict, key: Optional[dict], send=None,
+        app: str = "") -> tuple[Response, tuple[int, int]]:
+    """``send(body) -> (status, json, raw)`` asks the model; the engine when None (a cloud provider's model otherwise).
+    ``app``: the app behind the key (apps.py), for its own denied tools and the tool-call log."""
+    from .gateway import tool_allowed
+    from .mcp_gateway import MCPError, SEP, log_call, result_text
     gw = pb.mcp
     rules = key["rules"] if key else None
     body = json.loads(json.dumps(body))  # a copy we can change
@@ -88,6 +91,8 @@ def run(pb, engine_url: str, body: dict, headers: dict, key: Optional[dict], sen
         for t in tools:
             server, tool = t["name"].split(SEP, 1)
             if allow and tool not in allow and t["name"] not in allow:
+                continue
+            if not tool_allowed(t["name"], rules, app):  # the key's (or app's) tool rules: never offered
                 continue
             if t["name"] in owner:
                 continue
@@ -126,13 +131,16 @@ def run(pb, engine_url: str, body: dict, headers: dict, key: Optional[dict], sen
             else:
                 server, tool = owner[name]
                 t0 = time.time()
+                raw_args = (c.get("function") or {}).get("arguments") or "{}"
                 try:
-                    args = json.loads((c.get("function") or {}).get("arguments") or "{}")
+                    args = json.loads(raw_args)
                     text = result_text(gw.call(server, tool, args if isinstance(args, dict) else {}))
                     ok = not text.startswith("ERROR:")
                 except (MCPError, ValueError) as exc:
                     text, ok = f"ERROR: {exc}", False
-                calls.append({"round": n + 1, "tool": name, "ok": ok, "ms": round((time.time() - t0) * 1000)})
+                ms = round((time.time() - t0) * 1000)
+                calls.append({"round": n + 1, "tool": name, "ok": ok, "ms": ms})
+                log_call(pb.store, key, app, server, tool, "chat", ok, ms, "" if ok else text, raw_args)
             body["messages"].append({"role": "tool", "tool_call_id": c.get("id") or "", "content": text})
         pb.event("mcp", f"chat ran {len(mine)} MCP tool call(s) in round {n + 1}: "
                  + ", ".join(c["function"]["name"] for c in mine))

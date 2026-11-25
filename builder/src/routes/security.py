@@ -154,12 +154,17 @@ def security_require_key():
 @bp.put("/api/security/keys/<int:key_id>")
 def security_key_rules(key_id):
     """Body: {name?, rules: {models, mcp_mode, mcps, expires_at, blocked, rpm, tpm, parallel, daily_tokens,
-    monthly_tokens, note}}."""
+    monthly_tokens, daily_usd, monthly_usd, mcp_tools, mcp_tools_deny, note, apps?}}. Rules left out of a save that
+    has no "apps" keep the key's app rules (the key's own form does not show them)."""
     if not _may_change():
         return err("log in to change keys", 401)
     d = body()
+    rules = dict(d.get("rules") or {})
+    if "apps" not in rules:
+        old = next((k for k in sec().list_keys() if k["id"] == key_id), None)
+        rules["apps"] = (old or {}).get("rules", {}).get("apps") or {}
     try:
-        k = sec().set_rules(key_id, d.get("rules") or {}, d.get("name"))
+        k = sec().set_rules(key_id, rules, d.get("name"))
     except ValueError as exc:
         return err(str(exc))
     if not k:
@@ -196,6 +201,37 @@ def security_key_apps_forget(key_id):
     return ok(apps=apps_mod.seen(store, key_id))
 
 
+@bp.put("/api/security/keys/<int:key_id>/apps/<path:app_name>")
+def security_key_app_rules(key_id, app_name):
+    """Body: {models, rpm, tpm, parallel, daily_tokens, monthly_tokens, daily_usd, monthly_usd, mcp_tools_deny,
+    blocked, note}: one app's own rules under a key, on top of the key's."""
+    if not _may_change():
+        return err("log in to change keys", 401)
+    k = next((x for x in sec().list_keys() if x["id"] == key_id), None)
+    if not k:
+        return err("no such key", 404)
+    rules = dict(k["rules"])
+    rules["apps"] = {**(rules.get("apps") or {}), app_name.strip()[:60]: body()}
+    try:
+        k = sec().set_rules(key_id, rules)
+    except ValueError as exc:
+        return err(str(exc))
+    current_app.extensions["pb"].event("settings", f"API key {k['name']}: rules for the app {app_name} changed")
+    return ok(key=k)
+
+
+@bp.delete("/api/security/keys/<int:key_id>/apps/<path:app_name>/rules")
+def security_key_app_rules_drop(key_id, app_name):
+    if not _may_change():
+        return err("log in to change keys", 401)
+    k = next((x for x in sec().list_keys() if x["id"] == key_id), None)
+    if not k:
+        return err("no such key", 404)
+    rules = dict(k["rules"])
+    rules["apps"] = {a: r for a, r in (rules.get("apps") or {}).items() if a != app_name}
+    return ok(key=sec().set_rules(key_id, rules))
+
+
 def _setting(name, default):
     return current_app.extensions["pb"].store.get_settings().get(name) or default
 
@@ -207,8 +243,105 @@ def gateway_settings():
     from .. import gateway
     from ..engine_proxy import answer_cache
     store = current_app.extensions["pb"].store
+    from ..engine_proxy import health, convert_settings
+    from .. import traces
     return ok(groups=_setting(gateway.GROUPS_KEY, {}), cache={**gateway.cache_settings(store), **answer_cache().view()},
-              fallbacks=[gateway.public_fallback(r) for r in gateway.fallback_rules(store)])
+              fallbacks=[gateway.public_fallback(r) for r in gateway.fallback_rules(store)],
+              retry=gateway.retry_settings(store), cooling=health().view(), convert=convert_settings(store),
+              traces={**traces.public(_setting(traces.SETTINGS_KEY, {})),
+                      "stats": (current_app.extensions.get("traces").stats() if current_app.extensions.get("traces") else {})})
+
+
+@bp.put("/api/gateway/convert")
+def gateway_convert():
+    """Body: {responses, messages}: "auto", "always" or "never" turn into chat completions."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from ..engine_proxy import CONVERT_KEY
+    d = body()
+    for k in ("responses", "messages"):
+        if d.get(k) not in (None, "auto", "always", "never"):
+            return err(f"{k} is auto, always or never")
+    store = current_app.extensions["pb"].store
+    old = store.get_settings().get(CONVERT_KEY) or {}
+    store.set_setting(CONVERT_KEY, {**old, **{k: d[k] for k in ("responses", "messages") if d.get(k)}})
+    return gateway_settings()
+
+
+@bp.put("/api/gateway/traces")
+def gateway_traces():
+    """Body: traces.clean's settings: where each model request is sent as an OpenTelemetry span."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import traces
+    store = current_app.extensions["pb"].store
+    try:
+        v = traces.clean(body(), store.get_settings().get(traces.SETTINGS_KEY) or {})
+    except ValueError as exc:
+        return err(str(exc))
+    store.set_setting(traces.SETTINGS_KEY, v)
+    _TRACE_CACHE.clear()
+    current_app.extensions["pb"].event("settings", "request traces " + (f"on: {v.get('endpoint')}" if v.get("enabled") else "off"))
+    return gateway_settings()
+
+
+@bp.post("/api/gateway/traces/test")
+def gateway_traces_test():
+    """Send one test span with the saved settings (or the ones in the body): "" ok, else what went wrong."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import traces
+    store = current_app.extensions["pb"].store
+    old = store.get_settings().get(traces.SETTINGS_KEY) or {}
+    try:
+        v = traces.clean(body() or old, old) if body() else old
+    except ValueError as exc:
+        return err(str(exc))
+    problem = traces.test_send(v)
+    return err(problem, 502) if problem else ok(sent=True)
+
+
+_TRACE_CACHE: dict = {}
+
+
+def trace_settings_getter(store):
+    """Settings for the exporter, read at most every 2 s (it asks on every request)."""
+    import time as _t
+    from .. import traces
+
+    def get():
+        hit = _TRACE_CACHE.get("v")
+        if hit and _t.time() - hit[0] < 2:
+            return hit[1]
+        v = store.get_settings().get(traces.SETTINGS_KEY) or {}
+        _TRACE_CACHE["v"] = (_t.time(), v)
+        return v
+    return get
+
+
+@bp.put("/api/gateway/retry")
+def gateway_retry():
+    """Body: {retries, fails, window_s, cooldown_s}: try a failed request again, and rest a model or provider that
+    keeps failing."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import gateway
+    try:
+        v = gateway.clean_retry({**gateway.RETRY_DEFAULTS, **body()})
+    except ValueError as exc:
+        return err(str(exc))
+    current_app.extensions["pb"].store.set_setting(gateway.RETRY_KEY, v)
+    return gateway_settings()
+
+
+@bp.post("/api/gateway/cooling/reset")
+def gateway_cooling_reset():
+    """Body: {target?}: end a cooldown now (all of them without a target)."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from ..engine_proxy import health
+    health().reset(body().get("target") or None)
+    return gateway_settings()
 
 
 @bp.put("/api/gateway/groups")
@@ -317,6 +450,7 @@ def providers_save():
         return err(str(exc))
     rest = [x for x in have if x is not old and x["name"] != p["name"]]
     store.set_setting(providers.KEY, rest + [p])
+    providers.warm_prices([p])  # its model list says its prices: known before the first request
     current_app.extensions["pb"].event("settings", f"provider {p['name']} saved: {len(p['models'])} model(s) offered")
     return providers_list()
 

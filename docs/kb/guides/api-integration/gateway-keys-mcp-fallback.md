@@ -1,8 +1,8 @@
 ---
 title: Keys, MCP gateway and cloud fallback
-summary: Per-key models, MCP servers and limits, one MCP link for every server or one each, MCP tools run inside a chat request, an answer cache and a cloud fallback.
+summary: Per-key and per-app models, MCP servers and tools, limits and dollar budgets, one MCP link for every server or one each, MCP tools run inside a chat request, an answer cache and a cloud fallback.
 category: guides
-tags: [api-keys, litellm, gateway, apps, loop-guard, mcp, rate-limit, quota, usage, fallback, cache, model-groups]
+tags: [api-keys, litellm, gateway, apps, loop-guard, budget, cost, mcp, rate-limit, quota, usage, fallback, cache, model-groups]
 config_keys: [apiKeys]
 updated: 2026-11-25
 ---
@@ -19,10 +19,20 @@ What LiteLLM did in front of Argos, Argos now does on its own port.
 | MCP servers | every one, only some, every one except some, or none |
 | requests a minute, tokens a minute, requests at once | answered 429 `rate_limit_exceeded` when over |
 | tokens a day, tokens a month | a quota, from the usage below |
+| dollars a day, dollars a month | a budget for cloud models (providers, cloud fallbacks); once spent they answer 429 `budget_exceeded` and local models still answer |
+| only these / never these MCP tools | `<server>__<tool>` patterns: a tool it may not use is not listed and its call is refused |
 | expires on, blocked | refused with 401 and the reason |
 
-**Usage per key** (same tab) counts requests and tokens per key, day and
-model, streamed or not. Limits are kept in memory; quotas in the database.
+**Usage per key** (same tab) counts requests, tokens and cloud cost per key,
+day and model, streamed or not. Limits are kept in memory; quotas and
+budgets in the database.
+
+A request's cost is its tokens at the provider's price: from the provider's
+model list (OpenRouter's says), else the prices set on the provider or the
+fallback (dollars per million tokens in, out). A model with no known price
+costs $0 and is never refused by a budget. The budget is checked before each
+request, so requests already running when it runs out can overshoot it a
+little.
 
 ## One key for a group of apps (LiteLLM in front)
 
@@ -45,11 +55,20 @@ litellm_settings:
   add_user_information_to_llm_headers: true # adds x-litellm-user_api_key_alias and team alias
 ```
 
+**Rules for one app** (Apps through each key -> Rules): models, the same
+limits, tokens and dollars a day or month, MCP tools it may never use, or
+blocked. They apply on top of the key's, to that app only: the key's other
+apps go on. An app with rules is listed even before it first comes.
+
 The second setting also sends the LiteLLM user's email and IDs to Argos.
 Argos reads only the key and team aliases from them. A name is what an app
 says it is: it tells honest apps apart, it does not authenticate them.
 
 ## MCP gateway (Settings -> MCP)
+
+**Tool calls** (same tab) lists the latest calls through `/mcp` and MCP tools
+run in chat: key, app, tool, result, time and arguments (cut to 500
+characters).
 
 Add each MCP server once: a command Argos starts (stdio; the program must be
 in the Argos container) or a URL (streamable HTTP). Headers and environment
@@ -105,6 +124,8 @@ answer carries `X-Argos-Fallback` and the Logs page says why.
   the engine starts answering; a stream starts early while a model loads.
 - **A stdio MCP server says "could not start".** Its program (npx, uvx) is not
   in the Argos container; run it as its own container and add it by URL.
+- **A budget never stops a cloud model.** Its price is unknown: set it on the
+  provider (Settings -> Providers -> Edit -> Prices) or the fallback.
 - **Every app behind LiteLLM shows as "OpenAI/Python".** LiteLLM is not
   sending the key alias: set both settings above, and give each app a LiteLLM
   key with an alias.

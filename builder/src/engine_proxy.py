@@ -36,6 +36,14 @@ def limiter(app=None) -> gateway.Limiter:
     return ext["gateway_limiter"]
 
 
+def health(app=None) -> gateway.Health:
+    """Failures and cooldowns of local models and providers (retries and cooldown, Settings -> Gateway)."""
+    ext = (app or current_app).extensions
+    if "gateway_health" not in ext:
+        ext["gateway_health"] = gateway.Health()
+    return ext["gateway_health"]
+
+
 def answer_cache(app=None) -> gateway.AnswerCache:
     ext = (app or current_app).extensions
     if "gateway_cache" not in ext:
@@ -192,17 +200,165 @@ def _to_fallback(rule: dict, engine_path: str, parsed: dict, headers: dict):
     return _open(f"{base.scheme}://{base.netloc}", "POST", target, data, h)
 
 
-def _record(store, key: dict, model: str, app: str, how: str, tokens_in: int, tokens_out: int) -> None:
-    """A key's usage, and the app seen through it."""
+def _record(store, key: dict, model: str, app: str, how: str, tokens_in: int, tokens_out: int,
+            cost_usd: float = 0.0) -> None:
+    """A key's usage (and what it cost, for a cloud model), and the app seen through it."""
     from . import apps as apps_mod
-    gateway.record_usage(store, key["id"], model, tokens_in, tokens_out)
+    gateway.record_usage(store, key["id"], model, tokens_in, tokens_out, cost_usd=cost_usd)
     try:
-        apps_mod.record(store, key["id"], app, how, model, tokens_in, tokens_out)
+        apps_mod.record(store, key["id"], app, how, model, tokens_in, tokens_out, cost_usd=cost_usd)
     except Exception:  # noqa: BLE001 - the answer matters more than the list of apps
         pass
 
 
+def _exporter():
+    return current_app.extensions.get("traces")
+
+
+def _send_trace(exp, info: dict, start: float, end: float, status: int, tokens=(None, None), cost=None, error: str = "",
+                body: bytes | None = None, answer: str | None = None) -> None:
+    """One span for a model request (traces.py; Settings -> Gateway -> Request traces). Never raises."""
+    if exp is None or not info:
+        return
+    try:
+        from . import traces
+        exp.record(traces.span(name=f"{info['op']} {info['model']}", start=start, end=end, model=info["model"],
+                               path=info["path"], status=status, key=info.get("key") or "", app=info.get("app") or "",
+                               provider=info.get("provider") or "", input_tokens=tokens[0], output_tokens=tokens[1],
+                               cost_usd=cost, stream=bool(info.get("stream")), error=error,
+                               fallback=info.get("fallback") or "", request_body=body, response_text=answer))
+    except Exception:  # noqa: BLE001 - a trace never breaks a request
+        pass
+
+
+def _answer_text(tail: bytes, streamed: bool) -> str:
+    """The answer's text for a trace: the message (or the streamed deltas) when it can be read, else the raw tail."""
+    text = tail.decode("utf-8", "replace")
+    if not streamed:
+        try:
+            j = json.loads(text)
+            c = (j.get("choices") or [{}])[0]
+            return (c.get("message") or {}).get("content") or c.get("text") or text
+        except (ValueError, AttributeError, IndexError, TypeError):
+            return text
+    parts = []
+    for line in text.splitlines():
+        if line.startswith("data:") and "[DONE]" not in line:
+            try:
+                d = (json.loads(line[5:]).get("choices") or [{}])[0].get("delta") or {}
+                parts.append(d.get("content") or "")
+            except (ValueError, AttributeError, IndexError, TypeError):
+                continue
+    return "".join(parts) or text
+
+
+CONVERT_KEY = "_convert"
+CONVERTED = {"/v1/responses": "responses", "/responses": "responses", "/v1/messages": "messages"}
+
+
+def convert_settings(store) -> dict:
+    """When /v1/responses and /v1/messages are turned into chat completions (api_translate.py): "auto" (a cloud
+    provider's model, or a local model that answers it does not know the path), "always", or "never"."""
+    v = (store.get_settings().get(CONVERT_KEY) if store is not None else None) or {}
+    return {k: (v.get(k) if v.get(k) in ("auto", "always", "never") else "auto") for k in ("responses", "messages")}
+
+
+def _converted(engine_path: str, kind: str, parsed: dict, why: str) -> Response:
+    """The request as a chat completion, and its answer turned back into the format the app asked in."""
+    from . import api_translate as tr
+    chat = tr.responses_to_chat(parsed) if kind == "responses" else tr.messages_to_chat(parsed)
+    resp = _forward_inner("/v1/chat/completions", json.dumps(chat).encode())
+    hdrs = [(k, v) for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")]
+    hdrs.append(("X-Argos-Converted", f"{kind} -> chat ({why})"))
+    if resp.is_streamed and resp.status_code < 400 and "event-stream" in (resp.content_type or ""):
+        conv = tr.ChatToResponsesStream(parsed) if kind == "responses" else tr.ChatToMessagesStream(parsed)
+        inner = resp.response
+
+        def gen():
+            try:
+                for chunk in inner:
+                    out = conv.feed(chunk if isinstance(chunk, bytes) else str(chunk).encode())
+                    if out:
+                        yield out
+                tail = conv.close()
+                if tail:
+                    yield tail
+            finally:
+                resp.close()  # the chat stream's own end: usage, limits, its trace
+        out = Response(gen(), status=200, headers=hdrs, mimetype="text/event-stream")
+        out.argos_traced = getattr(resp, "argos_traced", False)
+        return out
+    data = resp.get_data()
+    resp.close()
+    if resp.status_code >= 400:
+        err = tr.error_to_responses(resp.status_code, data) if kind == "responses" else tr.error_to_messages(resp.status_code, data)
+        out = Response(json.dumps(err), status=resp.status_code, headers=hdrs, mimetype="application/json")
+    else:
+        try:
+            chat_answer = json.loads(data)
+        except ValueError:
+            chat_answer = {}
+        if bool(chat.get("stream")):  # the model sent one answer although asked to stream: replay it as a stream
+            conv = tr.ChatToResponsesStream(parsed) if kind == "responses" else tr.ChatToMessagesStream(parsed)
+            out = Response(conv.feed(data) + conv.close(), status=200, headers=hdrs, mimetype="text/event-stream")
+        else:
+            ans = tr.chat_to_response(chat_answer, parsed) if kind == "responses" else tr.chat_to_message(chat_answer, parsed)
+            out = Response(json.dumps(ans), status=200, headers=hdrs, mimetype="application/json")
+    out.argos_traced = getattr(resp, "argos_traced", False)
+    return out
+
+
+def _convert_plan(engine_path: str) -> tuple[str, str, dict | None]:
+    """(kind, why, request) when this request should be turned into a chat completion now; kind "" when not, and
+    "maybe" when the engine is asked first (auto, a local model)."""
+    kind = CONVERTED.get(engine_path.rstrip("/"))
+    if not kind or request.method != "POST":
+        return "", "", None
+    try:
+        parsed = json.loads(request.get_data() or b"null")
+    except ValueError:
+        return "", "", None
+    if not isinstance(parsed, dict) or not parsed.get("model"):
+        return "", "", None
+    pb = current_app.extensions.get("pb")
+    store = pb.store if pb is not None else None
+    mode = convert_settings(store)[kind]
+    if mode == "never":
+        return "", "", None
+    if mode == "always":
+        return kind, "always", parsed
+    from . import model_groups, providers
+    provs = providers.listed(store) if store is not None else []
+    model = str(parsed["model"])
+    bare = model_groups.strip_prefix(model, {p["name"] for p in provs}) or model
+    if providers.resolve(bare, provs):
+        return kind, "a cloud provider's model", parsed
+    return "maybe", kind, parsed
+
+
 def _forward(engine_path: str) -> Response:
+    """Forward a request (``_forward_inner``), and trace the model requests answered here rather than streamed."""
+    t0 = time.time()
+    kind, why, parsed = _convert_plan(engine_path)
+    if kind and kind != "maybe":
+        resp = _converted(engine_path, kind, parsed, why)
+    else:
+        resp = _forward_inner(engine_path)
+        if kind == "maybe" and resp.status_code in (404, 405, 501):
+            # the local model's server does not know this path: ask it in chat completions instead
+            resp.close()
+            g.pop("argos_trace", None)
+            resp = _converted(engine_path, why, parsed, f"the model answered {resp.status_code} to {engine_path}")
+    info = getattr(g, "argos_trace", None)
+    if info and not getattr(resp, "argos_traced", False):
+        err_text = ""
+        if resp.status_code >= 400 and not resp.is_streamed:
+            err_text = resp.get_data()[:500].decode("utf-8", "replace")
+        _send_trace(_exporter(), info, t0, time.time(), resp.status_code, error=err_text, body=request.get_data())
+    return resp
+
+
+def _forward_inner(engine_path: str, body_override: bytes | None = None) -> Response:
     engine_url = current_app.config.get("ENGINE_URL") or ""
     if not engine_url:
         abort(404)  # builder-only run: unknown paths get the builder's own 404
@@ -226,10 +382,15 @@ def _forward(engine_path: str) -> Response:
     for k in [k for k in headers if k.lower() == "x-argos-app"]:
         del headers[k]
     if app:
-        headers["X-Argos-App"] = app
-    body = _converted_audio(engine_path, headers)
+        # its UTF-8 bytes (http.client sends headers as Latin-1); the engine reads them as UTF-8
+        headers["X-Argos-App"] = app.encode("utf-8").decode("latin-1")
+    body = body_override if body_override is not None else _converted_audio(engine_path, headers)
     if body is None:
         body = request.get_data()
+    if body_override is not None:
+        headers["Content-Type"] = "application/json"
+        for k in [k for k in headers if k.lower() in ("anthropic-version", "anthropic-beta")]:
+            del headers[k]
     parsed = None
     if body[:1] == b"{":
         try:
@@ -262,13 +423,27 @@ def _forward(engine_path: str) -> Response:
             model = bare
     cloud = providers.resolve(model, provs) if (model and isinstance(parsed, dict)) else None
 
-    # ----- the key's rules (gateway.py) -----
+    if request.method == "POST" and model:
+        op = "embeddings" if "embedding" in engine_path else ("text_completion" if engine_path.rstrip("/").endswith(
+            "/completions") and "chat" not in engine_path else "chat")
+        g.argos_trace = {"model": model, "path": engine_path, "op": op, "key": key["name"] if key else "", "app": app,
+                         "provider": cloud[0]["name"] if cloud else "",
+                         "stream": bool(isinstance(parsed, dict) and parsed.get("stream"))}
+
+    # ----- the key's rules, and the rules of the app behind it (gateway.py) -----
     groups = (store.get_settings().get(gateway.GROUPS_KEY) or {}) if (store is not None and key) else {}
     slot = False
+    app_slot = ""
+    arules = gateway.app_rules(key["rules"], app) if key else None
+    who_app = f"the app {app} on this key"
     if key:
         rules = key["rules"]
+        if arules and arules.get("blocked"):
+            return _api_error(f"{who_app} is blocked", 403, "app_blocked")
         if model and not gateway.model_allowed(model, rules, groups):
             return _api_error(f"this API key may not use the model {model}", 403, "model_not_allowed")
+        if model and arules and not gateway.model_allowed(model, arules, groups):
+            return _api_error(f"{who_app} may not use the model {model}", 403, "model_not_allowed")
         if request.method == "POST" and model:
             day = time.strftime("%Y-%m-%d")
             why = LIMITER.acquire(key["id"], rules,
@@ -277,10 +452,38 @@ def _forward(engine_path: str) -> Response:
             if why:
                 return _api_error(why, 429, "rate_limit_exceeded")
             slot = True
+            if arules:
+                need_day = arules.get("daily_tokens") or arules.get("daily_usd")
+                need_month = arules.get("monthly_tokens") or arules.get("monthly_usd")
+                used_d = gateway.app_used(store, key["id"], app, day) if need_day else (0, 0.0)
+                used_m = gateway.app_used(store, key["id"], app, day[:8] + "01") if need_month else (0, 0.0)
+                why = LIMITER.acquire(f"{key['id']}:{app}", arules, used_d[0], used_m[0], who=who_app)
+                if why:
+                    LIMITER.release(key["id"])
+                    slot = False
+                    return _api_error(why, 429, "rate_limit_exceeded")
+                app_slot = f"{key['id']}:{app}"
 
     def done(tokens: int = 0) -> None:
         if slot:
             LIMITER.release(key["id"], tokens)
+        if app_slot:
+            LIMITER.release(app_slot, tokens)
+
+    def budget_why() -> str:
+        """"" while this key (and app) may spend money on a cloud model, else why not."""
+        if not key or store is None:
+            return ""
+        r, day = key["rules"], time.strftime("%Y-%m-%d")
+        if r.get("daily_usd") or r.get("monthly_usd"):
+            why = gateway.budget_problem(gateway.usd_spent(store, key["id"], day) if r.get("daily_usd") else 0,
+                                         gateway.usd_spent(store, key["id"], day[:8] + "01") if r.get("monthly_usd") else 0, r)
+            if why:
+                return why
+        if arules and (arules.get("daily_usd") or arules.get("monthly_usd")):
+            return gateway.budget_problem(gateway.app_used(store, key["id"], app, day)[1],
+                                          gateway.app_used(store, key["id"], app, day[:8] + "01")[1], arules, who_app)
+        return ""
 
     act: dict = {}
 
@@ -289,6 +492,7 @@ def _forward(engine_path: str) -> Response:
             from .moe import ACTIVITY
             ACTIVITY.end(model)
 
+    trace = getattr(g, "argos_trace", None)
     try:
         # ----- MCP tools run here (mcp_chat.py) -----
         if engine_path == "/v1/chat/completions" and isinstance(parsed, dict) and pb is not None:
@@ -306,11 +510,16 @@ def _forward(engine_path: str) -> Response:
                             return r2.status, json.loads(raw), raw
                         except ValueError:
                             return r2.status, {}, raw
-                out, tokens = mcp_chat.run(pb, engine_url, parsed, headers, key, send=send)
+                if cloud:
+                    why = budget_why() if providers.price(cloud[0], cloud[1]) else ""
+                    if why:
+                        return _api_error(why, 429, "budget_exceeded")
+                out, tokens = mcp_chat.run(pb, engine_url, parsed, headers, key, send=send, app=app)
                 if key and store is not None:
-                    _record(store, key, model, app, app_how, *tokens)
+                    cost = providers.cost(providers.price(cloud[0], cloud[1]), *tokens) if cloud else 0.0
+                    _record(store, key, model, app, app_how, *tokens, cost_usd=cost)
                 done(sum(tokens))
-                slot = False
+                slot, app_slot = False, ""
                 return out
 
         # ----- answer cache -----
@@ -324,7 +533,7 @@ def _forward(engine_path: str) -> Response:
                     if key:
                         _record(store, key, model, app, app_how, 0, 0)
                     done(0)
-                    slot = False
+                    slot, app_slot = False, ""
                     return Response(hit[2], hit[0], mimetype=hit[1].split(";")[0], headers={"X-Argos-Cache": "hit"})
 
         # ----- the engine, or the cloud fallback -----
@@ -339,40 +548,101 @@ def _forward(engine_path: str) -> Response:
             headers["Content-Length"] = str(len(body))
         conn = resp = None
         fell_back, why_fb = False, ""
+        price_now = None  # dollars per million tokens of whatever answers (a provider or fallback), for budgets
+        HEALTH, retry = health(), gateway.retry_settings(store)
+        is_call = request.method == "POST" and bool(model)  # a model request: worth a retry, counts for cooldown
+
+        def pause(i: int, r=None) -> None:
+            ra = (r.getheader("Retry-After") if r is not None else "") or ""
+            time.sleep(min(5.0, float(ra)) if ra.replace(".", "", 1).isdigit() else 0.5 * (i + 1))
+
         if cloud:
-            try:
-                conn, resp = _to_fallback({"url": cloud[0]["url"], "api_key": cloud[0]["api_key"], "model": cloud[1]},
-                                          engine_path, parsed, headers)
-            except OSError as exc:
-                return _json(f"the provider {cloud[0]['name']} is unreachable: {exc}", 502)
-        try:
-            if resp is None:
-                conn, resp = _open(engine_url, request.method, target, body, headers, (rule or {}).get("wait_s") or 0,
-                                   gone=_client_gone())
-        except ClientGone:
-            return _json("the app hung up before the answer started", 499)
-        except socket.timeout:
-            why_fb = f"no answer in {rule['wait_s']:g}s"
-        except OSError as exc:
-            if not (rule and rule.get("on_down")):
-                return _json(f"engine unreachable: {exc}", 502)
-            why_fb = f"engine unreachable: {exc}"
-        if resp is not None and rule and resp.status >= 400:
-            # an error is small: read it to see whether it calls for the fallback
-            err_body = resp.read()
-            conn.close()
-            if (resp.status >= 500 and rule.get("on_down")) or (rule.get("on_too_long") and gateway.too_long(resp.status, err_body)):
-                why_fb = f"the local model answered {resp.status}"
+            tgt = f"provider:{cloud[0]['name']}"
+            price_now = providers.price(cloud[0], cloud[1])
+            why = budget_why() if price_now and any(price_now) else ""
+            if why:
+                return _api_error(why, 429, "budget_exceeded")
+            left = HEALTH.cooling(tgt)
+            if left:
+                return _api_error(f"the provider {cloud[0]['name']} failed {retry['fails']} times and cools down for "
+                                  f"{left:.0f} s more", 503, "provider_cooling_down")
+            for i in range(retry["retries"] + 1):
+                try:
+                    conn, resp = _to_fallback({"url": cloud[0]["url"], "api_key": cloud[0]["api_key"], "model": cloud[1]},
+                                              engine_path, parsed, headers)
+                except OSError as exc:
+                    HEALTH.fail(tgt, str(exc), retry)
+                    if i < retry["retries"] and not HEALTH.cooling(tgt):
+                        pause(i)
+                        continue
+                    return _json(f"the provider {cloud[0]['name']} is unreachable: {exc}", 502)
+                if resp.status in gateway.RETRY_STATUS:
+                    err_body = resp.read()
+                    conn.close()
+                    HEALTH.fail(tgt, f"answered {resp.status}", retry)
+                    if i < retry["retries"] and gateway.retryable(resp.status, err_body, False) and not HEALTH.cooling(tgt):
+                        pause(i, resp)
+                        continue
+                    out_headers = [(k, v) for k, v in resp.getheaders() if k.lower() not in HOP_BY_HOP]
+                    return Response(err_body, status=resp.status, headers=out_headers + [("X-Argos-Provider", cloud[0]["name"])])
+                HEALTH.ok(tgt)
+                break
+        else:
+            tgt = f"model:{model}"
+            cool = HEALTH.cooling(tgt) if is_call else 0
+            can_fb = bool(rule and rule.get("on_down"))
+            if cool and can_fb:
+                why_fb = f"it failed {retry['fails']} times and cools down for {cool:.0f} s more"
             else:
-                out_headers = [(k, v) for k, v in resp.getheaders() if k.lower() not in HOP_BY_HOP]
-                return Response(err_body, status=resp.status, headers=out_headers)
-            resp = None
+                for i in range(retry["retries"] + 1 if is_call else 1):
+                    try:
+                        conn, resp = _open(engine_url, request.method, target, body, headers, (rule or {}).get("wait_s") or 0,
+                                           gone=_client_gone())
+                    except ClientGone:
+                        return _json("the app hung up before the answer started", 499)
+                    except socket.timeout:
+                        why_fb = f"no answer in {rule['wait_s']:g}s"
+                        break
+                    except OSError as exc:
+                        if not can_fb:
+                            return _json(f"engine unreachable: {exc}", 502)
+                        why_fb = f"engine unreachable: {exc}"
+                        break
+                    if not is_call or resp.status < 400:
+                        if is_call:
+                            HEALTH.ok(tgt)
+                        break
+                    # an error is small: read it to see whether to try again, or to go to the fallback
+                    err_body = resp.read()
+                    conn.close()
+                    again = gateway.retryable(resp.status, err_body, True)
+                    if again:
+                        HEALTH.fail(tgt, f"answered {resp.status}: {err_body[:120].decode('utf-8', 'replace')}", retry)
+                    if again and i < retry["retries"] and not (HEALTH.cooling(tgt) and can_fb):
+                        pause(i)
+                        continue
+                    if rule and ((resp.status >= 500 and rule.get("on_down")) or
+                                 (rule.get("on_too_long") and gateway.too_long(resp.status, err_body))):
+                        why_fb = f"the local model answered {resp.status}"
+                        resp = None
+                        break
+                    out_headers = [(k, v) for k, v in resp.getheaders() if k.lower() not in HOP_BY_HOP]
+                    return Response(err_body, status=resp.status, headers=out_headers)
         if resp is None:
+            if not rule:
+                return _json(f"the local model failed: {why_fb}", 502)
+            price_now = tuple(rule["price"]) if rule.get("price") else None
+            why = budget_why() if price_now else ""
+            if why:
+                return _api_error(f"the local model failed ({why_fb}) and the cloud fallback is not allowed: {why}",
+                                  429, "budget_exceeded")
             try:
                 conn, resp = _to_fallback(rule, engine_path, parsed, headers)
             except OSError as exc:
                 return _json(f"the local model failed ({why_fb}) and so did the fallback {rule['name']}: {exc}", 502)
             fell_back = True
+            if trace is not None:
+                trace["fallback"] = rule["name"]
             if pb is not None:
                 pb.event("gateway", f"{model}: sent to the fallback {rule['name']} ({why_fb})", level="warn")
 
@@ -396,16 +666,24 @@ def _forward(engine_path: str) -> Response:
                 rows = list(listing["data"]) + providers.model_entries(provs)
                 if key and key["rules"].get("models"):
                     rows = [m for m in rows if gateway.model_allowed(str(m.get("id") or ""), key["rules"], groups)]
+                if arules and arules.get("models"):
+                    rows = [m for m in rows if gateway.model_allowed(str(m.get("id") or ""), arules, groups)]
                 prefix = bool(store.get_settings().get(model_groups.PREFIX_KEY)) if store is not None else False
                 listing["data"] = model_groups.arrange(rows, pnames, prefix)
                 data = json.dumps(listing).encode()
             except (ValueError, AttributeError):
                 pass
             return Response(data, status=status, headers=[(k, v) for k, v in out_headers if k.lower() != "content-length"])
-        held = slot
-        slot = False  # the stream below releases it
+        held, held_app = slot, app_slot
+        slot, app_slot = False, ""  # the stream below releases them
         mine = dict(act)
         act.clear()  # and ends the model's activity
+
+        exp, t_start, sent = _exporter(), time.time(), request.get_data() if trace else b""
+
+        def price_end():
+            # a provider's price from its model list may have arrived while it answered (fetched in the background)
+            return price_now or (providers.price(cloud[0], cloud[1]) if cloud else None)
 
         def stream():
             tail, whole = bytearray(), bytearray()
@@ -417,7 +695,7 @@ def _forward(engine_path: str) -> Response:
                     chunk = resp.read1(65536)
                     if not chunk:
                         break
-                    if key or keep_whole:
+                    if key or keep_whole or trace is not None:
                         tail += chunk
                         del tail[:-131072]
                         if keep_whole and len(whole) < 4 * 2 ** 20:
@@ -425,20 +703,30 @@ def _forward(engine_path: str) -> Response:
                     yield chunk
                 if key and status < 400:
                     tokens = gateway.usage_from(bytes(tail), streamed)
-                    _record(store, key, model, app, app_how, *tokens)
+                    _record(store, key, model, app, app_how, *tokens, cost_usd=providers.cost(price_end(), *tokens))
                 if keep_whole and status == 200:
                     CACHE.put(cache_key, status, ctype, bytes(whole), cs["max_entries"])
             finally:
                 conn.close()
+                if trace is not None:
+                    err_text = bytes(tail[-500:]).decode("utf-8", "replace") if status >= 400 else ""
+                    _send_trace(exp, trace, t_start, time.time(), status,
+                                tokens if (key or tokens != (0, 0)) else gateway.usage_from(bytes(tail), streamed),
+                                providers.cost(price_end(), *tokens) if price_end() else None, err_text, sent,
+                                _answer_text(bytes(tail), streamed))
                 if held:
                     LIMITER.release(key["id"], sum(tokens))
+                if held_app:
+                    LIMITER.release(held_app, sum(tokens))
                 if mine:
                     from .moe import ACTIVITY
                     ACTIVITY.end(model)
 
-        return Response(stream(), status=status, headers=out_headers)
+        out = Response(stream(), status=status, headers=out_headers)
+        out.argos_traced = True  # the stream sends its own span when it ends
+        return out
     finally:
-        if slot:
+        if slot or app_slot:
             done(0)
         act_end()
 

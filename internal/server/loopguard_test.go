@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // A client the loop guard stopped gets 429 at once for that model, with the
@@ -131,5 +132,8 @@ func TestLoopGuard_AppLabel(t *testing.T) {
 	}
 	if got := appLabel("k", strings.Repeat("a", 200), ""); len(got) != 80 {
 		t.Errorf("long labels are cut to 80, got %d", len(got))
+	}
+	if got := appLabel("", strings.Repeat("ü", 60), ""); !utf8.ValidString(got) || len(got) > 80 {
+		t.Errorf("a cut never splits a character: %q", got)
 	}
 }

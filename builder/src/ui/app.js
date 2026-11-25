@@ -4811,6 +4811,10 @@ async function editKey(k) {
   const exp = h("input", { type: "date", value: r.expires_at ? new Date(r.expires_at * 1000).toISOString().slice(0, 10) : "" });
   const blocked = h("input", { type: "checkbox", checked: !!r.blocked });
   const note = h("input", { type: "text", value: r.note || "", placeholder: "what it is for" });
+  const usd = (key) => h("input", { type: "number", min: 0, step: "0.01", value: r[key] || "", placeholder: "0 = none" });
+  const dayUsd = usd("daily_usd"), monthUsd = usd("monthly_usd");
+  const tools = h("textarea", { rows: 2, spellcheck: "false", placeholder: "blank = every tool of the servers above\nfiles__read_*\ngithub__*" }, (r.mcp_tools || []).join("\n"));
+  const toolsDeny = h("textarea", { rows: 2, spellcheck: "false", placeholder: "files__delete*\n*__rm" }, (r.mcp_tools_deny || []).join("\n"));
   const field = (label, el, hint) => h("label", { class: "field wide" }, h("span", {}, label), el, hint ? h("small", { class: "hint" }, hint) : null);
   modal(`Key ${k.name}`, h("div", { class: "fields" },
     field("Name", name),
@@ -4820,10 +4824,15 @@ async function editKey(k) {
     h("label", { class: "field" }, h("span", {}, "Requests a minute"), f.rpm), h("label", { class: "field" }, h("span", {}, "Tokens a minute"), f.tpm),
     h("label", { class: "field" }, h("span", {}, "Requests at once"), f.parallel), h("label", { class: "field" }, h("span", {}, "Tokens a day"), f.daily_tokens),
     h("label", { class: "field" }, h("span", {}, "Tokens a month"), f.monthly_tokens), h("label", { class: "field" }, h("span", {}, "Expires on"), exp),
+    field("Only these MCP tools", tools, "<server>__<tool>, * allowed, one per line. The /mcp links and chat offer only these; calling another is refused."),
+    field("Never these MCP tools", toolsDeny, "Taken out even when allowed above (a delete or shell tool, say)."),
+    h("label", { class: "field" }, h("span", {}, "Dollars a day"), dayUsd), h("label", { class: "field" }, h("span", {}, "Dollars a month"), monthUsd),
+    h("small", { class: "hint wide" }, "Dollar budgets count cloud models (Settings → Providers, cloud fallbacks) at their price; once spent, cloud requests are refused and local models still answer."),
     field("Note", note), h("label", { class: "check wide" }, blocked, "Blocked: refused until unticked")),
   [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
     const rules = { models: models.value, mcp_mode: mode.value, mcps: picks.map((p) => p.querySelector("input")).filter((i) => i.checked).map((i) => i.value),
-      expires_at: exp.value ? new Date(exp.value + "T23:59:59").getTime() / 1000 : 0, blocked: blocked.checked, note: note.value };
+      expires_at: exp.value ? new Date(exp.value + "T23:59:59").getTime() / 1000 : 0, blocked: blocked.checked, note: note.value,
+      mcp_tools: tools.value, mcp_tools_deny: toolsDeny.value, daily_usd: Number(dayUsd.value || 0), monthly_usd: Number(monthUsd.value || 0) };
     for (const [key, el] of Object.entries(f)) rules[key] = Number(el.value || 0);
     try { await api("PUT", `/api/security/keys/${k.id}`, { name: name.value, rules }); close(); toast("Saved: it applies to the next request.", "ok"); loadSecurity(); } catch (e) { fail(e); }
   } }]);
@@ -4833,39 +4842,83 @@ async function keyUsageCard() {
   try { u = await api("GET", "/api/security/usage?days=30"); } catch (e) { return null; }
   const per = {};
   for (const r of u.rows) {
-    const p = (per[r.key_id] ||= { requests: 0, input: 0, output: 0, today: 0, models: {} });
-    p.requests += r.requests; p.input += r.input_tokens; p.output += r.output_tokens;
+    const p = (per[r.key_id] ||= { requests: 0, input: 0, output: 0, today: 0, models: {}, usd: 0 });
+    p.requests += r.requests; p.input += r.input_tokens; p.output += r.output_tokens; p.usd += r.cost_usd || 0;
     if (r.day === new Date().toISOString().slice(0, 10)) p.today += r.input_tokens + r.output_tokens;
     p.models[r.model] = (p.models[r.model] || 0) + r.input_tokens + r.output_tokens;
   }
   const rows = Object.entries(u.keys).map(([id, name]) => {
-    const p = per[id] || { requests: 0, input: 0, output: 0, today: 0, models: {} }, live = u.live[id] || {};
+    const p = per[id] || { requests: 0, input: 0, output: 0, today: 0, models: {}, usd: 0 }, live = u.live[id] || {};
     const top = Object.entries(p.models).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([m, n]) => `${mname(m)} ${n.toLocaleString()}`).join(", ");
     return [name, p.requests.toLocaleString(), p.input.toLocaleString(), p.output.toLocaleString(), p.today.toLocaleString(),
-      `${live.requests_last_minute || 0} req · ${(live.tokens_last_minute || 0).toLocaleString()} tok · ${live.in_flight || 0} now`, h("span", { class: "mono-sm" }, top || DASH)];
+      p.usd ? `$${p.usd.toFixed(p.usd < 1 ? 4 : 2)}` : DASH, `${live.requests_last_minute || 0} req · ${(live.tokens_last_minute || 0).toLocaleString()} tok · ${live.in_flight || 0} now`, h("span", { class: "mono-sm" }, top || DASH)];
   });
   const usage = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Usage per key"), h("span", { class: "spacer" }), h("span", { class: "hint" }, "last 30 days")),
-    rows.length ? h("div", { class: "table-wrap" }, simpleTable(["Key", "Requests", "Tokens in", "Tokens out", "Today", "Last minute", "Most used"], rows))
+    rows.length ? h("div", { class: "table-wrap" }, simpleTable(["Key", "Requests", "Tokens in", "Tokens out", "Today", "Cloud cost", "Last minute", "Most used"], rows))
       : h("div", { class: "muted mono-sm" }, "No keys yet."));
-  return [usage, keyAppsCard(u)];
+  let keys = [];
+  try { keys = (await api("GET", "/api/security")).keys || []; } catch (e) { /* the card shows no rules */ }
+  return [usage, keyAppsCard(u, keys)];
+}
+
+// One app's own rules under a key: the same limits as a key's, on top of them.
+function editAppRules(k, appName) {
+  const r = ((k.rules || {}).apps || {})[appName] || {};
+  const name = h("input", { type: "text", value: appName || "", placeholder: "codex (as listed, or its LiteLLM key alias)" });
+  const models = h("textarea", { rows: 2, spellcheck: "false", placeholder: "blank = what the key allows\nqwen*coder*" }, (r.models || []).join("\n"));
+  const num = (key, ph = "0 = none", step) => h("input", { type: "number", min: 0, step, value: r[key] || "", placeholder: ph });
+  const f = { rpm: num("rpm"), tpm: num("tpm"), parallel: num("parallel"), daily_tokens: num("daily_tokens"), monthly_tokens: num("monthly_tokens"),
+    daily_usd: num("daily_usd", "0 = none", "0.01"), monthly_usd: num("monthly_usd", "0 = none", "0.01") };
+  const deny = h("textarea", { rows: 2, spellcheck: "false", placeholder: "files__delete*" }, (r.mcp_tools_deny || []).join("\n"));
+  const blocked = h("input", { type: "checkbox", checked: !!r.blocked });
+  const fl = (label, el) => h("label", { class: "field" }, h("span", {}, label), el);
+  const wide = (label, el, hint) => h("label", { class: "field wide" }, h("span", {}, label), el, hint ? h("small", { class: "hint" }, hint) : null);
+  modal(appName ? `${k.name} / ${appName}` : `Rules for an app on ${k.name}`, h("div", { class: "fields" },
+    appName ? null : wide("App", name, "Its name as Argos knows it: the key's app list shows them."),
+    wide("Models", models, "Within the key's models; blank: all of the key's."),
+    fl("Requests a minute", f.rpm), fl("Tokens a minute", f.tpm), fl("Requests at once", f.parallel), fl("Tokens a day", f.daily_tokens),
+    fl("Tokens a month", f.monthly_tokens), fl("Dollars a day", f.daily_usd), fl("Dollars a month", f.monthly_usd),
+    wide("Never these MCP tools", deny, "On top of the key's own."),
+    h("label", { class: "check wide" }, blocked, "Blocked: this app's requests are refused, the key's other apps go on")),
+  [{ label: "Cancel", run: (c) => c() },
+    appName && Object.keys(r).length ? { label: "Remove rules", cls: "ghost danger", run: async (close) => {
+      try { await api("DELETE", `/api/security/keys/${k.id}/apps/${encodeURIComponent(appName)}/rules`); close(); loadSecurity(); } catch (e) { fail(e); } } } : null,
+    { label: "Save", cls: "primary", run: async (close) => {
+      const app = (appName || name.value).trim();
+      if (!app) { toast("Name the app.", "err"); return; }
+      const body = { models: models.value, mcp_tools_deny: deny.value, blocked: blocked.checked };
+      for (const [key, el] of Object.entries(f)) body[key] = Number(el.value || 0);
+      try { await api("PUT", `/api/security/keys/${k.id}/apps/${encodeURIComponent(app)}`, body); close(); toast("Saved: it applies to the app's next request.", "ok"); loadSecurity(); } catch (e) { fail(e); }
+    } }].filter(Boolean));
 }
 
 // The apps seen through each key: one key for a group of apps (all the apps behind LiteLLM, say) still shows who
 // is using it, and the loop guard and the waiting line tell them apart (apps.py).
-function keyAppsCard(u) {
-  const byKey = {};
+function keyAppsCard(u, keys = []) {
+  const byKey = {}, keyById = Object.fromEntries(keys.map((k) => [String(k.id), k]));
   for (const a of u.apps || []) (byKey[a.key_id] ||= []).push(a);
+  // apps that have rules but have not come yet are listed too
+  for (const k of keys) for (const name of Object.keys((k.rules || {}).apps || {}))
+    if (!(byKey[k.id] || []).some((a) => a.app === name)) (byKey[k.id] ||= []).push({ key_id: k.id, app: name, how: "", requests: 0, input_tokens: 0, output_tokens: 0 });
+  const ruleText = (r) => !r ? "" : [r.blocked ? "blocked" : "", (r.models || []).length ? `${r.models.length} model pattern${r.models.length > 1 ? "s" : ""}` : "",
+    r.rpm ? `${r.rpm}/min` : "", r.tpm ? `${r.tpm} tok/min` : "", r.parallel ? `${r.parallel} at once` : "", r.daily_tokens ? `${r.daily_tokens} tok/day` : "",
+    r.monthly_tokens ? `${r.monthly_tokens} tok/month` : "", r.daily_usd ? `$${r.daily_usd}/day` : "", r.monthly_usd ? `$${r.monthly_usd}/month` : "",
+    (r.mcp_tools_deny || []).length ? `${r.mcp_tools_deny.length} tool${r.mcp_tools_deny.length > 1 ? "s" : ""} denied` : ""].filter(Boolean).join(", ") || "none";
   const forget = async (id, app) => {
     try { await api("DELETE", `/api/security/keys/${id}/apps${app ? `?app=${encodeURIComponent(app)}` : ""}`); loadSecurity(); } catch (e) { fail(e); }
   };
   const how = { "X-Argos-App": "X-Argos-App header", "LiteLLM key": "its LiteLLM key", "LiteLLM team": "its LiteLLM team", "X-Title": "X-Title header", "User-Agent": "User-Agent" };
-  const blocks = Object.entries(u.keys).filter(([id]) => byKey[id]).map(([id, name]) => h("div", { style: "margin-top:10px" },
-    h("div", { class: "row", style: "gap:8px;align-items:center" }, h("strong", {}, name), h("span", { class: "hint" }, `${byKey[id].length} app${byKey[id].length === 1 ? "" : "s"}`),
-      h("span", { class: "spacer" }), btn("Forget all", () => forget(id), "sm ghost")),
-    h("div", { class: "table-wrap" }, simpleTable(["App", "Known by", "Requests", "Tokens in", "Tokens out", "Last seen", "Last model", ""],
-      byKey[id].map((a) => [h("strong", {}, a.app), h("span", { class: "hint" }, how[a.how] || a.how || DASH), a.requests.toLocaleString(),
-        a.input_tokens.toLocaleString(), a.output_tokens.toLocaleString(), a.last_seen ? ago(a.last_seen) : DASH, h("span", { class: "mono-sm" }, a.last_model ? mname(a.last_model) : DASH),
-        btn("Forget", () => forget(id, a.app), "sm ghost")])))));
+  const blocks = Object.entries(u.keys).filter(([id]) => byKey[id] || keyById[id]).map(([id, name]) => h("div", { style: "margin-top:10px" },
+    h("div", { class: "row", style: "gap:8px;align-items:center" }, h("strong", {}, name), h("span", { class: "hint" }, `${(byKey[id] || []).length} app${(byKey[id] || []).length === 1 ? "" : "s"}`),
+      h("span", { style: "flex:1" }), keyById[id] ? btn("Rules for an app", () => editAppRules(keyById[id], ""), "sm ghost", "plus") : null, byKey[id] ? btn("Forget all", () => forget(id), "sm ghost") : null),
+    byKey[id] ? h("div", { class: "table-wrap" }, simpleTable(["App", "Known by", "Requests", "Tokens in", "Tokens out", "Last seen", "Last model", "Its rules", ""],
+      byKey[id].map((a) => {
+        const rr = (((keyById[id] || {}).rules || {}).apps || {})[a.app];
+        return [h("strong", {}, a.app), h("span", { class: "hint" }, how[a.how] || a.how || DASH), a.requests.toLocaleString(),
+          a.input_tokens.toLocaleString(), a.output_tokens.toLocaleString(), a.last_seen ? ago(a.last_seen) : DASH, h("span", { class: "mono-sm" }, a.last_model ? mname(a.last_model) : DASH),
+          h("span", { class: rr ? "mono-sm" : "hint" }, ruleText(rr)),
+          h("span", { class: "nowrap" }, keyById[id] ? btn("Rules", () => editAppRules(keyById[id], a.app), "sm ghost", "pencil") : null, " ", a.requests ? btn("Forget", () => forget(id, a.app), "sm ghost") : null)];
+      }))) : null));
   return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Apps through each key")),
     h("p", { class: "hint" }, "One key can stand for a group of apps (all the apps behind LiteLLM, say): Argos tells them apart, so the loop guard stops only the app that loops and each app gets its turn in a busy model's line. ",
       "An app is known by an X-Argos-App header, else its LiteLLM key's alias (LiteLLM: litellm_settings: add_user_information_to_llm_headers: true and general_settings: forward_client_headers_to_llm_api: true), else an X-Title header, else its User-Agent. ",
@@ -4909,7 +4962,54 @@ async function loadGateway() {
   const fbCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Cloud fallback"), h("span", { class: "spacer" }), btn("Add", () => editFallback(null), "sm primary", "plus")),
     h("p", { class: "hint" }, "When a local model cannot answer, send the request to another OpenAI-compatible server instead (OpenAI, OpenRouter, another Argos). The app gets the answer as usual, with an X-Argos-Fallback header, and the Logs say so."),
     fbRows.length ? h("div", { class: "table-wrap" }, simpleTable(["Name", "Models", "Goes to", "When", "Key", ""], fbRows)) : h("div", { class: "muted mono-sm" }, "No fallback: a local model that fails answers with its error."));
-  fill($("#sGateway"), groupsCard, cacheCard, fbCard);
+  // retries and cooldown
+  const R = G.retry || {};
+  const rn = (k, min, max) => h("input", { type: "number", min, max, value: R[k] ?? "" });
+  const rf = { retries: rn("retries", 0, 3), fails: rn("fails", 1, 100), window_s: rn("window_s", 5, 3600), cooldown_s: rn("cooldown_s", 0, 3600) };
+  const saveRetry = async () => { const b = {}; for (const [k, el] of Object.entries(rf)) b[k] = Number(el.value); try { await api("PUT", "/api/gateway/retry", b); toast("Saved.", "ok"); loadGateway(); } catch (e) { fail(e); } };
+  const cooling = G.cooling || [];
+  const retryCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Retries and cooldown")),
+    h("p", { class: "hint" }, "A model or provider that fails before answering (500, 502, 503, 504; a provider's 429 too) is asked again. One that keeps failing rests for a while: its requests go straight to its cloud fallback, or a resting provider answers 503 at once. Requests Argos stopped itself (the loop guard, a cancel) and models stopped after crashes are never retried."),
+    h("div", { class: "fields" }, h("label", { class: "field" }, h("span", {}, "Try again (times)"), rf.retries), h("label", { class: "field" }, h("span", {}, "Rest after (failures)"), rf.fails),
+      h("label", { class: "field" }, h("span", {}, "…within (seconds)"), rf.window_s), h("label", { class: "field" }, h("span", {}, "Rest for (seconds, 0 = never)"), rf.cooldown_s)),
+    h("div", { class: "row", style: "gap:8px;margin-top:8px" }, btn("Save", saveRetry, "sm primary", "save")),
+    cooling.length ? h("div", { class: "table-wrap", style: "margin-top:10px" }, simpleTable(["Resting", "For", "Last failure", ""], cooling.map((c) => [h("strong", {}, c.target), `${c.seconds_left} s`,
+      h("span", { class: "mono-sm" }, c.why || DASH), btn("End now", async () => { try { await api("POST", "/api/gateway/cooling/reset", { target: c.target }); loadGateway(); } catch (e) { fail(e); } }, "sm ghost")])))
+      : h("div", { class: "muted mono-sm", style: "margin-top:8px" }, "Nothing is resting."));
+
+  // API formats
+  const C = G.convert || {};
+  const sel = (v) => h("select", {}, [["auto", "auto"], ["always", "always"], ["never", "never"]].map(([x, l]) => h("option", { value: x, selected: v === x }, l)));
+  const cResp = sel(C.responses || "auto"), cMsg = sel(C.messages || "auto");
+  const convertCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "API formats")),
+    h("p", { class: "hint" }, "Apps that speak OpenAI's Responses API (/v1/responses: Codex) or Anthropic's Messages API (/v1/messages: Claude apps) can use any model: Argos turns the request into a chat completion and the answer back, streamed or not, tool calls included. Auto: for a cloud provider's model, and for a local model whose server answers that it does not know the path (llama-server answers both itself). Always: every model. The answer carries an X-Argos-Converted header."),
+    h("div", { class: "fields" }, h("label", { class: "field" }, h("span", {}, "Responses API"), cResp), h("label", { class: "field" }, h("span", {}, "Messages API"), cMsg)),
+    h("div", { class: "row", style: "gap:8px;margin-top:8px" }, btn("Save", async () => { try { await api("PUT", "/api/gateway/convert", { responses: cResp.value, messages: cMsg.value }); toast("Saved.", "ok"); loadGateway(); } catch (e) { fail(e); } }, "sm primary", "save")));
+
+  // request traces
+  const T = G.traces || {}, st = T.stats || {};
+  const tOn = h("input", { type: "checkbox", checked: !!T.enabled });
+  const tKind = h("select", {}, [["otlp", "OpenTelemetry (OTLP/HTTP)"], ["langfuse", "Langfuse"]].map(([v, l]) => h("option", { value: v, selected: (T.kind || "otlp") === v }, l)));
+  const tUrl = h("input", { type: "text", value: T.endpoint || "", placeholder: "http://otel-collector:4318  ·  https://cloud.langfuse.com" });
+  const tHead = h("textarea", { rows: 2, spellcheck: "false", placeholder: "Authorization: Bearer …" }, Object.entries(T.headers || {}).filter(([k]) => !(T.kind === "langfuse" && k.toLowerCase() === "authorization")).map(([k, v]) => `${k}: ${v}`).join("\n"));
+  const tPub = h("input", { type: "text", value: T.public_key || "", placeholder: "pk-lf-…" });
+  const tSec = h("input", { type: "password", value: T.secret_key ? "••••" : "", placeholder: "sk-lf-…" });
+  const tContent = h("input", { type: "checkbox", checked: !!T.content });
+  const tSample = h("input", { type: "number", min: 0, max: 1, step: "0.05", value: T.sample ?? 1 });
+  const tBody = () => ({ enabled: tOn.checked, kind: tKind.value, endpoint: tUrl.value, headers: tHead.value, public_key: tPub.value, secret_key: tSec.value, content: tContent.checked, sample: Number(tSample.value) });
+  const lf = h("div", { class: "fields wide" }, h("label", { class: "field" }, h("span", {}, "Langfuse public key"), tPub), h("label", { class: "field" }, h("span", {}, "Langfuse secret key"), tSec));
+  const showLf = () => { lf.style.display = tKind.value === "langfuse" ? "" : "none"; };
+  tKind.addEventListener("change", showLf); showLf();
+  const tracesCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Request traces"), h("span", { class: "spacer" }),
+      h("span", { class: "hint" }, `${st.sent || 0} sent · ${st.failed || 0} failed · ${st.dropped || 0} dropped${st.last_error ? ` · last error: ${st.last_error}` : ""}`)),
+    h("p", { class: "hint" }, "Each model request as an OpenTelemetry span (model, key, app, tokens, cost, time, status, fallback) to a collector, Grafana Tempo, Jaeger, Phoenix or Langfuse, sent in the background. Prompts and answers only when ticked."),
+    h("div", { class: "fields" }, h("label", { class: "check wide" }, tOn, "Send traces"), h("label", { class: "field" }, h("span", {}, "To"), tKind),
+      h("label", { class: "field wide" }, h("span", {}, "Endpoint"), tUrl), lf, h("label", { class: "field wide" }, h("span", {}, "Headers (one per line)"), tHead),
+      h("label", { class: "field" }, h("span", {}, "Share of requests (0-1)"), tSample), h("label", { class: "check wide" }, tContent, "Include prompts and answers (cut to 32 KB)")),
+    h("div", { class: "row", style: "gap:8px;margin-top:8px" },
+      btn("Save", async () => { try { await api("PUT", "/api/gateway/traces", tBody()); toast("Saved.", "ok"); loadGateway(); } catch (e) { fail(e); } }, "sm primary", "save"),
+      btn("Send a test span", async () => { try { await api("POST", "/api/gateway/traces/test", tBody()); toast("Sent: the endpoint took it.", "ok"); } catch (e) { fail(e); } }, "sm ghost")));
+  fill($("#sGateway"), groupsCard, cacheCard, fbCard, retryCard, convertCard, tracesCard);
 }
 function editFallback(r) {
   const v = r || { on_down: true, on_too_long: true, wait_s: 0 };
@@ -4918,16 +5018,18 @@ function editFallback(r) {
   const model = inp(v.model, "gpt-4o-mini (blank = the same name)"), key = inp("", v.has_key ? "saved: leave blank to keep it" : "sk-…", "password");
   const down = h("input", { type: "checkbox", checked: v.on_down !== false }), long = h("input", { type: "checkbox", checked: v.on_too_long !== false });
   const wait = inp(v.wait_s || "", "0 = wait as long as it takes", "number");
+  const price = inp((v.price || []).join(", "), "0.15, 0.60 (blank = not counted)");
   const field = (label, el, hint) => h("label", { class: "field wide" }, h("span", {}, label), el, hint ? h("small", { class: "hint" }, hint) : null);
   modal(r ? `Fallback ${r.name}` : "Add a cloud fallback", h("div", { class: "fields" },
     field("Name", name), field("For the models", match, "The name an app asks for, or a pattern with *."), field("Server URL", url, "Its OpenAI-compatible base, ending in /v1."),
     field("Model there", model), field("API key there", key, "Kept in Argos's database and never shown again."),
     h("label", { class: "check wide" }, down, "when the local model fails to start or errors (5xx)"),
     h("label", { class: "check wide" }, long, "when the prompt does not fit the local model's context"),
-    field("…or when it has not started answering after (seconds)", wait, "Covers a model that is still loading or waiting behind others. Blank: never.")),
+    field("…or when it has not started answering after (seconds)", wait, "Covers a model that is still loading or waiting behind others. Blank: never."),
+    field("Its price (dollars per million tokens in, out)", price, "For keys' dollar budgets: a key whose budget is spent is not sent to it.")),
   [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
     try { await api("POST", "/api/gateway/fallbacks", { replace: r ? r.name : "", name: name.value, match: match.value, url: url.value, model: model.value, api_key: key.value,
-      on_down: down.checked, on_too_long: long.checked, wait_s: Number(wait.value || 0) }); close(); loadGateway(); } catch (e) { fail(e); }
+      on_down: down.checked, on_too_long: long.checked, wait_s: Number(wait.value || 0), price: price.value }); close(); loadGateway(); } catch (e) { fail(e); }
   } }]);
 }
 
@@ -4989,12 +5091,15 @@ function editProvider(p) {
   const inp = (val, ph, type = "text") => h("input", { type, value: val ?? "", placeholder: ph, spellcheck: "false" });
   const name = inp(v.name, "openrouter"), url = inp(v.url, "https://openrouter.ai/api/v1"), key = inp("", v.has_key ? "saved: leave blank to keep it" : "sk-…", "password");
   const on = h("input", { type: "checkbox", checked: v.enabled !== false });
+  const prices = h("textarea", { rows: 2, spellcheck: "false", placeholder: "tencent/hy4-flash: 0.15, 0.60" }, Object.entries(v.prices || {}).map(([m, pr]) => `${m}: ${pr.join(", ")}`).join("\n"));
   const field = (label, el, hint) => h("label", { class: "field wide" }, h("span", {}, label), el, hint ? h("small", { class: "hint" }, hint) : null);
   modal(p ? `Provider ${p.name}` : "Add a provider", h("div", { class: "fields" },
     field("Name", name, "Starts each of its models' names: openrouter/tencent/hy4-flash."), field("URL", url, "Its OpenAI-compatible base, ending in /v1 (OpenRouter: https://openrouter.ai/api/v1)."),
-    field("API key", key, "Kept in Argos's database and never shown again."), h("label", { class: "check wide" }, on, "On")),
+    field("API key", key, "Kept in Argos's database and never shown again."),
+    field("Prices (dollars per million tokens in, out)", prices, "One model a line. Only needed when its model list says no price (OpenRouter's does): keys' dollar budgets count what each request cost."),
+    h("label", { class: "check wide" }, on, "On")),
   [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
-    try { await api("POST", "/api/providers", { replace: p ? p.name : "", name: name.value, url: url.value, api_key: key.value, enabled: on.checked, models: p ? p.models : [] }); close(); toast("Saved. Now Pick models.", "ok"); loadProviders(); } catch (e) { fail(e); }
+    try { await api("POST", "/api/providers", { replace: p ? p.name : "", name: name.value, url: url.value, api_key: key.value, enabled: on.checked, models: p ? p.models : [], prices: prices.value }); close(); toast("Saved. Now Pick models.", "ok"); loadProviders(); } catch (e) { fail(e); }
   } }]);
 }
 
@@ -5032,7 +5137,21 @@ async function loadMcp() {
         (s.disabled_tools || []).length ? ` · off: ${s.disabled_tools.join(", ")}` : "", (s.allowed_tools || []).length ? ` · only: ${s.allowed_tools.join(", ")}` : ""),
       h("p", { class: "hint", style: "margin-bottom:4px" }, h("b", {}, "Its own link:")), link(`/mcp/${s.name}`), out);
   });
-  fill($("#sMcp"), head, ...(cards.length ? cards : [h("div", { class: "card" }, h("div", { class: "empty" }, "No MCP servers yet. Add one: a command Argos starts (npx, uvx, a script) or the URL of one already running."))]));
+  fill($("#sMcp"), head, ...(cards.length ? cards : [h("div", { class: "card" }, h("div", { class: "empty" }, "No MCP servers yet. Add one: a command Argos starts (npx, uvx, a script) or the URL of one already running."))]),
+    await mcpCallsCard());
+}
+
+// Every tool call through Argos: who (key, app), which tool, how it went.
+async function mcpCallsCard() {
+  let calls = [];
+  try { calls = (await api("GET", "/api/mcp/calls?limit=100")).calls || []; } catch (e) { return null; }
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Tool calls"), h("span", { class: "spacer" }), h("span", { class: "hint" }, "the latest 100")),
+    h("p", { class: "hint" }, "Through the /mcp links and MCP tools run in chat. Which tools a key (or an app behind it) may call is set on the key: Settings → Security → Edit, and an app's Rules."),
+    calls.length ? h("div", { class: "table-wrap" }, simpleTable(["When", "Key / app", "Tool", "Via", "Result", "Time", "Arguments"], calls.map((c) => [
+      ago(c.ts), h("span", { class: "mono-sm" }, [c.key_name || "no key", c.app].filter(Boolean).join(" / ")), h("strong", {}, `${c.server}${"__"}${c.tool}`), c.via,
+      c.ok ? h("span", { class: "pill ok" }, "ok") : h("span", { class: "pill bad", title: c.error }, (c.error || "failed").slice(0, 60)), `${c.ms} ms`,
+      h("span", { class: "mono-sm", title: c.args }, (c.args || "").slice(0, 80))])))
+      : h("div", { class: "muted mono-sm" }, "No tool calls yet."));
 }
 function editMcp(s) {
   const v = s || { transport: "stdio", enabled: true };

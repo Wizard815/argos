@@ -243,6 +243,18 @@ CREATE TABLE IF NOT EXISTS key_usage (
     input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, PRIMARY KEY (key_id, day, model)
 );
 
+CREATE TABLE IF NOT EXISTS app_usage (
+    key_id INTEGER NOT NULL, app TEXT NOT NULL, day TEXT NOT NULL, requests INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0,
+    PRIMARY KEY (key_id, app, day)
+);
+
+CREATE TABLE IF NOT EXISTS mcp_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, key_id INTEGER, key_name TEXT DEFAULT '',
+    app TEXT DEFAULT '', server TEXT NOT NULL, tool TEXT NOT NULL, via TEXT DEFAULT '', ok INTEGER DEFAULT 1,
+    ms INTEGER DEFAULT 0, error TEXT DEFAULT '', args TEXT DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS key_apps (
     key_id INTEGER NOT NULL, app TEXT NOT NULL, how TEXT DEFAULT '', requests INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, first_seen REAL, last_seen REAL,
@@ -323,6 +335,7 @@ class Store:
             self._add_missing_columns("cpu_samples", {"power_w": "REAL"})
             self._add_missing_columns("requests", {"client": "TEXT"})
             self._add_missing_columns("api_keys", {"rules": "TEXT DEFAULT '{}'"})
+            self._add_missing_columns("key_usage", {"cost_usd": "REAL DEFAULT 0"})
             self._add_missing_columns("servers", {"env_kind": "TEXT DEFAULT 'none'", "env_value": "TEXT DEFAULT ''",
                                                  "color": "TEXT DEFAULT ''", "download_dir": "TEXT DEFAULT ''"})
             self._add_missing_columns("notes", {"x": "REAL", "y": "REAL", "w": "REAL", "h": "REAL", "collapsed": "INTEGER DEFAULT 0"})

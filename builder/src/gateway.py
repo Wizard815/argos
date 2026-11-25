@@ -28,7 +28,26 @@ CACHE_KEY = "_answer_cache"
 FALLBACK_KEY = "_fallbacks"
 
 RULE_FIELDS = ("models", "mcps", "mcp_mode", "expires_at", "blocked", "rpm", "tpm", "parallel", "daily_tokens",
-               "monthly_tokens", "note")
+               "monthly_tokens", "note", "daily_usd", "monthly_usd", "mcp_tools", "mcp_tools_deny", "apps")
+APP_FIELDS = ("models", "rpm", "tpm", "parallel", "daily_tokens", "monthly_tokens", "daily_usd", "monthly_usd",
+              "mcp_tools_deny", "blocked", "note")
+MAX_APP_RULES = 100
+
+
+def _patterns(v) -> list[str]:
+    if isinstance(v, str):
+        v = v.replace("\n", ",").split(",")
+    return [str(m).strip() for m in (v or []) if str(m).strip()][:200]
+
+
+def _usd(d: dict, k: str) -> float:
+    try:
+        v = float(d.get(k) or 0)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{k} must be an amount in dollars") from None
+    if not (v >= 0) or v > 1e7:  # also NaN
+        raise ValueError(f"{k} is from 0 to 10,000,000 dollars")
+    return round(v, 4)
 
 
 # ----- key rules ------------------------------------------------------------------------------------------------
@@ -59,7 +78,43 @@ def clean_rules(d: dict) -> dict:
         raise ValueError("expires_at must be a time") from None
     out["blocked"] = bool(d.get("blocked"))
     out["note"] = str(d.get("note") or "")[:300]
+    # dollars: what cloud models (providers, fallbacks) may cost; local models cost nothing and are never refused
+    out["daily_usd"] = _usd(d, "daily_usd")
+    out["monthly_usd"] = _usd(d, "monthly_usd")
+    # MCP tools as <server>__<tool> patterns: only these (blank: every tool of the servers it may use), never these
+    out["mcp_tools"] = _patterns(d.get("mcp_tools"))
+    out["mcp_tools_deny"] = _patterns(d.get("mcp_tools_deny"))
+    # rules for one app behind this key (apps.py names it): the same limits, on top of the key's
+    apps = d.get("apps") or {}
+    if not isinstance(apps, dict):
+        raise ValueError("apps is {app name: rules}")
+    out["apps"] = {}
+    for name, r in list(apps.items())[:MAX_APP_RULES]:
+        name = str(name).strip()[:60]
+        if not name or not isinstance(r, dict):
+            continue
+        try:
+            c = clean_rules({k: v for k, v in r.items() if k in APP_FIELDS})
+        except ValueError as exc:
+            raise ValueError(f"app {name}: {exc}") from None
+        out["apps"][name] = {k: c[k] for k in APP_FIELDS}
     return out
+
+
+def app_rules(rules: dict, app: str) -> Optional[dict]:
+    """The rules for one app under a key, or None."""
+    return (rules.get("apps") or {}).get(app) if app else None
+
+
+def tool_allowed(full_name: str, rules: Optional[dict], app: str = "") -> bool:
+    """May a key (and the app behind it) use the MCP tool <server>__<tool>?"""
+    if not rules:
+        return True
+    allow = rules.get("mcp_tools") or []
+    if allow and not any(fnmatch.fnmatchcase(full_name, p) for p in allow):
+        return False
+    deny = list(rules.get("mcp_tools_deny") or []) + list((app_rules(rules, app) or {}).get("mcp_tools_deny") or [])
+    return not any(fnmatch.fnmatchcase(full_name, p) for p in deny)
 
 
 def load_rules(text: Any) -> dict:
@@ -137,9 +192,10 @@ class Limiter:
         while q and q[0][0] < now - 60:
             q.popleft()
 
-    def acquire(self, key_id: int, rules: dict, used_today: int = 0, used_month: int = 0,
-                now: Optional[float] = None) -> str:
-        """Take one request slot: "" when allowed, else why not (the caller answers 429)."""
+    def acquire(self, key_id, rules: dict, used_today: int = 0, used_month: int = 0,
+                now: Optional[float] = None, who: str = "this key") -> str:
+        """Take one request slot: "" when allowed, else why not (the caller answers 429). ``key_id`` is a key's id,
+        or "<id>:<app>" for an app's own limits."""
         now = now or time.time()
         with self.lock:
             rq = self.reqs.setdefault(key_id, collections.deque())
@@ -147,15 +203,15 @@ class Limiter:
             self._trim(rq, now)
             self._trim(tq, now)
             if rules.get("rpm") and len(rq) >= rules["rpm"]:
-                return f"rate limit: {rules['rpm']} requests a minute for this key"
+                return f"rate limit: {rules['rpm']} requests a minute for {who}"
             if rules.get("tpm") and sum(n for _, n in tq) >= rules["tpm"]:
-                return f"rate limit: {rules['tpm']} tokens a minute for this key"
+                return f"rate limit: {rules['tpm']} tokens a minute for {who}"
             if rules.get("parallel") and self.busy.get(key_id, 0) >= rules["parallel"]:
-                return f"limit: {rules['parallel']} requests at once for this key"
+                return f"limit: {rules['parallel']} requests at once for {who}"
             if rules.get("daily_tokens") and used_today >= rules["daily_tokens"]:
-                return f"quota: {rules['daily_tokens']} tokens a day for this key, used up"
+                return f"quota: {rules['daily_tokens']} tokens a day for {who}, used up"
             if rules.get("monthly_tokens") and used_month >= rules["monthly_tokens"]:
-                return f"quota: {rules['monthly_tokens']} tokens a month for this key, used up"
+                return f"quota: {rules['monthly_tokens']} tokens a month for {who}, used up"
             rq.append((now, 1))
             self.busy[key_id] = self.busy.get(key_id, 0) + 1
             return ""
@@ -228,13 +284,16 @@ def usage_from(body: bytes, streamed: bool) -> tuple[int, int]:
     return best or (0, 0)
 
 
-def record_usage(store, key_id: int, model: str, tokens_in: int, tokens_out: int, now: Optional[float] = None) -> None:
+def record_usage(store, key_id: int, model: str, tokens_in: int, tokens_out: int, now: Optional[float] = None,
+                 cost_usd: float = 0.0) -> None:
     day = time.strftime("%Y-%m-%d", time.localtime(now or time.time()))
-    store._x("INSERT INTO key_usage (key_id, day, model, requests, input_tokens, output_tokens) VALUES (?, ?, ?, 1, ?, ?) "
+    store._x("INSERT INTO key_usage (key_id, day, model, requests, input_tokens, output_tokens, cost_usd) "
+             "VALUES (?, ?, ?, 1, ?, ?, ?) "
              "ON CONFLICT (key_id, day, model) DO UPDATE SET requests = key_usage.requests + 1, "
              "input_tokens = key_usage.input_tokens + excluded.input_tokens, "
-             "output_tokens = key_usage.output_tokens + excluded.output_tokens",
-             (key_id, day, model or "", tokens_in, tokens_out))
+             "output_tokens = key_usage.output_tokens + excluded.output_tokens, "
+             "cost_usd = COALESCE(key_usage.cost_usd, 0) + excluded.cost_usd",
+             (key_id, day, model or "", tokens_in, tokens_out, float(cost_usd or 0)))
 
 
 def tokens_used(store, key_id: int, since_day: str) -> int:
@@ -243,9 +302,32 @@ def tokens_used(store, key_id: int, since_day: str) -> int:
     return int((rows[0] or {}).get("n") or 0) if rows else 0
 
 
+def usd_spent(store, key_id: int, since_day: str) -> float:
+    rows = store._q("SELECT COALESCE(SUM(cost_usd), 0) AS n FROM key_usage WHERE key_id=? AND day>=?", (key_id, since_day))
+    return float((rows[0] or {}).get("n") or 0) if rows else 0.0
+
+
+def app_used(store, key_id: int, app: str, since_day: str) -> tuple[int, float]:
+    """(tokens, dollars) one app used through a key since a day."""
+    rows = store._q("SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS n, COALESCE(SUM(cost_usd), 0) AS c "
+                    "FROM app_usage WHERE key_id=? AND app=? AND day>=?", (key_id, app, since_day))
+    r = rows[0] if rows else {}
+    return int(r.get("n") or 0), float(r.get("c") or 0)
+
+
+def budget_problem(spent_day: float, spent_month: float, rules: dict, who: str = "this key") -> str:
+    """"" while a request that costs money may go, else why not."""
+    if rules.get("daily_usd") and spent_day >= rules["daily_usd"]:
+        return f"budget: ${rules['daily_usd']:g} a day for {who} is spent (${spent_day:.2f}); local models still answer"
+    if rules.get("monthly_usd") and spent_month >= rules["monthly_usd"]:
+        return f"budget: ${rules['monthly_usd']:g} a month for {who} is spent (${spent_month:.2f}); local models still answer"
+    return ""
+
+
 def usage_report(store, days: int = 30) -> list[dict]:
     since = time.strftime("%Y-%m-%d", time.localtime(time.time() - days * 86400))
-    return store._q("SELECT key_id, day, model, requests, input_tokens, output_tokens FROM key_usage WHERE day>=? "
+    return store._q("SELECT key_id, day, model, requests, input_tokens, output_tokens, COALESCE(cost_usd, 0) AS cost_usd "
+                    "FROM key_usage WHERE day>=? "
                     "ORDER BY day DESC, key_id, model", (since,))
 
 
@@ -330,7 +412,23 @@ def clean_fallback(d: dict) -> dict:
     return {"name": str(d.get("name") or match).strip()[:60], "match": match, "url": url,
             "api_key": str(d.get("api_key") or ""), "model": str(d.get("model") or "").strip(),
             "on_down": d.get("on_down", True) is not False, "on_too_long": d.get("on_too_long", True) is not False,
-            "wait_s": wait, "enabled": d.get("enabled", True) is not False}
+            "wait_s": wait, "enabled": d.get("enabled", True) is not False, "price": _fallback_price(d.get("price"))}
+
+
+def _fallback_price(v) -> list:
+    """[input, output] dollars per million tokens at the fallback, for dollar budgets; [] when free or unknown."""
+    if not v:
+        return []
+    if isinstance(v, str):
+        v = v.split(",")
+    try:
+        a, b = (list(v) + [0, 0])[:2]
+        a, b = float(a or 0), float(b or 0)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("price is two numbers: dollars per million tokens in, out") from None
+    if not (0 <= a <= 10000 and 0 <= b <= 10000):
+        raise ValueError("price is from 0 to 10,000 dollars per million tokens")
+    return [a, b] if (a or b) else []
 
 
 def fallback_for(model: str, rules: list[dict]) -> Optional[dict]:
@@ -354,3 +452,94 @@ def too_long(status: int, body: bytes) -> bool:
 def public_fallback(r: dict) -> dict:
     """A rule as the page sees it: the key is never sent back."""
     return {**{k: v for k, v in r.items() if k != "api_key"}, "has_key": bool(r.get("api_key"))}
+
+
+# ----- retries and cooldown ---------------------------------------------------------------------------------------
+RETRY_KEY = "_retry"
+RETRY_DEFAULTS = {"retries": 1, "fails": 3, "window_s": 60, "cooldown_s": 60}
+RETRY_STATUS = (429, 500, 502, 503, 504)
+
+
+def retry_settings(store) -> dict:
+    v = (store.get_settings().get(RETRY_KEY) if store is not None else None) or {}
+    try:
+        return clean_retry({**RETRY_DEFAULTS, **v})
+    except ValueError:
+        return dict(RETRY_DEFAULTS)
+
+
+def clean_retry(d: dict) -> dict:
+    out = {}
+    for k, lo, hi in (("retries", 0, 3), ("fails", 1, 100), ("window_s", 5, 3600), ("cooldown_s", 0, 3600)):
+        try:
+            v = int(float(d.get(k, RETRY_DEFAULTS[k])))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f"{k} must be a number") from None
+        if not lo <= v <= hi:
+            raise ValueError(f"{k} is from {lo} to {hi}")
+        out[k] = v
+    return out
+
+
+def retryable(status: int, body: bytes, local: bool) -> bool:
+    """Worth sending again: the server failed before answering, for a reason that may pass. Not a request Argos
+    itself stopped (cancelled, the loop guard), nor a model the engine stopped starting after crashes. A local
+    model's 429 is Argos's own limit or the loop guard: never retried."""
+    if status not in RETRY_STATUS or (local and status == 429):
+        return False
+    t = body[:4000].lower()
+    return not any(w in t for w in (b"cancelled", b"canceled", b"loop guard", b"crashed", b"shutting down",
+                                    b"not started again"))
+
+
+class Health:
+    """Failures per target (a local model, a provider): ``fails`` within ``window_s`` cool it down for
+    ``cooldown_s``. While a local model cools down its requests go straight to its cloud fallback (if any); a
+    cooling provider is answered 503 at once instead of being asked again."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.fails: dict[str, collections.deque] = {}
+        self.until: dict[str, float] = {}
+        self.why: dict[str, str] = {}
+
+    def fail(self, target: str, why: str, settings: dict, now: Optional[float] = None) -> bool:
+        """Count a failure; True when it starts a cooldown."""
+        now = time.time() if now is None else now
+        with self.lock:
+            q = self.fails.setdefault(target, collections.deque())
+            q.append(now)
+            while q and q[0] < now - settings["window_s"]:
+                q.popleft()
+            self.why[target] = why[:300]
+            if settings["cooldown_s"] and len(q) >= settings["fails"] and self.until.get(target, 0) <= now:
+                self.until[target] = now + settings["cooldown_s"]
+                q.clear()
+                return True
+        return False
+
+    def ok(self, target: str) -> None:
+        with self.lock:
+            self.fails.pop(target, None)
+            self.until.pop(target, None)
+
+    def cooling(self, target: str, now: Optional[float] = None) -> float:
+        """Seconds left of its cooldown, 0 when none."""
+        now = time.time() if now is None else now
+        with self.lock:
+            return max(0.0, self.until.get(target, 0) - now)
+
+    def view(self, now: Optional[float] = None) -> list[dict]:
+        now = time.time() if now is None else now
+        with self.lock:
+            return [{"target": t, "seconds_left": round(u - now), "why": self.why.get(t, "")}
+                    for t, u in sorted(self.until.items()) if u > now]
+
+    def reset(self, target: Optional[str] = None) -> None:
+        with self.lock:
+            if target is None:
+                self.fails.clear()
+                self.until.clear()
+            else:
+                self.fails.pop(target, None)
+                self.until.pop(target, None)

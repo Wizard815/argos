@@ -33,7 +33,64 @@ def clean(d: dict, old: Optional[dict] = None) -> dict:
     key = str(d.get("api_key") or "") or (old or {}).get("api_key", "")
     return {"name": name, "url": url, "api_key": key, "enabled": d.get("enabled", True) is not False,
             "models": sorted({str(m).strip() for m in models if str(m).strip()}),
-            "label": str(d.get("label") or "").strip()[:60]}
+            "label": str(d.get("label") or "").strip()[:60], "prices": clean_prices(d.get("prices"))}
+
+
+def clean_prices(v) -> dict:
+    """{model: [input, output]} dollars per million tokens, set by hand: for a provider whose model list says no
+    price, so a key's dollar budget can count it. Also "model: 0.15, 0.60" lines."""
+    if isinstance(v, str):
+        rows = {}
+        for line in v.splitlines():
+            m, sep, rest = line.rpartition(":")
+            if sep and m.strip():
+                rows[m.strip()] = [x.strip() for x in rest.split(",")]
+        v = rows
+    out = {}
+    for m, pr in (v or {}).items() if isinstance(v, dict) else []:
+        try:
+            a, b = (list(pr) + [0, 0])[:2] if isinstance(pr, (list, tuple)) else (pr, 0)
+            a, b = float(a or 0), float(b or 0)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f"the price of {m} is two numbers: dollars per million tokens in, out") from None
+        if not (0 <= a <= 10000 and 0 <= b <= 10000):
+            raise ValueError(f"the price of {m} is from 0 to 10,000 dollars per million tokens")
+        out[str(m).strip()[:200]] = [a, b]
+    return dict(list(out.items())[:500])
+
+
+_warming: dict = {}
+
+
+def price(p: dict, model: str) -> Optional[tuple[float, float]]:
+    """(input, output) dollars per million tokens for one of a provider's models: set by hand, else from its model
+    list (OpenRouter's says). Never waits on the network: an unknown list is fetched in the background for next time."""
+    hand = (p.get("prices") or {}).get(model)
+    if hand:
+        return float(hand[0]), float(hand[1])
+    hit = _catalog_cache.get(p["url"])
+    if hit:
+        for r in hit[1]:
+            if r["id"] == model and r.get("prompt_price") is not None:
+                return float(r["prompt_price"] or 0), float(r.get("completion_price") or 0)
+    if not hit or time.time() - hit[0] > 600:
+        if time.time() - _warming.get(p["url"], 0) > 600:
+            _warming[p["url"]] = time.time()
+            import threading
+
+            def warm():
+                try:
+                    catalog(p, fresh=True)
+                except ValueError:
+                    pass
+            threading.Thread(target=warm, daemon=True, name="price-list").start()
+    return None
+
+
+def cost(pr: Optional[tuple[float, float]], tokens_in: int, tokens_out: int) -> float:
+    if not pr:
+        return 0.0
+    return round(((tokens_in or 0) * pr[0] + (tokens_out or 0) * pr[1]) / 1e6, 8)
 
 
 def listed(store) -> list[dict]:
@@ -108,3 +165,20 @@ def catalog(p: dict, fresh: bool = False) -> list[dict]:
     rows.sort(key=lambda r: r["id"])
     _catalog_cache[p["url"]] = (time.time(), rows)
     return rows
+
+
+def warm_prices(providers_list: list[dict]) -> None:
+    """Fetch the model lists (with their prices) of these providers in the background now, so the first requests
+    to a model priced only by its list are counted and checked against budgets."""
+    import threading
+
+    def run():
+        for p in providers_list:
+            if not p.get("enabled", True):
+                continue
+            _warming[p["url"]] = time.time()
+            try:
+                catalog(p, fresh=True)
+            except ValueError:
+                pass
+    threading.Thread(target=run, daemon=True, name="price-lists").start()

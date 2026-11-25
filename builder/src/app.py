@@ -399,6 +399,8 @@ def create_app(config: dict | None = None) -> Flask:
     atexit.register(inventory.close_all)
     if cfg["BACKGROUND"]:
         collector.start()
+        from . import providers as _providers
+        _providers.warm_prices(_providers.listed(store))  # cloud prices for keys' dollar budgets
         # Start the slow reads now, so the first visit to a page finds them ready
         # rather than paying for them. Every one of these is cached afterwards, so
         # this is about the first page load after a restart and nothing else.
@@ -473,6 +475,10 @@ def create_app(config: dict | None = None) -> Flask:
     from datetime import timedelta
     security = Security(store)
     app.extensions["security"] = security
+    # request traces (Settings -> Gateway): each model request as an OpenTelemetry span, sent in the background
+    from . import traces as traces_mod
+    from .routes.security import trace_settings_getter
+    app.extensions["traces"] = traces_mod.Exporter(trace_settings_getter(store))
     said = security.first_start(cfg.get("UI_PASSWORD"))
     if said:
         logging.getLogger("argos.security").warning(said)

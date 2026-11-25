@@ -128,3 +128,18 @@ def test_Apps_a_key_lists_at_most_so_many_apps(gw):
     rows = apps.seen(store, 1)
     assert len(rows) == apps.MAX_APPS_PER_KEY
     assert next(r for r in rows if r["app"] == "app0")["requests"] == 2, "a known app keeps counting"
+
+
+def test_Apps_a_utf8_name_in_a_header_is_read_as_written():
+    from src.apps import identify
+    raw = "ünïcode app".encode("utf-8").decode("latin-1")  # what WSGI hands over
+    assert identify({"X-Argos-App": raw})[0] == "ünïcode app"
+    assert identify({"X-Argos-App": "caf\xe9"})[0] == "caf\xe9", "Latin-1 that is not UTF-8 stays as it is"
+
+
+def test_Apps_any_app_name_reaches_the_engine(gw):
+    out = gw.test_client()
+    raw = "编码 agent 🚀".encode("utf-8").decode("latin-1")
+    r = out.post("/v1/chat/completions", json={"model": "fast", "messages": []}, headers={"X-Argos-App": raw})
+    assert r.status_code == 200 and r.get_json()["choices"]
+    assert SEEN[-1]["app"].encode("latin-1").decode("utf-8") == "编码 agent 🚀"
