@@ -554,8 +554,11 @@ def main() -> None:
     # open: each holds a thread for as long as it is connected. A few slow
     # requests on top of that and the pool is full and the queue grows until the
     # page times out. The slow endpoints are fixed, and this is the headroom.
+    # clear_untrusted_proxy_headers=False: waitress would otherwise drop X-Forwarded-For and Forwarded, and a
+    # reverse proxy on this host (connecting from 127.0.0.1) would then pass for a request from inside the container,
+    # which needs no login and no key. The app reads those headers only to tell the two apart.
     serve(app, host=host, port=port, threads=int(os.environ.get("ARGOS_THREADS", "32")),
-          channel_timeout=900, ident="argos-builder", expose_tracebacks=False)
+          channel_timeout=900, ident="argos-builder", expose_tracebacks=False, clear_untrusted_proxy_headers=False)
 
 
 if __name__ == "__main__":

@@ -291,3 +291,46 @@ def test_Gateway_mcp_over_http_with_a_session_and_headers(gw, monkeypatch):
     assert called["result"]["content"][0]["text"] == "auth=Bearer t0k"
     assert c.post("/api/mcp/servers/clock/test").get_json()["tools"][0]["name"] == "time"
     srv.shutdown()
+
+
+def test_Gateway_a_cloud_fallback_goes_through_the_https_proxy(monkeypatch):
+    """HTTPS_PROXY is honoured for servers outside, never for the engine on 127.0.0.1."""
+    from src import engine_proxy
+    seen = []
+
+    class Conn:
+        def __init__(self, host, port, timeout=None):
+            seen.append(("connect", host, port))
+            self.sock = None
+
+        def set_tunnel(self, host, port):
+            seen.append(("tunnel", host, port))
+
+        def request(self, *a, **k):
+            pass
+
+        def getresponse(self):
+            return "resp"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(engine_proxy.http.client, "HTTPSConnection", Conn)
+    monkeypatch.setattr(engine_proxy.http.client, "HTTPConnection", Conn)
+    for name in ("HTTPS_PROXY", "https_proxy"):
+        monkeypatch.setenv(name, "http://proxy.lan:3128")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(name, "localhost,127.0.0.1")
+    engine_proxy._open("https://openrouter.ai", "POST", "/api/v1/chat/completions", b"{}", {})
+    assert seen == [("connect", "proxy.lan", 3128), ("tunnel", "openrouter.ai", 443)]
+    seen.clear()
+    engine_proxy._open("http://127.0.0.1:8081", "POST", "/v1/chat/completions", b"{}", {})
+    assert seen == [("connect", "127.0.0.1", 8081)]
+
+
+def test_Gateway_waitress_keeps_the_forwarded_headers():
+    """A reverse proxy on this host connects from 127.0.0.1; without its X-Forwarded-For it would pass for a request
+    from inside the container, which needs no key."""
+    import inspect
+    from src import app as app_module
+    assert "clear_untrusted_proxy_headers=False" in inspect.getsource(app_module.main)
