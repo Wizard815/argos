@@ -114,18 +114,24 @@ def view(profiles: list[dict], table: dict) -> list[dict]:
             total += moe["expert_bytes"][i]
             cum.append(round(total / GIB, 3))
         rows = []
+        live = {p["profile_id"]: apply(p["launch_command"], p["profile_id"], table) for p, _ in items}
         for p, cmd in items:
             bare = cmd.copy()
             bare.remove("n-cpu-moe")
             bare.remove("cpu-moe")
             full = estimate_command(bare.to_string())
-            rows.append({"profile_id": p["profile_id"], "name": p["name"], "exempt": p["profile_id"] in exempt,
+            try:
+                served = parse_command(live[p["profile_id"]])
+                runs = "--cpu-moe" if served.has("cpu-moe") else (f"--n-cpu-moe {served.get('n-cpu-moe')}" if served.get("n-cpu-moe") else "all on the GPU")
+            except ValueError:
+                runs = ""
+            rows.append({"profile_id": p["profile_id"], "name": p["name"], "exempt": p["profile_id"] in exempt, "runs_with": runs,
                          "own_pct": own_share(cmd, moe), "full_gib": full.get("gib"), "kv_gib": full.get("kv_gib"),
                          "ok": full.get("ok", False), "error": full.get("error", "")})
         out.append({"path": path, "name": os.path.basename(path), "layers": moe["layers"],
                     "moe_layers": len(moe["moe_layers"]), "expert_gib": round(moe["expert_total"] / GIB, 2),
                     "other_gib": round(moe["other_bytes"] / GIB, 2), "cum_gib": cum,
-                    "pct": o.get("pct"), "profiles": rows})
+                    "pct": o.get("pct"), "last_pct": o.get("last_pct", o.get("pct")), "profiles": rows})
     return out
 
 
@@ -139,7 +145,14 @@ def clean(d: dict, profiles: list[dict]) -> dict:
         if not 0 <= pct <= 100:
             raise ValueError("pct is from 0 to 100")
     ids = {p["profile_id"] for p in profiles}
-    return {"pct": pct, "exempt": [str(x) for x in d.get("exempt") or [] if str(x) in ids]}
+    last = d.get("last_pct")
+    try:
+        last = None if last is None else max(0, min(100, int(round(float(last)))))
+    except (TypeError, ValueError):
+        last = None
+    # the slider and the exempt profiles are kept while Default is on, so turning it off again brings them back
+    return {"pct": pct, "last_pct": pct if pct is not None else last,
+            "exempt": [str(x) for x in d.get("exempt") or [] if str(x) in ids]}
 
 
 __all__ = ["KEY", "apply", "apply_all", "layers_for", "memory", "overrides", "view", "clean"]

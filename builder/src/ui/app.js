@@ -4414,53 +4414,66 @@ function renderMoe() {
     D.models.map(moeCard));
 }
 function moeCard(m) {
-  const auto = m.pct == null;
-  let pct = auto ? 0 : m.pct;
-  const slider = h("input", { type: "range", min: 0, max: 100, step: 1, value: pct, style: "flex:1", disabled: auto });
-  const out = h("b", { class: "mono-sm", style: "min-width:16ch" });
-  const exempt = new Set(m.profiles.filter((p) => p.exempt).map((p) => p.profile_id));
+  // the card's own state: what is on screen, saved with Apply. Default keeps the slider and the exempt
+  // profiles, so turning it off again brings them back (the server keeps them too, as last_pct).
+  const st = m._ui || (m._ui = {
+    auto: m.pct == null,
+    pct: m.pct != null ? m.pct : (m.last_pct != null ? m.last_pct : 0),
+    exempt: new Set(m.profiles.filter((p) => p.exempt).map((p) => p.profile_id)),
+  });
+  const saved = { auto: m.pct == null, pct: m.pct, exempt: m.profiles.filter((p) => p.exempt).map((p) => p.profile_id).sort().join(",") };
+  const slider = h("input", { type: "range", min: 0, max: 100, step: 1, value: st.pct, style: "flex:1", disabled: st.auto, "aria-label": "Share of MoE layers in RAM" });
+  const out = h("b", { class: "mono-sm", style: "min-width:18ch" });
   const bars = h("div", { class: "stack", style: "gap:6px" });
+  const warn = h("span", { class: "warn-text" });
+  const note = h("span", { class: "hint", style: "margin:0" });
   const ramFree = (MOE.data.ram || {}).available;
+  const save = btn("Apply", async () => {
+    try {
+      MOE.data = await api("PUT", "/api/moe", { path: m.path, pct: st.auto ? null : st.pct, last_pct: st.pct, exempt: [...st.exempt] });
+      toast(st.auto ? "Default: each profile runs with its own setting. The slider and exempt profiles are kept for next time." : "Applied: its profiles run with it from their next load.", "ok");
+      renderMoe();
+    } catch (e) { fail(e); }
+  }, "sm primary", "save");
+  const changed = () => st.auto !== saved.auto || (!st.auto && st.pct !== saved.pct) || [...st.exempt].sort().join(",") !== saved.exempt;
   const draw = () => {
-    const k = Math.round(m.moe_layers * pct / 100);
-    out.textContent = auto ? "each profile's own" : `${pct}% · ${k} of ${m.moe_layers} layers`;
+    const k = Math.round(m.moe_layers * st.pct / 100);
+    out.textContent = st.auto ? `Default (${st.pct}% kept)` : `${st.pct}% · ${k} of ${m.moe_layers} layers`;
+    slider.disabled = st.auto;
     const rows = m.profiles.map((p) => {
-      const mine = auto || exempt.has(p.profile_id) ? p.own_pct : pct;
-      const s = moeSplit(m, p, mine);
-      return { p, s, mine };
+      const mine = st.auto || st.exempt.has(p.profile_id) ? p.own_pct : st.pct;
+      return { p, s: moeSplit(m, p, mine), mine };
     });
     const max = Math.max(1, ...rows.map((r) => r.s.gpu + r.s.cpu));
     fill(bars, rows.map(({ p, s, mine }) => {
-      const tag = exempt.has(p.profile_id) ? "exempt: its own" : auto ? "its own" : "this setting";
-      const box = h("input", { type: "checkbox", checked: exempt.has(p.profile_id), title: "Exempt: this profile keeps its own MoE setting" });
-      box.addEventListener("change", () => { box.checked ? exempt.add(p.profile_id) : exempt.delete(p.profile_id); draw(); dirty(); });
-      return h("div", { class: "row", style: "gap:8px;flex-wrap:nowrap;align-items:center" },
-        h("label", { class: "check", style: "min-width:22ch" }, box, h("span", { class: "mono-sm", title: p.name }, p.name)),
+      const ex = st.exempt.has(p.profile_id);
+      const box = h("input", { type: "checkbox", checked: ex, "data-exempt": p.name, title: "Exempt: this profile keeps its own MoE setting" });
+      box.addEventListener("change", () => { box.checked ? st.exempt.add(p.profile_id) : st.exempt.delete(p.profile_id); draw(); });
+      const tag = ex ? "exempt" : st.auto ? "its own" : "this setting";
+      return h("div", { class: "row", style: `gap:8px;flex-wrap:nowrap;align-items:center;${ex ? "opacity:.75" : ""}` },
+        h("label", { class: "check", style: "min-width:22ch" }, box, h("span", { class: "mono-sm", title: p.name }, p.name),
+          ex ? h("span", { class: "pill", style: "margin-left:6px" }, "exempt") : null),
         h("div", { style: "flex:1;display:flex;height:18px;border-radius:4px;overflow:hidden;background:var(--bg)" },
-          h("div", { style: `width:${(s.gpu / max) * 100}%;background:var(--green)`, title: `GPU ${s.gpu.toFixed(1)} GiB` }),
-          h("div", { style: `width:${(s.cpu / max) * 100}%;background:var(--purple, #bd93f9)`, title: `CPU + RAM ${s.cpu.toFixed(1)} GiB` })),
-        h("span", { class: "mono-sm nowrap", style: "min-width:30ch;text-align:right" },
-          p.ok ? `GPU ${s.gpu.toFixed(1)} · RAM ${s.cpu.toFixed(1)} GiB` : p.error, h("span", { class: "muted" }, ` (${mine}%, ${tag})`)));
+          h("div", { style: `width:${(s.gpu / max) * 100}%;background:var(--green);transition:width .15s`, title: `GPU ${s.gpu.toFixed(1)} GiB` }),
+          h("div", { style: `width:${(s.cpu / max) * 100}%;background:var(--purple, #bd93f9);transition:width .15s`, title: `CPU + RAM ${s.cpu.toFixed(1)} GiB` })),
+        h("span", { class: "mono-sm nowrap", style: "min-width:44ch;text-align:right" },
+          p.ok ? `GPU ${s.gpu.toFixed(1)} · RAM ${s.cpu.toFixed(1)} GiB` : p.error, h("span", { class: "muted" }, ` (${mine}%, ${tag})`),
+          h("div", { class: "muted", style: "font-size:11px" }, "engine runs it with: ", h("code", {}, p.runs_with || "?"))));
     }));
     const worst = Math.max(0, ...rows.map((r) => r.s.cpu));
     warn.textContent = ramFree != null && worst > ramFree ? `Needs up to ${worst.toFixed(1)} GiB of RAM, only ${ramFree} GiB is free.` : "";
+    const dirty = changed();
+    save.disabled = !dirty;
+    note.textContent = dirty ? "not applied yet" : "applied";
   };
-  const warn = h("span", { class: "warn-text" });
-  const save = btn("Apply", async () => {
-    try { MOE.data = await api("PUT", "/api/moe", { path: m.path, pct: auto ? null : pct, exempt: [...exempt] }); toast("Applied: its profiles run with it from their next load.", "ok"); renderMoe(); } catch (e) { fail(e); }
-  }, "sm primary", "save");
-  const dirty = () => { save.disabled = false; };
-  slider.addEventListener("input", () => { pct = Number(slider.value); draw(); dirty(); });
-  const autoBox = h("input", { type: "checkbox", checked: auto });
-  autoBox.addEventListener("change", () => { m.pct = autoBox.checked ? null : pct; moeCardRedraw(m, card); });
-  const reset = btn("Default", async () => {
-    try { MOE.data = await api("PUT", "/api/moe", { path: m.path, pct: null, exempt: [] }); toast("Back to each profile's own setting.", "ok"); renderMoe(); } catch (e) { fail(e); }
-  }, "sm ghost", "refresh");
+  slider.addEventListener("input", () => { st.pct = Number(slider.value); draw(); });
+  const autoBox = h("input", { type: "checkbox", checked: st.auto, "aria-label": "Default" });
+  autoBox.addEventListener("change", () => { st.auto = autoBox.checked; draw(); });
   const card = h("div", { class: "card" },
     h("div", { class: "card-head" }, h("h2", { title: m.path }, m.name), h("span", { class: "chip" }, `${m.moe_layers} MoE layers · ${m.expert_gib} GiB experts · ${m.other_gib} GiB rest`),
-      h("span", { class: "spacer" }), reset, save),
+      h("span", { class: "spacer" }), note, save),
     h("div", { class: "row", style: "gap:10px;flex-wrap:nowrap;align-items:center;margin:6px 0" },
-      h("label", { class: "check", title: "Each profile keeps its own --n-cpu-moe" }, autoBox, "Default"),
+      h("label", { class: "check", title: "Each profile runs with its own --n-cpu-moe. The slider and exempt profiles are kept for when you turn this off." }, autoBox, "Default"),
       h("span", { class: "hint", style: "margin:0" }, "GPU"), slider, h("span", { class: "hint", style: "margin:0" }, "RAM"), out),
     h("div", { class: "row", style: "gap:12px;margin-bottom:6px" },
       h("span", { class: "hint", style: "margin:0" }, h("span", { style: "display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px" }), " GPU VRAM"),
@@ -4469,7 +4482,6 @@ function moeCard(m) {
   draw();
   return card;
 }
-function moeCardRedraw(m, card) { card.replaceWith(moeCard(m)); }
 
 // ── API key rules (gateway.py): models, MCP servers, expiry, limits ──
 function keyScope(r = {}) {
