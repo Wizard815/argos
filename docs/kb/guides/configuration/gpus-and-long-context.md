@@ -50,6 +50,26 @@ converts the whole cache to f16 first. The **KV cache** field in Settings works
 the same way: its list ends with **Show all**, which lists every K/V pair the
 build compiled, mixed ones too (for example `q8_0 / turbo5`).
 
+# Time to first token
+
+Under VRAM the Builder has a **Time to first token** card for the same command.
+It splits the wait into the **load** (cold start only: reading the file, GPU
+upload, warmup) and the **prompt** (prompt tokens ÷ prompt speed, paid on every
+request), with a warm and a cold row per prompt length.
+
+Both numbers come from what Argos measured for this model: the load time of
+earlier loads (this config first, then the same `-lm` load mode) and the median
+prompt speed of its requests and benchmarks. Without measurements the load is
+the file size ÷ the read speed plus a start overhead, set in **Settings → Time
+to first token** (NVMe ~2–3 GB/s, SATA SSD 0.5, HDD array 0.2). Prompt speed
+stays unknown until the model has run a request or a benchmark.
+
+The card lists the model's other measured configs: click one to take its
+settings. **Settings that change it** names the flags that move TTFT, each with
+a **Try** button: `-lm none` instead of `dio` (a reload then comes from the page
+cache in RAM), `--no-warmup`, a larger `-ub`, `-fa on` and `--cache-reuse` (a
+chat's next turn processes only the new part of the prompt).
+
 # Stretching to 1M with RoPE
 
 For a model trained on less than 1M tokens the table has a last column, **1M

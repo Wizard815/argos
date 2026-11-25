@@ -1251,6 +1251,8 @@ function scheduleEstimate() {
     const cmd = VE.cmd;
     try { const r = await api("POST", "/api/estimate", { command: cmd, profile_id: B.profileId || "" }); if (cmd === VE.cmd) renderEstimate(r.estimate); }
     catch (e) { fill($("#bVram"), h("p", { class: "hint" }, e.message)); }
+    try { const r = await api("POST", "/api/ttft", { command: cmd }); if (cmd === VE.cmd) renderTtft(r.ttft); }
+    catch (e) { fill($("#bTtft"), h("p", { class: "hint" }, e.message)); }
   }, 350);
 }
 const ctxLabel = (c) => (c >= 1048576 && c % 1048576 === 0 ? `${c / 1048576}M` : c >= 1024 ? `${num(c / 1024, 0)}K` : String(c));
@@ -1390,6 +1392,50 @@ function contextBox(e) {
         h("li", {}, `RoPE (YaRN) is about one chat's length, not the total: it is needed only when one chat can be longer than the model was trained on${e.train_ctx ? ` (${ctxLabel(e.train_ctx)} here)` : ""}, and the scale is that chat's context ÷ the trained length (1M ÷ 256K = ×4). It costs no memory, but it loosens positions for every chat, short ones too.`),
         h("li", {}, "The chats also share the GPU's speed: llama.cpp works on all of them in each batch, so a chat reading a long prompt slows the others' answers (Logs → per slot shows each ID)."))));
   return lines;
+}
+/** Seconds as "0.8 s", "42 s" or "3.1 min". */
+const secs = (s) => (s == null ? DASH : s >= 120 ? `${num(s / 60, 1)} min` : s >= 10 ? `${num(s, 0)} s` : `${num(s, 1)} s`);
+/** The TTFT card: cold start (load + prompt) and warm (prompt only), where each number comes from, the model's
+ *  other measured configs (click to use their settings) and the settings that change it (click to try). */
+function renderTtft(t) {
+  const box = $("#bTtft");
+  if (!box) return;
+  if (!t || !t.ok) return fill(box, h("p", { class: "hint", style: "margin:0" }, (t && t.error) || "Pick a model to see how long its first token takes."));
+  const L = t.load, P = t.prefill;
+  const ref = t.rows.find((r) => r.tokens === 2048) || t.rows[t.rows.length - 1];
+  const loadS = L.seconds || 0, promptS = (ref && ref.warm_s) || 0, total = loadS + promptS;
+  const bar = total > 0 ? h("div", { class: "vram-bar", title: `cold start with a ${ref ? ref.tokens : ""}-token prompt: ${secs(total)}` },
+    h("i", { style: `width:${(loadS / total) * 100}%;background:var(--muted)`, title: `load: ${secs(loadS)}` }),
+    h("i", { style: `width:${(promptS / total) * 100}%;background:var(--accent, #6aa)`, title: `prompt: ${secs(promptS)}` })) : null;
+  const head = h("div", { class: "vram-sum" },
+    h("b", {}, "Load "), secs(L.seconds), " ", h("span", { class: `pill ${L.source.startsWith("measured") ? "ok" : ""}`,
+      title: L.source.startsWith("measured") ? `median of ${L.n} load(s); the file-size estimate is ${secs(L.estimate_s)}` : `${num(t.size_gb, 1)} GB at ${t.disk_gbps} GB/s + ${t.start_s} s start (Settings → Time to first token)` }, L.source),
+    ` · -lm ${t.load_mode} · `, h("b", {}, "Prompt "), P.tps ? `${num(P.tps, 0)} t/s` : "unknown", " ",
+    h("span", { class: `pill ${P.source.startsWith("measured") ? "ok" : ""}`, title: P.n ? `median of ${P.n} request(s) or benchmarks` : "run a benchmark or use the model to measure it" }, P.source));
+  const rows = t.rows.length && P.tps ? h("details", { class: "vram-compare", open: true },
+    h("summary", { class: "hint" }, "Time to first token by prompt length · warm = model already loaded"),
+    h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+      h("thead", {}, h("tr", {}, h("th", {}, "prompt"), ...t.rows.map((r) => h("th", { class: "num" }, ctxLabel(r.tokens))))),
+      h("tbody", {},
+        h("tr", {}, h("td", { title: "the model is loaded: only the prompt" }, "warm"), ...t.rows.map((r) => h("td", { class: "num" }, secs(r.warm_s)))),
+        h("tr", {}, h("td", { title: "the model has to load first (Argos swapped it out)" }, "cold"), ...t.rows.map((r) => h("td", { class: "num" }, secs(r.cold_s)))))))) : null;
+  const flagText = (d) => Object.entries(d).map(([k, v]) => v === null ? `no --${k}` : v === true ? `--${k}` : `--${k} ${v}`).join(" ");
+  const configs = t.configs.length > 1 || (t.configs.length && !t.configs[0].current) ? h("details", { class: "vram-compare" },
+    h("summary", { class: "hint" }, "Measured prompt speed of this model's other configs · click one to use its settings"),
+    h("div", { class: "table-wrap" }, h("table", { class: "dense" },
+      h("thead", {}, h("tr", {}, h("th", {}, "config"), h("th", {}, "differs by"), h("th", { class: "num" }, "prompt t/s"), h("th", { class: "num" }, "2K warm"))),
+      h("tbody", {}, t.configs.map((c) => h("tr", { class: c.current ? "sel" : "" },
+        h("td", {}, c.label), h("td", { class: "mono-sm" }, c.current ? "this command" : flagText(c.diff) || "other flags"),
+        h("td", { class: `num${c.current ? "" : " pick"}`, title: c.current ? `${c.n} measurement(s)` : `Use these settings: ${flagText(c.diff)}`,
+          onclick: c.current ? null : () => { const ed = {}; for (const [k, v] of Object.entries(c.diff)) ed[k] = v; edit(ed); } }, num(c.prefill_tps, 0)),
+        h("td", { class: "num" }, secs(2048 / c.prefill_tps)))))))) : null;
+  const tips = t.tips.length ? h("details", { class: "vram-compare", open: !P.tps },
+    h("summary", { class: "hint" }, "Settings that change it"),
+    h("ul", { class: "hint", style: "margin:4px 0 0;padding-left:18px" }, t.tips.map((x) => h("li", {},
+      h("b", {}, x.flag), ` (${x.phase}) ${x.current}${x.suggest ? ` → ${x.suggest}` : ""}: ${x.why} `,
+      x.edits ? btn("Try", () => edit(x.edits), "sm") : null)))) : null;
+  fill(box, head, bar, rows, configs, tips,
+    h("p", { class: "hint", style: "margin:6px 0 0" }, "Cold = load + prompt. A model Argos keeps loaded only pays the prompt; a matching prompt prefix with --cache-reuse pays only the new part."));
 }
 function renderEstimate(e) {
   const box = $("#bVram");
@@ -4784,6 +4830,9 @@ const SETTINGS_FORM = [
     { k: "nvidia_smi", label: "nvidia-smi to use", ph: "/usr/bin/nvidia-smi", hint: "blank = on PATH" }] },
   { group: "kv", title: "KV cache types", hint: "Cache types the VRAM estimate does not know yet, as name=bits per value, comma separated. Bits per value = bytes per block × 8 ÷ values per block: q8_0 is 34 bytes per 32 values = 8.5, q4_0 is 18 per 32 = 4.5. Built in: f32 f16 bf16 f8_e4m3 q8_0 q5_1 q5_0 q4_1 q4_0 iq4_nl turbo6 (6.125) turbo5 (5.125) turbo4 (4.25) turbo3 (3.5) turbo2 (2.5); a name here overrides those.", fields: [
     { k: "custom_types", label: "Custom cache types", wide: true, ph: "turbo5=3.0, mykv=4.25" }] },
+  { group: "ttft", title: "Time to first token", hint: "Used by the Builder's TTFT card until a model has measured loads (Argos records each load's time and uses those instead).", fields: [
+    { k: "disk_gbps", label: "Model read speed (GB/s)", ph: "2.0", hint: "where your GGUFs live: NVMe behind PCIe 3.0 about 2-3, SATA SSD 0.5, HDD array 0.2" },
+    { k: "start_s", label: "Server start (s)", ph: "10", hint: "GPU init, graph reserve and warmup, on top of reading the file" }] },
   { group: "playground", title: "Playground", fields: [
     { k: "llama_bench", label: "llama-bench tab", type: "check", hint: "llama.cpp's own benchmark in the Playground, run where your llama-server runs. Off hides the tab." }] },
   { group: "downloads", title: "Downloads", fields: [
