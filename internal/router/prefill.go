@@ -329,3 +329,25 @@ func (p *PrefillWatch) Forget(model string) {
 	delete(p.models, model)
 	delete(p.partial, model)
 }
+
+// Speed is how fast a model reads prompts, in tokens a second: the median of
+// its recent finished prompts long enough to time (256 tokens or more). False
+// until one has been seen.
+func (p *PrefillWatch) Speed(model string) (float64, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var speeds []float64
+	runs := p.runs[model]
+	for i := len(runs) - 1; i >= 0 && len(speeds) < 8; i-- {
+		r := runs[i]
+		d := r.Ended.Sub(r.Started).Seconds()
+		if r.Tokens >= 256 && d > 0.05 {
+			speeds = append(speeds, float64(r.Tokens)/d)
+		}
+	}
+	if len(speeds) == 0 {
+		return 0, false
+	}
+	sort.Float64s(speeds)
+	return speeds[len(speeds)/2], true
+}

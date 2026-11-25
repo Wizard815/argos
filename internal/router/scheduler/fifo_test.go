@@ -1357,3 +1357,34 @@ func TestFIFO_ARequestThatWaitedItsLimitGoesNext(t *testing.T) {
 	assert.Equal(t, 1, eff.startsFor("small"), "the coder finished: the waiting model loads, ahead of the newer coder prompt")
 	assert.Equal(t, 2, eff.served("coder"))
 }
+
+// TestFIFO_ConcurrencyQueue_TakesTurnsBetweenApps: an app that queued many
+// requests does not keep another app waiting behind all of them.
+func TestFIFO_ConcurrencyQueue_TakesTurnsBetweenApps(t *testing.T) {
+	eff := newFakeEffects()
+	eff.states["a"] = process.StateReady
+	models := map[string]config.ModelConfig{"a": {ConcurrencyLimit: 1}}
+	s := NewFIFO("test", logmon.NewWriter(io.Discard), &stubPlanner{}, config.FifoConfig{}, models, eff)
+	mk := func(client string) HandlerReq { r := reqCh("a"); r.Client = client; return r }
+	first := mk("agent")
+	s.OnRequest(first) // served
+	burst := []HandlerReq{mk("agent"), mk("agent"), mk("agent")}
+	for _, r := range burst {
+		s.OnRequest(r)
+	}
+	hermes := mk("hermes")
+	s.OnRequest(hermes) // came last
+	s.OnServeDone(ServeDoneEvent{ModelID: "a", Client: "agent"})
+	// the free slot goes to hermes: it has nothing running, the agent had one
+	if len(s.slotWait["a"]) != 3 || s.slotWait["a"][0].Respond != burst[0].Respond {
+		t.Fatalf("hermes should have been served next; line now %d long", len(s.slotWait["a"]))
+	}
+	for _, q := range s.slotWait["a"] {
+		if q.Respond == hermes.Respond {
+			t.Fatal("hermes is still waiting behind the agent's burst")
+		}
+	}
+	if s.running["a"]["hermes"] != 1 {
+		t.Fatalf("running %v", s.running["a"])
+	}
+}

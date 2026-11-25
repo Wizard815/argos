@@ -60,6 +60,13 @@ type FIFO struct {
 	// concurrencyLimit already, in arrival order: one is served each time a
 	// request to that model finishes.
 	slotWait map[string][]HandlerReq
+	// running counts each app's requests being answered per model, so the
+	// line gives the next free slot to the app with the fewest.
+	running map[string]map[string]int
+	// served is when each app last got a slot on each model (a counter):
+	// between apps with as many running, the one served longest ago goes.
+	served map[string]map[string]uint64
+	turn   uint64
 }
 
 // NewFIFO builds a FIFO scheduler. Per-model concurrency limits are derived
@@ -96,6 +103,8 @@ func NewFIFO(name string, logger *logmon.Monitor, planner Swapper, cfg config.Fi
 		limits:     limits,
 		lines:      lines,
 		slotWait:   make(map[string][]HandlerReq),
+		running:    make(map[string]map[string]int),
+		served:     make(map[string]map[string]uint64),
 		active:     make(map[string]*activeSwap),
 		reserved:   make(map[string]int),
 		inFlight:   make(map[string]int),
@@ -289,6 +298,11 @@ func (s *FIFO) OnSwapDone(ev SwapDone) {
 // have evicted this (now-idle) process can now proceed.
 func (s *FIFO) OnServeDone(ev ServeDoneEvent) {
 	s.inFlight[ev.ModelID]--
+	if byClient := s.running[ev.ModelID]; byClient != nil {
+		if byClient[ev.Client]--; byClient[ev.Client] <= 0 {
+			delete(byClient, ev.Client)
+		}
+	}
 	if ev.Intent == swaputil.IntentPrefill {
 		s.prefilling[ev.ModelID]--
 		if s.prefilling[ev.ModelID] <= 0 {
@@ -405,6 +419,15 @@ func (s *FIFO) grantHandler(req HandlerReq, modelID string) {
 	Marks.say(RequestID(req.Ctx), "")
 	if s.effects.GrantServe(req, modelID) {
 		s.inFlight[modelID]++
+		if s.running[modelID] == nil {
+			s.running[modelID] = map[string]int{}
+		}
+		s.running[modelID][req.Client]++
+		if s.served[modelID] == nil {
+			s.served[modelID] = map[string]uint64{}
+		}
+		s.turn++
+		s.served[modelID][req.Client] = s.turn
 		if req.Intent == swaputil.IntentPrefill {
 			s.prefilling[modelID]++
 		}
@@ -512,8 +535,10 @@ func (s *FIFO) setLine(modelID string, line []HandlerReq) {
 // free slots, oldest first. The model is ready: it just finished a request.
 func (s *FIFO) nextInLine(modelID string) {
 	for len(s.slotWait[modelID]) > 0 && s.inFlight[modelID] < s.limit(modelID) {
-		next := s.slotWait[modelID][0]
-		s.setLine(modelID, s.slotWait[modelID][1:])
+		line := s.slotWait[modelID]
+		i := s.fairest(modelID, line)
+		next := line[i]
+		s.setLine(modelID, append(append([]HandlerReq{}, line[:i]...), line[i+1:]...))
 		if st, ok := s.effects.ModelState(modelID); !ok || st != process.StateReady {
 			// it stopped meanwhile: go through the whole decision again
 			s.enqueue(next)
@@ -522,6 +547,29 @@ func (s *FIFO) nextInLine(modelID string) {
 		}
 		s.grantHandler(next, modelID)
 	}
+}
+
+// fairest picks who in a model's line gets the free slot: the request whose
+// app has the fewest requests being answered on the model right now; between
+// those, the app served longest ago; then the oldest request. One app's burst
+// then cannot keep another app waiting: apps take turns as slots free up.
+// With one app it is plain arrival order.
+func (s *FIFO) fairest(modelID string, line []HandlerReq) int {
+	best := 0
+	for i := 1; i < len(line); i++ {
+		a, b := line[i], line[best]
+		ra, rb := s.running[modelID][a.Client], s.running[modelID][b.Client]
+		if ra != rb {
+			if ra < rb {
+				best = i
+			}
+			continue
+		}
+		if sa, sb := s.served[modelID][a.Client], s.served[modelID][b.Client]; sa < sb {
+			best = i
+		}
+	}
+	return best
 }
 
 // startSwap records the swap as active and launches it via Effects. running is

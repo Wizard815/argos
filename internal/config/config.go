@@ -430,6 +430,59 @@ type AnswerFirstConfig struct {
 	// MaxWaitSeconds is how long a prompt waits at most before it goes
 	// anyway. Default 300.
 	MaxWaitSeconds int `yaml:"maxWaitSeconds"`
+
+	// Auto applies answer first to every model whose command serves several
+	// chats at once (--parallel 2 or more), not only the Models listed.
+	// Default true; false: only the Models listed.
+	Auto *bool `yaml:"auto"`
+
+	// StallSeconds: once a model's prompt reading speed is measured (from its
+	// log), a new prompt part waits only when reading it would slow the
+	// answering chats for longer than this. Until then MinPromptTokens
+	// decides. Default 3.
+	StallSeconds float64 `yaml:"stallSeconds"`
+
+	// AutoMaxWaitSeconds is MaxWaitSeconds for the models Auto adds: they did
+	// not ask for it, so a prompt waits less. Default 20.
+	AutoMaxWaitSeconds int `yaml:"autoMaxWaitSeconds"`
+}
+
+// AnswerFirstDefaultStallSeconds and AnswerFirstDefaultAutoMaxWaitSeconds
+// apply when answerFirst leaves them unset.
+const (
+	AnswerFirstDefaultStallSeconds       = 3.0
+	AnswerFirstDefaultAutoMaxWaitSeconds = 20
+)
+
+// AutoOn reports whether answer first also covers every --parallel model.
+func (a AnswerFirstConfig) AutoOn() bool { return a.Auto == nil || *a.Auto }
+
+// Stall is StallSeconds with its default.
+func (a AnswerFirstConfig) Stall() float64 {
+	if a.StallSeconds > 0 {
+		return a.StallSeconds
+	}
+	return AnswerFirstDefaultStallSeconds
+}
+
+// MinTokens is MinPromptTokens with its default.
+func (a AnswerFirstConfig) MinTokens() int {
+	if a.MinPromptTokens > 0 {
+		return a.MinPromptTokens
+	}
+	return AnswerFirstDefaultMinPromptTokens
+}
+
+// WaitFor is how long a prompt for a model waits at most: MaxWaitSeconds for
+// a model listed, AutoMaxWaitSeconds for one Auto added.
+func (a AnswerFirstConfig) WaitFor(listed bool) time.Duration {
+	if listed { // as configured: loading fills in the default (pool.go)
+		return time.Duration(a.MaxWaitSeconds) * time.Second
+	}
+	if a.AutoMaxWaitSeconds > 0 {
+		return time.Duration(a.AutoMaxWaitSeconds) * time.Second
+	}
+	return AnswerFirstDefaultAutoMaxWaitSeconds * time.Second
 }
 
 // AnswerFirstDefaultMinPromptTokens and AnswerFirstDefaultMaxWaitSeconds apply

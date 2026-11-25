@@ -3,8 +3,10 @@ package router
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -310,7 +312,7 @@ func (b *baseRouter) trackedServe(modelID string, p process.Process) http.Handle
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			select {
-			case b.serveDoneCh <- scheduler.ServeDoneEvent{ModelID: modelID, Intent: swaputil.IntentOf(r)}:
+			case b.serveDoneCh <- scheduler.ServeDoneEvent{ModelID: modelID, Intent: swaputil.IntentOf(r), Client: ClientOf(r)}:
 			case <-b.shutdownCtx.Done():
 			}
 		}()
@@ -574,6 +576,7 @@ func (b *baseRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Arrived: time.Now(),
 		Ctx:     req.Context(),
 		Intent:  swaputil.IntentOf(req),
+		Client:  ClientOf(req),
 		// Unbuffered: a successful send on Respond proves the waiter is
 		// alive and consuming. grant() relies on this to avoid handing a
 		// handleFunc to a cancelled waiter and leaking the inFlight count.
@@ -720,4 +723,22 @@ func (b *baseRouter) procList() map[string]process.Process {
 		out[id] = p
 	}
 	return out
+}
+
+// ClientOf names the app behind a request, for taking turns in a model's
+// waiting line: its API key's name (the builder sends it as X-Argos-Key), else
+// the address it came from (the first X-Forwarded-For hop), else the peer.
+func ClientOf(r *http.Request) string {
+	if k := strings.TrimSpace(r.Header.Get("X-Argos-Key")); k != "" {
+		return "key:" + k
+	}
+	if f := r.Header.Get("X-Forwarded-For"); f != "" {
+		first, _, _ := strings.Cut(f, ",")
+		return "ip:" + strings.TrimSpace(first)
+	}
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return "ip:" + host
 }

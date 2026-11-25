@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wizard815/Argos/internal/chain"
+	"github.com/Wizard815/Argos/internal/config"
 	"github.com/Wizard815/Argos/internal/router"
 	"github.com/Wizard815/Argos/internal/router/scheduler"
 	"github.com/Wizard815/Argos/internal/swaputil"
@@ -367,7 +368,8 @@ func CreateAnswerFirstMiddleware(s *Server) chain.Middleware {
 				return
 			}
 
-			if len(af.Models) == 0 || !af.Applies(data.ModelID) {
+			listed := af.Applies(data.ModelID)
+			if !listed && !s.answerFirstAuto(data.ModelID) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -378,17 +380,18 @@ func CreateAnswerFirstMiddleware(s *Server) chain.Middleware {
 				return
 			}
 			tokens := s.answerFirst.newTokens(data.ModelID, body)
-			if tokens < af.MinPromptTokens || !s.answerFirst.answering(data.ModelID) {
+			stall, long := answerFirstLong(af, tokens, data.ModelID)
+			if !long || !s.answerFirst.answering(data.ModelID) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			if iw != nil {
-				iw.tracker.SetHeld(id, fmt.Sprintf("answer first: a ~%d-token prompt waits while another chat on this model is answering", tokens))
+				iw.tracker.SetHeld(id, fmt.Sprintf("answer first: a ~%d-token prompt (%s) waits while another chat on this model is answering", tokens, stall))
 			}
 			skip, done := s.gate.holdUntil(id)
 			start := time.Now()
-			deadline := start.Add(time.Duration(af.MaxWaitSeconds) * time.Second)
+			deadline := start.Add(af.WaitFor(listed))
 			tick := time.NewTicker(s.answerFirst.poll)
 		wait:
 			for s.answerFirst.answering(data.ModelID) {
@@ -415,6 +418,32 @@ func CreateAnswerFirstMiddleware(s *Server) chain.Middleware {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// prefillSpeed is how fast a model reads prompts (router.Prefills.Speed); a
+// variable so a test can set it.
+var prefillSpeed = router.Prefills.Speed
+
+// answerFirstAuto reports whether answer first covers a model it was not
+// listed for: Auto is on and the model serves several chats at once.
+func (s *Server) answerFirstAuto(model string) bool {
+	if !s.cfg.Routing.Router.Settings.Pool.AnswerFirst.AutoOn() {
+		return false
+	}
+	mc, ok := s.cfg.Models[model]
+	return ok && parallelFromCmd(mc.Cmd) >= 2
+}
+
+// answerFirstLong decides whether a new prompt part is long enough to wait:
+// it would slow the answering chats for longer than stallSeconds at the
+// model's measured reading speed, or, before that is known, it is at least
+// minPromptTokens. The string says which, for the hold's note.
+func answerFirstLong(af config.AnswerFirstConfig, tokens int, model string) (string, bool) {
+	if speed, ok := prefillSpeed(model); ok && speed > 0 {
+		secs := float64(tokens) / speed
+		return fmt.Sprintf("~%.1f s to read at %.0f t/s", secs, speed), secs > af.Stall()
+	}
+	return fmt.Sprintf("%d tokens or more", af.MinTokens()), tokens >= af.MinTokens()
 }
 
 // handleAPIInflightHold holds a request (POST .../hold) so it never makes a
