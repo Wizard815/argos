@@ -423,6 +423,14 @@ def _forward_inner(engine_path: str, body_override: bytes | None = None) -> Resp
             model = bare
     cloud = providers.resolve(model, provs) if (model and isinstance(parsed, dict)) else None
 
+    # ----- the model's temperature and sampling, set on Profiles -> Temperature (temps.py) -----
+    sampled: list[str] = []
+    if model and isinstance(parsed, dict) and request.method == "POST" and store is not None:
+        from . import temps
+        sampled = temps.apply(engine_path, parsed, temps.rule_for(model, temps.table(store)))
+        if sampled:
+            body = json.dumps(parsed).encode()
+
     if request.method == "POST" and model:
         op = "embeddings" if "embedding" in engine_path else ("text_completion" if engine_path.rstrip("/").endswith(
             "/completions") and "chat" not in engine_path else "chat")
@@ -651,6 +659,8 @@ def _forward_inner(engine_path: str, body_override: bytes | None = None) -> Resp
             out_headers.append(("X-Argos-Fallback", rule["name"]))
         if cloud:
             out_headers.append(("X-Argos-Provider", cloud[0]["name"]))
+        if sampled:
+            out_headers.append(("X-Argos-Sampling", ", ".join(f"{k}={parsed[k]}" for k in sampled)))
         streamed = "text/event-stream" in (resp.getheader("Content-Type") or "")
         status, ctype = resp.status, resp.getheader("Content-Type") or "application/json"
         is_list = (request.method == "GET" and engine_path.rstrip("/") in ("/v1/models", "/models")

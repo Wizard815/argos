@@ -536,8 +536,9 @@ def create_app(config: dict | None = None) -> Flask:
                                       status=401, mimetype="application/json")
         return redirect("/login?next=" + urllib.parse.quote(request.full_path.rstrip("?")))
 
+    from .routes import temps as temps_routes
     for bp in (bench_routes.bp, core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp,
-               runners_routes.bp, mcp_routes.bp, power_routes.bp):
+               runners_routes.bp, mcp_routes.bp, power_routes.bp, temps_routes.bp):
         app.register_blueprint(bp)
     # last: anything the builder does not own goes to the engine (one port for both)
     app.register_blueprint(engine_proxy.bp)

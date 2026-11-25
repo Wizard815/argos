@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+# Argos's own measuring (a temperature sweep asks the same kind of question again and again on purpose)
+OWN_APPS = ("temperature sweep",)
 IN_SHARE = 0.25   # what a request read may differ by this share of the last one's
 OUT_SHARE = 0.05  # what it wrote, by this share: an answer of the same size is the loop's mark
 
@@ -30,6 +32,8 @@ def find_loops(rows: list[dict], repeats: int = 25, tolerance: int = 3, now: Opt
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
         if not r.get("src") or not r.get("model") or "embedding" in (r.get("path") or ""):
+            continue
+        if (r.get("client") or "").endswith(OWN_APPS):
             continue
         groups.setdefault((r["src"], r.get("client") or "", r["model"]), []).append(r)
     out = []

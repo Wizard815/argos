@@ -7748,6 +7748,7 @@ function initTabs() {
     else if (bar.dataset.tabs === "servers" && b.dataset.pane === "local") loadLocal();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "defaults") loadServed();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "moe") loadMoe();
+    else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "temps") loadTemps();
     else if (bar.dataset.tabs === "profiles" && b.dataset.pane === "power") loadPower();
     else if (bar.dataset.tabs === "playground" && b.dataset.pane === "bench") loadBenchTab();
     else if (bar.dataset.tabs === "settings" && b.dataset.pane === "assistant") loadSettingsAssistant();
@@ -7862,3 +7863,152 @@ function boot() {
 }
 
 boot();
+
+
+// ── Profiles → Temperature: each profile's sampling (no reload) and temperature sweeps (temps.py) ──
+let tempsTimer = null;
+async function loadTemps() {
+  let D;
+  try { D = await api("GET", "/api/temps"); } catch (e) { fill($("#pTemps"), h("p", { class: "hint" }, e.message)); return; }
+  clearTimeout(tempsTimer);
+  const running = (D.sweeps || []).find((s) => s.state === "running");
+  if (running && $("#pTemps").offsetParent) tempsTimer = setTimeout(loadTemps, 3000);
+  const head = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Temperature")),
+    h("p", { class: "hint" }, "How much a model gambles on each word. Low: the same, likeliest answer every time (code, facts, tool calls). High: more varied writing, and more slips: a test of Gemma writing code passed 87 of 92 hidden checks at 0.2 and 52 at 1.0. Many apps send 1.0 whatever the model, so a profile can force its own."),
+    h("p", { class: "hint", style: "margin:0" }, `A sweep asks the model ${D.questions} questions with one right answer (smart) and one short story several times (creative: how different the stories are) at each temperature, and draws both. It runs on the loaded model through the engine, one sweep at a time.`));
+  fill($("#pTemps"), head, ...D.profiles.map((p) => tempsCard(p, D.sweeps || [], !!running)));
+}
+
+function tempsCard(p, sweeps, busy) {
+  const r = p.sampling || {};
+  const mode = h("select", {}, [["", "as the app sends"], ["default", "when the app sends none"], ["force", "always (replace the app's)"]]
+    .map(([v, l]) => h("option", { value: v, selected: (r.mode || "") === v && (v !== "" || !r.mode) }, l)));
+  const t = r.temperature ?? 0.6;
+  const slider = h("input", { type: "range", min: 0, max: 2, step: 0.05, value: t, style: "flex:1;min-width:140px" });
+  const num = h("input", { type: "number", min: 0, max: 2, step: 0.05, value: r.temperature ?? "", placeholder: "0.6", style: "width:80px" });
+  slider.addEventListener("input", () => { num.value = slider.value; });
+  num.addEventListener("input", () => { if (num.value !== "") slider.value = num.value; });
+  const opt = (k, ph) => h("input", { type: "number", min: 0, step: k === "top_k" ? 1 : 0.01, value: r[k] ?? "", placeholder: ph, style: "width:80px" });
+  const topP = opt("top_p", "top-p"), topK = opt("top_k", "top-k"), minP = opt("min_p", "min-p");
+  const save = async (temp) => {
+    if (temp != null) { num.value = temp; slider.value = temp; if (!mode.value) mode.value = "force"; }
+    const b = mode.value ? { model: p.label, mode: mode.value, temperature: num.value, top_p: topP.value, top_k: topK.value, min_p: minP.value } : { model: p.label, clear: true };
+    try { await api("PUT", "/api/temps/sampling", b); toast(mode.value ? `Saved: ${p.name}'s next request uses it, no reload.` : "Back to what apps send.", "ok"); loadTemps(); } catch (e) { fail(e); }
+  };
+  const live = sweeps.find((s) => s.model === p.model || s.model === p.label);
+  const sweep = live && live.state === "running"
+    ? h("div", { class: "row", style: "gap:8px;align-items:center" }, h("span", { class: "pill" }, `sweeping ${live.done}/${live.total}`),
+        btn("Stop", async () => { try { await api("POST", `/api/temps/sweep/${live.id}/stop`); loadTemps(); } catch (e) { fail(e); } }, "sm ghost"))
+    : btn("Run a sweep", () => runSweep(p), "sm", "play");
+  if (busy && !(live && live.state === "running")) sweep.disabled = true;
+  const results = [...(p.results || [])].reverse();
+  if (live && live.state === "running" && live.points.length) results.unshift({ kind: "sweep", points: live.points, best: live.best, at: live.started, partial: true });
+  return h("div", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", {}, p.name), h("span", { class: "hint", style: "margin-left:8px" }, p.model),
+      h("span", { class: "spacer" }), p.running ? h("span", { class: "pill ok" }, "loaded") : h("span", { class: "pill" }, "not loaded")),
+    h("div", { class: "fields" },
+      h("label", { class: "field" }, h("span", {}, "Use a temperature"), mode),
+      h("label", { class: "field wide" }, h("span", {}, "Temperature (0 = always the likeliest word; 1+ = gambles more)"), h("div", { class: "row", style: "gap:8px;align-items:center" }, slider, num)),
+      h("label", { class: "field" }, h("span", {}, "Also (optional)"), h("div", { class: "row", style: "gap:6px" }, topP, topK, minP))),
+    h("div", { class: "row", style: "gap:8px;margin-top:8px;flex-wrap:wrap" }, btn("Save", () => save(), "sm primary", "save"), sweep,
+      btn("Add my own results", () => addTempResults(p), "sm ghost", "plus"),
+      live && live.state === "failed" ? h("span", { class: "warn-text" }, live.error) : null),
+    ...results.slice(0, 3).map((res) => tempsResult(p, res, r.temperature, save)));
+}
+
+function runSweep(p) {
+  const temps = h("input", { type: "text", value: "0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2" });
+  const samples = h("input", { type: "number", min: 1, max: 5, value: 1 });
+  const think = h("input", { type: "checkbox" });
+  modal(`Sweep ${p.name}`, h("div", { class: "fields" },
+    h("label", { class: "field wide" }, h("span", {}, "Temperatures"), temps),
+    h("label", { class: "field" }, h("span", {}, "Ask each question (times)"), samples),
+    h("label", { class: "check wide" }, think, "Let it think first (slower; for models that reason before answering)"),
+    h("small", { class: "hint wide" }, `${p.running ? "" : "It is not loaded: the engine loads it first. "}Each temperature is 16 questions and 4 stories; at a few seconds each, 7 temperatures take a few minutes. Chats on this model wait their turn meanwhile.`)),
+  [{ label: "Cancel", run: (c) => c() }, { label: "Run", cls: "primary", run: async (close) => {
+    try { await api("POST", "/api/temps/sweep", { model: p.model, temps: temps.value.split(",").map(Number).filter((x) => !Number.isNaN(x)), samples: Number(samples.value), thinking: think.checked }); close(); loadTemps(); } catch (e) { fail(e); }
+  } }]);
+}
+
+function addTempResults(p) {
+  const label = h("input", { type: "text", placeholder: "coding test, hidden checks" });
+  const rows = h("textarea", { rows: 4, spellcheck: "false", placeholder: "0.2: 87/92, 0 broken\n0.6: 85/92\n1.0: 52/92, 2 broken" });
+  modal(`Your results for ${p.name}`, h("div", { class: "fields" },
+    h("label", { class: "field wide" }, h("span", {}, "What you measured"), label),
+    h("label", { class: "field wide" }, h("span", {}, "One temperature a line: temp: passed/total (, N broken)"), rows)),
+  [{ label: "Cancel", run: (c) => c() }, { label: "Add", cls: "primary", run: async (close) => {
+    const points = rows.value.split("\n").map((l) => l.match(/^\s*([\d.]+)\s*:\s*(\d+)\s*\/\s*(\d+)(?:.*?(\d+)\s*broken)?/i)).filter(Boolean)
+      .map((m) => ({ temp: Number(m[1]), passed: Number(m[2]), total: Number(m[3]), broken: Number(m[4] || 0) }));
+    try { await api("POST", "/api/temps/results", { model: p.model, label: label.value, points }); close(); loadTemps(); } catch (e) { fail(e); }
+  } }]);
+}
+
+function tempsResult(p, res, now, save) {
+  const pts = res.points || [];
+  const sweep = res.kind === "sweep";
+  const series = [{ key: "accuracy", name: sweep ? "Right answers (smart)" : `Passed (${res.label || "my test"})`, color: "var(--s1)" }];
+  if (sweep) series.push({ key: "variety", name: "Variety (creative)", color: "var(--s2)" });
+  const when = res.at ? new Date(res.at * 1000).toLocaleString() : "";
+  const title = sweep ? `Sweep${res.partial ? " (running)" : ""}${res.thinking ? ", thinking" : ""} · ${when}` : `${res.label || "My results"} · ${when}`;
+  const tableRows = pts.map((q) => [q.temp, `${q.correct}/${q.total} (${Math.round(q.accuracy * 100)}%)`,
+    sweep ? (q.variety == null ? "not measured" : `${Math.round(q.variety * 100)}%`) : (q.broken ? `${q.broken} broken` : DASH),
+    sweep ? (q.cut ? `${q.cut} ran out of room` : DASH) : null].filter((v) => v !== null));
+  return h("div", { style: "margin-top:12px" },
+    h("div", { class: "row", style: "gap:8px;align-items:center" }, h("strong", {}, title), h("span", { class: "spacer", style: "flex:1" }),
+      res.best != null ? btn(`Use ${res.best}`, () => save(res.best), "sm", "check") : null,
+      res.id ? btn("Remove", async () => { try { await api("DELETE", `/api/temps/results/${res.id}`); loadTemps(); } catch (e) { fail(e); } }, "sm ghost") : null),
+    tempChart(pts, series, res.best, now),
+    h("details", {}, h("summary", { class: "hint" }, "Table"), simpleTable(sweep ? ["Temperature", "Right answers", "Variety", "Cut off while thinking"] : ["Temperature", "Passed", "Broken"], tableRows)),
+    sweep && pts.some((q) => q.cut) ? h("p", { class: "hint" }, "Some answers used all their tokens before saying anything: a thinking model that thinks longer the hotter it runs. They count as wrong.") : null);
+}
+
+// One 0-100% axis for both series (both are shares), temperature along the bottom; hover shows each temperature.
+function tempChart(pts, series, best, now) {
+  const NS = "http://www.w3.org/2000/svg";
+  const s = (tag, attrs, ...kids) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v); kids.forEach((k) => k && e.append(k)); return e; };
+  const W = 640, H = 220, L = 38, R = 120, T = 10, B = 28;
+  const maxT = Math.max(1.2, ...pts.map((p) => p.temp)), x = (t) => L + (t / maxT) * (W - L - R), y = (v) => T + (1 - v) * (H - T - B);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${series.map((q) => q.name).join(" and ")} by temperature` });
+  const grid = s("g", { class: "grid" }), axis = s("g", { class: "axis" });
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    grid.append(s("line", { x1: L, x2: W - R, y1: y(v), y2: y(v) }));
+    axis.append(s("text", { x: L - 6, y: y(v) + 3, "text-anchor": "end" }, document.createTextNode(`${v * 100}%`)));
+  }
+  for (let t = 0; t <= maxT + 1e-9; t += 0.2) axis.append(s("text", { x: x(t), y: H - 10, "text-anchor": "middle" }, document.createTextNode(t.toFixed(1))));
+  axis.append(s("text", { x: (L + W - R) / 2, y: H, "text-anchor": "middle" }, document.createTextNode("temperature")));
+  svg.append(grid, axis);
+  const marks = s("g", { class: "mark" });
+  const vline = (t, text) => { if (t == null || t > maxT) return; marks.append(s("line", { x1: x(t), x2: x(t), y1: T, y2: H - B }), s("text", { class: "lbl", x: x(t) + 4, y: H - B - 6 }, document.createTextNode(text))); };
+  vline(best, `best ${best}`);
+  if (now != null && now !== best) vline(now, `now ${now}`);
+  svg.append(marks);
+  for (const q of series) {
+    const pp = pts.filter((p) => p[q.key] != null);
+    if (!pp.length) continue;
+    svg.append(s("path", { class: "ser", stroke: q.color, d: pp.map((p, i) => `${i ? "L" : "M"}${x(p.temp)},${y(p[q.key])}`).join(" ") }));
+    pp.forEach((p) => svg.append(s("circle", { class: "dot", cx: x(p.temp), cy: y(p[q.key]), r: 4, fill: q.color })));
+    const last = pp[pp.length - 1];  // direct label at the line's end, in text ink
+    svg.append(s("text", { class: "lbl", x: x(last.temp) + 8, y: y(last[q.key]) + 3 }, document.createTextNode(q.name.split(" (")[0])));
+  }
+  const hair = s("line", { class: "hair", y1: T, y2: H - B, visibility: "hidden" });
+  svg.append(hair);
+  const tip = h("div", { class: "tip" });
+  const box = h("div", { class: "tchart" }, svg, tip,
+    h("div", { class: "tkey" }, series.map((q) => h("span", {}, h("i", { style: `background:${q.color}` }), q.name))));
+  const hit = s("rect", { x: L, y: T, width: W - L - R, height: H - T - B, fill: "transparent" });
+  svg.append(hit);
+  hit.addEventListener("mousemove", (ev) => {
+    if (!pts.length) return;
+    const r = svg.getBoundingClientRect(), mx = (ev.clientX - r.left) * (W / r.width);
+    const p = pts.reduce((a, b) => (Math.abs(x(b.temp) - mx) < Math.abs(x(a.temp) - mx) ? b : a));
+    hair.setAttribute("x1", x(p.temp)); hair.setAttribute("x2", x(p.temp)); hair.setAttribute("visibility", "visible");
+    fill(tip, h("div", {}, h("b", {}, `temperature ${p.temp}`)), ...series.filter((q) => p[q.key] != null).map((q) =>
+      h("div", {}, h("i", { style: `display:inline-block;width:10px;height:2px;margin-right:6px;vertical-align:middle;background:${q.color}` }),
+        q.key === "accuracy" ? `${p.correct}/${p.total} right` : `${Math.round(p[q.key] * 100)}% varied`)),
+      p.broken ? h("div", {}, `${p.broken} broken`) : null, p.cut ? h("div", {}, `${p.cut} cut off while thinking`) : null);
+    tip.style.display = "block";
+    tip.style.left = `${Math.min((x(p.temp) / W) * r.width + 12, r.width - 150)}px`; tip.style.top = "8px";
+  });
+  hit.addEventListener("mouseleave", () => { tip.style.display = "none"; hair.setAttribute("visibility", "hidden"); });
+  return box;
+}

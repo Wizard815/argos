@@ -105,3 +105,11 @@ def test_ScheduleLive_says_how_long_it_took_and_which_clients_hung_up(app, clien
     d = client.get("/api/schedule/live").get_json()
     assert d["connected"] and d["gone"] == gone
     assert {"database", "requests", "running requests", "engine pool", "total"} <= set(d["took"])
+
+
+def test_LoopGuard_leaves_argos_own_temperature_sweep_alone():
+    from src.loop_guard import find_loops
+    rows = [{"src": "ip:127.0.0.1", "client": "temperature sweep", "model": "m", "path": "/v1/chat/completions",
+             "input_tokens": 70, "output_tokens": 512, "ts": 1000 + i} for i in range(40)]
+    assert find_loops(rows, repeats=25, now=1040) == []
+    assert find_loops([{**r, "client": "codex"} for r in rows], repeats=25, now=1040), "the same from an app is a loop"

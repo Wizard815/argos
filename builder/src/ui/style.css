@@ -707,3 +707,19 @@ pre.log.logs-big { max-height: 70dvh; min-height: 320px; }
 .file-caret:hover { color: var(--fg); }
 tr.model-file-row td { background: var(--hl-bg); border-top: 0; padding-top: 4px; padding-bottom: 4px; }
 tr.model-file-row .file-tree { color: var(--muted); margin: 0 8px 0 14px; }
+
+/* Profiles -> Temperature: two series on one 0-100% axis (validated: dataviz palette slots 1-2) */
+:root { --s1: #338ced; --s2: #e76624; }
+:root.light { --s1: #257de0; --s2: #f47230; }
+.tchart { position: relative; }
+.tchart svg { display: block; width: 100%; height: 220px; overflow: visible; }
+.tchart .grid line { stroke: var(--border); stroke-opacity: .35; }
+.tchart .axis text, .tchart .lbl { fill: var(--muted); font-size: 10px; font-family: var(--font); }
+.tchart .ser { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.tchart .dot { stroke: var(--panel); stroke-width: 2; }
+.tchart .mark line { stroke: var(--muted); stroke-dasharray: 3 3; }
+.tchart .hair { stroke: var(--muted); stroke-opacity: .6; }
+.tchart .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--border);
+  padding: 6px 8px; font-size: 11px; white-space: nowrap; display: none; z-index: 2; }
+.tchart .tkey { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin-top: 4px; flex-wrap: wrap; }
+.tchart .tkey i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; }
