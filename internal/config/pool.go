@@ -68,8 +68,8 @@ func validatePool(config *Config) error {
 	pool.Persistent = resolved
 
 	af := &pool.AnswerFirst
-	if af.MinPromptTokens < 0 || af.MaxWaitSeconds < 0 {
-		return fmt.Errorf("routing.router.settings.pool.answerFirst: minPromptTokens and maxWaitSeconds must be >= 0")
+	if af.MinPromptTokens < 0 || af.MaxWaitSeconds < 0 || af.StallSeconds < 0 || af.AutoMaxWaitSeconds < 0 {
+		return fmt.Errorf("routing.router.settings.pool.answerFirst: minPromptTokens, maxWaitSeconds, stallSeconds and autoMaxWaitSeconds must be >= 0")
 	}
 	if af.MinPromptTokens == 0 {
 		af.MinPromptTokens = AnswerFirstDefaultMinPromptTokens

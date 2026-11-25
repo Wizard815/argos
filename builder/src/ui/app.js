@@ -1912,6 +1912,7 @@ function renderProfiles() {
       return h("td", { class: "num nowrap", title: `Estimate: ${est}\nIt is replaced by the real size the first time this profile loads.` },
         h("b", {}, `${num(e.gib, 1)} GiB`), h("div", { class: "cell-sub" }, `${num(e.weights_gib, 1)} + ${num(e.kv_gib, 1)} KV @ ${ctxLabel(e.ctx)}`));
     } },
+    { label: "Tips", cell: (p) => profileTips(p) },
     { label: "Served as", cell: (p) => servedCell(p) },
     { key: "last_used_at", label: "Used", sort: (p) => p.last_used_at || 0,
       cell: (p) => h("td", { class: "nowrap", title: "Used: launched, or made its model's default. Edited: last saved." },
@@ -4522,6 +4523,16 @@ async function loadSecurity() {
   fill($("#sSecurity"), pwCard, keyCard, await keyUsageCard());
 }
 
+// tips from advice.py: how a profile splits over the cards, and how much a prompt slows the chats beside it
+function profileTips(p) {
+  const tips = (((S.profileEst || {})[p.profile_id] || {}).advice) || [];
+  if (!tips.length) return h("span", { class: "muted" }, DASH);
+  return h("button", { class: "pill warn", style: "cursor:pointer;border:0", title: tips.map((t) => `${t.title}\n${t.why}`).join("\n\n"),
+    onclick: (e) => { e.stopPropagation(); modal(`Tips for ${p.name}`, h("div", { class: "stack" },
+      tips.map((t) => h("div", {}, h("b", {}, t.title), h("p", { class: "hint", style: "margin:4px 0 0" }, t.why))))); } },
+    `${tips.length} tip${tips.length > 1 ? "s" : ""}`);
+}
+
 // ── Profiles → MoE offload: one setting per MoE model, for all its profiles but the exempt ones ──
 const MOE = { data: null, timer: null };
 async function loadMoe() {
@@ -6354,9 +6365,10 @@ async function loadLive(force = false) {
   if (liveBusy && !force) return liveBusy;
   const t0 = performance.now();
   liveBusy = (async () => { try {
-    const [live, slots, guard] = await Promise.all([api("GET", `/api/schedule/live?requests=${Math.max(reqShow(), 1)}`),
-      api("GET", "/api/slots").catch(() => ({ models: [] })), api("GET", "/api/guard").catch(() => null)]);
-    SC.live = live; SC.slots = slots.models || []; SC.guard = guard;
+    const [live, slots, guard, now] = await Promise.all([api("GET", `/api/schedule/live?requests=${Math.max(reqShow(), 1)}`),
+      api("GET", "/api/slots").catch(() => ({ models: [] })), api("GET", "/api/guard").catch(() => null),
+      api("GET", "/api/slots/live").catch(() => ({ models: [] }))]);
+    SC.live = live; SC.slots = slots.models || []; SC.guard = guard; SC.slotsNow = now.models || [];
     SC.live.refresh_s = (performance.now() - t0) / 1000;
   } catch (e) { SC.live = { connected: false, error: e.message, pool: null, refresh_s: (performance.now() - t0) / 1000 }; }
   if (S.view === "schedule" && SC.pane === "live") renderLive();
@@ -6637,6 +6649,41 @@ function prefillCard(models) {
       left == null ? DASH : `~${runClock(left * 1000)}`];
   }))));
 }
+// What each model's slots are doing this second: reading a prompt (with how far) or writing an answer (how fast).
+// llama-server puts every busy slot in each step, so a slot reading a long prompt slows the answers next to it.
+function chatsNowCard() {
+  const rows = (SC.slotsNow || []).filter((m) => m.slots.length || m.parallel > 1);
+  if (!rows.length) return null;
+  const tps = (v) => (v ? `${num(v, v < 10 ? 1 : 0)} t/s` : DASH);
+  return h("div", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", {}, "Chats right now"), h("span", { class: "spacer" }),
+      h("span", { class: "hint", style: "margin:0" }, "every busy slot, live: reading a prompt or writing an answer")),
+    rows.map((m) => {
+      const answering = m.slots.filter((x) => x.phase === "generating");
+      const reading = m.slots.filter((x) => x.phase === "prefill");
+      const speeds = answering.map((x) => x.gen_tokens_per_second).filter(Boolean);
+      const spread = speeds.length > 1 ? Math.max(...speeds) / Math.max(Math.min(...speeds), 0.01) : 1;
+      return h("div", { style: "margin:8px 0 12px" },
+        h("div", { class: "row", style: "gap:8px;align-items:center" }, h("b", { class: "mono-sm", title: m.model }, mname(m.model)),
+          h("span", { class: "chip" }, `${m.slots.length} of ${m.parallel} slot${m.parallel > 1 ? "s" : ""} busy`),
+          m.answer_first ? h("span", { class: "chip", title: "A long new prompt waits while another chat on this model answers (Plan → answer first)" }, "answer first") : null,
+          m.prefill_tps ? h("span", { class: "hint", style: "margin:0" }, `reads prompts at ~${num(m.prefill_tps, 0)} t/s`) : null,
+          reading.length && answering.length ? h("span", { class: "pill warn", title: "A slot reading a prompt makes every step longer, so the answers next to it slow down until it is done." }, "a prompt is slowing the answers") : null,
+          spread > 1.5 ? h("span", { class: "pill warn" }, `answers uneven (${num(spread, 1)}×)`) : null),
+        m.slots.length ? h("div", { class: "stack", style: "gap:4px;margin-top:6px" }, m.slots.map((x) => {
+          const isRead = x.phase === "prefill";
+          const pct = isRead ? Math.round((x.progress || 0) * 100) : 100;
+          return h("div", { style: "display:grid;grid-template-columns:7ch 11ch 1fr 26ch;gap:8px;align-items:center" },
+            h("span", { class: "mono-sm" }, `ID ${x.id}`),
+            h("span", { class: `pill ${isRead ? "warn" : "ok"}` }, isRead ? "reading" : "answering"),
+            h("div", { style: "height:10px;border-radius:4px;background:var(--bg);overflow:hidden" },
+              h("div", { style: `width:${pct}%;height:100%;background:${isRead ? "var(--warn)" : "var(--green)"};transition:width .3s` })),
+            h("span", { class: "mono-sm nowrap", style: "text-align:right" }, isRead
+              ? `${num(x.tokens || 0, 0)}${x.total ? ` / ${num(x.total, 0)}` : ""} tokens · ${tps(x.tokens_per_second)}`
+              : `${num(x.generated || 0, 0)} tokens · ${tps(x.gen_tokens_per_second)}`));
+        })) : h("div", { class: "muted mono-sm" }, "idle"));
+    }));
+}
 function renderLive() {
   const el = $("#scLive"), L = SC.live;
   if (!L) return fill(el, h("div", { class: "empty" }, "Loading…"));
@@ -6647,7 +6694,7 @@ function renderLive() {
   const P = L.pool;
   if (!P.enabled) {
     return fill(el, h("div", { class: "card" }, h("div", { class: "empty" }, h("b", {}, `The engine is using the “${P.router || "group"}” router.`), h("br"),
-      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")), requestsCard(L.requests, {}, { running: L.running }));
+      "Turn scheduling on in the Plan tab. The engine switches to the pool router when it reloads.")), chatsNowCard(), requestsCard(L.requests, {}, { running: L.running }));
   }
   const byId = Object.fromEntries(P.models.map((m) => [m.id, m]));
   const running = P.models.filter((m) => m.state !== "stopped");
@@ -6688,6 +6735,7 @@ function renderLive() {
       feed.map((a) => [ago(a.ts), h("span", { class: a.level === "info" ? "" : `pill ${a.level === "error" ? "bad" : "warn"}` }, a.message)])))
       : h("div", { class: "empty" }, "Nothing yet. Send a request to a model that is not loaded and the decision shows up here."));
   fill(el,
+    chatsNowCard(),
     h("div", { class: "status-line" }, h("span", { class: "pill ok" }, "pool router"),
       h("span", { class: `pill ${P.placement ? "ok" : "warn"}`, title: P.placement ? "each model is placed on a card" : "no per-card sizes: planning by total VRAM" }, P.placement ? "placement on" : "placement off"),
       h("span", { class: "muted" }, `${num(P.budget_gib)} GiB usable · ${(() => { const pl = (SC.data && SC.data.plan) || {};
