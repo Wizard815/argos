@@ -606,6 +606,8 @@ def main() -> None:
     # which needs no login and no key. The app reads those headers only to tell the two apart.
     # channel_request_lookahead: waitress then notices an app hanging up while its request waits on the engine
     # (waitress.client_disconnected), and engine_proxy drops the request instead of having the model read it.
+    from .apps import patch_waitress
+    patch_waitress()  # LiteLLM's x-litellm-*_* headers name the app behind it (apps.py)
     serve(app, host=host, port=port, threads=int(os.environ.get("ARGOS_THREADS", "32")),
           channel_timeout=900, ident="argos-builder", expose_tracebacks=False, clear_untrusted_proxy_headers=False,
           channel_request_lookahead=1)

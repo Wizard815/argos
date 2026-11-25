@@ -192,6 +192,16 @@ def _to_fallback(rule: dict, engine_path: str, parsed: dict, headers: dict):
     return _open(f"{base.scheme}://{base.netloc}", "POST", target, data, h)
 
 
+def _record(store, key: dict, model: str, app: str, how: str, tokens_in: int, tokens_out: int) -> None:
+    """A key's usage, and the app seen through it."""
+    from . import apps as apps_mod
+    gateway.record_usage(store, key["id"], model, tokens_in, tokens_out)
+    try:
+        apps_mod.record(store, key["id"], app, how, model, tokens_in, tokens_out)
+    except Exception:  # noqa: BLE001 - the answer matters more than the list of apps
+        pass
+
+
 def _forward(engine_path: str) -> Response:
     engine_url = current_app.config.get("ENGINE_URL") or ""
     if not engine_url:
@@ -210,6 +220,13 @@ def _forward(engine_path: str) -> Response:
     headers["X-Forwarded-Host"] = request.host
     if key:
         headers["X-Argos-Key"] = key["name"]
+    # which app behind the address or key (apps.py): the engine's loop guard and waiting line tell apps apart by it
+    from . import apps as apps_mod
+    app, app_how = apps_mod.identify(request.headers)
+    for k in [k for k in headers if k.lower() == "x-argos-app"]:
+        del headers[k]
+    if app:
+        headers["X-Argos-App"] = app
     body = _converted_audio(engine_path, headers)
     if body is None:
         body = request.get_data()
@@ -291,7 +308,7 @@ def _forward(engine_path: str) -> Response:
                             return r2.status, {}, raw
                 out, tokens = mcp_chat.run(pb, engine_url, parsed, headers, key, send=send)
                 if key and store is not None:
-                    gateway.record_usage(store, key["id"], model, *tokens)
+                    _record(store, key, model, app, app_how, *tokens)
                 done(sum(tokens))
                 slot = False
                 return out
@@ -305,7 +322,7 @@ def _forward(engine_path: str) -> Response:
                 hit = CACHE.get(cache_key, cs["ttl_s"])
                 if hit:
                     if key:
-                        gateway.record_usage(store, key["id"], model, 0, 0)
+                        _record(store, key, model, app, app_how, 0, 0)
                     done(0)
                     slot = False
                     return Response(hit[2], hit[0], mimetype=hit[1].split(";")[0], headers={"X-Argos-Cache": "hit"})
@@ -408,7 +425,7 @@ def _forward(engine_path: str) -> Response:
                     yield chunk
                 if key and status < 400:
                     tokens = gateway.usage_from(bytes(tail), streamed)
-                    gateway.record_usage(store, key["id"], model, *tokens)
+                    _record(store, key, model, app, app_how, *tokens)
                 if keep_whole and status == 200:
                     CACHE.put(cache_key, status, ctype, bytes(whole), cs["max_entries"])
             finally:

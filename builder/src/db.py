@@ -238,6 +238,12 @@ CREATE TABLE IF NOT EXISTS key_usage (
     input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, PRIMARY KEY (key_id, day, model)
 );
 
+CREATE TABLE IF NOT EXISTS key_apps (
+    key_id INTEGER NOT NULL, app TEXT NOT NULL, how TEXT DEFAULT '', requests INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, first_seen REAL, last_seen REAL,
+    last_model TEXT DEFAULT '', PRIMARY KEY (key_id, app)
+);
+
 CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT, view TEXT NOT NULL DEFAULT '*', title TEXT DEFAULT '', body TEXT DEFAULT '',
     color TEXT DEFAULT 'yellow', created_at REAL NOT NULL, updated_at REAL NOT NULL, deleted INTEGER DEFAULT 0,

@@ -2,7 +2,7 @@
 title: Keys, MCP gateway and cloud fallback
 summary: Per-key models, MCP servers and limits, one MCP link for every server or one each, MCP tools run inside a chat request, an answer cache and a cloud fallback.
 category: guides
-tags: [api-keys, litellm, gateway, mcp, rate-limit, quota, usage, fallback, cache, model-groups]
+tags: [api-keys, litellm, gateway, apps, loop-guard, mcp, rate-limit, quota, usage, fallback, cache, model-groups]
 config_keys: [apiKeys]
 updated: 2026-11-25
 ---
@@ -23,6 +23,31 @@ What LiteLLM did in front of Argos, Argos now does on its own port.
 
 **Usage per key** (same tab) counts requests and tokens per key, day and
 model, streamed or not. Limits are kept in memory; quotas in the database.
+
+## One key for a group of apps (LiteLLM in front)
+
+A key can stand for several apps, named for the group ("litellm",
+"coding"). **Apps through each key** (Settings -> Security) lists the apps
+seen through it, with their requests and tokens. The loop guard stops only
+the app that loops, and each app takes its turn in a busy model's line.
+
+An app is known by, first found: an `X-Argos-App` header; its LiteLLM key's
+alias (or team alias); an `X-Title` header; its User-Agent without the
+version. Behind LiteLLM the User-Agent is LiteLLM's own, the same for every
+app, so give each app its own LiteLLM key with an alias and let LiteLLM send
+it:
+
+```yaml
+# LiteLLM config.yaml
+general_settings:
+  forward_client_headers_to_llm_api: true   # forwards the apps' x- headers (X-Title, X-Argos-App)
+litellm_settings:
+  add_user_information_to_llm_headers: true # adds x-litellm-user_api_key_alias and team alias
+```
+
+The second setting also sends the LiteLLM user's email and IDs to Argos.
+Argos reads only the key and team aliases from them. A name is what an app
+says it is: it tells honest apps apart, it does not authenticate them.
 
 ## MCP gateway (Settings -> MCP)
 
@@ -80,5 +105,8 @@ answer carries `X-Argos-Fallback` and the Logs page says why.
   the engine starts answering; a stream starts early while a model loads.
 - **A stdio MCP server says "could not start".** Its program (npx, uvx) is not
   in the Argos container; run it as its own container and add it by URL.
+- **Every app behind LiteLLM shows as "OpenAI/Python".** LiteLLM is not
+  sending the key alias: set both settings above, and give each app a LiteLLM
+  key with an alias.
 - **LiteLLM in front still lists old models.** It caches the list; restart it,
   or point apps at Argos directly.

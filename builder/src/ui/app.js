@@ -4591,9 +4591,33 @@ async function keyUsageCard() {
     return [name, p.requests.toLocaleString(), p.input.toLocaleString(), p.output.toLocaleString(), p.today.toLocaleString(),
       `${live.requests_last_minute || 0} req · ${(live.tokens_last_minute || 0).toLocaleString()} tok · ${live.in_flight || 0} now`, h("span", { class: "mono-sm" }, top || DASH)];
   });
-  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Usage per key"), h("span", { class: "spacer" }), h("span", { class: "hint" }, "last 30 days")),
+  const usage = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Usage per key"), h("span", { class: "spacer" }), h("span", { class: "hint" }, "last 30 days")),
     rows.length ? h("div", { class: "table-wrap" }, simpleTable(["Key", "Requests", "Tokens in", "Tokens out", "Today", "Last minute", "Most used"], rows))
       : h("div", { class: "muted mono-sm" }, "No keys yet."));
+  return [usage, keyAppsCard(u)];
+}
+
+// The apps seen through each key: one key for a group of apps (all the apps behind LiteLLM, say) still shows who
+// is using it, and the loop guard and the waiting line tell them apart (apps.py).
+function keyAppsCard(u) {
+  const byKey = {};
+  for (const a of u.apps || []) (byKey[a.key_id] ||= []).push(a);
+  const forget = async (id, app) => {
+    try { await api("DELETE", `/api/security/keys/${id}/apps${app ? `?app=${encodeURIComponent(app)}` : ""}`); loadSecurity(); } catch (e) { fail(e); }
+  };
+  const how = { "X-Argos-App": "X-Argos-App header", "LiteLLM key": "its LiteLLM key", "LiteLLM team": "its LiteLLM team", "X-Title": "X-Title header", "User-Agent": "User-Agent" };
+  const blocks = Object.entries(u.keys).filter(([id]) => byKey[id]).map(([id, name]) => h("div", { style: "margin-top:10px" },
+    h("div", { class: "row", style: "gap:8px;align-items:center" }, h("strong", {}, name), h("span", { class: "hint" }, `${byKey[id].length} app${byKey[id].length === 1 ? "" : "s"}`),
+      h("span", { class: "spacer" }), btn("Forget all", () => forget(id), "sm ghost")),
+    h("div", { class: "table-wrap" }, simpleTable(["App", "Known by", "Requests", "Tokens in", "Tokens out", "Last seen", "Last model", ""],
+      byKey[id].map((a) => [h("strong", {}, a.app), h("span", { class: "hint" }, how[a.how] || a.how || DASH), a.requests.toLocaleString(),
+        a.input_tokens.toLocaleString(), a.output_tokens.toLocaleString(), a.last_seen ? ago(a.last_seen) : DASH, h("span", { class: "mono-sm" }, a.last_model ? mname(a.last_model) : DASH),
+        btn("Forget", () => forget(id, a.app), "sm ghost")])))));
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Apps through each key")),
+    h("p", { class: "hint" }, "One key can stand for a group of apps (all the apps behind LiteLLM, say): Argos tells them apart, so the loop guard stops only the app that loops and each app gets its turn in a busy model's line. ",
+      "An app is known by an X-Argos-App header, else its LiteLLM key's alias (LiteLLM: litellm_settings: add_user_information_to_llm_headers: true and general_settings: forward_client_headers_to_llm_api: true), else an X-Title header, else its User-Agent. ",
+      "Behind LiteLLM the User-Agent is LiteLLM's own, the same for every app."),
+    blocks.length ? blocks : h("div", { class: "muted mono-sm" }, "No app has used a key yet."));
 }
 
 // ── Settings → Gateway: model groups, answer cache, cloud fallback ──

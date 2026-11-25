@@ -726,11 +726,21 @@ func (b *baseRouter) procList() map[string]process.Process {
 }
 
 // ClientOf names the app behind a request, for taking turns in a model's
-// waiting line: its API key's name (the builder sends it as X-Argos-Key), else
-// the address it came from (the first X-Forwarded-For hop), else the peer.
+// waiting line: its API key's name (the builder sends it as X-Argos-Key) and
+// the app it made out behind that key (X-Argos-App: one key shared by the
+// apps behind LiteLLM still gives each its turn), else the address it came
+// from (the first X-Forwarded-For hop) and that app, else the peer.
 func ClientOf(r *http.Request) string {
+	app := strings.TrimSpace(r.Header.Get("X-Argos-App"))
 	if k := strings.TrimSpace(r.Header.Get("X-Argos-Key")); k != "" {
+		if app != "" {
+			return "key:" + k + "|" + app
+		}
 		return "key:" + k
+	}
+	if f := r.Header.Get("X-Forwarded-For"); f != "" && app != "" {
+		first, _, _ := strings.Cut(f, ",")
+		return "ip:" + strings.TrimSpace(first) + "|" + app
 	}
 	if f := r.Header.Get("X-Forwarded-For"); f != "" {
 		first, _, _ := strings.Cut(f, ",")

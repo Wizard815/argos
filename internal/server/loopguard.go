@@ -23,8 +23,8 @@ type loopGuard struct {
 	blocks map[string]loopBlock // src + "\x00" + client + "\x00" + model
 }
 
-// A block names an address, the app on it (its User-Agent, as clientApp gives
-// it; "" for every app there) and a model.
+// A block names an address, the app on it (as clientApp gives it; "" for
+// every app there) and a model.
 type loopBlock struct {
 	Src     string    `json:"src"`
 	Client  string    `json:"client"`
@@ -38,14 +38,32 @@ func newLoopGuard() *loopGuard { return &loopGuard{blocks: map[string]loopBlock{
 
 func guardKey(src, client, model string) string { return src + "\x00" + client + "\x00" + model }
 
-// clientApp is the app that sent a request, from its User-Agent ("node",
-// "OpenAI/Python 2.24.0"): what tells two agents on one machine apart.
+// clientApp is the app that sent a request: what tells two agents on one
+// machine, or behind one proxy such as LiteLLM, apart. See appLabel.
 func clientApp(r *http.Request) string {
-	ua := strings.TrimSpace(r.Header.Get("User-Agent"))
-	if len(ua) > 80 {
-		ua = ua[:80]
+	return appLabel(r.Header.Get("X-Argos-Key"), r.Header.Get("X-Argos-App"), r.Header.Get("User-Agent"))
+}
+
+// appLabel names an app from what the builder sends: its API key's name
+// (X-Argos-Key), the app it made out (X-Argos-App: a LiteLLM key's alias, the
+// app's X-Title, its User-Agent), else the raw User-Agent. "hermes",
+// "litellm / codex", "OpenAI/Python 2.24.0".
+func appLabel(key, app, ua string) string {
+	key, app = strings.TrimSpace(key), strings.TrimSpace(app)
+	if app == "" {
+		app = strings.TrimSpace(ua)
 	}
-	return ua
+	out := app
+	if key != "" {
+		out = key
+		if app != "" {
+			out = key + " / " + app
+		}
+	}
+	if len(out) > 80 {
+		out = out[:80]
+	}
+	return out
 }
 
 // blocked reports the block for this request's address, app and model (a
@@ -82,8 +100,12 @@ func CreateLoopGuardMiddleware(s *Server) chain.Middleware {
 			if data, ok := swaputil.ReadContext(r.Context()); ok && data.ModelID != "" {
 				if b, stop := s.guard.blocked(clientIP(r), clientApp(r), data.ModelID); stop {
 					w.Header().Set("Retry-After", "60")
+					who := "this app's"
+					if b.Client != "" {
+						who = b.Client + "'s" // several apps share an address (LiteLLM): say which one
+					}
 					swaputil.SendResponse(w, r, http.StatusTooManyRequests,
-						"Argos stopped this app's requests to "+b.Model+": "+b.Reason+
+						"Argos stopped "+who+" requests to "+b.Model+": "+b.Reason+
 							". It looks like it is repeating one step. Let it run again on Argos -> Schedule -> Live -> Loop guard.")
 					return
 				}
@@ -111,10 +133,7 @@ func (s *Server) handleAPIGuard(w http.ResponseWriter, r *http.Request) {
 		s.guard.mu.Unlock()
 		cancelled := 0
 		for _, e := range s.inflight.Current().Requests {
-			app := strings.TrimSpace(e.ReqHeaders["User-Agent"])
-			if len(app) > 80 {
-				app = app[:80]
-			}
+			app := appLabel(e.ReqHeaders["X-Argos-Key"], e.ReqHeaders["X-Argos-App"], e.ReqHeaders["User-Agent"])
 			if e.RemoteIP == b.Src && e.Model == b.Model && (b.Client == "" || app == b.Client) && s.inflight.Cancel(e.ID, "stopped by the loop guard: this app sent about the same request again and again. "+
 				"Let it run again on Argos -> Schedule -> Live -> Loop guard") {
 				cancelled++

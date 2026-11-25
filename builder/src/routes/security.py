@@ -178,8 +178,22 @@ def security_usage():
     days = max(1, min(request.args.get("days", 30, type=int), 400))
     store = current_app.extensions["pb"].store
     keys = sec().list_keys()
+    from .. import apps as apps_mod
     return ok(rows=gateway.usage_report(store, days), days=days,
-              live={k["id"]: limiter().view(k["id"]) for k in keys}, keys={k["id"]: k["name"] for k in keys})
+              live={k["id"]: limiter().view(k["id"]) for k in keys}, keys={k["id"]: k["name"] for k in keys},
+              apps=apps_mod.seen(store))
+
+
+@bp.delete("/api/security/keys/<int:key_id>/apps")
+def security_key_apps_forget(key_id):
+    """Forget the apps seen through a key (?app=<name>: just that one); they are listed again when they next come."""
+    if not _may_change():
+        return err("log in to change this", 401)
+    from .. import apps as apps_mod
+    store = current_app.extensions["pb"].store
+    app_name = request.args.get("app")
+    apps_mod.forget(store, key_id, app_name)
+    return ok(apps=apps_mod.seen(store, key_id))
 
 
 def _setting(name, default):

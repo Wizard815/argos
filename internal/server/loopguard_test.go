@@ -80,3 +80,56 @@ func TestLoopGuard_StopsOneAppOnASharedAddress(t *testing.T) {
 		t.Fatal("lifted")
 	}
 }
+
+// Behind LiteLLM every app comes from one address with one Argos key and the
+// same User-Agent (LiteLLM's own); the builder names each app (X-Argos-App,
+// from LiteLLM's key alias or the app's X-Title), and one app's loop stops
+// only that app.
+func TestLoopGuard_StopsOneAppBehindLiteLLM(t *testing.T) {
+	s := newTestServer(newStubRouter([]string{"m1"}, ""))
+	send := func(app string) int {
+		w := httptest.NewRecorder()
+		r := chatRequest("m1")
+		r.Header.Set("X-Forwarded-For", "10.0.0.5")
+		r.Header.Set("User-Agent", "AsyncOpenAI/Python 1.99.1")
+		r.Header.Set("X-Argos-Key", "litellm")
+		r.Header.Set("X-Argos-App", app)
+		s.ServeHTTP(w, r)
+		return w.Code
+	}
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/guard",
+		strings.NewReader(`{"src":"10.0.0.5","client":"litellm / codex","model":"m1","reason":"61 out every time"}`)))
+	if code := send("codex"); code != http.StatusTooManyRequests {
+		t.Fatalf("codex: want 429, got %d", code)
+	}
+	w := httptest.NewRecorder()
+	r := chatRequest("m1")
+	r.Header.Set("X-Forwarded-For", "10.0.0.5")
+	r.Header.Set("X-Argos-Key", "litellm")
+	r.Header.Set("X-Argos-App", "codex")
+	s.ServeHTTP(w, r)
+	if !strings.Contains(w.Body.String(), "litellm / codex's requests") {
+		t.Errorf("the 429 names the app: %s", w.Body.String())
+	}
+	if code := send("hermes"); code == http.StatusTooManyRequests {
+		t.Fatal("hermes behind the same LiteLLM must not be stopped")
+	}
+}
+
+func TestLoopGuard_AppLabel(t *testing.T) {
+	for _, c := range []struct{ key, app, ua, want string }{
+		{"", "", "node", "node"},
+		{"litellm", "codex", "AsyncOpenAI/Python 1.99", "litellm / codex"},
+		{"litellm", "", "AsyncOpenAI/Python 1.99", "litellm / AsyncOpenAI/Python 1.99"},
+		{"hermes", "", "", "hermes"},
+		{"", "hermes", "x", "hermes"},
+		{"", "", "", ""},
+	} {
+		if got := appLabel(c.key, c.app, c.ua); got != c.want {
+			t.Errorf("appLabel(%q, %q, %q) = %q, want %q", c.key, c.app, c.ua, got, c.want)
+		}
+	}
+	if got := appLabel("k", strings.Repeat("a", 200), ""); len(got) != 80 {
+		t.Errorf("long labels are cut to 80, got %d", len(got))
+	}
+}
