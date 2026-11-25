@@ -185,7 +185,15 @@ def _forward(engine_path: str) -> Response:
             parsed = None
     model = _model_of(body, parsed) if request.method == "POST" else ""
     if engine_path.startswith("/upstream/"):  # the model is the path's first part: /upstream/<model>/...
-        model = urllib.parse.unquote(engine_path[len("/upstream/"):].split("/", 1)[0])
+        first, _, rest = engine_path[len("/upstream/"):].partition("/")
+        from .model_groups import KNOWN
+        from .providers import listed as _providers
+        if first in KNOWN and rest and store is not None and first not in {p["name"] for p in _providers(store)}:
+            # /upstream/qwen/<name>/...: the family prefix apps may use, taken off
+            engine_path = "/upstream/" + rest
+            target = engine_path + (f"?{query}" if query else "")
+            first = rest.split("/", 1)[0]
+        model = urllib.parse.unquote(first)
     elif not model and request.method == "GET" and engine_path.rstrip("/") not in ("/v1/models", "/models"):
         model = request.args.get("model", "")  # a GET routed by ?model= (voices, a model's props)
 

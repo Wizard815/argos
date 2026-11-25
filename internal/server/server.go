@@ -472,6 +472,7 @@ func (s *Server) routes() {
 	// Upstream passthrough. Meter only the model-dispatched endpoints that can
 	// produce token usage/timings.
 	upstreamChain := apiChain.Append(
+		CreateShortNameMiddleware(s),
 		CreateProfileMiddleware(s),
 		CreateUpstreamInflightMiddleware(s.inflight, s.cfg),
 		CreateMetricsMiddleware(s.metrics, s.cfg),

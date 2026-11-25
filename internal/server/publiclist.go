@@ -149,6 +149,26 @@ func (s *Server) hiddenFromOutside(id string, mc config.ModelConfig) bool {
 	return !pinned
 }
 
+// CreateShortNameMiddleware runs a profile asked for by its label on
+// /upstream/<label>/...: the same names apps see in the list work there too.
+func CreateShortNameMiddleware(s *Server) chain.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			model, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/upstream/"), "/")
+			if model != "" {
+				if _, known := s.cfg.RealModelName(model); !known {
+					if full, ok := s.shortNames()[model]; ok {
+						if updated, err := swaputil.ReplaceRequestModel(r, model, full); err == nil {
+							r = updated
+						}
+					}
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // CreatePublicModelMiddleware runs a profile asked for by its label, and turns
 // away an outside call for a base model that has no profile.
 func CreatePublicModelMiddleware(s *Server) chain.Middleware {
