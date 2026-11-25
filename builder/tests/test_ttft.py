@@ -21,7 +21,7 @@ def test_ttft_estimate_without_measurements(app, tmp_path):
     assert t["prefill"]["tps"] is None and all(r["warm_s"] is None for r in t["rows"])
     assert [r["tokens"] for r in t["rows"]] == [512, 2048, 8192], "no prompt longer than the context"
     tips = {x["flag"]: x for x in t["tips"]}
-    assert tips["-lm"]["edits"] == {"load-mode": "none"}, "dio skips the page cache"
+    assert tips["-lm"]["edits"] == {"load-mode": "dio-auto"}, "dio skips the page cache"
     assert tips["-ub"]["suggest"] == "512" and tips["--no-warmup"]["edits"] == {"no-warmup": True}
     assert "--cache-reuse" in tips
 
