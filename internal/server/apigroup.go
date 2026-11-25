@@ -520,6 +520,47 @@ func (s *Server) handleAPICapture(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonBytes)
 }
 
+// handleAPICaptureList pages through persisted captures for a collector, oldest
+// first. after_id is the last id the caller has (default 0) and limit caps the
+// page (default 100, at most 1000). The response's next_after_id is the value
+// to pass next; when data is empty the caller is caught up. Only captures
+// written to the store (store.captures.enabled) are listed.
+func (s *Server) handleAPICaptureList(w http.ResponseWriter, r *http.Request) {
+	if !s.metrics.persistCaptures {
+		swaputil.SendResponse(w, r, http.StatusNotFound, "capture persistence is off; set store.captures.enabled: true")
+		return
+	}
+	afterID, limit := 0, 100
+	if v := r.URL.Query().Get("after_id"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			swaputil.SendResponse(w, r, http.StatusBadRequest, "after_id must be a non-negative integer")
+			return
+		}
+		afterID = n
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			swaputil.SendResponse(w, r, http.StatusBadRequest, "limit must be between 1 and 1000")
+			return
+		}
+		limit = n
+	}
+	records, err := s.metrics.store.ListCaptures(r.Context(), afterID, limit)
+	if err != nil {
+		s.metrics.warnf("list captures: %v", err)
+		swaputil.SendResponse(w, r, http.StatusInternalServerError, "failed to list captures")
+		return
+	}
+	next := afterID
+	if len(records) > 0 {
+		next = records[len(records)-1].ID
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"data": records, "next_after_id": next})
+}
+
 // handleAPIInflight lists the model-dispatched requests still running, oldest
 // first, each with how long it has run and how many bytes it has sent back, so
 // a dashboard can show a request while it works instead of once it finishes.

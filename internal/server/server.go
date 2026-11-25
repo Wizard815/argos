@@ -311,6 +311,9 @@ func New(cfg config.Config, muxlog *logmon.Monitor, proxylog *logmon.Monitor, up
 		shutdownCtx:   shutdownCtx,
 		shutdownFn:    shutdownFn,
 	}
+	if cfg.Store != nil && cfg.Store.Captures.Enabled {
+		s.metrics.enableCapturePersistence(cfg.Store.Captures.CaptureRetention())
+	}
 	// Bring back the profile the operator last selected. Without this, a restart
 	// or a container recreate silently falls back to "no profile".
 	s.gate = newSlotGate(s.inflight.SetHeld)
@@ -519,6 +522,7 @@ func (s *Server) routes() {
 	mux.Handle("GET /api/version", apiChain.ThenFunc(s.handleAPIVersion))
 	mux.Handle("GET /api/hardware", apiChain.ThenFunc(s.handleAPIHardware))
 	mux.Handle("GET /api/tailcat", apiChain.ThenFunc(s.handleAPITailcat))
+	mux.Handle("GET /api/captures", apiChain.ThenFunc(s.handleAPICaptureList))
 	mux.Handle("GET /api/captures/{id}", apiChain.ThenFunc(s.handleAPICapture))
 
 	// Stateless MCP server exposing Argos's own documentation as tools,
