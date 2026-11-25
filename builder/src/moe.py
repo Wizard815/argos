@@ -294,9 +294,12 @@ class Holder:
                 out.append({**p, "launch_command": have})
             else:
                 self.served[pid] = cmd
-                if self.pending.pop(pid, None) is not None:
+                self.pending.pop(pid, None)
+                # a running model takes its new command now (quiet, or let go after waiting): the engine stops it
+                # when it takes the command, so it is loaded again with it (app.py's watch)
+                if names & run:
                     with self.lock:
-                        self.released[pid] = bool(names & run)
+                        self.released[pid] = True
                 out.append({**p, "launch_command": cmd})
         return out
 

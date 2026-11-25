@@ -167,6 +167,9 @@ type HandlerReq struct {
 	// declared nothing. A declared interactive request is held while a prefill is
 	// in flight for the same model.
 	Intent string
+	// Client is the app that sent it (its API key's name, else its address):
+	// a model's waiting line takes turns between apps (fifo.nextInLine).
+	Client string
 }
 
 // HandlerResp is the routing decision returned to a HandlerReq's caller: either
@@ -188,4 +191,6 @@ type ServeDoneEvent struct {
 	// Intent is the finished request's declared intent, so a prefill that has
 	// drained stops counting as one in flight.
 	Intent string
+	// Client is the finished request's app (HandlerReq.Client).
+	Client string
 }

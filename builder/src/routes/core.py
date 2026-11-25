@@ -266,11 +266,38 @@ def profiles_estimates():
     _custom_cache()
     variants, measured = _profile_variants(), ctx().plans.get()["measured"]
     out = {}
+    from ..advice import advise, card_totals
+    cards, speeds = _cards_and_speeds()
+    if not cards:
+        cards = card_totals()
     for p in ctx().store.list_profiles():
         e = estimate_command(p["launch_command"], measured=measured.get(variants.get(p["profile_id"], "")))
         out[p["profile_id"]] = {k: e.get(k) for k in ("ok", "error", "gib", "weights_gib", "kv_gib", "overhead_gib", "ctx",
-                                                     "cache_k", "cache_v", "notes", "measured", "estimate_gib")}
+                                                     "cache_k", "cache_v", "notes", "measured", "estimate_gib", "cpu_gib")}
+        # tips on how it splits over the cards and how much a prompt slows the chats beside it (advice.py)
+        out[p["profile_id"]]["advice"] = advise(p["launch_command"], e.get("gib") if e.get("ok") else None, cards,
+                                                speeds.get(variants.get(p["profile_id"], "")))
     return ok(estimates=out)
+
+
+def _cards_and_speeds() -> tuple[list, dict]:
+    """Each card's VRAM (GiB) as the engine plans with it, and how fast each running model reads prompts."""
+    url = ctx().settings.get("integrations").get("engine_url")
+    cards, speeds = [], {}
+    if not url:
+        return cards, speeds
+    try:
+        pool = engine_api.pool_state(url, 2.0)
+        cards = [float(c.get("cap_gib") or 0) for c in pool.get("cards") or [] if c.get("cap_gib")]
+    except Exception:  # noqa: BLE001 - the kernel's numbers are used instead
+        pass
+    try:
+        for m in (engine_api._get(url.rstrip("/") + "/api/slots/live", 2.0) or {}).get("models") or []:
+            if m.get("prefill_tps"):
+                speeds[m["model"]] = float(m["prefill_tps"])
+    except Exception:  # noqa: BLE001
+        pass
+    return cards, speeds
 
 
 @bp.post("/api/profiles")

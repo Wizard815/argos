@@ -178,3 +178,15 @@ def test_MoE_builder_memory_shows_the_slider_caches_and_what_mlock_pins(client, 
 
     r = client.post("/api/builder/memory", json={"command": f"llama-server -m {path} -cram -1"}).get_json()
     assert r["memory"]["cache_ram_mib"] == -1 and "ram" in r["memory"]
+
+
+def test_MoE_a_quiet_running_model_is_reloaded_with_its_new_command():
+    from src import moe as moe_mod
+    h = moe_mod.Holder()
+    old = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf"}]
+    new = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf --n-cpu-moe 4"}]
+    h.pick(old, old, lambda: {"x--fast"}, lambda n: 1e9)
+    h.pick(old, new, lambda: {"x--fast"}, lambda n: 60.0)
+    assert h.take_released() == {"p": True}, "running and quiet: goes now, and is loaded again"
+    h.pick(old, old, lambda: set(), lambda n: 0.0)
+    assert h.take_released() == {}, "not running: nothing to load again"

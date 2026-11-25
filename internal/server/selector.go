@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 
@@ -110,7 +112,24 @@ func CreateSelectorMiddleware(s *Server) chain.Middleware {
 			case config.SelectorStrategyWarm:
 				target, err = strategyWarm(s.cfg, selector, s.local.RunningModels())
 			case config.SelectorStrategySpillover:
-				target, err = strategySpillover(model, spillovers, s.local.RunningModels())
+				// a conversation goes back to the copy that has its turns cached
+				var key uint64
+				if r.Method == http.MethodPost && s.affinity != nil {
+					if body, rerr := io.ReadAll(r.Body); rerr == nil {
+						r.Body = io.NopCloser(bytes.NewReader(body))
+						key = conversationKey(body)
+					}
+				}
+				prefer := ""
+				if key != 0 {
+					prefer = s.affinity.copyFor(model, key)
+				}
+				target, err = strategySpillover(model, spillovers, s.local.RunningModels(), prefer)
+				if err == nil && key != 0 {
+					if id, ok := s.cfg.RealModelName(target); ok {
+						s.affinity.rememberCopy(model, key, id)
+					}
+				}
 			default:
 				err = fmt.Errorf("unknown selector strategy %q", selector.Strategy)
 			}
@@ -172,7 +191,9 @@ func strategyWarm(cfg config.Config, selector config.SelectorConfig, running map
 	return selector.Targets[0], nil
 }
 
-func strategySpillover(selectorID string, tracker *selectorSpilloverTracker, running map[string]process.ProcessState) (string, error) {
+// prefer is the model id of the copy a conversation used last ("" for none):
+// it gets the request while it is up and has room.
+func strategySpillover(selectorID string, tracker *selectorSpilloverTracker, running map[string]process.ProcessState, prefer string) (string, error) {
 	if tracker == nil || tracker.states[selectorID] == nil {
 		return "", fmt.Errorf("spillover selector %q is not configured", selectorID)
 	}
@@ -193,6 +214,14 @@ func strategySpillover(selectorID string, tracker *selectorSpilloverTracker, run
 			active = append(active, target)
 		case !runningNow || processState == process.StateStopped:
 			cold = append(cold, target)
+		}
+	}
+
+	if prefer != "" {
+		for _, target := range active {
+			if target.modelID == prefer && state.inflight[target.modelID] < state.spillover {
+				return state.reserve(target), nil
+			}
 		}
 	}
 

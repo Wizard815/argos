@@ -979,6 +979,23 @@
                                                     "minimum": 0,
                                                     "default": 300,
                                                     "description": "How long a prompt waits at most before it goes anyway. 0 uses the default of 300."
+                                                },
+                                                "auto": {
+                                                    "type": "boolean",
+                                                    "default": true,
+                                                    "description": "Also apply it to every model whose command serves several chats at once (--parallel 2 or more), not only the models listed. false: only the models listed."
+                                                },
+                                                "stallSeconds": {
+                                                    "type": "number",
+                                                    "minimum": 0,
+                                                    "default": 3,
+                                                    "description": "Once a model's prompt reading speed is measured (from its log), a new prompt part waits only when reading it would slow the answering chats for longer than this. Until then minPromptTokens decides. 0 uses the default of 3."
+                                                },
+                                                "autoMaxWaitSeconds": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "default": 20,
+                                                    "description": "maxWaitSeconds for the models auto adds. 0 uses the default of 20."
                                                 }
                                             },
                                             "additionalProperties": false
