@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wizard815/Argos/internal/store"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/klauspost/compress/zstd"
 )
@@ -160,10 +161,17 @@ func (mp *metricsMonitor) getCaptureByID(id int) *ReqRespCapture {
 		ID:          rec.ID,
 		ReqPath:     rec.ReqPath,
 		ReqHeaders:  rec.ReqHeaders,
-		ReqBody:     rec.ReqBody,
+		ReqBody:     nilIfEmpty(store.BodyBytes(rec.ReqBody)),
 		RespHeaders: rec.RespHeaders,
-		RespBody:    rec.RespBody,
+		RespBody:    nilIfEmpty(store.BodyBytes(rec.RespBody)),
 	}
+}
+
+func nilIfEmpty(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 // sensitiveHeaders lists headers that are redacted in captures, both the

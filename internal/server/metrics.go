@@ -343,9 +343,11 @@ func (mp *metricsMonitor) persistCapture(capture ReqRespCapture, tm ActivityLogE
 		ReqPath:        capture.ReqPath,
 		RespStatusCode: tm.RespStatusCode,
 		ReqHeaders:     capture.ReqHeaders,
-		ReqBody:        capture.ReqBody,
+		ReqBody:        store.BodyText(capture.ReqBody),
 		RespHeaders:    capture.RespHeaders,
-		RespBody:       capture.RespBody,
+		RespBody:       store.BodyText(capture.RespBody),
+		PromptText:     capturePromptText(capture.ReqBody),
+		ResponseText:   captureResponseText(capture.RespBody),
 	})
 	if err != nil {
 		mp.warnf("failed to persist capture %d: %v", capture.ID, err)

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -520,45 +522,103 @@ func (s *Server) handleAPICapture(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonBytes)
 }
 
-// handleAPICaptureList pages through persisted captures for a collector, oldest
-// first. after_id is the last id the caller has (default 0) and limit caps the
-// page (default 100, at most 1000). The response's next_after_id is the value
-// to pass next; when data is empty the caller is caught up. Only captures
-// written to the store (store.captures.enabled) are listed.
+// handleAPICaptureList searches persisted captures (store.captures.enabled).
+//
+// Paging: oldest first by default; pass the returned next_after_id as
+// after_id to get the next page, and an empty data list means caught up.
+// order=desc lists newest first; pass next_before_id as before_id instead.
+//
+// Filters: model, path, src (source prefix), status, since and until (RFC 3339
+// or Unix seconds), q (case-insensitive text in the prompt, the answer or the
+// request body). view=summary leaves out headers and raw bodies.
 func (s *Server) handleAPICaptureList(w http.ResponseWriter, r *http.Request) {
 	if !s.metrics.persistCaptures {
 		swaputil.SendResponse(w, r, http.StatusNotFound, "capture persistence is off; set store.captures.enabled: true")
 		return
 	}
-	afterID, limit := 0, 100
-	if v := r.URL.Query().Get("after_id"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			swaputil.SendResponse(w, r, http.StatusBadRequest, "after_id must be a non-negative integer")
-			return
-		}
-		afterID = n
+	query, err := parseCaptureQuery(r.URL.Query())
+	if err != nil {
+		swaputil.SendResponse(w, r, http.StatusBadRequest, err.Error())
+		return
 	}
-	if v := r.URL.Query().Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > 1000 {
-			swaputil.SendResponse(w, r, http.StatusBadRequest, "limit must be between 1 and 1000")
-			return
-		}
-		limit = n
-	}
-	records, err := s.metrics.store.ListCaptures(r.Context(), afterID, limit)
+	records, err := s.metrics.store.ListCaptures(r.Context(), query)
 	if err != nil {
 		s.metrics.warnf("list captures: %v", err)
 		swaputil.SendResponse(w, r, http.StatusInternalServerError, "failed to list captures")
 		return
 	}
-	next := afterID
-	if len(records) > 0 {
-		next = records[len(records)-1].ID
+	resp := map[string]any{"data": records}
+	if query.Desc {
+		next := query.BeforeID
+		if len(records) > 0 {
+			next = records[len(records)-1].ID
+		}
+		resp["next_before_id"] = next
+	} else {
+		next := query.AfterID
+		if len(records) > 0 {
+			next = records[len(records)-1].ID
+		}
+		resp["next_after_id"] = next
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"data": records, "next_after_id": next})
+	json.NewEncoder(w).Encode(resp)
+}
+
+func parseCaptureQuery(v url.Values) (store.CaptureQuery, error) {
+	q := store.CaptureQuery{
+		Model:     v.Get("model"),
+		Path:      v.Get("path"),
+		SrcPrefix: v.Get("src"),
+		Text:      v.Get("q"),
+		NoBodies:  v.Get("view") == "summary",
+		Limit:     100,
+	}
+	ints := []struct {
+		name     string
+		dest     *int
+		min, max int
+	}{
+		{"after_id", &q.AfterID, 0, math.MaxInt},
+		{"before_id", &q.BeforeID, 0, math.MaxInt},
+		{"limit", &q.Limit, 1, 1000},
+		{"status", &q.Status, 100, 599},
+	}
+	for _, f := range ints {
+		raw := v.Get(f.name)
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < f.min || n > f.max {
+			return q, fmt.Errorf("%s must be a whole number from %d to %d", f.name, f.min, f.max)
+		}
+		*f.dest = n
+	}
+	switch v.Get("order") {
+	case "", "asc":
+	case "desc":
+		q.Desc = true
+	default:
+		return q, fmt.Errorf("order must be asc or desc")
+	}
+	for _, f := range []struct {
+		name string
+		dest *time.Time
+	}{{"since", &q.Since}, {"until", &q.Until}} {
+		raw := v.Get(f.name)
+		if raw == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			*f.dest = t
+		} else if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			*f.dest = time.Unix(n, 0)
+		} else {
+			return q, fmt.Errorf("%s must be RFC 3339 (2026-11-25T10:00:00-05:00) or Unix seconds", f.name)
+		}
+	}
+	return q, nil
 }
 
 // handleAPIInflight lists the model-dispatched requests still running, oldest
