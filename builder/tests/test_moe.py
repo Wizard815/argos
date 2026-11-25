@@ -145,3 +145,18 @@ def test_MoE_a_busy_running_model_keeps_its_command_until_quiet():
     h2 = moe_mod.Holder()
     h2.pick(old, old, lambda: set(), lambda n: 0.0)
     assert h2.pick(old, new, lambda: set(), lambda n: 0.0)[0]["launch_command"] == new[0]["launch_command"], "not running: at once"
+
+
+def test_MoE_the_wait_before_a_reload_is_a_setting(client):
+    from src import moe as moe_mod
+    assert client.get("/api/moe").get_json()["idle_s"] == 30
+    assert client.put("/api/moe/idle", json={"seconds": 90}).get_json()["idle_s"] == 90
+    assert client.put("/api/moe/idle", json={"seconds": -1}).status_code == 400
+    assert client.put("/api/moe/idle", json={"seconds": "x"}).status_code == 400
+    assert client.put("/api/moe/idle", json={"seconds": 0}).get_json()["idle_s"] == 0
+    h = moe_mod.Holder()
+    old = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf"}]
+    new = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf --n-cpu-moe 4"}]
+    h.pick(old, old, lambda: {"x--fast"}, lambda n: 1e9)
+    assert h.pick(old, new, lambda: {"x--fast"}, lambda n: 45.0, idle=90)[0] == old[0], "used 45 s ago, wait 90: waits"
+    assert h.pick(old, new, lambda: {"x--fast"}, lambda n: 45.0, idle=40)[0] == new[0], "wait 40: goes"

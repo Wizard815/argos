@@ -1081,7 +1081,8 @@ def cookbook_state() -> dict:
     # ones; a model that is running and was used in the last 30 s keeps its old command until it is quiet
     saved = c.store.list_profiles()
     wanted = moe.apply_all(saved, moe.overrides(c.store)) if moe.enabled(c.store) else saved
-    profiles = moe.HOLD.pick(saved, wanted, _running_ids(c), lambda names: _quiet_for(c, names))
+    idle = moe.idle_s(c.store)
+    profiles = moe.HOLD.pick(saved, wanted, _running_ids(c), lambda names: _quiet_for(c, names, idle), idle=idle)
     return build_state(profiles, c.runner.list(), cookbook_presets(), always if always["on_export"] else None,
                        server=c.servers.default_parts())
 
@@ -1101,13 +1102,13 @@ def _running_ids(c):
     return get
 
 
-def _quiet_for(c, names: set) -> float:
+def _quiet_for(c, names: set, idle: float) -> float:
     """Seconds since a request for one of these names, from the builder's own view and the engine's request log."""
     from .. import moe
     quiet = moe.ACTIVITY.quiet_for(names)
     now = time.time()
     try:
-        recent = [r["ts"] for r in c.store.list_requests(since=now - moe.IDLE_S, limit=500) if r.get("model") in names]
+        recent = [r["ts"] for r in c.store.list_requests(since=now - max(idle, 1), limit=500) if r.get("model") in names]
     except Exception:  # noqa: BLE001
         recent = []
     if recent:
@@ -1118,7 +1119,7 @@ def _quiet_for(c, names: set) -> float:
 def _moe_payload(c):
     from .. import moe
     cookbook_state()  # settles what each profile is served now, and what waits for its model to be quiet
-    return ok(enabled=moe.enabled(c.store), idle_s=moe.IDLE_S,
+    return ok(enabled=moe.enabled(c.store), idle_s=moe.idle_s(c.store), idle_max=moe.IDLE_MAX,
               models=moe.view(c.store.list_profiles(), moe.overrides(c.store), moe.enabled(c.store)), ram=moe.memory())
 
 
@@ -1137,6 +1138,23 @@ def moe_enabled():
     c.store.set_setting(moe.ENABLED_KEY, on)
     c.event("profile", "MoE offload " + ("on" if on else "off: every profile runs with its own setting"))
     _push(c)
+    return _moe_payload(c)
+
+
+@bp.put("/api/moe/idle")
+def moe_idle():
+    """Body: {seconds}: how long a running model must go unused before it reloads with a new MoE setting
+    (0: at once, even mid-chat). Applies to changes already waiting too."""
+    from .. import moe
+    c = ctx()
+    try:
+        secs = int(round(float(body().get("seconds"))))
+    except (TypeError, ValueError):
+        return err("seconds is a number")
+    if not 0 <= secs <= moe.IDLE_MAX:
+        return err(f"seconds is from 0 to {moe.IDLE_MAX}")
+    c.store.set_setting(moe.IDLE_KEY, secs)
+    c.event("profile", f"MoE offload: a model in use reloads with a new setting after {secs} s unused")
     return _moe_payload(c)
 
 

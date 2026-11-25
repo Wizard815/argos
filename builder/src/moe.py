@@ -192,7 +192,18 @@ def set_own(command: str, pct: Optional[int]) -> str:
 
 
 # ----- a running model keeps its command until it has been idle a while -------------------------------------------
-IDLE_S = 30
+IDLE_S = 30  # the default; Profiles -> MoE offload -> "Reload a model in use after" changes it
+IDLE_KEY = "_moe_idle_s"
+IDLE_MAX = 3600
+
+
+def idle_s(store) -> int:
+    """How long a running model must go unused before it reloads with a new MoE setting (seconds; 0: at once)."""
+    v = store.get_settings().get(IDLE_KEY)
+    try:
+        return max(0, min(IDLE_MAX, int(v))) if v is not None else IDLE_S
+    except (TypeError, ValueError):
+        return IDLE_S
 
 
 class Activity:
@@ -245,7 +256,7 @@ def variant_names(command: str, name: str) -> set:
 
 class Holder:
     """Which command the engine is given for each profile. A new MoE setting for a profile whose model is running
-    and was used in the last IDLE_S seconds waits (``pending``) and the old command is served, so the model is not
+    and was used in the last ``idle`` seconds (IDLE_S unless set) waits (``pending``) and the old command is served, so the model is not
     reloaded under a chat; once it is quiet (or stopped), the new command goes out and the engine reloads it."""
 
     def __init__(self):
@@ -260,7 +271,8 @@ class Holder:
             out, self.released = self.released, {}
             return out
 
-    def pick(self, profiles: list[dict], wanted: list[dict], running, quiet_for, now: Optional[float] = None) -> list[dict]:
+    def pick(self, profiles: list[dict], wanted: list[dict], running, quiet_for, now: Optional[float] = None,
+             idle: float = IDLE_S) -> list[dict]:
         import time
         now = now or time.time()
         want = {p["profile_id"]: p["launch_command"] for p in wanted}
@@ -276,7 +288,7 @@ class Holder:
             names = variant_names(have, p["name"])
             run = running()
             quiet = quiet_for(names)
-            if (names & run) and quiet < IDLE_S:
+            if (names & run) and quiet < idle:
                 self.pending[pid] = {"command": cmd, "since": self.pending.get(pid, {}).get("since", now),
                                      "quiet_s": round(quiet if quiet < 1e8 else 0, 1)}
                 out.append({**p, "launch_command": have})
