@@ -44,10 +44,14 @@ FLAGS: dict[str, tuple[tuple[str, ...], str]] = {
     "cache-type-v": (("-ctv", "--cache-type-v"), "value"),
     "mmproj": (("-mm", "--mmproj"), "value"),
     "image-max-tokens": (("--image-max-tokens",), "value"),
-    "model-draft": (("-md", "--model-draft"), "value"),
+    # newer llama.cpp names the draft flags --spec-draft-*; the old spellings
+    # stay first among the long forms so a newly added flag works on older builds
+    "model-draft": (("-md", "--model-draft", "--spec-draft-model"), "value"),
     "spec-type": (("--spec-type",), "value"),
     "spec-draft-n-max": (("--spec-draft-n-max",), "value"),
-    "gpu-layers-draft": (("-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"), "value"),
+    "gpu-layers-draft": (("-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft", "--spec-draft-ngl"), "value"),
+    # devices for the draft model; "none" keeps it on the CPU
+    "spec-draft-device": (("-devd", "--device-draft", "--spec-draft-device"), "value"),
     "draft-max": (("--draft-max", "--draft", "--draft-n"), "value"),
     "draft-min": (("--draft-min", "--draft-n-min"), "value"),
     "n-cpu-moe": (("-ncmoe", "--n-cpu-moe"), "value"),
@@ -250,6 +254,14 @@ class LaunchCommand:
             return " \\\n  ".join([head] + parts)
         return " ".join([head] + parts)
 
+    def draft_on_cpu(self) -> bool:
+        """True when a draft model is set and none of it goes to a GPU
+        (``--spec-draft-device none`` or ``-ngld 0``), so its weights use system RAM, not VRAM."""
+        if not self.get("model-draft"):
+            return False
+        device = (self.get("spec-draft-device") or "").strip().lower()
+        return device == "none" or (self.get("gpu-layers-draft") or "").strip() == "0"
+
     def summary(self) -> dict:
         """Structured view of the settings that matter for performance."""
         fa = self.get("flash-attn")
@@ -273,6 +285,8 @@ class LaunchCommand:
             "model_draft": self.get("model-draft"),
             "spec_type": self.get("spec-type"),
             "spec_draft_n_max": _int(self.get("spec-draft-n-max")),
+            "spec_draft_device": self.get("spec-draft-device"),
+            "draft_on_cpu": self.draft_on_cpu(),
             "load_mode": self.get("load-mode"),
             "fit": None if self.get("fit") is None else (self.get("fit") or "on"),
             "split_mode": self.get("split-mode"),

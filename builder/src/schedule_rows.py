@@ -68,6 +68,12 @@ def moe_cpu_bytes(cmd, path: str) -> int:
     return moe["expert_total"] if cmd.has("cpu-moe") else cpu_expert_bytes(moe, int(n))
 
 
+def vram_extras(s: dict) -> tuple:
+    """The extra files a command puts in VRAM: the vision projector, and the draft model
+    unless it runs on the CPU (--spec-draft-device none or -ngld 0)."""
+    return (s.get("mmproj"), None if s.get("draft_on_cpu") else s.get("model_draft"))
+
+
 def estimate_command(command: str, compare: bool = False, measured: Optional[dict] = None) -> dict:
     """What a launch command needs in VRAM: model file + KV cache + buffers.
 
@@ -83,7 +89,7 @@ def estimate_command(command: str, compare: bool = False, measured: Optional[dic
     weights = file_bytes(path) if path.lower().endswith(".gguf") else 0
     if not weights:
         return {"ok": False, "error": f"model file not found: {path}" if path else "no --model in the command", "path": path}
-    extra = sum(file_bytes(p) for p in (s.get("mmproj"), s.get("model_draft")) if p)
+    extra = sum(file_bytes(p) for p in vram_extras(s) if p)
     arch = arch_of(path)
     ctx = s.get("ctx_size") or (arch or {}).get("train_ctx") or 4096
     ck, cv = s.get("cache_type_k") or "", s.get("cache_type_v") or ""
@@ -155,7 +161,7 @@ def _row(row_id: str, name: str, kind: str, command: str, plan: dict, known: Opt
         parsed, s = None, {}
     path = s.get("model") or ""
     weights = file_bytes(path) if path.lower().endswith(".gguf") else 0
-    extra_bytes = sum(file_bytes(p) for p in (s.get("mmproj"), s.get("model_draft")) if p)
+    extra_bytes = sum(file_bytes(p) for p in vram_extras(s) if p)
     arch = arch_of(path) if weights else None
     ctx = s.get("ctx_size") or (arch or {}).get("train_ctx") or 4096
     est = estimate_gib(weights, arch, ctx, s.get("cache_type_k") or "", s.get("cache_type_v") or "",

@@ -725,6 +725,9 @@ const FILES = [
   { name: "model", label: "Model", flag: "--model", ph: "/app/models/model-Q4_K_M.gguf", wide: true },
   { name: "mmproj", label: "Vision projector", flag: "--mmproj", ph: "mmproj-F16.gguf", list: "list-mmproj", wide: true },
   { name: "model-draft", label: "Draft model", flag: "-md", ph: "small-draft-Q8_0.gguf", list: "list-draft", wide: true },
+  // none runs the draft model on the CPU: its weights stay in system RAM and its VRAM goes to context
+  { name: "spec-draft-device", label: "Draft device", flag: "-devd", ph: "default",
+    combo: () => [{ value: "", label: "default", sub: "same GPUs as the model" }, { value: "none", label: "none", sub: "CPU: draft in system RAM, no VRAM" }] },
   { name: "spec-type", label: "Speculative", flag: "--spec-type", ph: "draft-mtp",
     combo: () => seenOpts("spec_type", ["", "draft-mtp", "draft", "ngram-simple", "ngram-map-k", "ngram-mod", "ngram-cache"]) },
   { name: "spec-draft-n-max", label: "Draft tokens", flag: "--spec-draft-n-max", type: "number", ph: "3" },
