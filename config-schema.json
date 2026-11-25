@@ -262,7 +262,7 @@
                         "enabled": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Also write request/response captures to the store's captures table, so they survive restarts and a collector can read them (GET /api/captures). Sensitive headers are redacted first. Works even when captureBuffer is 0."
+                            "description": "Also write request/response captures to the store's captures table, so they survive restarts and can be searched and read by a collector (GET /api/captures). Sensitive headers are redacted first. Works even when captureBuffer is 0."
                         },
                         "maxRows": {
                             "type": "integer",

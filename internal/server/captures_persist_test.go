@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wizard815/Argos/internal/config"
 	"github.com/Wizard815/Argos/internal/logmon"
+	"github.com/Wizard815/Argos/internal/store"
 )
 
 func recordChat(mm *metricsMonitor, reqHeaders map[string]string) {
@@ -18,8 +19,8 @@ func recordChat(mm *metricsMonitor, reqHeaders map[string]string) {
 	copier.Header().Set("Content-Type", "application/json")
 	copier.Header().Set("Set-Cookie", "session=abc")
 	copier.WriteHeader(http.StatusOK)
-	copier.Write([]byte(`{"usage":{"prompt_tokens":3,"completion_tokens":4}}`))
-	mm.record("m", r, copier, captureAll, []byte(`{"model":"m"}`), reqHeaders)
+	copier.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Porch light is on."}}],"usage":{"prompt_tokens":3,"completion_tokens":4}}`))
+	mm.record("m", r, copier, captureAll, []byte(`{"model":"m","messages":[{"role":"user","content":"turn on the porch light"}]}`), reqHeaders)
 }
 
 func TestServer_CapturePersistedToStore(t *testing.T) {
@@ -44,8 +45,14 @@ func TestServer_CapturePersistedToStore(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("GetCapture: found=%v err=%v", found, err)
 	}
-	if rec.Model != "m" || rec.RespStatusCode != http.StatusOK || string(rec.ReqBody) != `{"model":"m"}` {
+	if rec.Model != "m" || rec.RespStatusCode != http.StatusOK || rec.ReqBody != `{"model":"m","messages":[{"role":"user","content":"turn on the porch light"}]}` {
 		t.Fatalf("persisted capture = %+v", rec)
+	}
+	if rec.PromptText != "turn on the porch light" || rec.ResponseText != "Porch light is on." {
+		t.Fatalf("readable text = %q / %q", rec.PromptText, rec.ResponseText)
+	}
+	if rec.Tokens.InputTokens != 3 || rec.Tokens.OutputTokens != 4 {
+		t.Fatalf("tokens not joined from activity: %+v", rec.Tokens)
 	}
 	for _, h := range []string{"Authorization", "X-Hermes-Token", "X-Client-Secret"} {
 		if rec.ReqHeaders[h] != "[REDACTED]" {
@@ -71,7 +78,7 @@ func TestServer_CapturePersistenceRetention(t *testing.T) {
 	for range 4 {
 		recordChat(mm, nil)
 	}
-	recs, err := mm.store.ListCaptures(t.Context(), 0, 100)
+	recs, err := mm.store.ListCaptures(t.Context(), store.CaptureQuery{})
 	if err != nil {
 		t.Fatalf("ListCaptures: %v", err)
 	}
@@ -99,12 +106,12 @@ func TestServer_CaptureListAPI(t *testing.T) {
 	}
 
 	get := func(url string) (int, struct {
-		Data        []ReqRespCapture `json:"data"`
-		NextAfterID int              `json:"next_after_id"`
+		Data        []store.CaptureRecord `json:"data"`
+		NextAfterID int                   `json:"next_after_id"`
 	}) {
 		var body struct {
-			Data        []ReqRespCapture `json:"data"`
-			NextAfterID int              `json:"next_after_id"`
+			Data        []store.CaptureRecord `json:"data"`
+			NextAfterID int                   `json:"next_after_id"`
 		}
 		w := httptest.NewRecorder()
 		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
@@ -127,6 +134,22 @@ func TestServer_CaptureListAPI(t *testing.T) {
 	code, done := get("/api/captures?after_id=" + strconv.Itoa(second.NextAfterID))
 	if code != http.StatusOK || len(done.Data) != 0 || done.NextAfterID != second.NextAfterID {
 		t.Fatalf("caught-up page: code=%d %+v", code, done)
+	}
+	code, found := get("/api/captures?q=PORCH&view=summary&order=desc&limit=1")
+	if code != http.StatusOK || len(found.Data) != 1 || found.Data[0].ID != 3 ||
+		found.Data[0].PromptText != "turn on the porch light" || found.Data[0].ReqBody != "" {
+		t.Fatalf("search: code=%d %+v", code, found.Data)
+	}
+	if code, none := get("/api/captures?model=other"); code != http.StatusOK || len(none.Data) != 0 {
+		t.Fatalf("model filter: code=%d %+v", code, none.Data)
+	}
+	if code, _ := get("/api/captures?since=2000-01-01T00:00:00Z&until=4102444800&status=200&path=/v1/chat/completions"); code != http.StatusOK {
+		t.Fatalf("time filters: code=%d", code)
+	}
+	for _, bad := range []string{"since=yesterday", "order=up", "status=42"} {
+		if code, _ := get("/api/captures?" + bad); code != http.StatusBadRequest {
+			t.Fatalf("%s: code=%d, want 400", bad, code)
+		}
 	}
 	if code, _ := get("/api/captures?limit=0"); code != http.StatusBadRequest {
 		t.Fatalf("limit=0: code=%d, want 400", code)
