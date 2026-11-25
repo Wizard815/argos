@@ -12,7 +12,7 @@ from typing import Any
 
 from .db import Store
 
-SECRET_KEYS = {("downloads", "hf_token"), ("odysseus", "token")}
+SECRET_KEYS = {("downloads", "hf_token"), ("odysseus", "token"), ("power", "fan_bridge_token")}
 
 
 def env_defaults(cfg: dict) -> dict:
@@ -73,6 +73,18 @@ def env_defaults(cfg: dict) -> dict:
             "cuda_path": cfg.get("CUDA_PATH", ""),     # e.g. /usr/local/cuda-12.4
             "rocm_smi": "",                            # e.g. /opt/rocm-gfx906/bin/rocm-smi
             "nvidia_smi": "",
+        },
+        "power": {
+            # Profiles -> Power: how Argos sets the GPUs' power cap and top clock (gpu_power.py).
+            # "auto": fan-bridge if its URL is set, else sysfs if /sys/class/drm is writable here, else rocm-smi,
+            # else amd-smi; or name one: fan-bridge, sysfs, rocm-smi, amd-smi
+            "backend": "auto",
+            "fan_bridge_url": "",    # e.g. http://<host>:5000 (ilofanmonitorgpu); also shows its GPU temperatures
+            "fan_bridge_token": "",  # FAN_BRIDGE_POWER_TOKEN, if fan-bridge has one set
+            "rocm_smi_path": "",     # blank = on PATH (or Settings -> GPU tools' rocm-smi)
+            "amd_smi_path": "",
+            "guard_c": 95.0,         # a raise waits while any GPU's junction is this hot; a cut never waits
+            "interval_s": 10,        # seconds between checks of what is running
         },
         "kv": {
             # KV cache types the estimator does not know, as name=bits per value, e.g. "turbo5=3.0, mykv=4.25".

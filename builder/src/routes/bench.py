@@ -10,6 +10,7 @@ from ..gpu_pick import resolve as resolve_gpus
 from ..command import parse_command
 from ..servers import launch_parts
 from ..web import body, check_id, ctx, err, ok
+from .power import bench_power, tick as power_tick
 
 bp = Blueprint("bench", __name__)
 
@@ -109,9 +110,18 @@ def bench_start():
         model_file = cmd.summary()["model"] if cmd else ""
         meta = {"profile_name": m["profile_name"], "base_model": m["base_model"], "command": m["command"],
                 "params": d.get("params") or {}, "running": m["id"]}
+        if c.benches.current():
+            return err("a benchmark is already running: stop it first, or wait for it", 409)
+        pid = next((p["profile_id"] for p in c.store.list_profiles() if p["name"] == m["profile_name"]), "") if m["profile_name"] else ""
+        try:
+            power, held = bench_power(c, d, pid)
+        except RuntimeError as exc:
+            return err(str(exc), 409)
+        meta.update(power, power_hold=held)
         try:
             run = c.benches.start_server(ServerBench(m["url"]), d.get("params") or {}, meta, model_file)
         except (RuntimeError, ValueError) as exc:
+            _release(c, held)
             return err(str(exc), 409)
         c.event("bench", f"benchmark of the running {m['label']} started (no restart)", data={"bench_id": run.bench_id})
         return ok(bench=run.to_dict())
@@ -130,13 +140,30 @@ def bench_start():
         except Exception as exc:  # noqa: BLE001
             return err(f"could not unload the engine's models first: {exc}", 502)
     meta = {**meta, "params": d.get("params") or {}, "server_id": d.get("server_id") or ""}
+    try:  # the power setting it runs at (Profiles -> Power), recorded with its results
+        power, held = bench_power(c, d, str(d.get("profile_id") or ""))
+    except RuntimeError as exc:
+        return err(str(exc), 409)
+    meta.update(power, power_hold=held)
     try:
         run = c.benches.start(argv, env, meta)
     except RuntimeError as exc:
+        _release(c, held)
         return err(str(exc), 409)
     c.event("bench", f"llama-bench started for {meta.get('profile_name') or (d.get('params') or {}).get('model')}",
             data={"bench_id": run.bench_id})
     return ok(bench=run.to_dict())
+
+
+def _release(c, held: bool) -> None:
+    """A benchmark that did not start lets go of the power setting it asked for."""
+    if held:
+        from .. import gpu_power
+        gpu_power.GOV.hold = None
+        try:
+            power_tick(c)
+        except Exception:  # noqa: BLE001 - the next check sets it
+            pass
 
 
 @bp.get("/api/bench")

@@ -44,6 +44,7 @@ from .log_analyzer import parse_log_text  # noqa: E402
 from .routes import assistant as assistant_routes  # noqa: E402
 from .routes import runners as runners_routes  # noqa: E402
 from .routes import mcp as mcp_routes  # noqa: E402
+from .routes import power as power_routes  # noqa: E402
 from .routes import security as security_routes  # noqa: E402
 from .routes import bench as bench_routes, core, inventory as inventory_routes, logs, models, odysseus_hub, schedule, servers as servers_routes, workspace  # noqa: E402
 from .measure import Measurer  # noqa: E402
@@ -376,6 +377,14 @@ def create_app(config: dict | None = None) -> Flask:
     def save_bench(run):
         """A finished llama-bench run goes to Benchmarks: one row per test."""
         rows = run_rows(run)
+        from . import gpu_power
+        try:  # the watts each test drew, from the GPU readings taken while it ran, and its tokens per watt
+            gpu_power.add_power(rows, run.results, run.started_at, run.ended_at or time.time(), store.gpu_samples_between,
+                                (run.meta.get("power") or {}).get("label", ""))
+        except Exception:  # noqa: BLE001 - the speeds are saved all the same
+            pass
+        if run.meta.get("power_hold"):
+            gpu_power.GOV.hold = None  # the profiles' settings apply again on the next check
         for row in rows:
             store.add_run(row)
         run.saved = len(rows)
@@ -445,6 +454,20 @@ def create_app(config: dict | None = None) -> Flask:
                     pass
         threading.Thread(target=_moe_holds, name="moe-holds", daemon=True).start()
 
+        def _power():
+            """Profiles -> Power: keep the GPUs at the running profiles' power setting. Does nothing (and asks the
+            engine nothing) until a profile or the idle setting has one."""
+            from .routes import power as power_routes
+            while True:
+                time.sleep(max(2, int(settings.get("power").get("interval_s") or 10)))
+                try:
+                    with app.app_context():
+                        if power_routes.needed(app.extensions["pb"]):
+                            power_routes.tick(app.extensions["pb"])
+                except Exception:  # noqa: BLE001 - tried again on the next check
+                    pass
+        threading.Thread(target=_power, name="gpu-power", daemon=True).start()
+
     # who may use Argos: the web page password and API keys (Settings -> Security), checked before anything else
     from .security import MODEL_API_PREFIXES, OPEN_PATHS, SESSION_DAYS, Security, key_from
     from datetime import timedelta
@@ -508,7 +531,7 @@ def create_app(config: dict | None = None) -> Flask:
         return redirect("/login?next=" + urllib.parse.quote(request.full_path.rstrip("?")))
 
     for bp in (bench_routes.bp, core.bp, models.bp, logs.bp, assistant_routes.bp, schedule.bp, inventory_routes.bp, workspace.bp, odysseus_hub.bp, servers_routes.bp,
-               runners_routes.bp, mcp_routes.bp):
+               runners_routes.bp, mcp_routes.bp, power_routes.bp):
         app.register_blueprint(bp)
     # last: anything the builder does not own goes to the engine (one port for both)
     app.register_blueprint(engine_proxy.bp)
