@@ -51,6 +51,16 @@ again, up to `max_tool_rounds` (5, at most 10). The answer has `argos_mcp`
 with each call. Without `require_approval: "never"` nothing runs: the tool
 calls go back to the app. A streamed request gets the answer in one chunk.
 
+## Cloud providers (Settings -> Providers)
+
+Add an OpenAI-compatible provider (OpenRouter: `https://openrouter.ai/api/v1`)
+with its key, then **Pick models** from its list (prices, context and tool
+support shown). Each is served as `<provider>/<model>`, for example
+`openrouter/tencent/hy4-flash`, and goes to the provider under its own name
+with the provider's key. Key rules, limits, usage, the cache and MCP tools in
+chat apply as for local models; a key's model list can say `openrouter/*`.
+They use no VRAM and come last in the model list.
+
 ## Answer cache (Settings -> Gateway)
 
 The exact same request again is answered from memory, with

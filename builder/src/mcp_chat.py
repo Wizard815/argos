@@ -63,7 +63,8 @@ def _engine(engine_url: str, body: dict, headers: dict) -> tuple[int, dict, byte
         return resp.status, {}, raw
 
 
-def run(pb, engine_url: str, body: dict, headers: dict, key: Optional[dict]) -> tuple[Response, tuple[int, int]]:
+def run(pb, engine_url: str, body: dict, headers: dict, key: Optional[dict], send=None) -> tuple[Response, tuple[int, int]]:
+    """``send(body) -> (status, json, raw)`` asks the model; the engine when None (a cloud provider's model otherwise)."""
     from .mcp_gateway import MCPError, SEP, result_text
     gw = pb.mcp
     rules = key["rules"] if key else None
@@ -107,7 +108,7 @@ def run(pb, engine_url: str, body: dict, headers: dict, key: Optional[dict]) -> 
         if last and functions:  # out of rounds: answer with what it has
             body.pop("tools", None)
             body.pop("tool_choice", None)
-        status, answer, raw = _engine(engine_url, body, headers)
+        status, answer, raw = send(body) if send else _engine(engine_url, body, headers)
         u = answer.get("usage") or {}
         used_in += int(u.get("prompt_tokens") or 0)
         used_out += int(u.get("completion_tokens") or 0)

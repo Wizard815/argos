@@ -133,7 +133,7 @@ def test_Gateway_a_key_reaches_only_its_models_and_sees_only_them(gw):
     assert c.post("/v1/chat/completions", json={"model": "chat", "messages": []}).status_code == 200, "through the group"
     no = c.post("/v1/chat/completions", json={"model": "gemma--big", "messages": []})
     assert no.status_code == 403 and no.get_json()["error"]["code"] == "model_not_allowed"
-    assert [m["id"] for m in c.get("/v1/models").get_json()["data"]] == ["fast", "chat"]
+    assert [m["id"] for m in c.get("/v1/models").get_json()["data"]] == ["chat", "fast"], "sorted"
     other = _key(app, "Codex")
     assert len(_out(app, other).get("/v1/models").get_json()["data"]) == 3, "a key without a list sees everything"
 
@@ -342,3 +342,39 @@ def test_Gateway_a_key_cannot_reach_other_models_through_upstream(gw):
     assert c.get("/upstream/chat/health").status_code == 403
     assert c.get("/upstream/fast/health").status_code != 403
     assert c.get("/v1/models?model=chat").status_code == 200, "a list is not a model call"
+
+
+def test_Gateway_cloud_provider_models_are_served_and_listed_last(gw):
+    c = gw.test_client()
+    r = c.post("/api/providers", json={"name": "openrouter", "url": gw.cloud_url, "api_key": "sk-or", "models": ["tencent/hy4-flash"]})
+    assert r.status_code == 200 and r.get_json()["providers"][0]["has_key"] and "api_key" not in r.get_json()["providers"][0]
+    cat = c.get("/api/providers/openrouter/catalog").get_json()
+    assert [m["id"] for m in cat["models"]] == ["chat", "fast", "gemma--big"] and cat["picked"] == ["tencent/hy4-flash"]
+    j = c.post("/v1/chat/completions", json={"model": "openrouter/tencent/hy4-flash", "messages": []})
+    assert j.headers["X-Argos-Provider"] == "openrouter"
+    body = j.get_json()
+    assert body["cloud"] and body["model"] == "tencent/hy4-flash" and body["auth"] == "Bearer sk-or" and body["path"] == "/v1/chat/completions"
+    assert c.post("/v1/chat/completions", json={"model": "openrouter/not-picked", "messages": []}).status_code != 200 or CALLS
+    ids = [m["id"] for m in c.get("/v1/models").get_json()["data"]]
+    assert ids[-1] == "openrouter/tencent/hy4-flash", "cloud models come after the local ones"
+    rows = {m["id"]: m["owned_by"] for m in c.get("/v1/models").get_json()["data"]}
+    assert rows["gemma--big"] == "gemma" and rows["openrouter/tencent/hy4-flash"] == "openrouter"
+    k = _key(gw, rules={"models": ["fast"]})
+    assert [m["id"] for m in _out(gw, k).get("/v1/models").get_json()["data"]] == ["fast"]
+    assert _out(gw, k).post("/v1/chat/completions", json={"model": "openrouter/tencent/hy4-flash"}).status_code == 403
+    k2 = _key(gw, "cloudy", rules={"models": ["openrouter/*"]})
+    assert _out(gw, k2).post("/v1/chat/completions", json={"model": "openrouter/tencent/hy4-flash", "messages": []}).status_code == 200
+
+
+def test_Gateway_family_prefix_is_optional_and_both_names_work(gw):
+    c = gw.test_client()
+    assert c.put("/api/library/family-prefix", json={"on": True}).get_json()["on"]
+    ids = [m["id"] for m in c.get("/v1/models").get_json()["data"]]
+    assert "gemma/gemma--big" in ids and "other/fast" in ids
+    c.post("/v1/chat/completions", json={"model": "gemma/gemma--big", "messages": []}).get_data()
+    assert CALLS[-1]["model"] == "gemma--big", "the prefix is taken off before the engine"
+    c.post("/v1/chat/completions", json={"model": "gemma--big", "messages": []}).get_data()
+    assert CALLS[-1]["model"] == "gemma--big"
+    c.put("/api/library/family-prefix", json={"on": False})
+    assert "gemma--big" in [m["id"] for m in c.get("/v1/models").get_json()["data"]]
+    assert len(c.get("/v1/models?all=1").get_json()["data"]) == 3, "?all=1 stays the engine's own list"

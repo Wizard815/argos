@@ -305,13 +305,15 @@ def effective_size(plan: dict, model_id: str, estimate: float = 0.0) -> tuple[fl
 
 # ----- size estimate -----------------------------------------------------------------
 def estimate_gib(weights_bytes: int, arch: Optional[dict], ctx: int, cache_k: str = "", cache_v: str = "",
-                 extra_bytes: int = 0) -> dict:
+                 extra_bytes: int = 0, cpu_bytes: int = 0) -> dict:
     """VRAM a launch needs: weights, KV cache for ``ctx`` tokens, and buffers.
 
     The buffer term (1 GiB + 10% of the weights) is a rule of thumb that matches
     a measured 35B MoE; a Measure run replaces the whole estimate.
     """
-    weights = (weights_bytes + extra_bytes) / GIB
+    # cpu_bytes: expert weights --n-cpu-moe / --cpu-moe keep in system RAM: not on the GPU
+    cpu = min(cpu_bytes, weights_bytes) / GIB
+    weights = (weights_bytes + extra_bytes) / GIB - cpu
     notes: list[str] = []
     kv = 0.0
     if arch and ctx:
@@ -331,8 +333,10 @@ def estimate_gib(weights_bytes: int, arch: Optional[dict], ctx: int, cache_k: st
     else:
         notes.append("no model header, KV cache not counted")
     overhead = 1.0 + 0.10 * weights
+    if cpu:
+        notes.append(f"{cpu:.1f} GiB of expert weights in system RAM (MoE offload)")
     return {"gib": round(weights + kv + overhead, 2), "weights_gib": round(weights, 2), "kv_gib": round(kv, 2),
-            "overhead_gib": round(overhead, 2), "notes": notes}
+            "overhead_gib": round(overhead, 2), "cpu_gib": round(cpu, 2), "notes": notes}
 
 
 # ----- the engine's copy ---------------------------------------------------------------

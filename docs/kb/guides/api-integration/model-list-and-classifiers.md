@@ -4,7 +4,7 @@ summary: Apps see your profiles by their own names, not the base models on disk;
 category: guides
 tags: [models, v1-models, profiles, aliases, classifier, decision, systemone, openjev]
 config_keys: [modelTogglesFile]
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # What apps see in the model list
@@ -45,6 +45,16 @@ Either name works when an app calls a profile, so switching names does not
 break an app that saved the other one. A proxy in front of Argos such as
 LiteLLM keeps its copy of the list for a few minutes: restart it to see a
 change at once.
+
+## Grouped by family
+
+The list apps get is sorted by family (Qwen, Gemma, GLM, gpt-oss...), local
+models first and each cloud provider after them, and `owned_by` holds the
+family or the provider. Tick **family/ in front (qwen/...)** under What apps
+see and each local name starts with its family, `qwen/qwen3.8-27b-uncen-mtp-2chat-512k`:
+Open WebUI, Cline and LiteLLM-style pickers show a group per prefix. The name
+without the prefix keeps working, so a saved app setting does not break.
+`?all=1` is the engine's own list, unsorted.
 
 ## Showing a base model anyway
 
