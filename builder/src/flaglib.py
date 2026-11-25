@@ -52,6 +52,8 @@ _ROWS: list[tuple[str, str, str, str]] = [
     ("draft-max", "Speculative decoding", "Most tokens drafted per step (older spelling).", ""),
     ("draft-min", "Speculative decoding", "Fewest tokens drafted per step.", ""),
     ("gpu-layers-draft", "Speculative decoding", "GPU layers for the draft model.", ""),
+    ("spec-draft-device", "Speculative decoding", "Devices for the draft model (comma separated); none keeps it on the CPU.",
+     "none puts the draft weights in system RAM and frees their VRAM for context; a small draft model still helps from there. Older builds spell it -devd / --device-draft."),
     # --- chat and tools
     ("jinja", "Chat & tools", "Use the model's Jinja chat template. Needed for tool calling.", "Recent builds have it on by default; add it if tools are ignored."),
     ("chat-template", "Chat & tools", "Override the chat template (name or text).", ""),
