@@ -41,6 +41,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # The shared homelab network: Omi, Hermes, Coinpile, Alexandria, Odysseus and
+    # FAITH reach the OpenAI API here as http://argos:8080/v1, and Argos reaches
+    # Postgres, which is only on this network.
+    networks:
+      - ai_net
 
   # Postgres instead of a SQLite file. The store is written to from several places at
   # once - the telemetry tick, the engine's activity sync, whatever a request is doing -
