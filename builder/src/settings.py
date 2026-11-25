@@ -79,6 +79,13 @@ def env_defaults(cfg: dict) -> dict:
             # bits per value = bytes per block * 8 / values per block (q8_0: 34 bytes per 32 values = 8.5)
             "custom_types": "",
         },
+        "ttft": {
+            # Time-to-first-token estimate in the Builder, used until a model has measured loads:
+            # how fast the model files read (GB/s; NVMe behind PCIe 3.0 ~2-3, SATA SSD ~0.5, HDD array ~0.2)
+            # and the fixed part of a server start (GPU init, graph reserve, warmup), in seconds.
+            "disk_gbps": 2.0,
+            "start_s": 10.0,
+        },
         "builder": {
             # "odysseus" rewrites commands into the Cookbook's shape on every edit
             "command_format": "odysseus",
