@@ -100,6 +100,9 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		if err := validateStorePath(config.Store.Path); err != nil {
 			return Config{}, err
 		}
+		if config.Store.Captures.MaxRows < -1 {
+			return Config{}, fmt.Errorf("store.captures.maxRows must be -1 (keep all), 0 (default) or a positive number")
+		}
 	}
 
 	// Apply default for upstream.ignorePaths when not specified. The default
