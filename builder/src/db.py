@@ -230,7 +230,12 @@ CREATE TABLE IF NOT EXISTS host_snapshots (
 
 CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL UNIQUE,
-    created_at REAL NOT NULL, last_used_at REAL
+    created_at REAL NOT NULL, last_used_at REAL, rules TEXT DEFAULT '{{}}'
+);
+
+CREATE TABLE IF NOT EXISTS key_usage (
+    key_id INTEGER NOT NULL, day TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', requests INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, PRIMARY KEY (key_id, day, model)
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -306,6 +311,7 @@ class Store:
             self._add_missing_columns("requests", {"prefill_high_tps": "REAL", "prefill_low_tps": "REAL"})
             self._add_missing_columns("cpu_samples", {"power_w": "REAL"})
             self._add_missing_columns("requests", {"client": "TEXT"})
+            self._add_missing_columns("api_keys", {"rules": "TEXT DEFAULT '{}'"})
             self._add_missing_columns("servers", {"env_kind": "TEXT DEFAULT 'none'", "env_value": "TEXT DEFAULT ''",
                                                  "color": "TEXT DEFAULT ''", "download_dir": "TEXT DEFAULT ''"})
             self._add_missing_columns("notes", {"x": "REAL", "y": "REAL", "w": "REAL", "h": "REAL", "collapsed": "INTEGER DEFAULT 0"})
