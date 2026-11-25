@@ -59,13 +59,14 @@ def _tips(f: dict[str, Any], load_mode: str) -> list[dict]:
     tips: list[dict] = []
     ub = _num(f.get("ubatch-size")) or 512
     if load_mode == "dio":
-        tips.append({"flag": "-lm", "current": "dio", "suggest": "none", "edits": {"load-mode": "none"}, "phase": "load",
+        tips.append({"flag": "-lm", "current": "dio", "suggest": "dio-auto", "edits": {"load-mode": "dio-auto"}, "phase": "load",
                      "why": "dio reads with O_DIRECT, past the page cache, so every reload goes back to the disk. "
-                            "'none' reads through the page cache: a reload while the file is still cached comes from RAM. "
-                            "Measure the cold load too: on some setups dio is faster cold."})
+                            "dio-auto (mx-llama.cpp-Rocm10) reads the parts already in the page cache from RAM and the rest "
+                            "with direct I/O, and fills the cache when the file fits in free RAM, so a reload after a swap "
+                            "comes from RAM. On other llama.cpp builds use 'none'."})
     elif load_mode in ("", "auto", "mmap"):
-        tips.append({"flag": "-lm", "current": load_mode or "default (mmap)", "suggest": "none", "edits": {"load-mode": "none"}, "phase": "load",
-                     "why": "mmap can hang on ROCm stacks (see the fork's FEATURES.md); 'none' keeps the page-cache benefit."})
+        tips.append({"flag": "-lm", "current": load_mode or "default (mmap)", "suggest": "dio-auto", "edits": {"load-mode": "dio-auto"}, "phase": "load",
+                     "why": "mmap can hang on ROCm stacks (see the fork's FEATURES.md); dio-auto (or 'none' on other builds) keeps the page-cache benefit."})
     if "no-warmup" not in f:
         tips.append({"flag": "--no-warmup", "current": "off", "suggest": "on", "edits": {"no-warmup": True}, "phase": "load",
                      "why": "skips the empty warmup run at start (a second or two); the first request pays the kernel loading instead."})
