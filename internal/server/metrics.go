@@ -45,6 +45,11 @@ type metricsMonitor struct {
 	logger         *logmon.Monitor
 	enableCaptures bool
 	captureCache   *cache.Cache // zstd-compressed CBOR of ReqRespCapture
+
+	// persistCaptures also writes each capture to the store's captures table,
+	// keeping at most captureMaxRows of them (0 keeps all).
+	persistCaptures bool
+	captureMaxRows  int
 }
 
 func newMetricsMonitor(logger *logmon.Monitor, maxMetrics int, captureBufferMB int, st *store.Store) *metricsMonitor {
@@ -61,6 +66,18 @@ func newMetricsMonitor(logger *logmon.Monitor, maxMetrics int, captureBufferMB i
 		mm.captureCache = cache.New(captureBufferMB * 1024 * 1024)
 	}
 	return mm
+}
+
+// enableCapturePersistence writes captures to the store as well as the
+// in-memory cache, keeping the newest maxRows (0 keeps all). It turns captures
+// on even when captureBuffer is 0, in which case the store is the only copy.
+func (mp *metricsMonitor) enableCapturePersistence(maxRows int) {
+	if mp.store == nil {
+		return
+	}
+	mp.persistCaptures = true
+	mp.captureMaxRows = maxRows
+	mp.enableCaptures = true
 }
 
 // queueMetrics persists a metric and returns the store-assigned row. It
@@ -90,14 +107,23 @@ func (mp *metricsMonitor) emitMetric(metric ActivityLogEntry) {
 }
 
 func (mp *metricsMonitor) overlayCaptureState(entries []ActivityLogEntry) {
-	if mp.captureCache == nil {
+	var persisted map[int]bool
+	if mp.persistCaptures && len(entries) > 0 {
+		ids := make([]int, len(entries))
 		for i := range entries {
-			entries[i].HasCapture = false
+			ids[i] = entries[i].ID
 		}
-		return
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		found, err := mp.store.CaptureIDs(ctx, ids)
+		if err != nil {
+			mp.warnf("failed to look up persisted captures: %v", err)
+		}
+		persisted = found
 	}
 	for i := range entries {
-		entries[i].HasCapture = mp.captureCache.Has(entries[i].ID)
+		id := entries[i].ID
+		entries[i].HasCapture = persisted[id] || (mp.captureCache != nil && mp.captureCache.Has(id))
 	}
 }
 
@@ -207,7 +233,7 @@ func (mp *metricsMonitor) record(modelID string, r *http.Request, recorder *resp
 		tm = stored
 		// Capture the request only; the failure is surfaced via ErrorMsg
 		// rather than storing the (possibly undisplayable) response body.
-		tm.HasCapture = mp.storeCapture(tm.ID, r, recorder, cf&^captureRespBody, reqBody, reqHeaders, nil)
+		tm.HasCapture = mp.storeCapture(tm, r, recorder, cf&^captureRespBody, reqBody, reqHeaders, nil)
 		mp.emitMetric(tm)
 		return
 	}
@@ -268,20 +294,20 @@ func (mp *metricsMonitor) record(modelID string, r *http.Request, recorder *resp
 		return
 	}
 	tm = stored
-	tm.HasCapture = mp.storeCapture(tm.ID, r, recorder, cf, reqBody, reqHeaders, body)
+	tm.HasCapture = mp.storeCapture(tm, r, recorder, cf, reqBody, reqHeaders, body)
 	mp.emitMetric(tm)
 }
 
-// storeCapture assembles a ReqRespCapture for id, honoring the captureFields
-// mask, and stores it when captures are enabled. body is the response body to
-// capture (already decompressed by the caller); pass nil to omit it. Returns
-// true if a capture was stored.
-func (mp *metricsMonitor) storeCapture(id int, r *http.Request, recorder *responseBodyCopier, cf captureFields, reqBody []byte, reqHeaders map[string]string, body []byte) bool {
+// storeCapture assembles a ReqRespCapture for the activity entry tm, honoring
+// the captureFields mask, and stores it in the cache and (when enabled) the
+// store. body is the response body to capture (already decompressed by the
+// caller); pass nil to omit it. Returns true if a capture was stored anywhere.
+func (mp *metricsMonitor) storeCapture(tm ActivityLogEntry, r *http.Request, recorder *responseBodyCopier, cf captureFields, reqBody []byte, reqHeaders map[string]string, body []byte) bool {
 	if !mp.enableCaptures {
 		return false
 	}
 	capture := ReqRespCapture{
-		ID:         id,
+		ID:         tm.ID,
 		ReqPath:    r.URL.Path,
 		ReqHeaders: reqHeaders,
 	}
@@ -296,7 +322,41 @@ func (mp *metricsMonitor) storeCapture(id int, r *http.Request, recorder *respon
 	if cf&captureRespBody != 0 {
 		capture.RespBody = body
 	}
-	return mp.addCapture(capture)
+	cached := mp.addCapture(capture)
+	persisted := mp.persistCapture(capture, tm)
+	return cached || persisted
+}
+
+// persistCapture writes capture to the store's captures table and trims it to
+// captureMaxRows. Like queueMetrics it ignores the request context, so an
+// aborted request is still written. Returns true if the row was written.
+func (mp *metricsMonitor) persistCapture(capture ReqRespCapture, tm ActivityLogEntry) bool {
+	if !mp.persistCaptures {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := mp.store.InsertCapture(ctx, store.CaptureRecord{
+		ID:             capture.ID,
+		Timestamp:      tm.Timestamp,
+		Model:          tm.Model,
+		ReqPath:        capture.ReqPath,
+		RespStatusCode: tm.RespStatusCode,
+		ReqHeaders:     capture.ReqHeaders,
+		ReqBody:        store.BodyText(capture.ReqBody),
+		RespHeaders:    capture.RespHeaders,
+		RespBody:       store.BodyText(capture.RespBody),
+		PromptText:     capturePromptText(capture.ReqBody),
+		ResponseText:   captureResponseText(capture.RespBody),
+	})
+	if err != nil {
+		mp.warnf("failed to persist capture %d: %v", capture.ID, err)
+		return false
+	}
+	if err := mp.store.PruneCaptures(ctx, mp.captureMaxRows); err != nil {
+		mp.warnf("failed to prune captures: %v", err)
+	}
+	return true
 }
 
 // decodeResponseBody returns the buffered response body, decompressing it when

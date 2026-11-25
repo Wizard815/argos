@@ -48,8 +48,19 @@ logToStdout: "proxy"
 # - optional, default: in-memory sqlite database capped by metricsMaxInMemory
 # - path is a sqlite database file path
 # - file-backed sqlite keeps activity logs across restarts
+# - captures.enabled also writes request/response captures to the store
+#   (captures table, id = activity id) so they survive restarts
+# - each row also has prompt_text and response_text, the readable prompt and
+#   answer; search them with GET /api/captures?q=kitchen&model=...&since=...
+# - a collector pages with GET /api/captures?after_id=N&limit=M
+# - sensitive headers (Authorization, cookies, *-token, *secret*, *api-key*)
+#   are redacted before a capture is written; bodies are stored as sent
+# - captures.maxRows: how many captures to keep, default 10000, -1 keeps all
 # store:
 #   path: /path/to/file.sqlite
+#   captures:
+#     enabled: true
+#     maxRows: 10000
 
 # metricsMaxInMemory: maximum number of metrics to keep in memory
 # - optional, default: 1000

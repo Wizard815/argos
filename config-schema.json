@@ -255,6 +255,24 @@
                     "type": "string",
                     "minLength": 1,
                     "description": "SQLite database file path for persistent activity logs."
+                },
+                "captures": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Also write request/response captures to the store's captures table, so they survive restarts and can be searched and read by a collector (GET /api/captures). Sensitive headers are redacted first. Works even when captureBuffer is 0."
+                        },
+                        "maxRows": {
+                            "type": "integer",
+                            "minimum": -1,
+                            "default": 0,
+                            "description": "How many persisted captures to keep, newest first. 0 uses the default of 10000; -1 keeps every capture."
+                        }
+                    },
+                    "additionalProperties": false,
+                    "description": "Durable request/response captures in the store."
                 }
             },
             "required": [
