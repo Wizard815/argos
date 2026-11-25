@@ -4419,11 +4419,22 @@ function renderMoe() {
     h("div", { class: "card" }, h("div", { class: "card-head" },
       h("label", { class: "check", style: "font-weight:600" }, master, "MoE offload"),
       h("span", { class: `pill ${D.enabled ? "ok" : ""}` }, D.enabled ? "on" : "off: every profile runs with its own setting"),
-      h("span", { class: "spacer" }), ram.total ? h("span", { class: "hint", style: "margin:0" }, `${ram.available} GiB of ${ram.total} GiB RAM free`) : null),
+      h("span", { class: "spacer" }), moeIdleField(D),
+      ram.total ? h("span", { class: "hint", style: "margin:0 0 0 14px;padding-left:14px;border-left:1px solid var(--line)" }, `${ram.available} GiB of ${ram.total} GiB RAM free`) : null),
       h("p", { class: "hint", style: "margin:0" }, "Keep some of a MoE model's expert weights in system RAM to free VRAM, for every profile of that model at once. Your saved profiles do not change; a profile ticked as exempt, a model not switched on, or this switch off runs each profile with its own setting, which Save to profile sets for good. ",
         `A model that is running and was used in the last ${D.idle_s} s keeps its old setting until it has been quiet that long, then reloads with the new one: llama-server cannot move experts while it runs.`)),
     D.models.map(moeCard));
   if (waiting) MOE.timer = setTimeout(async () => { if (!document.querySelector("#pMoe") || !$("#pMoe").offsetParent) return; try { MOE.data = await api("GET", "/api/moe"); renderMoe(); } catch (e) { /* next time */ } }, 5000);
+}
+function moeIdleField(D) {
+  // how long a running model must go unused before it reloads with a new setting
+  const inp = h("input", { type: "number", min: 0, max: D.idle_max || 3600, step: 5, value: D.idle_s, style: "width:8ch", "aria-label": "Reload a busy model after (seconds)" });
+  inp.addEventListener("change", async () => {
+    try { MOE.data = await api("PUT", "/api/moe/idle", { seconds: Number(inp.value) }); toast(Number(inp.value) ? `A model in use now reloads after ${inp.value} s unused.` : "A model in use now reloads at once, even mid-chat.", "ok"); renderMoe(); }
+    catch (e) { inp.value = D.idle_s; fail(e); }
+  });
+  return h("label", { class: "row", style: "gap:6px;align-items:center;margin:0", title: "A model that is running and was used within this many seconds keeps its old setting until it has gone unused this long. 0: reload at once, even mid-chat." },
+    h("span", { class: "hint", style: "margin:0" }, "Reload a model in use after"), inp, h("span", { class: "hint", style: "margin:0" }, "s unused"));
 }
 function moeCard(m) {
   // the card's own state: what is on screen, saved with Apply. Switching the model off keeps the slider and the

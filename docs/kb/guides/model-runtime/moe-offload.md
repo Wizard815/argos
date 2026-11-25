@@ -39,10 +39,13 @@ do not change, and the Schedule plans with the GPU share only.
 ## What goes wrong
 
 - **The model reloads, but not mid-chat.** llama-server cannot move experts
-  while it runs. A model that is running and was used in the last 30 seconds
+  while it runs. A model that is running and was used in the last 30 seconds (a setting)
   keeps its old setting (the row shows "-> new setting once quiet 30 s") until
   no request has used it for 30 seconds; then Argos unloads it and loads it
   again with the new one. A model that is not running takes it at once.
+  **Reload a model in use after** (top of the page) sets the 30 seconds:
+  longer for agents that pause between steps, 0 to reload at once even
+  mid-chat.
 - **It got slower.** Experts in RAM run on the CPU. Measure the profile to see
   by how much; the GPU share is what the slider buys.
 - **"Needs up to N GiB of RAM"** on the chart: the RAM share is more than this
