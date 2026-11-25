@@ -1327,7 +1327,7 @@ function renderMemory() {
       : "Only does something once some experts are in RAM (the slider above).")));
 
   // host prompt cache: blank keeps llama.cpp's own default
-  const cram = h("input", { type: "number", min: -1, step: 1024, value: D.cache_ram_default ? "" : D.cache_ram_mib, placeholder: "8192 (llama.cpp default)", style: "width:22ch" });
+  const cram = h("input", { type: "number", min: -1, step: 1024, value: D.cache_ram_default ? "" : D.cache_ram_mib, placeholder: "8192 (llama.cpp default)", style: "width:28ch" });
   cram.addEventListener("change", () => edit({ "cache-ram": cram.value.trim() || null }));
   rows.push(h("label", { class: "field" }, h("span", {}, "Prompt cache in RAM", h("code", {}, "--cache-ram")),
     h("div", { class: "row", style: "gap:8px;align-items:center" }, cram, h("span", { class: "hint", style: "margin:0" }, "MiB · blank = default · -1 no limit · 0 off")),
@@ -1344,6 +1344,7 @@ function renderMemory() {
     !lockFits ? h("span", { class: "warn-text" }, `Needs ${gib(D.mlock_gib)} locked, only ${gib(free)} is free.`) : null,
     h("span", { class: "hint", style: "margin:0" }, D.mapped
       ? "Keeps the model in RAM so the OS never swaps it out or drops it from the page cache."
+      : D.mlock ? "Keeps the CPU's weights from being swapped out. The file is read with -lm mlock (buffered); turning it off goes back to the load mode before."
       : `Keeps the CPU's weights from being swapped out. With -lm ${D.load_mode}, turning it on reads the file with -lm mlock (buffered) instead.`)));
 
   // the RAM bar: in use now, what this command adds, free after
