@@ -108,17 +108,29 @@ func TestPrefillWatch_SpeedIsTheMedianOfRecentPrompts(t *testing.T) {
 		w.Feed("m", []byte("slot launch_slot_: id  0 | task "+itoa(task)+" | processing task, is_child = 0\n"))
 		now = now.Add(time.Duration(secs * float64(time.Second)))
 		w.Feed("m", []byte("slot print_timing: id  0 | task "+itoa(task)+" | prompt processing, n_tokens = "+itoa(tokens)+
-			", progress = 1.00, t = "+strconv.FormatFloat(secs, 'f', 2, 64)+" s / 1.00 tokens per second\n"))
+			", progress = 1.00, t = "+strconv.FormatFloat(secs, 'f', 2, 64)+" s / "+strconv.FormatFloat(float64(tokens)/secs, 'f', 2, 64)+" tokens per second\n"))
 		w.Feed("m", []byte("slot update_slots: id  0 | task "+itoa(task)+" | prompt done, n_tokens = "+itoa(tokens)+", batch.n_tokens = 1\n"))
 		w.Feed("m", []byte("slot      release: id  0 | task "+itoa(task)+" | stop processing: n_tokens = "+itoa(tokens)+", truncated = 0\n"))
 	}
-	feed(1, 4000, 4)  // 1000 t/s
-	feed(2, 6000, 3)  // 2000 t/s
-	feed(3, 100, 0.1) // too short to time
-	feed(4, 3000, 2)  // 1500 t/s
+	feed(1, 4000, 4) // 1000 t/s
+	feed(2, 6000, 3) // 2000 t/s
+	feed(4, 3000, 2) // 1500 t/s
 	sp, ok := w.Speed("m")
 	require.True(t, ok)
 	assert.InDelta(t, 1500, sp, 1)
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestPrefillWatch_ACachedPartDoesNotCountAsRead(t *testing.T) {
+	now := time.Unix(1000, 0)
+	w := router.NewPrefillWatch(func() time.Time { return now })
+	// 20,000 tokens of conversation, 19,000 cached: 1,000 read in 0.5 s, 2,000 t/s
+	w.Feed("m", []byte("slot launch_slot_: id  0 | task 1 | processing task, is_child = 0\n"))
+	now = now.Add(500 * time.Millisecond)
+	w.Feed("m", []byte("slot print_timing: id  0 | task 1 | prompt processing, n_tokens = 20000, progress = 1.00, t = 0.50 s / 2000.00 tokens per second\n"))
+	w.Feed("m", []byte("slot update_slots: id  0 | task 1 | prompt done, n_tokens = 20000, batch.n_tokens = 1\n"))
+	sp, ok := w.Speed("m")
+	require.True(t, ok)
+	assert.InDelta(t, 2000, sp, 1, "not 40,000 t/s")
+}

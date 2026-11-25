@@ -73,10 +73,13 @@ type Prefill struct {
 type PrefillRun struct {
 	Slot, Task int
 	Tokens     int
-	High, Low  float64
-	Started    time.Time
-	Ended      time.Time
-	claimed    bool
+	// Speed is the reading speed llama-server reported last for this prompt
+	// (tokens read a second, the cached part not counted), or 0.
+	Speed     float64
+	High, Low float64
+	Started   time.Time
+	Ended     time.Time
+	claimed   bool
 }
 
 // prefillRunsKept is how many finished prompts each model keeps for claiming.
@@ -190,7 +193,7 @@ func (p *PrefillWatch) line(model string, line []byte) {
 		}
 		s.Phase = PhaseGenerating
 		if s.HighTokensPerSecond > 0 {
-			runs := append(p.runs[model], &PrefillRun{Slot: s.ID, Task: s.Task, Tokens: s.Tokens, High: s.HighTokensPerSecond,
+			runs := append(p.runs[model], &PrefillRun{Slot: s.ID, Task: s.Task, Tokens: s.Tokens, Speed: s.TokensPerSecond, High: s.HighTokensPerSecond,
 				Low: s.LowTokensPerSecond, Started: s.Started, Ended: now})
 			if len(runs) > prefillRunsKept {
 				runs = runs[len(runs)-prefillRunsKept:]
@@ -331,18 +334,21 @@ func (p *PrefillWatch) Forget(model string) {
 }
 
 // Speed is how fast a model reads prompts, in tokens a second: the median of
-// its recent finished prompts long enough to time (256 tokens or more). False
-// until one has been seen.
+// the speeds llama-server reported for its recent prompts. False until one has
+// been seen.
 func (p *PrefillWatch) Speed(model string) (float64, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var speeds []float64
 	runs := p.runs[model]
 	for i := len(runs) - 1; i >= 0 && len(speeds) < 8; i-- {
+		// llama-server's own figure: Tokens counts the cached part of a prompt
+		// too (n_tokens is the position), so Tokens over the time it took
+		// makes a turn of a cached conversation look many times faster
 		r := runs[i]
 		d := r.Ended.Sub(r.Started).Seconds()
-		if r.Tokens >= 256 && d > 0.05 {
-			speeds = append(speeds, float64(r.Tokens)/d)
+		if r.Speed > 0 && d > 0.05 {
+			speeds = append(speeds, r.Speed)
 		}
 	}
 	if len(speeds) == 0 {
