@@ -712,7 +712,6 @@ const SETTINGS = [
   { name: "ubatch-size", label: "Micro-batch", flag: "-ub", type: "number", ph: "512" },
   { name: "threads", label: "Threads", flag: "-t", type: "number", ph: "auto" },
   { name: "parallel", label: "Parallel slots", flag: "-np", type: "number", ph: "auto" },
-  { name: "n-cpu-moe", label: "MoE layers on CPU", flag: "-ncmoe", type: "number", ph: "0" },
   { name: "port", label: "Port", flag: "--port", ph: "8080 or ${PORT}" },
   { name: "host", label: "Host", flag: "--host", ph: "127.0.0.1" },
   { name: "cache-type", label: "KV cache", flag: "-ctk / -ctv", combo: kvOptions },
@@ -730,7 +729,9 @@ const FILES = [
     combo: () => seenOpts("spec_type", ["", "draft-mtp", "draft", "ngram-simple", "ngram-map-k", "ngram-mod", "ngram-cache"]) },
   { name: "spec-draft-n-max", label: "Draft tokens", flag: "--spec-draft-n-max", type: "number", ph: "3" },
 ];
-const KEY_NAMES = new Set([...SETTINGS, ...FILES].map((f) => f.name).concat(["no-mmap", "cache-type-k", "cache-type-v"]));
+// shown in the System RAM card, not under Other flags
+const MEM_NAMES = ["n-cpu-moe", "cpu-moe", "moe-cache-mib", "cache-ram", "mlock"];
+const KEY_NAMES = new Set([...SETTINGS, ...FILES].map((f) => f.name).concat(["no-mmap", "cache-type-k", "cache-type-v"], MEM_NAMES));
 /** K and V use one type. A command that already mixes them shows both, until you pick one value for both. */
 function kvShown() {
   const k = argValue("cache-type-k"), v = argValue("cache-type-v");
@@ -1240,6 +1241,136 @@ function renderBuilder() {
   src.textContent = B.profileId ? `profile${B.source && B.source !== "profile" ? " · " + B.source : ""}` : B.source;
   $("#bSave").title = B.profileId ? "Update this saved profile" : "Save as a new profile";
   scheduleEstimate();
+  scheduleMemory();
+}
+
+// ── Builder: system RAM (MoE offload, MoE expert cache, prompt cache, mlock) ──
+// The same share-of-MoE-layers slider as Profiles -> MoE offload, but written into this command as --n-cpu-moe.
+const BM = { cmd: null, timer: 0, data: null, prevMode: null };
+const MOE_CACHE_MAX_MIB = 16384;
+function scheduleMemory() {
+  if (!B.cmd || B.cmd === BM.cmd) return;
+  BM.cmd = B.cmd;
+  clearTimeout(BM.timer);
+  BM.timer = setTimeout(async () => {
+    const cmd = BM.cmd;
+    try { const r = await api("POST", "/api/builder/memory", { command: cmd }); if (cmd === BM.cmd) { BM.data = r.memory; renderMemory(); } }
+    catch (e) { fill($("#bMem"), h("p", { class: "hint" }, e.message)); }
+  }, 350);
+}
+const swatch = (color) => h("span", { style: `display:inline-block;width:10px;height:10px;background:${color};border-radius:2px` });
+/** --n-cpu-moe for the first k MoE layers: the index after the last one moved (the first layers of some models are dense). */
+function moeLayersEdit(moe, k) {
+  const n = k > 0 ? moe.moe_layers[Math.min(k, moe.moe_layers.length) - 1] + 1 : 0;
+  return { "n-cpu-moe": n ? String(n) : null, "cpu-moe": null };
+}
+function setMlock(on) {
+  const D = BM.data || {};
+  const mode = String(argValue("load-mode") ?? "");
+  if (on) {
+    BM.prevMode = mode;
+    // a memory map locks with mmap+mlock; dio and the other read modes read into buffers and lock those
+    edit({ "load-mode": ["", "auto", "mmap"].includes(mode) ? "mmap+mlock" : "mlock", mlock: null });
+  } else if (D.mlock_flag && !["mlock", "mmap+mlock"].includes(mode)) {
+    edit({ mlock: null });
+  } else {
+    const back = BM.prevMode != null && !["mlock", "mmap+mlock"].includes(BM.prevMode) ? BM.prevMode : (mode === "mmap+mlock" ? "mmap" : "none");
+    BM.prevMode = null;
+    edit({ "load-mode": back || null, mlock: null });
+  }
+}
+function renderMemory() {
+  const D = BM.data, el = $("#bMem");
+  if (!el || !D) return;
+  if (D.error) { fill(el, h("p", { class: "hint" }, D.error)); return; }
+  const ram = D.ram || {}, total = ram.total || 0, free = ram.available || 0, used = Math.max(0, total - free);
+  const rows = [];
+
+  // MoE offload: the share of MoE layers whose experts stay in RAM
+  const moe = D.moe;
+  const moeOut = h("b", { class: "mono-sm", style: "min-width:22ch" });
+  if (moe) {
+    const N = moe.moe_layers.length;
+    const slider = h("input", { type: "range", min: 0, max: N, step: 1, value: moe.k, style: "flex:1", "aria-label": "MoE layers in RAM" });
+    const draw = (k) => { moeOut.textContent = `${Math.round(100 * k / N)}% · ${k} of ${N} layers · ${gib(moe.cum_gib[k])}`; };
+    slider.addEventListener("input", () => draw(Number(slider.value)));
+    slider.addEventListener("change", () => edit(moeLayersEdit(moe, Number(slider.value))));
+    draw(moe.k);
+    rows.push(h("div", { class: "field", style: "gap:4px" },
+      h("span", {}, "MoE experts in RAM", h("code", {}, "--n-cpu-moe")),
+      h("div", { class: "row", style: "gap:10px;flex-wrap:nowrap;align-items:center" },
+        h("span", { class: "hint", style: "margin:0" }, "GPU"), slider, h("span", { class: "hint", style: "margin:0" }, "RAM"), moeOut),
+      h("span", { class: "hint", style: "margin:0" }, `${N} MoE layers, ${gib(moe.expert_gib)} of experts. More in RAM frees VRAM and costs speed. Profiles → MoE offload can still override it per model.`)));
+  } else {
+    const n = h("input", { type: "number", min: 0, placeholder: "0", value: argValue("n-cpu-moe") ?? "", style: "width:10ch" });
+    n.addEventListener("change", () => edit({ "n-cpu-moe": n.value.trim() || null }));
+    rows.push(h("label", { class: "field" }, h("span", {}, "MoE layers on CPU", h("code", {}, "-ncmoe")), n,
+      h("span", { class: "hint", style: "margin:0" }, D.model ? "Not a MoE model, or its file is not readable on this host." : "No model file set.")));
+  }
+
+  // MoE expert cache: VRAM that holds the experts in use most, out of the ones in RAM
+  const mc = h("input", { type: "range", min: 0, max: MOE_CACHE_MAX_MIB, step: 256, value: Math.min(D.moe_cache_mib, MOE_CACHE_MAX_MIB), style: "flex:1", "aria-label": "MoE expert cache in VRAM" });
+  const mcNum = h("input", { type: "number", min: 0, step: 256, value: D.moe_cache_mib || "", placeholder: "off", style: "width:10ch" });
+  const mcOut = h("b", { class: "mono-sm", style: "min-width:12ch" });
+  const mcDraw = (v) => { mcOut.textContent = v > 0 ? `${(v / 1024).toFixed(2)} GiB` : "off"; };
+  const mcSet = (v) => edit({ "moe-cache-mib": v > 0 ? String(v) : null });
+  mc.addEventListener("input", () => { mcNum.value = mc.value === "0" ? "" : mc.value; mcDraw(Number(mc.value)); });
+  mc.addEventListener("change", () => mcSet(Number(mc.value)));
+  mcNum.addEventListener("change", () => mcSet(Math.max(0, Number(mcNum.value || 0))));
+  mcDraw(D.moe_cache_mib);
+  const inRam = D.cpu_weights_gib > 0;
+  rows.push(h("div", { class: "field", style: `gap:4px;${inRam ? "" : "opacity:.7"}` },
+    h("span", {}, "MoE expert cache in VRAM", h("code", {}, "--moe-cache-mib")),
+    h("div", { class: "row", style: "gap:10px;flex-wrap:nowrap;align-items:center" }, h("span", { class: "hint", style: "margin:0" }, "off"), mc, mcNum, h("span", { class: "hint", style: "margin:0" }, "MiB"), mcOut),
+    h("span", { class: "hint", style: "margin:0" }, inRam
+      ? "Keeps the experts used most of the ones in RAM on the GPU, so most tokens skip the slow path. Spread over the cards like the layers."
+      : "Only does something once some experts are in RAM (the slider above).")));
+
+  // host prompt cache: blank keeps llama.cpp's own default
+  const cram = h("input", { type: "number", min: -1, step: 1024, value: D.cache_ram_default ? "" : D.cache_ram_mib, placeholder: "8192 (llama.cpp default)", style: "width:28ch" });
+  cram.addEventListener("change", () => edit({ "cache-ram": cram.value.trim() || null }));
+  rows.push(h("label", { class: "field" }, h("span", {}, "Prompt cache in RAM", h("code", {}, "--cache-ram")),
+    h("div", { class: "row", style: "gap:8px;align-items:center" }, cram, h("span", { class: "hint", style: "margin:0" }, "MiB · blank = default · -1 no limit · 0 off")),
+    h("span", { class: "hint", style: "margin:0" }, "Processed prompts kept in RAM, so a long chat you come back to skips re-reading its prompt. It grows up to this size as chats come and go.")));
+
+  // mlock: what it would pin, against RAM used and free now
+  const lockBox = h("input", { type: "checkbox", checked: D.mlock, "aria-label": "Lock the model in RAM" });
+  lockBox.addEventListener("change", () => setMlock(lockBox.checked));
+  const lockWhat = D.mapped ? `the whole ${gib(D.file_gib)} file (memory-mapped, the GPU part too)` : `the ${gib(D.cpu_weights_gib)} of weights kept on the CPU`;
+  const lockFits = !total || D.mlock_gib <= free || D.mlock;
+  rows.push(h("div", { class: "field", style: "gap:4px" },
+    h("span", {}, "Lock in RAM", h("code", {}, D.mlock_flag ? "--mlock" : "-lm mlock / mmap+mlock")),
+    h("label", { class: "check" }, lockBox, D.mlock ? `On: locks ${lockWhat}` : `Off · on would lock ${lockWhat}`),
+    !lockFits ? h("span", { class: "warn-text" }, `Needs ${gib(D.mlock_gib)} locked, only ${gib(free)} is free.`) : null,
+    h("span", { class: "hint", style: "margin:0" }, D.mapped
+      ? "Keeps the model in RAM so the OS never swaps it out or drops it from the page cache."
+      : D.mlock ? "Keeps the CPU's weights from being swapped out. The file is read with -lm mlock (buffered); turning it off goes back to the load mode before."
+      : `Keeps the CPU's weights from being swapped out. With -lm ${D.load_mode}, turning it on reads the file with -lm mlock (buffered) instead.`)));
+
+  // the RAM bar: in use now, what this command adds, free after
+  if (total) {
+    const weights = D.cpu_weights_gib || 0;
+    const locked = D.mlock ? Math.max(0, D.mlock_gib - weights) : 0;
+    const prompt = D.cache_ram_mib > 0 ? D.cache_ram_mib / 1024 : 0;
+    const segs = [
+      ["in use now", used, "var(--muted)"],
+      ["weights on the CPU", weights, "var(--series-2, #bd93f9)"],
+      ["locked file", locked, "var(--warn)"],
+      [`prompt cache, up to${D.cache_ram_default ? " (default)" : ""}`, prompt, "var(--series-1, #8be9fd)"],
+    ];
+    const need = segs.slice(1).reduce((a, s) => a + s[1], 0);
+    const left = total - used - need;
+    rows.push(h("div", { class: "stack", style: "gap:6px" },
+      h("div", { style: "display:flex;height:18px;border-radius:4px;overflow:hidden;background:var(--bg)" },
+        segs.filter((s) => s[1] > 0).map(([label, v, color]) => h("div", { style: `width:${Math.min(100, (v / total) * 100)}%;background:${color};transition:width .15s`, title: `${label}: ${gib(v)}` }))),
+      h("div", { class: "row", style: "gap:12px;flex-wrap:wrap" },
+        segs.filter((s) => s[1] > 0).map(([label, v, color]) => h("span", { class: "hint", style: "margin:0" }, swatch(color), ` ${label} ${gib(v)}`)),
+        h("span", { class: "hint", style: "margin:0" }, swatch("var(--bg)"), ` free after ${gib(Math.max(0, left))} of ${gib(total)}`)),
+      left < 0 ? h("span", { class: "warn-text" }, `This command could take ${gib(-left)} more than is free now.`) : null,
+      D.cache_ram_mib < 0 ? h("span", { class: "hint", style: "margin:0" }, "The prompt cache has no limit (-1): it can grow into all the free RAM.") : null,
+      h("span", { class: "hint", style: "margin:0" }, "In use now counts this model too when it is already running.")));
+  }
+  fill(el, rows);
 }
 
 // ── Builder: what the command needs in VRAM ──────────────────

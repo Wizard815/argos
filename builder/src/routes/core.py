@@ -132,6 +132,13 @@ def estimate():
     return ok(estimate=estimate_command(str(d.get("command") or ""), compare=True, measured=measured), variant_id=vid)
 
 
+@bp.post("/api/builder/memory")
+def builder_memory():
+    """System RAM a command takes: experts on the CPU, what --mlock pins, the prompt and MoE caches, used and free."""
+    from .. import moe
+    return ok(memory=moe.builder_memory(str(body().get("command") or "")))
+
+
 @bp.post("/api/ttft")
 def ttft():
     """Time to first token of a command: cold (load + prompt) and warm (prompt), measured where possible,

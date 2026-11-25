@@ -320,3 +320,63 @@ def flags_of(command: str) -> str:
     except ValueError:
         return ""
     return "--cpu-moe" if c.has("cpu-moe") else (f"--n-cpu-moe {c.get('n-cpu-moe')}" if c.get("n-cpu-moe") else "all on the GPU")
+
+
+# -lm modes that memory-map the file (auto is the default): locking then pins the whole file, the part
+# copied to the GPU too. The others read the file into buffers, and locking pins only the ones on the CPU.
+MAPPED_LOAD_MODES = {"", "auto", "mmap", "mmap+mlock"}
+MLOCK_LOAD_MODES = {"mlock", "mmap+mlock"}
+CACHE_RAM_DEFAULT_MIB = 8192
+
+
+def builder_memory(command: str) -> dict:
+    """System RAM a builder command takes: the experts it keeps on the CPU, what --mlock would pin, the host
+    prompt cache (--cache-ram) and the MoE expert cache (--moe-cache-mib), next to what is used and free now.
+
+    ``moe`` carries the model's MoE layout so the builder can draw the same slider as Profiles -> MoE offload.
+    """
+    from .schedule_rows import file_bytes, moe_cpu_bytes
+    from .gguf import read_moe
+    try:
+        cmd = parse_command(command)
+    except ValueError as e:
+        return {"error": str(e), "ram": memory()}
+    path = cmd.summary().get("model") or ""
+    gguf = path.lower().endswith(".gguf")
+    file_gib = round(file_bytes(path) / GIB, 2) if gguf else 0.0
+    moe = read_moe(path) if gguf else None
+    cpu_experts = moe_cpu_bytes(cmd, path) / GIB
+    ngl = str(cmd.get("n-gpu-layers") or "").strip()
+    all_cpu = ngl == "0"
+    cpu_weights = file_gib if all_cpu else cpu_experts
+    load_mode = str(cmd.get("load-mode") or "").strip()
+    mapped = not cmd.has("no-mmap") and load_mode in MAPPED_LOAD_MODES
+    # llama.cpp now spells it -lm mlock / -lm mmap+mlock; older builds took --mlock
+    locked = cmd.has("mlock") or load_mode in MLOCK_LOAD_MODES
+    mlock_gib = file_gib if mapped else cpu_weights
+
+    cram_raw = cmd.get("cache-ram")
+    try:
+        cram = int(str(cram_raw).strip()) if cram_raw not in (None, "") else CACHE_RAM_DEFAULT_MIB
+    except ValueError:
+        cram = CACHE_RAM_DEFAULT_MIB
+    try:
+        mcache = max(0, int(str(cmd.get("moe-cache-mib") or "0").strip()))
+    except ValueError:
+        mcache = 0
+
+    out = {"model": path, "file_gib": file_gib, "mapped": mapped, "load_mode": load_mode or "auto",
+           "cpu_weights_gib": round(cpu_weights, 2), "mlock": locked, "mlock_flag": cmd.has("mlock"), "mlock_gib": round(mlock_gib, 2),
+           "cache_ram_mib": cram, "cache_ram_default": cram_raw in (None, ""), "moe_cache_mib": mcache,
+           "ram": memory(), "moe": None}
+    if moe:
+        cum, total = [0.0], 0
+        for i in moe["moe_layers"]:
+            total += moe["expert_bytes"][i]
+            cum.append(round(total / GIB, 3))
+        n = str(cmd.get("n-cpu-moe") or "").strip()
+        k = len(moe["moe_layers"]) if cmd.has("cpu-moe") else (
+            sum(1 for i in moe["moe_layers"] if i < int(n)) if n.isdigit() else 0)
+        out["moe"] = {"moe_layers": moe["moe_layers"], "expert_gib": round(moe["expert_total"] / GIB, 2),
+                      "cum_gib": cum, "k": k}
+    return out

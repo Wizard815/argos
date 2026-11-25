@@ -24,7 +24,8 @@ _ROWS: list[tuple[str, str, str, str]] = [
     ("swa-full", "Context & memory", "Keep the full-size cache for sliding-window-attention models.", "Uses more memory; avoids re-processing the prompt."),
     ("mmap", "Context & memory", "Memory-map the model file instead of reading it.", ""),
     ("no-mmap", "Context & memory", "Read the whole model into memory instead of memory-mapping it.", ""),
-    ("mlock", "Context & memory", "Lock the model in RAM so the OS cannot swap it out.", ""),
+    ("mlock", "Context & memory", "Lock the model in RAM so the OS cannot swap it out.", "With mmap the whole file is locked, even the part on the GPU; with -lm dio only the weights kept on the CPU."),
+    ("cache-ram", "Context & memory", "Most system RAM, in MiB, the server keeps processed prompts in (the host prompt cache); -1 no limit, 0 off.", "llama.cpp's default is 8192. More lets a long chat you come back to skip re-reading its prompt."),
     ("load-mode", "Context & memory", "How the weights are read from disk (a custom-build option; dio = direct I/O).", "Not in every llama.cpp build. Some ROCm setups hang on mmap; there it is passed as -lm dio."),
     ("fit", "Context & memory", "Shrink unset settings automatically so the model fits in free device memory (on / off).", "Where the build has it, leaving it on stops a small model allocating a huge cache."),
     # --- GPU and offload
@@ -35,6 +36,7 @@ _ROWS: list[tuple[str, str, str, str]] = [
     ("device", "GPU & offload", "Which devices to use, by name.", ""),
     ("n-cpu-moe", "GPU & offload", "Keep the expert weights of the first N mixture-of-experts layers on the CPU.", "Lets a big MoE model fit with less VRAM."),
     ("cpu-moe", "GPU & offload", "Keep all mixture-of-experts weights on the CPU.", ""),
+    ("moe-cache-mib", "GPU & offload", "VRAM in MiB that caches the experts kept on the CPU, so the ones in use most run on the GPU.", "Only does something with --n-cpu-moe or --cpu-moe; 0 is off."),
     ("override-tensor", "GPU & offload", "Place tensors matching a pattern on a chosen device (pattern=device).", ""),
     # --- speed
     ("flash-attn", "Speed", "Flash attention (on / off / auto).", "Needed to quantize the V cache; recommended on both ROCm and CUDA."),
