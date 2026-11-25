@@ -118,7 +118,34 @@ type HookOnStartup struct {
 }
 
 type Store struct {
-	Path string `yaml:"path"`
+	Path     string        `yaml:"path"`
+	Captures StoreCaptures `yaml:"captures"`
+}
+
+// StoreCaptures controls writing request/response captures to the store so
+// they survive restarts and a collector can read them from the captures table
+// or GET /api/captures.
+type StoreCaptures struct {
+	Enabled bool `yaml:"enabled"`
+	// MaxRows is how many captures to keep, newest first. 0 means the default
+	// (DefaultStoreCaptureMaxRows) and -1 keeps every capture.
+	MaxRows int `yaml:"maxRows"`
+}
+
+// DefaultStoreCaptureMaxRows is the capture retention used when
+// store.captures.maxRows is left at 0.
+const DefaultStoreCaptureMaxRows = 10000
+
+// CaptureRetention returns the number of captures to keep, or 0 for no limit.
+func (c StoreCaptures) CaptureRetention() int {
+	switch {
+	case c.MaxRows < 0:
+		return 0
+	case c.MaxRows == 0:
+		return DefaultStoreCaptureMaxRows
+	default:
+		return c.MaxRows
+	}
 }
 
 type UIConfig struct {

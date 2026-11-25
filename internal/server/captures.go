@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/Wizard815/Argos/internal/store"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/klauspost/compress/zstd"
 )
@@ -108,7 +111,7 @@ func decompressCapture(data []byte) (*ReqRespCapture, error) {
 // addCapture compresses and stores a capture in the cache. Returns true if the
 // capture was stored.
 func (mp *metricsMonitor) addCapture(capture ReqRespCapture) bool {
-	if !mp.enableCaptures {
+	if !mp.enableCaptures || mp.captureCache == nil {
 		return false
 	}
 
@@ -128,31 +131,62 @@ func (mp *metricsMonitor) addCapture(capture ReqRespCapture) bool {
 	return true
 }
 
-// getCaptureByID decompresses and unmarshals a capture by ID. Returns nil if
-// the capture is not found or decompression fails.
+// getCaptureByID returns a capture by ID from the in-memory cache, falling
+// back to the store when captures are persisted (so captures survive a
+// restart). Returns nil if the capture is not found or cannot be read.
 func (mp *metricsMonitor) getCaptureByID(id int) *ReqRespCapture {
-	if mp.captureCache == nil {
+	if mp.captureCache != nil {
+		if data, err := mp.captureCache.Get(id); err == nil {
+			capture, err := decompressCapture(data)
+			if err == nil {
+				return capture
+			}
+			mp.warnf("failed to decompress capture %d: %v", id, err)
+		}
+	}
+	if !mp.persistCaptures {
 		return nil
 	}
-	data, err := mp.captureCache.Get(id)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rec, found, err := mp.store.GetCapture(ctx, id)
 	if err != nil {
+		mp.warnf("failed to read persisted capture %d: %v", id, err)
 		return nil
 	}
-	capture, err := decompressCapture(data)
-	if err != nil {
-		mp.logger.Warnf("failed to decompress capture %d: %v", id, err)
+	if !found {
 		return nil
 	}
-	return capture
+	return &ReqRespCapture{
+		ID:          rec.ID,
+		ReqPath:     rec.ReqPath,
+		ReqHeaders:  rec.ReqHeaders,
+		ReqBody:     nilIfEmpty(store.BodyBytes(rec.ReqBody)),
+		RespHeaders: rec.RespHeaders,
+		RespBody:    nilIfEmpty(store.BodyBytes(rec.RespBody)),
+	}
 }
 
-// sensitiveHeaders lists headers that are redacted in captures.
+func nilIfEmpty(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// sensitiveHeaders lists headers that are redacted in captures, both the
+// in-memory ones and those written to the store.
 var sensitiveHeaders = map[string]bool{
-	"authorization":       true,
-	"proxy-authorization": true,
-	"cookie":              true,
-	"set-cookie":          true,
-	"x-api-key":           true,
+	"authorization":        true,
+	"proxy-authorization":  true,
+	"cookie":               true,
+	"set-cookie":           true,
+	"x-api-key":            true,
+	"api-key":              true, // Azure OpenAI
+	"x-goog-api-key":       true, // Gemini
+	"x-auth-token":         true,
+	"x-access-token":       true,
+	"x-amz-security-token": true,
 }
 
 // headerMap flattens an http.Header to a single-value map.
@@ -169,8 +203,24 @@ func headerMap(h http.Header) map[string]string {
 // redactHeaders replaces sensitive header values in-place with "[REDACTED]".
 func redactHeaders(headers map[string]string) {
 	for key := range headers {
-		if sensitiveHeaders[strings.ToLower(key)] {
+		if isSensitiveHeader(key) {
 			headers[key] = "[REDACTED]"
 		}
 	}
+}
+
+// isSensitiveHeader reports whether a header carries a credential. Besides the
+// fixed list it catches the usual naming patterns of vendor and homelab auth
+// headers (X-Foo-Token, X-Foo-Secret, X-Foo-Api-Key), since captures can now
+// be written to disk and read by other services.
+func isSensitiveHeader(key string) bool {
+	k := strings.ToLower(key)
+	if sensitiveHeaders[k] {
+		return true
+	}
+	return strings.HasSuffix(k, "-token") ||
+		strings.Contains(k, "secret") ||
+		strings.Contains(k, "api-key") ||
+		strings.Contains(k, "apikey") ||
+		strings.Contains(k, "password")
 }

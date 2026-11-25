@@ -114,6 +114,33 @@ store:
 	})
 }
 
+func TestConfig_StoreCaptures(t *testing.T) {
+	load := func(captures string) (Config, error) {
+		return LoadConfigFromReader(strings.NewReader(`
+store:
+  path: ` + filepath.Join(t.TempDir(), "argos.db") + `
+  captures:
+` + captures))
+	}
+
+	cfg, err := load("    enabled: true\n")
+	require.NoError(t, err)
+	assert.True(t, cfg.Store.Captures.Enabled)
+	assert.Equal(t, DefaultStoreCaptureMaxRows, cfg.Store.Captures.CaptureRetention())
+
+	cfg, err = load("    enabled: true\n    maxRows: 50\n")
+	require.NoError(t, err)
+	assert.Equal(t, 50, cfg.Store.Captures.CaptureRetention())
+
+	cfg, err = load("    enabled: true\n    maxRows: -1\n")
+	require.NoError(t, err)
+	assert.Equal(t, 0, cfg.Store.Captures.CaptureRetention(), "-1 keeps everything")
+
+	_, err = load("    maxRows: -2\n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "store.captures.maxRows")
+}
+
 func TestConfig_FindConfig(t *testing.T) {
 
 	// TODO?
