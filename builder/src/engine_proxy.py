@@ -17,6 +17,7 @@ import http.client
 import json
 import re
 import socket
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -103,9 +104,23 @@ def _api_error(message: str, status: int, code: str) -> Response:
                     status, mimetype="application/json")
 
 
-def _open(url: str, method: str, target: str, body: bytes, headers: dict, wait: float = 0):
+class ClientGone(OSError):
+    """The app that sent the request hung up before the answer started."""
+
+
+def _client_gone():
+    """A check for whether the app has hung up (waitress, with channel_request_lookahead), or None."""
+    try:
+        return request.environ.get("waitress.client_disconnected")
+    except RuntimeError:  # outside a request
+        return None
+
+
+def _open(url: str, method: str, target: str, body: bytes, headers: dict, wait: float = 0, gone=None):
     """Send a request; returns (conn, response). ``wait`` > 0: give up (socket.timeout) when no answer starts in
-    that many seconds."""
+    that many seconds. ``gone``: a check for the app having hung up; while no answer has started it is asked
+    every quarter second, and the request is dropped (ClientGone) when it says so. The server sees the connection
+    close and drops it too: a prompt held in the engine's line, or read by the model, for nobody."""
     parts = urllib.parse.urlsplit(url)
     https = parts.scheme == "https"
     conn_cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
@@ -122,15 +137,36 @@ def _open(url: str, method: str, target: str, body: bytes, headers: dict, wait: 
             target = f"{url.rstrip('/')}{target}"
     else:
         conn = conn_cls(host, port, timeout=600)
+    done, hung_up = threading.Event(), threading.Event()
     try:
         conn.request(method, target, body=body or None, headers=headers)
         if wait and conn.sock:
             conn.sock.settimeout(wait)
-        resp = conn.getresponse()
+        if gone is not None and conn.sock is not None:
+            sock = conn.sock
+
+            def watch():
+                while not done.wait(0.25):
+                    try:
+                        if gone():
+                            hung_up.set()
+                            sock.shutdown(socket.SHUT_RDWR)
+                            return
+                    except Exception:
+                        return
+            threading.Thread(target=watch, daemon=True, name="client-gone").start()
+        try:
+            resp = conn.getresponse()
+        finally:
+            done.set()
+        if hung_up.is_set():
+            raise ClientGone("the app hung up")
         if wait and conn.sock:
             conn.sock.settimeout(600)
-    except Exception:
+    except Exception as exc:
         conn.close()
+        if hung_up.is_set() and not isinstance(exc, ClientGone):
+            raise ClientGone("the app hung up") from exc
         raise
     return conn, resp
 
@@ -294,7 +330,10 @@ def _forward(engine_path: str) -> Response:
                 return _json(f"the provider {cloud[0]['name']} is unreachable: {exc}", 502)
         try:
             if resp is None:
-                conn, resp = _open(engine_url, request.method, target, body, headers, (rule or {}).get("wait_s") or 0)
+                conn, resp = _open(engine_url, request.method, target, body, headers, (rule or {}).get("wait_s") or 0,
+                                   gone=_client_gone())
+        except ClientGone:
+            return _json("the app hung up before the answer started", 499)
         except socket.timeout:
             why_fb = f"no answer in {rule['wait_s']:g}s"
         except OSError as exc:

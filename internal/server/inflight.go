@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -64,7 +65,7 @@ type inflightTracker struct {
 
 type inflightRequest struct {
 	entry       swaputil.InflightRequestEntry
-	cancel      context.CancelFunc
+	cancel      context.CancelCauseFunc
 	lastEmitted time.Time
 	timer       *time.Timer
 }
@@ -84,7 +85,7 @@ func newInflightTrackerWithPublisher(size int, publish func(swaputil.InFlightReq
 	return t
 }
 
-func (t *inflightTracker) Add(r *http.Request, cancel context.CancelFunc) string {
+func (t *inflightTracker) Add(r *http.Request, cancel context.CancelCauseFunc) string {
 	id := strconv.FormatUint(t.nextID.Add(1), 10)
 	entry := swaputil.InflightRequestEntry{
 		ID:          id,
@@ -289,14 +290,16 @@ func (t *inflightTracker) discardQueuedUpdates() {
 	}
 }
 
-func (t *inflightTracker) Cancel(id string) bool {
+// Cancel stops a request; why is what its app is told (the model's proxy
+// reads it back with context.Cause).
+func (t *inflightTracker) Cancel(id string, why string) bool {
 	t.mu.RLock()
 	req, ok := t.requests[id]
 	t.mu.RUnlock()
 	if !ok {
 		return false
 	}
-	req.cancel()
+	req.cancel(errors.New(why))
 	return true
 }
 
@@ -448,8 +451,8 @@ func CreateInflightMiddleware(t *inflightTracker, cfg config.Config) chain.Middl
 			}
 
 			client := r.Context() // done when the client hangs up (not when Argos cancels it)
-			ctx, cancel := context.WithCancel(client)
-			defer cancel()
+			ctx, cancel := context.WithCancelCause(client)
+			defer cancel(nil)
 
 			r = r.WithContext(ctx)
 			id := t.Add(r, cancel)
@@ -495,8 +498,8 @@ func CreateUpstreamInflightMiddleware(t *inflightTracker, cfg config.Config) cha
 				return
 			}
 
-			ctx, cancel := context.WithCancel(r.Context())
-			defer cancel()
+			ctx, cancel := context.WithCancelCause(r.Context())
+			defer cancel(nil)
 
 			r = r.WithContext(ctx)
 			tracked := r.Clone(ctx)

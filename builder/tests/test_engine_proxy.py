@@ -134,3 +134,37 @@ def test_no_engine_configured_is_builder_404(tmp_path):
         assert r.status_code == 404
     finally:
         app.extensions["runner"].stop_all()
+
+
+def test_engine_proxy_drops_the_request_when_the_app_hangs_up():
+    """An app that hangs up while its request waits on the engine (held in line): the engine connection is closed,
+    so the engine drops the request too instead of having the model read a prompt for nobody."""
+    import time
+    from src import engine_proxy
+
+    closed = threading.Event()
+
+    class Slow(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.connection.settimeout(5)
+            try:  # never answers; sees the builder close the connection
+                if self.connection.recv(1) == b"":
+                    closed.set()
+            except OSError:
+                closed.set()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        t0 = time.time()
+        with pytest.raises(engine_proxy.ClientGone):
+            engine_proxy._open(f"http://127.0.0.1:{srv.server_port}", "POST", "/v1/chat/completions", b"{}",
+                               {"Content-Length": "2"}, gone=lambda: time.time() - t0 > 0.3)
+        assert time.time() - t0 < 2
+        assert closed.wait(3), "the engine saw the connection close"
+    finally:
+        srv.shutdown()

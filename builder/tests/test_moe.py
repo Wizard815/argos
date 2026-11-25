@@ -153,6 +153,10 @@ def test_MoE_the_wait_before_a_reload_is_a_setting(client):
     assert client.put("/api/moe/idle", json={"seconds": 90}).get_json()["idle_s"] == 90
     assert client.put("/api/moe/idle", json={"seconds": -1}).status_code == 400
     assert client.put("/api/moe/idle", json={"seconds": "x"}).status_code == 400
+    # a number too big to be an integer is the caller's mistake, not a crash
+    assert client.put("/api/moe/idle", json={"seconds": "1e400"}).status_code == 400
+    assert client.put("/api/settings/guard", json={"repeats": "1e400"}).status_code == 400
+    assert client.put("/api/moe", json={"path": "/x.gguf", "pct": "1e400"}).status_code in (400, 404)
     assert client.put("/api/moe/idle", json={"seconds": 0}).get_json()["idle_s"] == 0
     h = moe_mod.Holder()
     old = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf"}]
@@ -172,3 +176,18 @@ def test_MoE_a_quiet_running_model_is_reloaded_with_its_new_command():
     assert h.take_released() == {"p": True}, "running and quiet: goes now, and is loaded again"
     h.pick(old, old, lambda: set(), lambda n: 0.0)
     assert h.take_released() == {}, "not running: nothing to load again"
+
+
+def test_MoE_an_engine_that_does_not_say_what_runs_lets_nothing_go():
+    """/running failed (the engine mid-reload): a waiting setting keeps waiting instead of going out as if the busy
+    model had stopped; once the engine answers again it is handled as usual."""
+    from src import moe as moe_mod
+    h = moe_mod.Holder()
+    old = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf"}]
+    new = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf --n-cpu-moe 4"}]
+    h.pick(old, old, lambda: {"x--fast"}, lambda n: 1e9)
+    assert h.pick(old, new, lambda: {"x--fast"}, lambda n: 1.0)[0] == old[0], "busy: waits"
+    assert h.pick(old, new, lambda: None, lambda n: 1e9)[0] == old[0], "not known what runs: still waits"
+    assert "p" in h.pending and h.take_released() == {}
+    assert h.pick(old, new, lambda: {"x--fast"}, lambda n: 60.0)[0] == new[0], "known again, and quiet: goes"
+    assert h.take_released() == {"p": True}

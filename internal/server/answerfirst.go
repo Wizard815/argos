@@ -337,6 +337,8 @@ func CreateAnswerFirstMiddleware(s *Server) chain.Middleware {
 							return
 						case <-skip:
 							break guard
+						case <-s.shutdownCtx.Done():
+							break guard // a reload: on to the new server
 						case <-tick.C:
 							if time.Now().After(deadline) {
 								break guard
@@ -402,6 +404,8 @@ func CreateAnswerFirstMiddleware(s *Server) chain.Middleware {
 					return // the client gave up while it waited
 				case <-skip:
 					break wait // sent on by hand (Go next)
+				case <-s.shutdownCtx.Done():
+					break wait // a reload: on to the new server, which holds it again if it must
 				case <-tick.C:
 					if time.Now().After(deadline) {
 						break wait

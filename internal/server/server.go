@@ -33,6 +33,10 @@ import (
 type Server struct {
 	cfg config.Config
 
+	// handedOver: running models given to a replacement server (hot reload)
+	handedMu   sync.Mutex
+	handedOver map[string]process.ProcessState
+
 	muxlog      *logmon.Monitor
 	proxylog    *logmon.Monitor
 	upstreamlog *logmon.Monitor
@@ -381,6 +385,14 @@ func (s *Server) modelHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.local.Handles(data.ModelID) {
+		if s.shutdownCtx.Err() != nil {
+			// a reload replaced this server while the request waited in it (held
+			// by answer first, say) and took its models: answer the way the
+			// router does, so the request is sent again to the new server
+			// (serveRetrying) instead of failing with "no router"
+			swaputil.SendError(w, r, fmt.Errorf("%s is shutting down", data.ModelID))
+			return
+		}
 		swaputil.SendError(w, r, router.ErrNoRouterFound)
 		return
 	}
@@ -718,7 +730,42 @@ func (s *Server) DetachRunning(models []string) map[string]process.Process {
 	if s.local == nil {
 		return map[string]process.Process{}
 	}
-	return s.local.DetachRunning(models)
+	before := map[string]process.ProcessState{}
+	for id, st := range s.local.RunningModels() {
+		before[id] = st
+	}
+	out := s.local.DetachRunning(models)
+	s.handedMu.Lock()
+	if s.handedOver == nil {
+		s.handedOver = map[string]process.ProcessState{}
+	}
+	for id := range out {
+		s.handedOver[id] = before[id]
+	}
+	s.handedMu.Unlock()
+	return out
+}
+
+// listedRunning is what /running and the model list report: the router's
+// running models, plus the ones handed to a replacement server during a hot
+// reload. This server goes on answering until the swap, while it stops the
+// models whose settings changed (seconds), and the handed-over ones are still
+// running all that time: left out, a caller takes them for stopped (the
+// builder's MoE hold would let a busy model's new setting go, and then not
+// load it again).
+func (s *Server) listedRunning() map[string]process.ProcessState {
+	out := map[string]process.ProcessState{}
+	for id, st := range s.local.RunningModels() {
+		out[id] = st
+	}
+	s.handedMu.Lock()
+	for id, st := range s.handedOver {
+		if _, ok := out[id]; !ok && st != "" {
+			out[id] = st
+		}
+	}
+	s.handedMu.Unlock()
+	return out
 }
 
 // Adopt registers processes that are already running so this server serves them

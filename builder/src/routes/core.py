@@ -1115,7 +1115,8 @@ def cookbook_state() -> dict:
 
 
 def _running_ids(c):
-    """A function giving the models the engine has running (asked once, and only when needed)."""
+    """A function giving the models the engine has running (asked once, and only when needed); None when the engine
+    did not answer (moe.Holder then keeps every waiting setting waiting)."""
     memo: dict = {}
 
     def get() -> set:
@@ -1123,8 +1124,8 @@ def _running_ids(c):
             url = c.settings.get("integrations").get("engine_url")
             try:
                 memo["ids"] = {m["model"] for m in engine_api.running(url)} if url else set()
-            except Exception:  # noqa: BLE001 - an engine that does not answer has nothing running to protect
-                memo["ids"] = set()
+            except Exception:  # noqa: BLE001 - not known: nothing is let go until it is
+                memo["ids"] = None
         return memo["ids"]
     return get
 
@@ -1176,7 +1177,7 @@ def moe_idle():
     c = ctx()
     try:
         secs = int(round(float(body().get("seconds"))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return err("seconds is a number")
     if not 0 <= secs <= moe.IDLE_MAX:
         return err(f"seconds is from 0 to {moe.IDLE_MAX}")
@@ -1200,7 +1201,7 @@ def moe_profile_own():
         if pct is not None and not 0 <= pct <= 100:
             raise ValueError("pct is from 0 to 100")
         command = moe.set_own(p["launch_command"], pct)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         return err(str(exc))
     c.store.save_profile({**p, "launch_command": command})
     c.event("profile", f"profile {p['name']}: its own MoE offload is now " + (f"{pct}%" if pct else "none"))
@@ -1282,7 +1283,7 @@ def settings_put(group):
     c = ctx()
     try:
         saved = c.settings.update(group, body())
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, OverflowError) as exc:
         return err(str(exc).strip("'\""))
     c.event("settings", f"saved {group} settings")
     if group == "gpu":

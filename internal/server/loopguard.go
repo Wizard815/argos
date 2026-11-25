@@ -115,7 +115,8 @@ func (s *Server) handleAPIGuard(w http.ResponseWriter, r *http.Request) {
 			if len(app) > 80 {
 				app = app[:80]
 			}
-			if e.RemoteIP == b.Src && e.Model == b.Model && (b.Client == "" || app == b.Client) && s.inflight.Cancel(e.ID) {
+			if e.RemoteIP == b.Src && e.Model == b.Model && (b.Client == "" || app == b.Client) && s.inflight.Cancel(e.ID, "stopped by the loop guard: this app sent about the same request again and again. "+
+				"Let it run again on Argos -> Schedule -> Live -> Loop guard") {
 				cancelled++
 			}
 		}

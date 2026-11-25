@@ -321,3 +321,26 @@ models:
 	assert.Equal(t, []string{"bc-a"}, s.BusyChangedModels(load("-c 8192")), "a is busy and changed; b is busy but unchanged")
 	assert.Empty(t, s.BusyChangedModels(load("-c 4096")), "nothing changed")
 }
+
+// A reload replaces the server: a prompt it holds goes on at once (to be sent
+// again to the new server, which holds it again if it must) rather than
+// waiting out its time in a server that no longer serves the model.
+func TestAnswerFirst_AReloadEndsAHold(t *testing.T) {
+	var answering atomic.Bool
+	answering.Store(true)
+	s, _, _ := answerFirstServer(t, &answering)
+	done := make(chan int, 1)
+	go func() { done <- post(s, chatBody("m", strings.Repeat("q", 20000))) }()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("not held")
+	default:
+	}
+	s.shutdownFn()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the hold outlived its server")
+	}
+}

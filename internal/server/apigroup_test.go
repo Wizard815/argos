@@ -197,7 +197,7 @@ func TestServer_InflightTracker_OutboxDoesNotBlockRequests(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	id := tracker.Add(req, func() {})
+	id := tracker.Add(req, func(error) {})
 	select {
 	case <-publishStarted:
 	case <-time.After(2 * time.Second):
@@ -253,7 +253,7 @@ func TestServer_InflightCancelByIDCancelsRequestContext(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for inflight id")
 	}
-	if !tracker.Cancel(id) {
+	if !tracker.Cancel(id, "test") {
 		t.Fatalf("Cancel(%q) = false, want true", id)
 	}
 	select {
@@ -536,7 +536,7 @@ func TestServer_APIMetricsStats(t *testing.T) {
 
 func TestServer_APICancelInflight(t *testing.T) {
 	s := newTestServer(newStubRouter(nil, ""))
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	id := s.inflight.Add(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx), cancel)
 	defer s.inflight.Remove(id)
 
@@ -631,8 +631,8 @@ func TestServer_APIEvents_InitialPayload(t *testing.T) {
 
 func TestServer_APIInflightListsRunningRequests(t *testing.T) {
 	s := newTestServer(newStubRouter(nil, ""))
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	_, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	id := s.inflight.Add(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), cancel)
 
 	get := func() []swaputil.InflightRequestEntry {

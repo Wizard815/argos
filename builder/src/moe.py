@@ -143,7 +143,7 @@ def clean(d: dict, profiles: list[dict]) -> dict:
     if pct is not None:
         try:
             pct = int(round(float(pct)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ValueError("pct is a number from 0 to 100, or null for each profile's own setting") from None
         if not 0 <= pct <= 100:
             raise ValueError("pct is from 0 to 100")
@@ -151,7 +151,7 @@ def clean(d: dict, profiles: list[dict]) -> dict:
     last = d.get("last_pct")
     try:
         last = None if last is None else max(0, min(100, int(round(float(last)))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         last = None
     # the slider and the exempt profiles are kept while Default is on, so turning it off again brings them back
     return {"pct": pct, "last_pct": pct if pct is not None else last,
@@ -287,6 +287,13 @@ class Holder:
                 continue
             names = variant_names(have, p["name"])
             run = running()
+            if run is None:
+                # the engine did not say what runs: keep what it has until it does, rather than take a busy model
+                # for a stopped one (its new command would go out mid-chat, and it would not be loaded again)
+                self.pending[pid] = {"command": cmd, "since": self.pending.get(pid, {}).get("since", now),
+                                     "quiet_s": self.pending.get(pid, {}).get("quiet_s", 0)}
+                out.append({**p, "launch_command": have})
+                continue
             quiet = quiet_for(names)
             if (names & run) and quiet < idle:
                 self.pending[pid] = {"command": cmd, "since": self.pending.get(pid, {}).get("since", now),

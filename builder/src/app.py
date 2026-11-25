@@ -570,6 +570,11 @@ def create_app(config: dict | None = None) -> Flask:
     def not_allowed(_e):
         return err("method not allowed", 405) if request.path.startswith("/api/") else ("Method not allowed", 405)
 
+    @app.errorhandler(OverflowError)
+    def too_big(e):
+        # a number a request gave that cannot be one (1e400 as an integer): the caller's mistake, not a crash
+        return err(f"a number is out of range: {e}", 400)
+
     @app.errorhandler(500)
     def server_error(e):
         if request.path.startswith("/api/"):
@@ -599,8 +604,11 @@ def main() -> None:
     # clear_untrusted_proxy_headers=False: waitress would otherwise drop X-Forwarded-For and Forwarded, and a
     # reverse proxy on this host (connecting from 127.0.0.1) would then pass for a request from inside the container,
     # which needs no login and no key. The app reads those headers only to tell the two apart.
+    # channel_request_lookahead: waitress then notices an app hanging up while its request waits on the engine
+    # (waitress.client_disconnected), and engine_proxy drops the request instead of having the model read it.
     serve(app, host=host, port=port, threads=int(os.environ.get("ARGOS_THREADS", "32")),
-          channel_timeout=900, ident="argos-builder", expose_tracebacks=False, clear_untrusted_proxy_headers=False)
+          channel_timeout=900, ident="argos-builder", expose_tracebacks=False, clear_untrusted_proxy_headers=False,
+          channel_request_lookahead=1)
 
 
 if __name__ == "__main__":

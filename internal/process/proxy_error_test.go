@@ -93,6 +93,9 @@ func TestProcessCommand_ProxyErrorHandler(t *testing.T) {
 		if !rec.wroteHeader {
 			t.Error("a real upstream failure must still be answered")
 		}
+		if body := rec.ResponseWriter.(*httptest.ResponseRecorder).Body.String(); !strings.Contains(body, "m stopped answering") {
+			t.Errorf("the 502 says what happened, got body %q", body)
+		}
 		if line := string(logger.GetHistory()); !strings.Contains(line, "proxy error") {
 			t.Errorf("upstream failure should be logged: %q", line)
 		}
@@ -109,9 +112,9 @@ func TestProcessCommand_ProxyErrorHandler(t *testing.T) {
 		// The client is alive; the inflight tracker's derived context is what
 		// gets cancelled, exactly as POST /api/inflight/{id}/cancel does.
 		clientCtx := context.Background()
-		ctx, cancel := context.WithCancel(swaputil.SetClientContext(clientCtx, clientCtx))
+		ctx, cancel := context.WithCancelCause(swaputil.SetClientContext(clientCtx, clientCtx))
 		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
-		cancel()
+		cancel(fmt.Errorf("stopped by the loop guard"))
 
 		rec := newMarkerRecorder()
 		handler(rec, r, context.Canceled)
@@ -121,6 +124,9 @@ func TestProcessCommand_ProxyErrorHandler(t *testing.T) {
 		}
 		if rec.status != http.StatusBadGateway {
 			t.Errorf("status = %d, want %d: a connected client must get a real response", rec.status, http.StatusBadGateway)
+		}
+		if body := rec.ResponseWriter.(*httptest.ResponseRecorder).Body.String(); !strings.Contains(body, "m: stopped by the loop guard") {
+			t.Errorf("the app is told why it was cancelled, got %q", body)
 		}
 		if line := string(logger.GetHistory()); strings.Contains(line, "proxy error") {
 			t.Errorf("a cancel is not an upstream fault: %q", line)

@@ -148,7 +148,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 	created := time.Now().Unix()
 	data := make([]modelRecord, 0, len(s.cfg.Models)+len(s.cfg.Selectors))
-	running := s.local.RunningModels()
+	running := s.listedRunning()
 	modelIDs := make(map[string]struct{})
 
 	modelStatus := func(id string) string {
@@ -382,7 +382,7 @@ func (s *Server) handleUnload(w http.ResponseWriter, r *http.Request) {
 // handleRunning lists local processes that are not stopped, joining each model
 // ID against its config for the cmd/proxy/ttl/name/description metadata.
 func (s *Server) handleRunning(w http.ResponseWriter, r *http.Request) {
-	states := s.local.RunningModels()
+	states := s.listedRunning()
 	list := make([]runningModel, 0, len(states))
 	for id, state := range states {
 		mc := s.cfg.Models[id]

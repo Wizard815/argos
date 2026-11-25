@@ -558,3 +558,55 @@ func TestServer_SystemOneRoutesByModel(t *testing.T) {
 		t.Fatalf("status=%d body=%q path=%q", w.Code, w.Body.String(), path)
 	}
 }
+
+// A request that waited in a server a reload replaced (held by answer first)
+// finds its model gone from it: it must get the router's "is shutting down",
+// which the reload retry sends again to the new server, not a 404.
+func TestServer_ReplacedServerAnswersShuttingDown(t *testing.T) {
+	cfg := config.Config{Models: map[string]config.ModelConfig{"moved": {}}}
+	s := newTestServerWithConfig(cfg, newStubRouter(nil, ""))
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, chatRequest("moved"))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("before the reload: status=%d want 404 body=%q", w.Code, w.Body.String())
+	}
+
+	s.shutdownFn()
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, chatRequest("moved"))
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "is shutting down") {
+		t.Fatalf("after the reload: status=%d body=%q, want 500 \"is shutting down\"", w.Code, w.Body.String())
+	}
+}
+
+// handoverRouter gives its running models away like a router in a hot reload.
+type handoverRouter struct{ *stubRouter }
+
+func (h handoverRouter) DetachRunning(models []string) map[string]process.Process {
+	out := map[string]process.Process{}
+	for _, id := range models {
+		if _, ok := h.running[id]; ok {
+			delete(h.running, id)
+			out[id] = nil
+		}
+	}
+	return out
+}
+
+// Until the swap, the old server goes on answering /running while it stops
+// the changed models; the models it handed over are still running, and must
+// not look stopped (the builder's MoE hold then let a busy model's new
+// setting go, and did not load it again).
+func TestServer_RunningListsModelsHandedOverInAReload(t *testing.T) {
+	stub := newStubRouter([]string{"kept", "changed"}, "")
+	stub.running = map[string]process.ProcessState{"kept": process.StateReady, "changed": process.StateReady}
+	s := newTestServer(handoverRouter{stub})
+	s.DetachRunning([]string{"kept"})
+
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/running", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"model":"kept"`) || !strings.Contains(w.Body.String(), `"model":"changed"`) {
+		t.Fatalf("status=%d body=%s: want both models listed", w.Code, w.Body.String())
+	}
+}

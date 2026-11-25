@@ -48,7 +48,7 @@ def clean_rules(d: dict) -> dict:
     for k in ("rpm", "tpm", "parallel", "daily_tokens", "monthly_tokens"):
         try:
             v = int(float(d.get(k) or 0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ValueError(f"{k} must be a number") from None
         if v < 0:
             raise ValueError(f"{k} cannot be negative")

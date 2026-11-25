@@ -25,8 +25,8 @@ func TestServer_ScheduleMCP_ReportsRunningAndRecentRequests(t *testing.T) {
 		t.Fatalf("pool_status without the pool router = %q", pool.text())
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	_, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	id := s.inflight.Add(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), cancel)
 	running := callToolRPC(t, s, "schedule__requests_in_flight", `{}`)
 	if !strings.Contains(running.text(), `"req_path": "/v1/chat/completions"`) {

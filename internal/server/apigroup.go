@@ -633,7 +633,7 @@ func (s *Server) handleAPIInflight(w http.ResponseWriter, r *http.Request) {
 // inflight ID. Normal request cleanup removes the row and emits the update.
 func (s *Server) handleAPICancelInflight(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" || !s.inflight.Cancel(id) {
+	if id == "" || !s.inflight.Cancel(id, "cancelled on Argos -> Schedule -> Live") {
 		swaputil.SendResponse(w, r, http.StatusNotFound, "inflight request not found")
 		return
 	}

@@ -58,7 +58,18 @@ func newProxyErrorHandler(id string, proxyLogger *logmon.Monitor) func(http.Resp
 		if swaputil.MarkClientClosed(w, r) || swaputil.ResponseStarted(w) {
 			return
 		}
-		w.WriteHeader(http.StatusBadGateway)
+		// say what happened: a bare 502 leaves the app with nothing to show
+		msg := fmt.Sprintf("%s stopped answering this request (it was unloaded, restarted or crashed): %v", id, err)
+		if r.Context().Err() != nil {
+			// cancelled in Argos: say by what when the canceller said (the
+			// loop guard, Schedule -> Live); otherwise a shutdown
+			why := "the request was cancelled in Argos (a shutdown)"
+			if c := context.Cause(r.Context()); c != nil && !errors.Is(c, context.Canceled) {
+				why = c.Error()
+			}
+			msg = fmt.Sprintf("%s: %s", id, why)
+		}
+		swaputil.SendResponse(w, r, http.StatusBadGateway, msg)
 	}
 }
 
