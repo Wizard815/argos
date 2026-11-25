@@ -132,6 +132,20 @@ def estimate():
     return ok(estimate=estimate_command(str(d.get("command") or ""), compare=True, measured=measured), variant_id=vid)
 
 
+@bp.post("/api/ttft")
+def ttft():
+    """Time to first token of a command: cold (load + prompt) and warm (prompt), measured where possible,
+    the model's other measured configs, and the settings that change it."""
+    from ..ttft import ttft_estimate
+    c, d = ctx(), body()
+    t = c.settings.get("ttft")
+    try:
+        gbps, start = max(0.01, float(t.get("disk_gbps") or 2.0)), max(0.0, float(t.get("start_s") or 0.0))
+    except (TypeError, ValueError):
+        gbps, start = 2.0, 10.0
+    return ok(ttft=ttft_estimate(c.store, str(d.get("command") or ""), disk_gbps=gbps, start_s=start))
+
+
 def _custom_cache() -> None:
     from ..scheduler import set_custom_cache_types
     set_custom_cache_types(ctx().settings.get("kv")["custom_types"])
