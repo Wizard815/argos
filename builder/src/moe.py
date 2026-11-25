@@ -89,7 +89,7 @@ def memory() -> dict:
     return out
 
 
-def view(profiles: list[dict], table: dict) -> list[dict]:
+def view(profiles: list[dict], table: dict, on: bool = True) -> list[dict]:
     """Every MoE model that has profiles: its layout, its setting, and each profile's GPU and RAM share."""
     from .schedule_rows import estimate_command
     by_path: dict[str, list] = {}
@@ -114,7 +114,8 @@ def view(profiles: list[dict], table: dict) -> list[dict]:
             total += moe["expert_bytes"][i]
             cum.append(round(total / GIB, 3))
         rows = []
-        live = {p["profile_id"]: apply(p["launch_command"], p["profile_id"], table) for p, _ in items}
+        live = {p["profile_id"]: HOLD.served.get(p["profile_id"]) or (apply(p["launch_command"], p["profile_id"], table) if on else p["launch_command"])
+                for p, _ in items}
         for p, cmd in items:
             bare = cmd.copy()
             bare.remove("n-cpu-moe")
@@ -125,7 +126,9 @@ def view(profiles: list[dict], table: dict) -> list[dict]:
                 runs = "--cpu-moe" if served.has("cpu-moe") else (f"--n-cpu-moe {served.get('n-cpu-moe')}" if served.get("n-cpu-moe") else "all on the GPU")
             except ValueError:
                 runs = ""
+            nxt = HOLD.pending.get(p["profile_id"])
             rows.append({"profile_id": p["profile_id"], "name": p["name"], "exempt": p["profile_id"] in exempt, "runs_with": runs,
+                         "next": flags_of(nxt["command"]) if nxt else "", "quiet_s": nxt["quiet_s"] if nxt else None,
                          "own_pct": own_share(cmd, moe), "full_gib": full.get("gib"), "kv_gib": full.get("kv_gib"),
                          "ok": full.get("ok", False), "error": full.get("error", "")})
         out.append({"path": path, "name": os.path.basename(path), "layers": moe["layers"],
@@ -156,3 +159,142 @@ def clean(d: dict, profiles: list[dict]) -> dict:
 
 
 __all__ = ["KEY", "apply", "apply_all", "layers_for", "memory", "overrides", "view", "clean"]
+
+
+# ----- the main switch -------------------------------------------------------------------------------------------
+ENABLED_KEY = "_moe_enabled"
+
+
+def enabled(store) -> bool:
+    """Profiles -> MoE offload's main switch (on unless turned off). Off: no model's setting is applied, and every
+    profile runs with its own command (which may carry a MoE value saved into the profile)."""
+    v = store.get_settings().get(ENABLED_KEY)
+    return True if v is None else bool(v)
+
+
+# ----- a profile's own value, saved into its command -------------------------------------------------------------
+def set_own(command: str, pct: Optional[int]) -> str:
+    """The command with ``pct`` percent of its MoE layers in RAM written into it (0 or None: the flag taken out)."""
+    cmd = parse_command(command)
+    path = cmd.summary().get("model") or ""
+    moe = read_moe(path)
+    if not moe:
+        raise ValueError("not a mixture-of-experts model")
+    cmd.remove("n-cpu-moe")
+    cmd.remove("cpu-moe")
+    if pct:
+        n, every = layers_for(moe, int(pct))
+        if every:
+            cmd.set("cpu-moe", True)
+        elif n:
+            cmd.set("n-cpu-moe", n)
+    return cmd.to_string()
+
+
+# ----- a running model keeps its command until it has been idle a while -------------------------------------------
+IDLE_S = 30
+
+
+class Activity:
+    """When each model name was last asked for, and how many requests are running on it, as the builder forwards
+    them (engine_proxy)."""
+
+    def __init__(self):
+        import threading
+        self.lock = threading.Lock()
+        self.last: dict[str, float] = {}
+        self.busy: dict[str, int] = {}
+
+    def start(self, name: str) -> None:
+        import time
+        with self.lock:
+            self.busy[name] = self.busy.get(name, 0) + 1
+            self.last[name] = time.time()
+
+    def end(self, name: str) -> None:
+        import time
+        with self.lock:
+            self.busy[name] = max(0, self.busy.get(name, 0) - 1)
+            self.last[name] = time.time()
+
+    def quiet_for(self, names: set) -> float:
+        """Seconds since any of these names was last used; 0 while one is busy; a large number if never."""
+        import time
+        with self.lock:
+            if any(self.busy.get(n) for n in names):
+                return 0.0
+            seen = [self.last[n] for n in names if n in self.last]
+        return time.time() - max(seen) if seen else 1e9
+
+
+ACTIVITY = Activity()
+
+
+def variant_names(command: str, name: str) -> set:
+    """The names a profile's model is asked for by: <model>--<label> and the label alone."""
+    from .command import swap_model_id
+    from .cookbook import _label_key
+    try:
+        path = parse_command(command).summary().get("model") or ""
+    except ValueError:
+        return set()
+    label = _label_key(name)
+    vid = f"{swap_model_id(path)}--{label}"
+    return {vid, label}
+
+
+class Holder:
+    """Which command the engine is given for each profile. A new MoE setting for a profile whose model is running
+    and was used in the last IDLE_S seconds waits (``pending``) and the old command is served, so the model is not
+    reloaded under a chat; once it is quiet (or stopped), the new command goes out and the engine reloads it."""
+
+    def __init__(self):
+        import threading
+        self.served: dict[str, str] = {}
+        self.pending: dict[str, dict] = {}
+        self.released: dict[str, bool] = {}  # held, then let go -> was its model running: needs the new command, a reload
+        self.lock = threading.Lock()
+
+    def take_released(self) -> dict:
+        with self.lock:
+            out, self.released = self.released, {}
+            return out
+
+    def pick(self, profiles: list[dict], wanted: list[dict], running, quiet_for, now: Optional[float] = None) -> list[dict]:
+        import time
+        now = now or time.time()
+        want = {p["profile_id"]: p["launch_command"] for p in wanted}
+        out = []
+        for p in profiles:
+            pid, cmd = p["profile_id"], want.get(p["profile_id"], p["launch_command"])
+            have = self.served.get(pid)
+            if have is None or have == cmd:
+                self.served[pid] = cmd
+                self.pending.pop(pid, None)
+                out.append({**p, "launch_command": cmd})
+                continue
+            names = variant_names(have, p["name"])
+            run = running()
+            quiet = quiet_for(names)
+            if (names & run) and quiet < IDLE_S:
+                self.pending[pid] = {"command": cmd, "since": self.pending.get(pid, {}).get("since", now),
+                                     "quiet_s": round(quiet if quiet < 1e8 else 0, 1)}
+                out.append({**p, "launch_command": have})
+            else:
+                self.served[pid] = cmd
+                if self.pending.pop(pid, None) is not None:
+                    with self.lock:
+                        self.released[pid] = bool(names & run)
+                out.append({**p, "launch_command": cmd})
+        return out
+
+
+HOLD = Holder()
+
+
+def flags_of(command: str) -> str:
+    try:
+        c = parse_command(command)
+    except ValueError:
+        return ""
+    return "--cpu-moe" if c.has("cpu-moe") else (f"--n-cpu-moe {c.get('n-cpu-moe')}" if c.get("n-cpu-moe") else "all on the GPU")

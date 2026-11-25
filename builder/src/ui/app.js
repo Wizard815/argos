@@ -4392,7 +4392,7 @@ async function loadSecurity() {
 }
 
 // ── Profiles → MoE offload: one setting per MoE model, for all its profiles but the exempt ones ──
-const MOE = { data: null };
+const MOE = { data: null, timer: null };
 async function loadMoe() {
   try { MOE.data = await api("GET", "/api/moe"); } catch (e) { fill($("#pMoe"), h("div", { class: "card" }, h("div", { class: "empty" }, e.message))); return; }
   renderMoe();
@@ -4406,42 +4406,56 @@ function moeSplit(m, p, pct) {
 }
 function renderMoe() {
   const D = MOE.data;
+  clearTimeout(MOE.timer);
   if (!D.models.length) return fill($("#pMoe"), h("div", { class: "card" }, h("div", { class: "empty" }, "No mixture-of-experts model has a profile yet. Once one does (Qwen3 MoE, GLM, gpt-oss, DeepSeek…), its offload is set here.")));
   const ram = D.ram || {};
+  const master = h("input", { type: "checkbox", checked: D.enabled, "aria-label": "MoE offload on" });
+  master.addEventListener("change", async () => {
+    try { MOE.data = await api("PUT", "/api/moe/enabled", { on: master.checked }); toast(master.checked ? "MoE offload on: each model's setting applies again." : "MoE offload off: every profile runs with its own setting.", "ok"); renderMoe(); }
+    catch (e) { master.checked = !master.checked; fail(e); }
+  });
+  const waiting = D.models.some((m) => m.profiles.some((p) => p.next));
   fill($("#pMoe"),
-    h("p", { class: "hint" }, "Keep some of a MoE model's expert weights in system RAM to free VRAM, for every profile of that model at once. It is applied where Argos hands profiles to the engine, so your saved profiles do not change; tick a profile to exempt it and keep its own setting. A running model restarts with the new setting: llama-server cannot move experts while it runs. Experts in RAM answer slower; Measure shows how much.",
-      ram.total ? ` This machine: ${ram.available} GiB of ${ram.total} GiB RAM free.` : ""),
+    h("div", { class: "card" }, h("div", { class: "card-head" },
+      h("label", { class: "check", style: "font-weight:600" }, master, "MoE offload"),
+      h("span", { class: `pill ${D.enabled ? "ok" : ""}` }, D.enabled ? "on" : "off: every profile runs with its own setting"),
+      h("span", { class: "spacer" }), ram.total ? h("span", { class: "hint", style: "margin:0" }, `${ram.available} GiB of ${ram.total} GiB RAM free`) : null),
+      h("p", { class: "hint", style: "margin:0" }, "Keep some of a MoE model's expert weights in system RAM to free VRAM, for every profile of that model at once. Your saved profiles do not change; a profile ticked as exempt, a model not switched on, or this switch off runs each profile with its own setting, which Save to profile sets for good. ",
+        `A model that is running and was used in the last ${D.idle_s} s keeps its old setting until it has been quiet that long, then reloads with the new one: llama-server cannot move experts while it runs.`)),
     D.models.map(moeCard));
+  if (waiting) MOE.timer = setTimeout(async () => { if (!document.querySelector("#pMoe") || !$("#pMoe").offsetParent) return; try { MOE.data = await api("GET", "/api/moe"); renderMoe(); } catch (e) { /* next time */ } }, 5000);
 }
 function moeCard(m) {
-  // the card's own state: what is on screen, saved with Apply. Default keeps the slider and the exempt
-  // profiles, so turning it off again brings them back (the server keeps them too, as last_pct).
+  // the card's own state: what is on screen, saved with Apply. Switching the model off keeps the slider and the
+  // exempt profiles, so switching it on again brings them back (the server keeps them too, as last_pct).
+  const D = MOE.data;
   const st = m._ui || (m._ui = {
-    auto: m.pct == null,
+    on: m.pct != null,
     pct: m.pct != null ? m.pct : (m.last_pct != null ? m.last_pct : 0),
     exempt: new Set(m.profiles.filter((p) => p.exempt).map((p) => p.profile_id)),
   });
-  const saved = { auto: m.pct == null, pct: m.pct, exempt: m.profiles.filter((p) => p.exempt).map((p) => p.profile_id).sort().join(",") };
-  const slider = h("input", { type: "range", min: 0, max: 100, step: 1, value: st.pct, style: "flex:1", disabled: st.auto, "aria-label": "Share of MoE layers in RAM" });
+  const saved = { on: m.pct != null, pct: m.pct, exempt: m.profiles.filter((p) => p.exempt).map((p) => p.profile_id).sort().join(",") };
+  const slider = h("input", { type: "range", min: 0, max: 100, step: 1, value: st.pct, style: "flex:1", "aria-label": "Share of MoE layers in RAM" });
   const out = h("b", { class: "mono-sm", style: "min-width:18ch" });
-  const bars = h("div", { class: "stack", style: "gap:6px" });
+  const bars = h("div", { class: "stack", style: "gap:8px" });
   const warn = h("span", { class: "warn-text" });
   const note = h("span", { class: "hint", style: "margin:0" });
-  const ramFree = (MOE.data.ram || {}).available;
+  const ramFree = (D.ram || {}).available;
+  const active = () => D.enabled && st.on;
   const save = btn("Apply", async () => {
     try {
-      MOE.data = await api("PUT", "/api/moe", { path: m.path, pct: st.auto ? null : st.pct, last_pct: st.pct, exempt: [...st.exempt] });
-      toast(st.auto ? "Default: each profile runs with its own setting. The slider and exempt profiles are kept for next time." : "Applied: its profiles run with it from their next load.", "ok");
+      MOE.data = await api("PUT", "/api/moe", { path: m.path, pct: st.on ? st.pct : null, last_pct: st.pct, exempt: [...st.exempt] });
+      toast(st.on ? "Applied. A model in use switches once it has been quiet for a while." : "Off for this model: each profile runs with its own setting. The slider and exempt profiles are kept for next time.", "ok");
       renderMoe();
     } catch (e) { fail(e); }
   }, "sm primary", "save");
-  const changed = () => st.auto !== saved.auto || (!st.auto && st.pct !== saved.pct) || [...st.exempt].sort().join(",") !== saved.exempt;
+  const changed = () => st.on !== saved.on || (st.on && st.pct !== saved.pct) || [...st.exempt].sort().join(",") !== saved.exempt;
   const draw = () => {
     const k = Math.round(m.moe_layers * st.pct / 100);
-    out.textContent = st.auto ? `Default (${st.pct}% kept)` : `${st.pct}% · ${k} of ${m.moe_layers} layers`;
-    slider.disabled = st.auto;
+    out.textContent = st.on ? `${st.pct}% · ${k} of ${m.moe_layers} layers` : `off (${st.pct}% kept)`;
+    slider.disabled = !st.on || !D.enabled;
     const rows = m.profiles.map((p) => {
-      const mine = st.auto || st.exempt.has(p.profile_id) ? p.own_pct : st.pct;
+      const mine = !active() || st.exempt.has(p.profile_id) ? p.own_pct : st.pct;
       return { p, s: moeSplit(m, p, mine), mine };
     });
     const max = Math.max(1, ...rows.map((r) => r.s.gpu + r.s.cpu));
@@ -4449,16 +4463,23 @@ function moeCard(m) {
       const ex = st.exempt.has(p.profile_id);
       const box = h("input", { type: "checkbox", checked: ex, "data-exempt": p.name, title: "Exempt: this profile keeps its own MoE setting" });
       box.addEventListener("change", () => { box.checked ? st.exempt.add(p.profile_id) : st.exempt.delete(p.profile_id); draw(); });
-      const tag = ex ? "exempt" : st.auto ? "its own" : "this setting";
-      return h("div", { class: "row", style: `gap:8px;flex-wrap:nowrap;align-items:center;${ex ? "opacity:.75" : ""}` },
-        h("label", { class: "check", style: "min-width:22ch" }, box, h("span", { class: "mono-sm", title: p.name }, p.name),
-          ex ? h("span", { class: "pill", style: "margin-left:6px" }, "exempt") : null),
-        h("div", { style: "flex:1;display:flex;height:18px;border-radius:4px;overflow:hidden;background:var(--bg)" },
+      const tag = !D.enabled ? "switch off: its own" : ex ? "exempt: its own" : !st.on ? "its own" : "this model's setting";
+      // the profile's own value, saved into its command: it runs with it whenever the model's setting does not apply
+      const own = h("input", { type: "number", min: 0, max: 100, value: p.own_pct, style: "width:8ch", "data-own": p.name, title: "This profile's own share, saved into its command" });
+      const keep = btn("Save to profile", async () => {
+        try { MOE.data = await api("PUT", "/api/moe/profile", { profile_id: p.profile_id, pct: Number(own.value || 0) }); toast(`${p.name} now keeps ${Number(own.value || 0)}% of its MoE layers in RAM on its own.`, "ok"); renderMoe(); } catch (e) { fail(e); }
+      }, "sm ghost", "save");
+      keep.dataset.keep = p.name;
+      return h("div", { style: `display:grid;grid-template-columns:24ch 1fr 46ch;gap:4px 10px;align-items:center;${ex ? "opacity:.8" : ""}` },
+        h("label", { class: "check" }, box, h("span", { class: "mono-sm", title: p.name }, p.name), ex ? h("span", { class: "pill", style: "margin-left:6px" }, "exempt") : null),
+        h("div", { style: "display:flex;height:18px;border-radius:4px;overflow:hidden;background:var(--bg)" },
           h("div", { style: `width:${(s.gpu / max) * 100}%;background:var(--green);transition:width .15s`, title: `GPU ${s.gpu.toFixed(1)} GiB` }),
           h("div", { style: `width:${(s.cpu / max) * 100}%;background:var(--purple, #bd93f9);transition:width .15s`, title: `CPU + RAM ${s.cpu.toFixed(1)} GiB` })),
-        h("span", { class: "mono-sm nowrap", style: "min-width:44ch;text-align:right" },
-          p.ok ? `GPU ${s.gpu.toFixed(1)} · RAM ${s.cpu.toFixed(1)} GiB` : p.error, h("span", { class: "muted" }, ` (${mine}%, ${tag})`),
-          h("div", { class: "muted", style: "font-size:11px" }, "engine runs it with: ", h("code", {}, p.runs_with || "?"))));
+        h("span", { class: "mono-sm nowrap", style: "text-align:right" }, p.ok ? `GPU ${s.gpu.toFixed(1)} · RAM ${s.cpu.toFixed(1)} GiB` : p.error, h("span", { class: "muted" }, ` (${mine}%, ${tag})`)),
+        h("span", {}),
+        h("div", { class: "row", style: "gap:6px;align-items:center;font-size:12px" }, h("span", { class: "muted" }, "own:"), own, h("span", { class: "muted" }, "%"), keep),
+        h("div", { class: "muted", style: "font-size:11px;text-align:right" }, "engine runs it with: ", h("code", {}, p.runs_with || "?"),
+          p.next ? h("div", { class: "warn-text" }, `→ ${p.next} once quiet ${D.idle_s} s (in use ${p.quiet_s} s ago)`) : null));
     }));
     const worst = Math.max(0, ...rows.map((r) => r.s.cpu));
     warn.textContent = ramFree != null && worst > ramFree ? `Needs up to ${worst.toFixed(1)} GiB of RAM, only ${ramFree} GiB is free.` : "";
@@ -4467,13 +4488,13 @@ function moeCard(m) {
     note.textContent = dirty ? "not applied yet" : "applied";
   };
   slider.addEventListener("input", () => { st.pct = Number(slider.value); draw(); });
-  const autoBox = h("input", { type: "checkbox", checked: st.auto, "aria-label": "Default" });
-  autoBox.addEventListener("change", () => { st.auto = autoBox.checked; draw(); });
-  const card = h("div", { class: "card" },
+  const onBox = h("input", { type: "checkbox", checked: st.on, "aria-label": "On for this model", disabled: !D.enabled });
+  onBox.addEventListener("change", () => { st.on = onBox.checked; draw(); });
+  const card = h("div", { class: "card", style: D.enabled ? "" : "opacity:.85" },
     h("div", { class: "card-head" }, h("h2", { title: m.path }, m.name), h("span", { class: "chip" }, `${m.moe_layers} MoE layers · ${m.expert_gib} GiB experts · ${m.other_gib} GiB rest`),
       h("span", { class: "spacer" }), note, save),
     h("div", { class: "row", style: "gap:10px;flex-wrap:nowrap;align-items:center;margin:6px 0" },
-      h("label", { class: "check", title: "Each profile runs with its own --n-cpu-moe. The slider and exempt profiles are kept for when you turn this off." }, autoBox, "Default"),
+      h("label", { class: "check", title: "Off: each profile runs with its own setting. The slider and exempt profiles are kept for when you switch it on." }, onBox, "On for this model"),
       h("span", { class: "hint", style: "margin:0" }, "GPU"), slider, h("span", { class: "hint", style: "margin:0" }, "RAM"), out),
     h("div", { class: "row", style: "gap:12px;margin-bottom:6px" },
       h("span", { class: "hint", style: "margin:0" }, h("span", { style: "display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px" }), " GPU VRAM"),

@@ -403,6 +403,48 @@ def create_app(config: dict | None = None) -> Flask:
             threading.Thread(target=work, name=name, daemon=True).start()
         app.extensions["pb"].others_monitor.start()
 
+        def _reload(url, vid):
+            """Load a model again once the engine has its new command (it stops the old one when it takes it)."""
+            from .integrations import engine_api
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                try:
+                    if vid not in {m["model"] for m in engine_api.running(url)}:
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(1)
+            try:
+                engine_api.load_model(url, vid)
+            except Exception as exc:  # noqa: BLE001 - the next request loads it anyway
+                event("profile", f"MoE offload: reloading {vid} failed, the next request loads it: {exc}", level="warn")
+
+        def _moe_holds():
+            """Every 5 s while a MoE setting waits for its model to be quiet: hand it to the engine once it is."""
+            from . import moe
+            from .routes import core as core_routes
+            while True:
+                time.sleep(5)
+                if not moe.HOLD.pending and not moe.HOLD.released:
+                    continue
+                try:
+                    with app.app_context():
+                        core_routes.cookbook_state()
+                        released = moe.HOLD.take_released()
+                        if released:
+                            url = settings.get("integrations").get("engine_url")
+                            core_routes.refresh_schedule()
+                            variants = core_routes._profile_variants()
+                            # running when its new setting was let go: load it again, whoever took it to the engine
+                            again = [variants[p] for p, was in released.items() if was and variants.get(p)]
+                            event("profile", "MoE offload: a model that was busy is quiet now and reloads with its new setting"
+                                  + (f": {', '.join(again)}" if again else ""))
+                            for vid in again:  # it was in use a moment ago: load it again now, with the new setting
+                                threading.Thread(target=lambda v=vid: _reload(url, v), name="moe-reload", daemon=True).start()
+                except Exception:  # noqa: BLE001 - tried again in 5 s
+                    pass
+        threading.Thread(target=_moe_holds, name="moe-holds", daemon=True).start()
+
     # who may use Argos: the web page password and API keys (Settings -> Security), checked before anything else
     from .security import MODEL_API_PREFIXES, OPEN_PATHS, SESSION_DAYS, Security, key_from
     from datetime import timedelta

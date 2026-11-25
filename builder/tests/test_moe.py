@@ -101,3 +101,47 @@ def test_MoE_default_remembers_the_slider_and_exempt_profiles(client, app, tmp_p
     m = client.put("/api/moe", json={"path": path, "pct": 67, "exempt": [ids["b"]]}).get_json()["models"][0]
     runs = {p["name"]: p["runs_with"] for p in m["profiles"]}
     assert runs == {"a": "--n-cpu-moe 3", "b": "all on the GPU"}, runs
+
+
+def test_MoE_main_switch_and_a_value_saved_into_the_profile(client, app, tmp_path):
+    from src import moe as moe_mod
+    moe_mod.HOLD.served.clear()
+    path = fake_moe(tmp_path / "m.gguf")
+    for name in ("a", "b"):
+        client.post("/api/profiles", json={"name": name, "base_model": "m", "launch_command": f"llama-server -m {path}"})
+    store = app.extensions["pb"].store
+    ids = {p["name"]: p["profile_id"] for p in store.list_profiles()}
+    client.put("/api/moe", json={"path": path, "pct": 100, "exempt": []})
+    r = client.put("/api/moe/profile", json={"profile_id": ids["b"], "pct": 34}).get_json()
+    assert "--n-cpu-moe 2" in store.get_profile(ids["b"])["launch_command"], "saved into the profile itself"
+    assert {p["name"]: p["own_pct"] for p in r["models"][0]["profiles"]}["b"] == 33
+    cmds = lambda: {p["label"]: p["cmd"] for p in client.get("/api/cookbook/state").get_json()["presets"]}  # noqa: E731
+    assert "--cpu-moe" in cmds()["a"] and "--cpu-moe" in cmds()["b"], "the model's setting is on top while the switch is on"
+    off = client.put("/api/moe/enabled", json={"on": False}).get_json()
+    assert off["enabled"] is False
+    c = cmds()
+    assert "moe" not in c["a"] and "--n-cpu-moe 2" in c["b"], "switch off: each runs with its own, b keeps its saved 2"
+    client.put("/api/moe/enabled", json={"on": True})
+    assert "--cpu-moe" in cmds()["a"]
+    client.put("/api/moe/profile", json={"profile_id": ids["b"], "pct": 0})
+    assert "moe" not in store.get_profile(ids["b"])["launch_command"]
+    assert client.put("/api/moe/profile", json={"profile_id": "nope", "pct": 5}).status_code == 404
+
+
+def test_MoE_a_busy_running_model_keeps_its_command_until_quiet():
+    from src import moe as moe_mod
+    h = moe_mod.Holder()
+    old = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf"}]
+    new = [{"profile_id": "p", "name": "fast", "launch_command": "llama-server -m /m/x.gguf --n-cpu-moe 4"}]
+    running = lambda: {"x--fast"}  # noqa: E731
+    assert h.pick(old, old, running, lambda n: 1e9)[0]["launch_command"] == old[0]["launch_command"]
+    got = h.pick(old, new, running, lambda n: 5.0)
+    assert got[0]["launch_command"] == old[0]["launch_command"] and "p" in h.pending, "used 5 s ago: waits"
+    got = h.pick(old, new, running, lambda n: 0.0)
+    assert got[0]["launch_command"] == old[0]["launch_command"], "busy: waits"
+    got = h.pick(old, new, running, lambda n: 31.0)
+    assert got[0]["launch_command"] == new[0]["launch_command"] and not h.pending, "quiet 31 s: the new one goes out"
+    assert h.take_released() == {"p": True} and h.take_released() == {}, "the reload is reported once, whoever let it go"
+    h2 = moe_mod.Holder()
+    h2.pick(old, old, lambda: set(), lambda n: 0.0)
+    assert h2.pick(old, new, lambda: set(), lambda n: 0.0)[0]["launch_command"] == new[0]["launch_command"], "not running: at once"
