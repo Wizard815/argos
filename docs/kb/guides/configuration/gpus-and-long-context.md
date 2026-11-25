@@ -66,8 +66,8 @@ stays unknown until the model has run a request or a benchmark.
 
 The card lists the model's other measured configs: click one to take its
 settings. **Settings that change it** names the flags that move TTFT, each with
-a **Try** button: `-lm none` instead of `dio` (a reload then comes from the page
-cache in RAM), `--no-warmup`, a larger `-ub`, `-fa on` and `--cache-reuse` (a
+a **Try** button: `-lm dio-auto` instead of `dio` (a reload then comes from the
+page cache in RAM; on llama.cpp builds without it, `-lm none`), `--no-warmup`, a larger `-ub`, `-fa on` and `--cache-reuse` (a
 chat's next turn processes only the new part of the prompt).
 
 # Stretching to 1M with RoPE
