@@ -134,6 +134,16 @@ def env_defaults(cfg: dict) -> dict:
         "playground": {
             "llama_bench": True,  # the llama-bench tab in the Playground
         },
+        "features": {
+            # what the UI shows. Off only hides it: whatever is already set keeps working
+            "temperature": True,  # Profiles -> Temperature
+            "app_rules": True,    # Settings -> Security: apps through each key, and their rules
+            "budgets": True,      # dollar budgets on keys and apps, the cloud cost column, provider prices
+            "mcp_tools": True,    # MCP tool rules on keys and apps, and Settings -> MCP -> Tool calls
+            "retries": True,      # Settings -> Gateway -> Retries and cooldown
+            "formats": True,      # Settings -> Gateway -> API formats
+            "traces": True,       # Settings -> Gateway -> Request traces
+        },
         "guard": {
             # the loop guard: a client sending the same request again and again (an agent stuck on a tool call)
             "enabled": True,

@@ -21,9 +21,20 @@ def test_defaults_overrides_and_coercion(tmp_path):
 
 def test_settings_routes(client):
     j = client.get("/api/settings").get_json()["settings"]
-    assert set(j) == {"paths", "integrations", "always", "odysseus", "memory", "builder", "prefab", "downloads", "telemetry", "assistant", "kv", "gpu", "playground", "guard", "ttft", "power"}
+    assert set(j) == {"paths", "integrations", "always", "odysseus", "memory", "builder", "prefab", "downloads", "telemetry", "assistant", "kv", "gpu", "playground", "guard", "ttft", "power", "features"}
     assert client.put("/api/settings/builder", json={"command_format": "plain"}).get_json()["ok"]
     assert client.post("/api/command/parse", json={"command": "llama-server -m a.gguf"}).get_json()["command"] == \
         "llama-server -m a.gguf"
     assert client.put("/api/settings/builder", json={"x": 1}).status_code == 400
     assert client.put("/api/settings/nope", json={}).status_code == 400
+
+
+def test_features_hide_and_come_back(client):
+    """Settings -> Features shown: every one starts shown, off saves, unknown names are refused."""
+    j = client.get("/api/settings").get_json()["settings"]["features"]
+    assert all(j.values()) and {"temperature", "budgets", "traces"} <= set(j)
+    r = client.put("/api/settings/features", json={"temperature": False, "traces": False})
+    assert r.status_code == 200
+    j = client.get("/api/settings").get_json()["settings"]["features"]
+    assert j["temperature"] is False and j["traces"] is False and j["budgets"] is True
+    assert client.put("/api/settings/features", json={"nope": False}).status_code == 400

@@ -574,6 +574,14 @@ async function loadModels() {
   S.models = (await api("GET", "/api/models")).models;
   fill($("#modelList"), S.models.map((m) => h("option", { value: m })));
 }
+/** Settings → Features shown: off hides a feature in the UI only (what is set keeps working). */
+const feat = (k) => ((S.settings || {}).features || {})[k] !== false;
+function applyFeatureTabs() {
+  const bar = $(".tabs[data-tabs=profiles]"), b = bar && bar.querySelector('button[data-pane="temps"]');
+  if (!b) return;
+  b.style.display = feat("temperature") ? "" : "none";
+  if (!feat("temperature") && b.classList.contains("on")) bar.querySelector('button[data-pane="list"]').click();
+}
 /** The Playground's optional tabs follow Settings → Playground: off hides the tab (and leaves it if open). */
 function applyPlaygroundTabs() {
   const on = ((S.settings || {}).playground || {}).llama_bench !== false;
@@ -584,6 +592,7 @@ function applyPlaygroundTabs() {
 }
 async function loadSettings() {
   S.settings = (await api("GET", "/api/settings")).settings;
+  applyFeatureTabs();
   return S.settings;
 }
 async function loadCatalog() {
@@ -4824,10 +4833,10 @@ async function editKey(k) {
     h("label", { class: "field" }, h("span", {}, "Requests a minute"), f.rpm), h("label", { class: "field" }, h("span", {}, "Tokens a minute"), f.tpm),
     h("label", { class: "field" }, h("span", {}, "Requests at once"), f.parallel), h("label", { class: "field" }, h("span", {}, "Tokens a day"), f.daily_tokens),
     h("label", { class: "field" }, h("span", {}, "Tokens a month"), f.monthly_tokens), h("label", { class: "field" }, h("span", {}, "Expires on"), exp),
-    field("Only these MCP tools", tools, "<server>__<tool>, * allowed, one per line. The /mcp links and chat offer only these; calling another is refused."),
-    field("Never these MCP tools", toolsDeny, "Taken out even when allowed above (a delete or shell tool, say)."),
-    h("label", { class: "field" }, h("span", {}, "Dollars a day"), dayUsd), h("label", { class: "field" }, h("span", {}, "Dollars a month"), monthUsd),
-    h("small", { class: "hint wide" }, "Dollar budgets count cloud models (Settings → Providers, cloud fallbacks) at their price; once spent, cloud requests are refused and local models still answer."),
+    feat("mcp_tools") ? field("Only these MCP tools", tools, "<server>__<tool>, * allowed, one per line. The /mcp links and chat offer only these; calling another is refused.") : null,
+    feat("mcp_tools") ? field("Never these MCP tools", toolsDeny, "Taken out even when allowed above (a delete or shell tool, say).") : null,
+    feat("budgets") ? [h("label", { class: "field" }, h("span", {}, "Dollars a day"), dayUsd), h("label", { class: "field" }, h("span", {}, "Dollars a month"), monthUsd),
+      h("small", { class: "hint wide" }, "Dollar budgets count cloud models (Settings → Providers, cloud fallbacks) at their price; once spent, cloud requests are refused and local models still answer.")] : null,
     field("Note", note), h("label", { class: "check wide" }, blocked, "Blocked: refused until unticked")),
   [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
     const rules = { models: models.value, mcp_mode: mode.value, mcps: picks.map((p) => p.querySelector("input")).filter((i) => i.checked).map((i) => i.value),
@@ -4851,14 +4860,14 @@ async function keyUsageCard() {
     const p = per[id] || { requests: 0, input: 0, output: 0, today: 0, models: {}, usd: 0 }, live = u.live[id] || {};
     const top = Object.entries(p.models).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([m, n]) => `${mname(m)} ${n.toLocaleString()}`).join(", ");
     return [name, p.requests.toLocaleString(), p.input.toLocaleString(), p.output.toLocaleString(), p.today.toLocaleString(),
-      p.usd ? `$${p.usd.toFixed(p.usd < 1 ? 4 : 2)}` : DASH, `${live.requests_last_minute || 0} req · ${(live.tokens_last_minute || 0).toLocaleString()} tok · ${live.in_flight || 0} now`, h("span", { class: "mono-sm" }, top || DASH)];
+      ...(feat("budgets") ? [p.usd ? `$${p.usd.toFixed(p.usd < 1 ? 4 : 2)}` : DASH] : []), `${live.requests_last_minute || 0} req · ${(live.tokens_last_minute || 0).toLocaleString()} tok · ${live.in_flight || 0} now`, h("span", { class: "mono-sm" }, top || DASH)];
   });
   const usage = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Usage per key"), h("span", { class: "spacer" }), h("span", { class: "hint" }, "last 30 days")),
-    rows.length ? h("div", { class: "table-wrap" }, simpleTable(["Key", "Requests", "Tokens in", "Tokens out", "Today", "Cloud cost", "Last minute", "Most used"], rows))
+    rows.length ? h("div", { class: "table-wrap" }, simpleTable(["Key", "Requests", "Tokens in", "Tokens out", "Today", ...(feat("budgets") ? ["Cloud cost"] : []), "Last minute", "Most used"], rows))
       : h("div", { class: "muted mono-sm" }, "No keys yet."));
   let keys = [];
   try { keys = (await api("GET", "/api/security")).keys || []; } catch (e) { /* the card shows no rules */ }
-  return [usage, keyAppsCard(u, keys)];
+  return [usage, feat("app_rules") ? keyAppsCard(u, keys) : null];
 }
 
 // One app's own rules under a key: the same limits as a key's, on top of them.
@@ -4877,8 +4886,8 @@ function editAppRules(k, appName) {
     appName ? null : wide("App", name, "Its name as Argos knows it: the key's app list shows them."),
     wide("Models", models, "Within the key's models; blank: all of the key's."),
     fl("Requests a minute", f.rpm), fl("Tokens a minute", f.tpm), fl("Requests at once", f.parallel), fl("Tokens a day", f.daily_tokens),
-    fl("Tokens a month", f.monthly_tokens), fl("Dollars a day", f.daily_usd), fl("Dollars a month", f.monthly_usd),
-    wide("Never these MCP tools", deny, "On top of the key's own."),
+    fl("Tokens a month", f.monthly_tokens), feat("budgets") ? [fl("Dollars a day", f.daily_usd), fl("Dollars a month", f.monthly_usd)] : null,
+    feat("mcp_tools") ? wide("Never these MCP tools", deny, "On top of the key's own.") : null,
     h("label", { class: "check wide" }, blocked, "Blocked: this app's requests are refused, the key's other apps go on")),
   [{ label: "Cancel", run: (c) => c() },
     appName && Object.keys(r).length ? { label: "Remove rules", cls: "ghost danger", run: async (close) => {
@@ -5009,7 +5018,7 @@ async function loadGateway() {
     h("div", { class: "row", style: "gap:8px;margin-top:8px" },
       btn("Save", async () => { try { await api("PUT", "/api/gateway/traces", tBody()); toast("Saved.", "ok"); loadGateway(); } catch (e) { fail(e); } }, "sm primary", "save"),
       btn("Send a test span", async () => { try { await api("POST", "/api/gateway/traces/test", tBody()); toast("Sent: the endpoint took it.", "ok"); } catch (e) { fail(e); } }, "sm ghost")));
-  fill($("#sGateway"), groupsCard, cacheCard, fbCard, retryCard, convertCard, tracesCard);
+  fill($("#sGateway"), groupsCard, cacheCard, fbCard, feat("retries") ? retryCard : null, feat("formats") ? convertCard : null, feat("traces") ? tracesCard : null);
 }
 function editFallback(r) {
   const v = r || { on_down: true, on_too_long: true, wait_s: 0 };
@@ -5026,7 +5035,7 @@ function editFallback(r) {
     h("label", { class: "check wide" }, down, "when the local model fails to start or errors (5xx)"),
     h("label", { class: "check wide" }, long, "when the prompt does not fit the local model's context"),
     field("…or when it has not started answering after (seconds)", wait, "Covers a model that is still loading or waiting behind others. Blank: never."),
-    field("Its price (dollars per million tokens in, out)", price, "For keys' dollar budgets: a key whose budget is spent is not sent to it.")),
+    feat("budgets") ? field("Its price (dollars per million tokens in, out)", price, "For keys' dollar budgets: a key whose budget is spent is not sent to it.") : null),
   [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
     try { await api("POST", "/api/gateway/fallbacks", { replace: r ? r.name : "", name: name.value, match: match.value, url: url.value, model: model.value, api_key: key.value,
       on_down: down.checked, on_too_long: long.checked, wait_s: Number(wait.value || 0), price: price.value }); close(); loadGateway(); } catch (e) { fail(e); }
@@ -5096,7 +5105,7 @@ function editProvider(p) {
   modal(p ? `Provider ${p.name}` : "Add a provider", h("div", { class: "fields" },
     field("Name", name, "Starts each of its models' names: openrouter/tencent/hy4-flash."), field("URL", url, "Its OpenAI-compatible base, ending in /v1 (OpenRouter: https://openrouter.ai/api/v1)."),
     field("API key", key, "Kept in Argos's database and never shown again."),
-    field("Prices (dollars per million tokens in, out)", prices, "One model a line. Only needed when its model list says no price (OpenRouter's does): keys' dollar budgets count what each request cost."),
+    feat("budgets") ? field("Prices (dollars per million tokens in, out)", prices, "One model a line. Only needed when its model list says no price (OpenRouter's does): keys' dollar budgets count what each request cost.") : null,
     h("label", { class: "check wide" }, on, "On")),
   [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
     try { await api("POST", "/api/providers", { replace: p ? p.name : "", name: name.value, url: url.value, api_key: key.value, enabled: on.checked, models: p ? p.models : [], prices: prices.value }); close(); toast("Saved. Now Pick models.", "ok"); loadProviders(); } catch (e) { fail(e); }
@@ -5138,7 +5147,7 @@ async function loadMcp() {
       h("p", { class: "hint", style: "margin-bottom:4px" }, h("b", {}, "Its own link:")), link(`/mcp/${s.name}`), out);
   });
   fill($("#sMcp"), head, ...(cards.length ? cards : [h("div", { class: "card" }, h("div", { class: "empty" }, "No MCP servers yet. Add one: a command Argos starts (npx, uvx, a script) or the URL of one already running."))]),
-    await mcpCallsCard());
+    feat("mcp_tools") ? await mcpCallsCard() : null);
 }
 
 // Every tool call through Argos: who (key, app), which tool, how it went.
@@ -5451,6 +5460,14 @@ const SETTINGS_FORM = [
     { k: "interval_s", label: "Check every (s)", type: "number" }] },
   { group: "playground", title: "Playground", fields: [
     { k: "llama_bench", label: "llama-bench tab", type: "check", hint: "llama.cpp's own benchmark in the Playground, run where your llama-server runs. Off hides the tab." }] },
+  { group: "features", title: "Features shown", hint: "Untick what you never use to hide it. Hiding is only here: whatever is already set keeps working (a key's dollar budget still counts, a failed request is still tried again once, API formats stay on auto). To stop one, turn it off in its card first.", fields: [
+    { k: "temperature", label: "Temperature tab (Profiles)", type: "check" },
+    { k: "app_rules", label: "Apps through each key, and their rules (Settings → Security)", type: "check" },
+    { k: "budgets", label: "Dollar budgets and cloud cost (keys, apps, provider prices)", type: "check" },
+    { k: "mcp_tools", label: "MCP tool rules on keys, and the tool call log (Settings → MCP)", type: "check" },
+    { k: "retries", label: "Retries and cooldown (Settings → Gateway)", type: "check" },
+    { k: "formats", label: "API formats (Settings → Gateway)", type: "check" },
+    { k: "traces", label: "Request traces (Settings → Gateway)", type: "check" }] },
   { group: "downloads", title: "Downloads", fields: [
     { k: "hf_endpoint", label: "Hugging Face endpoint", ph: "https://huggingface.co" },
     { k: "hf_token", label: "HF token", type: "password", hint: "Only for gated or private repos." },
@@ -5514,6 +5531,7 @@ function renderSettings() {
         if (g.group === "builder") B.format = S.settings.builder.command_format;
         if (g.group === "paths") loadLibrary();
         if (g.group === "playground") applyPlaygroundTabs();
+        if (g.group === "features") applyFeatureTabs();
       } catch (e) { fail(e); }
     };
     const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;

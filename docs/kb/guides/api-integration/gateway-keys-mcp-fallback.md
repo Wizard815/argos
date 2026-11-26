@@ -131,3 +131,7 @@ answer carries `X-Argos-Fallback` and the Logs page says why.
   key with an alias.
 - **LiteLLM in front still lists old models.** It caches the list; restart it,
   or point apps at Argos directly.
+
+## Hiding it
+
+Never use this? Settings → General → **Features shown**: untick it and Save. That only hides it in the web page; anything already set keeps working, so turn it off in its own card first if you want it to stop.

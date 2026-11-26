@@ -68,3 +68,7 @@ ticked (cut to 32 KB). **Share of requests** below 1 sends that share.
   and ended with `response.incomplete`, as OpenAI does: raise the limit.
 - **No spans arrive.** The card's counts say failed or dropped, with the last
   error. Spans are dropped while traces are off, and when 2,000 wait unsent.
+
+## Hiding it
+
+Never use this? Settings → General → **Features shown**: untick it and Save. That only hides it in the web page; anything already set keeps working, so turn it off in its own card first if you want it to stop.

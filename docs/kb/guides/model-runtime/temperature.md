@@ -52,3 +52,7 @@ line: `0.2: 87/92, 0 broken`.
 - **Variety "not measured".** Fewer than two stories came back.
 - **The temperature does nothing.** "as the app sends" is set, or the app
   sends its own and the mode is "when the app sends none": use "always".
+
+## Hiding it
+
+Never use this? Settings → General → **Features shown**: untick it and Save. That only hides it in the web page; anything already set keeps working, so turn it off in its own card first if you want it to stop.
