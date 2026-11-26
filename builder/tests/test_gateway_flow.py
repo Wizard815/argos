@@ -38,6 +38,7 @@ class Engine(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         STATE["engine"].append((self.path, body.get("model")))
+        STATE.setdefault("bodies", []).append(body)
         if self.path in ("/v1/responses", "/v1/messages"):
             return _send(self, 404, {"error": "unknown path"})
         m = body.get("model")
@@ -369,3 +370,60 @@ def test_Flow_mcp_tool_rules_and_log(gw):
                                                                                 ("rm", 0, "codex", "litellm"),
                                                                                 ("rm", 0, "codex", "litellm")]
     assert '"/etc"' in log[0]["args"]
+
+
+# ----- Settings -> General -> Features: Working off skips a feature on every request ---------------------------------
+def _off(app, *names):
+    from src.routes.security import _TRACE_CACHE
+    r = app.test_client().put("/api/settings/enabled", json={n: False for n in names})
+    assert r.status_code == 200, r.get_json()
+    _TRACE_CACHE.clear()
+
+
+def test_Flow_features_off_temperature_and_app_rules(gw):
+    admin = gw.test_client()
+    assert admin.put("/api/temps/sampling", json={"model": "fast", "mode": "force", "temperature": 0.2}).status_code == 200
+    _chat(admin, "fast", temperature=1.0)
+    assert STATE["bodies"][-1]["temperature"] == 0.2
+    k = _key(gw)
+    admin.put(f"/api/security/keys/{k['id']}/apps/spam", json={"blocked": True})
+    assert _chat(_as(gw, k, "spam"), "fast").status_code == 403
+    _off(gw, "temperature", "app_rules")
+    _chat(admin, "fast", temperature=1.0)
+    assert STATE["bodies"][-1]["temperature"] == 1.0, "off: what the app sent"
+    assert _chat(_as(gw, k, "spam"), "fast").status_code == 200, "off: the app's rules are not used"
+    rules = admin.get("/api/security").get_json()["keys"][0]["rules"]
+    assert rules["apps"]["spam"]["blocked"], "its rules are kept for when it is back on"
+    admin.put("/api/settings/enabled", json={"app_rules": True})
+    assert _chat(_as(gw, k, "spam"), "fast").status_code == 403
+
+
+def test_Flow_features_off_budgets_retries_formats(gw):
+    k = _key(gw, rules={"daily_usd": 0.015})
+    c = _as(gw, k, "hermes")
+    _chat(c, "cloud/paid")
+    assert _chat(c, "cloud/paid").status_code == 429
+    _off(gw, "budgets", "retries", "formats")
+    assert _chat(c, "cloud/paid").status_code == 200, "off: never refused for money"
+    rows = gw.test_client().get("/api/security/usage").get_json()["rows"]
+    assert rows[0]["cost_usd"] == pytest.approx(0.04), "still counted"
+    STATE["flaky"] = 0
+    assert _chat(gw.test_client(), "flaky").status_code == 503 and STATE["flaky"] == 1, "off: asked once"
+    r = gw.test_client().post("/v1/messages", json={"model": "fast", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 404 and "X-Argos-Converted" not in r.headers, "off: passed through as is"
+
+
+def test_Flow_features_off_traces_and_mcp_tools(gw):
+    admin = gw.test_client()
+    admin.put("/api/gateway/traces", json={"enabled": True, "endpoint": gw.collector})
+    k = _key(gw, rules={"mcp_tools_deny": ["files__rm"]})
+    c = _as(gw, k, "codex")
+    assert [t["name"] for t in _rpc(c, "/mcp", "tools/list")["result"]["tools"]] == ["files__read"]
+    _off(gw, "traces", "mcp_tools")
+    _chat(c, "fast")
+    gw.extensions["traces"].flush()
+    assert STATE["spans"] == [], "off: nothing sent"
+    assert admin.get("/api/gateway").get_json()["traces"]["enabled"], "its own setting is kept"
+    assert sorted(t["name"] for t in _rpc(c, "/mcp", "tools/list")["result"]["tools"]) == ["files__read", "files__rm"]
+    assert not _rpc(c, "/mcp", "tools/call", {"name": "files__rm", "arguments": {}})["result"].get("isError")
+    assert admin.get("/api/mcp/calls").get_json()["calls"] == [], "off: no call log"

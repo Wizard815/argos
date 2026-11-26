@@ -144,6 +144,11 @@ def env_defaults(cfg: dict) -> dict:
             "formats": True,      # Settings -> Gateway -> API formats
             "traces": True,       # Settings -> Gateway -> Request traces
         },
+        "enabled": {
+            # whether each of those works at all (features.py): off skips it on every request
+            "temperature": True, "app_rules": True, "budgets": True, "mcp_tools": True,
+            "retries": True, "formats": True, "traces": True,
+        },
         "guard": {
             # the loop guard: a client sending the same request again and again (an agent stuck on a tool call)
             "enabled": True,

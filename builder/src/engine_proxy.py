@@ -25,6 +25,7 @@ import urllib.request
 from flask import Blueprint, Response, abort, current_app, g, request
 
 from . import gateway
+from . import features
 
 
 
@@ -322,7 +323,7 @@ def _convert_plan(engine_path: str) -> tuple[str, str, dict | None]:
         return "", "", None
     pb = current_app.extensions.get("pb")
     store = pb.store if pb is not None else None
-    mode = convert_settings(store)[kind]
+    mode = convert_settings(store)[kind] if features.on(store, "formats") else "never"
     if mode == "never":
         return "", "", None
     if mode == "always":
@@ -425,7 +426,7 @@ def _forward_inner(engine_path: str, body_override: bytes | None = None) -> Resp
 
     # ----- the model's temperature and sampling, set on Profiles -> Temperature (temps.py) -----
     sampled: list[str] = []
-    if model and isinstance(parsed, dict) and request.method == "POST" and store is not None:
+    if model and isinstance(parsed, dict) and request.method == "POST" and store is not None and features.on(store, "temperature"):
         from . import temps
         sampled = temps.apply(engine_path, parsed, temps.rule_for(model, temps.table(store)))
         if sampled:
@@ -442,7 +443,7 @@ def _forward_inner(engine_path: str, body_override: bytes | None = None) -> Resp
     groups = (store.get_settings().get(gateway.GROUPS_KEY) or {}) if (store is not None and key) else {}
     slot = False
     app_slot = ""
-    arules = gateway.app_rules(key["rules"], app) if key else None
+    arules = gateway.app_rules(key["rules"], app) if key and features.on(store, "app_rules") else None
     who_app = f"the app {app} on this key"
     if key:
         rules = key["rules"]
@@ -480,7 +481,7 @@ def _forward_inner(engine_path: str, body_override: bytes | None = None) -> Resp
 
     def budget_why() -> str:
         """"" while this key (and app) may spend money on a cloud model, else why not."""
-        if not key or store is None:
+        if not key or store is None or not features.on(store, "budgets"):
             return ""
         r, day = key["rules"], time.strftime("%Y-%m-%d")
         if r.get("daily_usd") or r.get("monthly_usd"):
@@ -558,6 +559,8 @@ def _forward_inner(engine_path: str, body_override: bytes | None = None) -> Resp
         fell_back, why_fb = False, ""
         price_now = None  # dollars per million tokens of whatever answers (a provider or fallback), for budgets
         HEALTH, retry = health(), gateway.retry_settings(store)
+        if not features.on(store, "retries"):
+            retry = {**retry, "retries": 0, "cooldown_s": 0}  # off: asked once, nothing rests
         is_call = request.method == "POST" and bool(model)  # a model request: worth a retry, counts for cooldown
 
         def pause(i: int, r=None) -> None:

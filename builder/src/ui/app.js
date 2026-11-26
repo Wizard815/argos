@@ -574,8 +574,44 @@ async function loadModels() {
   S.models = (await api("GET", "/api/models")).models;
   fill($("#modelList"), S.models.map((m) => h("option", { value: m })));
 }
-/** Settings → Features shown: off hides a feature in the UI only (what is set keeps working). */
+/** Settings → General → Features. Shown: off hides it on the page only. Working: off skips it on every request
+ * (features.py), whatever its own settings say. */
 const feat = (k) => ((S.settings || {}).features || {})[k] !== false;
+const featOn = (k) => ((S.settings || {}).enabled || {})[k] !== false;
+const FEATURES = [
+  ["temperature", "Temperature per profile", "Profiles → Temperature", "Apps' requests are sent with the temperature they ask for; your per-profile settings are kept for later. Sweeps still run."],
+  ["app_rules", "Rules per app", "Settings → Security → Apps through each key", "Only the key's own rules apply. Apps are still told apart (the loop guard, the waiting line) and listed."],
+  ["budgets", "Dollar budgets", "keys, apps, provider prices", "No request is refused for money. What each one cost is still counted."],
+  ["mcp_tools", "MCP tool rules and call log", "keys, apps, Settings → MCP", "Every tool of the MCP servers a key may use is offered and callable; calls are not logged."],
+  ["retries", "Retries and cooldown", "Settings → Gateway", "A failed request is not tried again, and nothing rests."],
+  ["formats", "API formats", "Settings → Gateway", "/v1/responses and /v1/messages go to the model as they are (llama-server answers both; cloud models may not)."],
+  ["traces", "Request traces", "Settings → Gateway", "Nothing is sent."],
+];
+/** A pill for a card whose feature is turned off, so its settings are not mistaken for live ones. */
+const offPill = (k) => featOn(k) ? null : h("span", { class: "pill warn", title: "Settings → General → Features" }, "off: not used");
+function featuresCard() {
+  const rows = FEATURES.map(([k, label, where, offText]) => {
+    const work = h("input", { type: "checkbox", checked: featOn(k), "aria-label": `${label} working` });
+    const show = h("input", { type: "checkbox", checked: feat(k), "aria-label": `${label} shown` });
+    const note = h("div", { class: "hint", style: "margin:2px 0 0" });
+    const paint = () => { note.textContent = work.checked ? "" : `Off: ${offText}`; note.hidden = work.checked; };
+    work.addEventListener("change", paint); paint();
+    return { k, work, show, tr: h("tr", {}, h("td", {}, h("strong", {}, label), h("div", { class: "muted mono-sm" }, where), note),
+      h("td", { style: "text-align:center" }, work), h("td", { style: "text-align:center" }, show)) };
+  });
+  const save = async () => {
+    const en = {}, sh = {};
+    rows.forEach((r) => { en[r.k] = r.work.checked; sh[r.k] = r.show.checked; });
+    try {
+      await api("PUT", "/api/settings/enabled", en); await api("PUT", "/api/settings/features", sh);
+      await loadSettings(); toast("Saved: it applies to the next request.", "ok");
+    } catch (e) { fail(e); }
+  };
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Features"), h("span", { class: "spacer" }), btn("Save", save, "sm primary", "save")),
+    h("p", { class: "hint" }, "Working: off turns the feature off on every request, whatever its own settings say; on brings them back as they were. Shown: off only hides it on these pages, so it keeps working if Working is ticked."),
+    h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Feature"), h("th", { style: "text-align:center" }, "Working"), h("th", { style: "text-align:center" }, "Shown"))),
+      h("tbody", {}, rows.map((r) => r.tr)))));
+}
 function applyFeatureTabs() {
   const bar = $(".tabs[data-tabs=profiles]"), b = bar && bar.querySelector('button[data-pane="temps"]');
   if (!b) return;
@@ -4833,10 +4869,10 @@ async function editKey(k) {
     h("label", { class: "field" }, h("span", {}, "Requests a minute"), f.rpm), h("label", { class: "field" }, h("span", {}, "Tokens a minute"), f.tpm),
     h("label", { class: "field" }, h("span", {}, "Requests at once"), f.parallel), h("label", { class: "field" }, h("span", {}, "Tokens a day"), f.daily_tokens),
     h("label", { class: "field" }, h("span", {}, "Tokens a month"), f.monthly_tokens), h("label", { class: "field" }, h("span", {}, "Expires on"), exp),
-    feat("mcp_tools") ? field("Only these MCP tools", tools, "<server>__<tool>, * allowed, one per line. The /mcp links and chat offer only these; calling another is refused.") : null,
+    feat("mcp_tools") ? field(featOn("mcp_tools") ? "Only these MCP tools" : "Only these MCP tools (off: not used)", tools, "<server>__<tool>, * allowed, one per line. The /mcp links and chat offer only these; calling another is refused.") : null,
     feat("mcp_tools") ? field("Never these MCP tools", toolsDeny, "Taken out even when allowed above (a delete or shell tool, say).") : null,
     feat("budgets") ? [h("label", { class: "field" }, h("span", {}, "Dollars a day"), dayUsd), h("label", { class: "field" }, h("span", {}, "Dollars a month"), monthUsd),
-      h("small", { class: "hint wide" }, "Dollar budgets count cloud models (Settings → Providers, cloud fallbacks) at their price; once spent, cloud requests are refused and local models still answer.")] : null,
+      h("small", { class: "hint wide" }, offPill("budgets"), " ", "Dollar budgets count cloud models (Settings → Providers, cloud fallbacks) at their price; once spent, cloud requests are refused and local models still answer.")] : null,
     field("Note", note), h("label", { class: "check wide" }, blocked, "Blocked: refused until unticked")),
   [{ label: "Cancel", run: (c) => c() }, { label: "Save", cls: "primary", run: async (close) => {
     const rules = { models: models.value, mcp_mode: mode.value, mcps: picks.map((p) => p.querySelector("input")).filter((i) => i.checked).map((i) => i.value),
@@ -4928,7 +4964,7 @@ function keyAppsCard(u, keys = []) {
           h("span", { class: rr ? "mono-sm" : "hint" }, ruleText(rr)),
           h("span", { class: "nowrap" }, keyById[id] ? btn("Rules", () => editAppRules(keyById[id], a.app), "sm ghost", "pencil") : null, " ", a.requests ? btn("Forget", () => forget(id, a.app), "sm ghost") : null)];
       }))) : null));
-  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Apps through each key")),
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Apps through each key"), offPill("app_rules")),
     h("p", { class: "hint" }, "One key can stand for a group of apps (all the apps behind LiteLLM, say): Argos tells them apart, so the loop guard stops only the app that loops and each app gets its turn in a busy model's line. ",
       "An app is known by an X-Argos-App header, else its LiteLLM key's alias (LiteLLM: litellm_settings: add_user_information_to_llm_headers: true and general_settings: forward_client_headers_to_llm_api: true), else an X-Title header, else its User-Agent. ",
       "Behind LiteLLM the User-Agent is LiteLLM's own, the same for every app."),
@@ -4977,7 +5013,7 @@ async function loadGateway() {
   const rf = { retries: rn("retries", 0, 3), fails: rn("fails", 1, 100), window_s: rn("window_s", 5, 3600), cooldown_s: rn("cooldown_s", 0, 3600) };
   const saveRetry = async () => { const b = {}; for (const [k, el] of Object.entries(rf)) b[k] = Number(el.value); try { await api("PUT", "/api/gateway/retry", b); toast("Saved.", "ok"); loadGateway(); } catch (e) { fail(e); } };
   const cooling = G.cooling || [];
-  const retryCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Retries and cooldown")),
+  const retryCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Retries and cooldown"), offPill("retries")),
     h("p", { class: "hint" }, "A model or provider that fails before answering (500, 502, 503, 504; a provider's 429 too) is asked again. One that keeps failing rests for a while: its requests go straight to its cloud fallback, or a resting provider answers 503 at once. Requests Argos stopped itself (the loop guard, a cancel) and models stopped after crashes are never retried."),
     h("div", { class: "fields" }, h("label", { class: "field" }, h("span", {}, "Try again (times)"), rf.retries), h("label", { class: "field" }, h("span", {}, "Rest after (failures)"), rf.fails),
       h("label", { class: "field" }, h("span", {}, "…within (seconds)"), rf.window_s), h("label", { class: "field" }, h("span", {}, "Rest for (seconds, 0 = never)"), rf.cooldown_s)),
@@ -4990,7 +5026,7 @@ async function loadGateway() {
   const C = G.convert || {};
   const sel = (v) => h("select", {}, [["auto", "auto"], ["always", "always"], ["never", "never"]].map(([x, l]) => h("option", { value: x, selected: v === x }, l)));
   const cResp = sel(C.responses || "auto"), cMsg = sel(C.messages || "auto");
-  const convertCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "API formats")),
+  const convertCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "API formats"), offPill("formats")),
     h("p", { class: "hint" }, "Apps that speak OpenAI's Responses API (/v1/responses: Codex) or Anthropic's Messages API (/v1/messages: Claude apps) can use any model: Argos turns the request into a chat completion and the answer back, streamed or not, tool calls included. Auto: for a cloud provider's model, and for a local model whose server answers that it does not know the path (llama-server answers both itself). Always: every model. The answer carries an X-Argos-Converted header."),
     h("div", { class: "fields" }, h("label", { class: "field" }, h("span", {}, "Responses API"), cResp), h("label", { class: "field" }, h("span", {}, "Messages API"), cMsg)),
     h("div", { class: "row", style: "gap:8px;margin-top:8px" }, btn("Save", async () => { try { await api("PUT", "/api/gateway/convert", { responses: cResp.value, messages: cMsg.value }); toast("Saved.", "ok"); loadGateway(); } catch (e) { fail(e); } }, "sm primary", "save")));
@@ -5009,7 +5045,7 @@ async function loadGateway() {
   const lf = h("div", { class: "fields wide" }, h("label", { class: "field" }, h("span", {}, "Langfuse public key"), tPub), h("label", { class: "field" }, h("span", {}, "Langfuse secret key"), tSec));
   const showLf = () => { lf.style.display = tKind.value === "langfuse" ? "" : "none"; };
   tKind.addEventListener("change", showLf); showLf();
-  const tracesCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Request traces"), h("span", { class: "spacer" }),
+  const tracesCard = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Request traces"), offPill("traces"), h("span", { class: "spacer" }),
       h("span", { class: "hint" }, `${st.sent || 0} sent · ${st.failed || 0} failed · ${st.dropped || 0} dropped${st.last_error ? ` · last error: ${st.last_error}` : ""}`)),
     h("p", { class: "hint" }, "Each model request as an OpenTelemetry span (model, key, app, tokens, cost, time, status, fallback) to a collector, Grafana Tempo, Jaeger, Phoenix or Langfuse, sent in the background. Prompts and answers only when ticked."),
     h("div", { class: "fields" }, h("label", { class: "check wide" }, tOn, "Send traces"), h("label", { class: "field" }, h("span", {}, "To"), tKind),
@@ -5154,7 +5190,7 @@ async function loadMcp() {
 async function mcpCallsCard() {
   let calls = [];
   try { calls = (await api("GET", "/api/mcp/calls?limit=100")).calls || []; } catch (e) { return null; }
-  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Tool calls"), h("span", { class: "spacer" }), h("span", { class: "hint" }, "the latest 100")),
+  return h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Tool calls"), offPill("mcp_tools"), h("span", { class: "spacer" }), h("span", { class: "hint" }, "the latest 100")),
     h("p", { class: "hint" }, "Through the /mcp links and MCP tools run in chat. Which tools a key (or an app behind it) may call is set on the key: Settings → Security → Edit, and an app's Rules."),
     calls.length ? h("div", { class: "table-wrap" }, simpleTable(["When", "Key / app", "Tool", "Via", "Result", "Time", "Arguments"], calls.map((c) => [
       ago(c.ts), h("span", { class: "mono-sm" }, [c.key_name || "no key", c.app].filter(Boolean).join(" / ")), h("strong", {}, `${c.server}${"__"}${c.tool}`), c.via,
@@ -5460,14 +5496,7 @@ const SETTINGS_FORM = [
     { k: "interval_s", label: "Check every (s)", type: "number" }] },
   { group: "playground", title: "Playground", fields: [
     { k: "llama_bench", label: "llama-bench tab", type: "check", hint: "llama.cpp's own benchmark in the Playground, run where your llama-server runs. Off hides the tab." }] },
-  { group: "features", title: "Features shown", hint: "Untick what you never use to hide it. Hiding is only here: whatever is already set keeps working (a key's dollar budget still counts, a failed request is still tried again once, API formats stay on auto). To stop one, turn it off in its card first.", fields: [
-    { k: "temperature", label: "Temperature tab (Profiles)", type: "check" },
-    { k: "app_rules", label: "Apps through each key, and their rules (Settings → Security)", type: "check" },
-    { k: "budgets", label: "Dollar budgets and cloud cost (keys, apps, provider prices)", type: "check" },
-    { k: "mcp_tools", label: "MCP tool rules on keys, and the tool call log (Settings → MCP)", type: "check" },
-    { k: "retries", label: "Retries and cooldown (Settings → Gateway)", type: "check" },
-    { k: "formats", label: "API formats (Settings → Gateway)", type: "check" },
-    { k: "traces", label: "Request traces (Settings → Gateway)", type: "check" }] },
+  { group: "features", title: "Features", custom: () => featuresCard() },
   { group: "downloads", title: "Downloads", fields: [
     { k: "hf_endpoint", label: "Hugging Face endpoint", ph: "https://huggingface.co" },
     { k: "hf_token", label: "HF token", type: "password", hint: "Only for gated or private repos." },
@@ -5519,6 +5548,7 @@ async function findRocm(box, use) {
 function renderSettings() {
   if (!S.settings) return;
   fill($("#sGrid"), SETTINGS_FORM.map((g) => {
+    if (g.custom) return g.custom(g);
     const vals = S.settings[g.group] || {};
     const fields = g.fields.map((f) => ({ f, ...settingsField(f, vals[f.k]) }));
     const save = async () => {
@@ -5531,7 +5561,6 @@ function renderSettings() {
         if (g.group === "builder") B.format = S.settings.builder.command_format;
         if (g.group === "paths") loadLibrary();
         if (g.group === "playground") applyPlaygroundTabs();
-        if (g.group === "features") applyFeatureTabs();
       } catch (e) { fail(e); }
     };
     const tools = g.group === "gpu" ? h("div", { id: "sToolsLine" }) : null;
@@ -7891,7 +7920,7 @@ async function loadTemps() {
   clearTimeout(tempsTimer);
   const running = (D.sweeps || []).find((s) => s.state === "running");
   if (running && $("#pTemps").offsetParent) tempsTimer = setTimeout(loadTemps, 3000);
-  const head = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Temperature")),
+  const head = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h2", {}, "Temperature"), offPill("temperature")),
     h("p", { class: "hint" }, "How much a model gambles on each word. Low: the same, likeliest answer every time (code, facts, tool calls). High: more varied writing, and more slips: a test of Gemma writing code passed 87 of 92 hidden checks at 0.2 and 52 at 1.0. Many apps send 1.0 whatever the model, so a profile can force its own."),
     h("p", { class: "hint", style: "margin:0" }, `A sweep asks the model ${D.questions} questions with one right answer (smart) and one short story several times (creative: how different the stories are) at each temperature, and draws both. It runs on the loaded model through the engine, one sweep at a time.`));
   fill($("#pTemps"), head, ...D.profiles.map((p) => tempsCard(p, D.sweeps || [], !!running)));

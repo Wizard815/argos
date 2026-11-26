@@ -24,8 +24,12 @@ def _rpc(id_, result=None, error=None) -> dict:
 
 def _handle(msg: dict, one: str, names: list[str], rules: dict | None = None, key: dict | None = None,
             app: str = "") -> dict | None:
+    from .. import features
     from ..gateway import tool_allowed
     from ..mcp_gateway import log_call, result_text
+    if not features.on(ctx().store, "mcp_tools"):  # off: no tool rules, no call log
+        tool_allowed = lambda *a, **k: True  # noqa: E731
+        log_call = lambda *a, **k: None  # noqa: E731
     gw = ctx().mcp
     method, mid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
     if mid is None:  # a notification: nothing to answer

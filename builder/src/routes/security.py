@@ -313,7 +313,10 @@ def trace_settings_getter(store):
         hit = _TRACE_CACHE.get("v")
         if hit and _t.time() - hit[0] < 2:
             return hit[1]
+        from .. import features
         v = store.get_settings().get(traces.SETTINGS_KEY) or {}
+        if not features.on(store, "traces"):
+            v = {**v, "enabled": False}  # Settings -> General -> Features: traces off
         _TRACE_CACHE["v"] = (_t.time(), v)
         return v
     return get

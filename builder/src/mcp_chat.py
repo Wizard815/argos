@@ -67,8 +67,12 @@ def run(pb, engine_url: str, body: dict, headers: dict, key: Optional[dict], sen
         app: str = "") -> tuple[Response, tuple[int, int]]:
     """``send(body) -> (status, json, raw)`` asks the model; the engine when None (a cloud provider's model otherwise).
     ``app``: the app behind the key (apps.py), for its own denied tools and the tool-call log."""
+    from . import features
     from .gateway import tool_allowed
     from .mcp_gateway import MCPError, SEP, log_call, result_text
+    if not features.on(pb.store, "mcp_tools"):  # off: no tool rules, no call log
+        tool_allowed = lambda *a, **k: True  # noqa: E731
+        log_call = lambda *a, **k: None  # noqa: E731
     gw = pb.mcp
     rules = key["rules"] if key else None
     body = json.loads(json.dumps(body))  # a copy we can change

@@ -132,6 +132,9 @@ answer carries `X-Argos-Fallback` and the Logs page says why.
 - **LiteLLM in front still lists old models.** It caches the list; restart it,
   or point apps at Argos directly.
 
-## Hiding it
+## Turning it off or hiding it
 
-Never use this? Settings → General → **Features shown**: untick it and Save. That only hides it in the web page; anything already set keeps working, so turn it off in its own card first if you want it to stop.
+Settings → General → **Features** has two switches per feature:
+
+- **Working** off: Argos skips the feature on every request, whatever its own settings say. They are kept, so ticking it again brings them back as they were. Its card shows an "off: not used" pill.
+- **Shown** off: it is only hidden on the web page. If Working is still ticked it keeps working.
