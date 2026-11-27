@@ -26,7 +26,15 @@ def library():
     d = models_dir()
     names = c.store.get_settings().get(NAMES_KEY) or {}
     models = with_names(library_with_profiles(scan_models(d), c.store.list_profiles()), names)
-    return ok(models_dir=d, exists=os.path.isdir(d), models=models, media=with_names(scan_media(d), names))
+    media = with_names(scan_media(d), names)
+    try:  # which runner serves each audio and image model, or why none does
+        status = c.runners.media_status() if getattr(c, "runners", None) is not None else {}
+    except Exception:  # noqa: BLE001 - the list still shows without it
+        status = {}
+    for m in media:
+        if m["id"] in status:
+            m["runner_status"] = status[m["id"]]
+    return ok(models_dir=d, exists=os.path.isdir(d), models=models, media=media)
 
 
 @bp.get("/api/library/listed")

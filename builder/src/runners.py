@@ -679,6 +679,47 @@ class Runners:
                             "size": 0, "auto": True})
         return out
 
+    def media_status(self) -> dict[str, dict]:
+        """For the Models list: what happens to each audio and image model file. model id ->
+        {"state": "served" | "unusable" | "own_model" | "none", "runner", "label", "why", "ggml"?}.
+
+        "own_model" is a speech or image file while that kind of runner is a service already running (a URL):
+        that service loads its own model, so the file in the folder is not what answers."""
+        rec = self.records()
+        skipped: list[dict] = []
+        served = {m["id"]: m for m in self.served(skipped)}
+        unusable = {m["id"]: m for m in skipped}
+        label = lambda rid: (rec.get(rid) or {}).get("label") or (TYPES.get((rec.get(rid) or {}).get("kind", "")) or {}).get("label") or rid
+        try:
+            media = self.scan_media(self.models_dir())
+        except Exception:  # noqa: BLE001
+            media = []
+        out: dict[str, dict] = {}
+        for m in media:
+            kind = TASK_RUNNER.get(m.get("task") or "")
+            r = rec.get(kind or "") or {}
+            on = bool(r) and r.get("enabled", True)
+            if m["id"] in served:
+                s = served[m["id"]]
+                out[m["id"]] = {"state": "served", "runner": s["runner"], "label": label(s["runner"]),
+                                "why": f"served by {label(s['runner'])} as {s['id']}"}
+            elif on and self.where(r) == "url":
+                url = str((r.get("opts") or {}).get("url") or "").strip()
+                out[m["id"]] = {"state": "own_model", "runner": kind, "label": label(kind),
+                                "why": f"not used: {label(kind)} at {url} loads its own model and answers as model \"{kind}\""
+                                       + (" (and whisper-1)" if kind == "whisper" else "")}
+            elif m["id"] in unusable:
+                u = unusable[m["id"]]
+                out[m["id"]] = {"state": "unusable", "runner": u["runner"], "label": label(u["runner"]), "ggml": u.get("ggml", ""),
+                                "why": f"{label(u['runner'])} cannot read it: {u['why']}"}
+            elif kind and not on:
+                out[m["id"]] = {"state": "none", "runner": kind, "label": label(kind),
+                                "why": f"no runner for it: {label(kind)} is off (Servers -> Others)"}
+            else:
+                out[m["id"]] = {"state": "none", "runner": "", "label": "",
+                                "why": "no runner serves this kind of model"}
+        return out
+
     def entries(self) -> dict[str, dict]:
         """model id -> engine model config for every served model whose runner is installed."""
         rec = self.records()

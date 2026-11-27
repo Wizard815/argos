@@ -3143,7 +3143,9 @@ async function openPrefab(m, launchIt = false) {
 const ML = { groups: [], by: "family", g: openGroups("argos.models.open"), files: new Set() /* models expanded to their files */, listed: new Set() /* base models shown to apps */ };
 try { ML.by = localStorage.getItem("argos.models.groupby") || "family"; } catch (e) { /* private window: defaults */ }
 const mlSave = () => { try { localStorage.setItem("argos.models.groupby", ML.by); } catch (e) { /* ignore */ } };
-const KIND_GROUPS = [["chat", "Chat"], ["vision", "Vision"], ["mtp", "MTP / draft"], ["classifier", "Classifier (/v1/systemone)"], ["embedding", "Embedding"], ["reranker", "Reranker"], ["audio", "Audio"], ["image", "Image"]];
+/** The Kind column: a model with MTP layers inside it, or with an MTP head beside it, is still a chat model. */
+const kindLabel = (m) => (m.kind === "mtp" ? "chat+mtp" : (m.mtp_head || []).length && ["chat", "vision"].includes(m.kind) ? `${m.kind}+mtp` : m.kind);
+const KIND_GROUPS = [["chat", "Chat"], ["vision", "Vision"], ["mtp", "Chat + MTP"], ["classifier", "Classifier (/v1/systemone)"], ["embedding", "Embedding"], ["reranker", "Reranker"], ["audio", "Audio"], ["image", "Image"]];
 const cap1 = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 /** "Qwen" for qwen3.6-35b…, "Hermes" for NousResearch_Hermes-4…, the folder for audio/image models. */
@@ -3321,7 +3323,7 @@ function renderLibrary() {
   const q = $("#mSearch").value.trim().toLowerCase();
   const media = lib.media || [];
   const all = [...lib.models, ...media];
-  const rows = all.filter((m) => !q || `${m.name} ${m.dir} ${m.kind} ${m.task || ""} ${m.quant} ${m.format || ""} ${modelFamily(m)} ${(myGroupOf(m) || {}).name || ""}`.toLowerCase().includes(q));
+  const rows = all.filter((m) => !q || `${m.name} ${m.dir} ${m.kind} ${kindLabel(m)} ${m.task || ""} ${m.quant} ${m.format || ""} ${modelFamily(m)} ${(myGroupOf(m) || {}).name || ""}`.toLowerCase().includes(q));
   const audio = media.filter((m) => m.kind === "audio").length, image = media.length - audio;
   $("#mCount").textContent = [`${lib.models.length} model${lib.models.length === 1 ? "" : "s"}`, audio ? `${audio} audio` : null, image ? `${image} image` : null].filter(Boolean).join(" · ");
 
@@ -3363,7 +3365,7 @@ function renderLibrary() {
         "aria-expanded": String(ML.files.has(m.path)), onclick: () => { ML.files.has(m.path) ? ML.files.delete(m.path) : ML.files.add(m.path); renderLibrary(); } },
       ML.files.has(m.path) ? "▾" : "▸") : null, h("span", { class: "strong" }, m.name),
       h("div", { class: "muted mono-sm" }, m.dir === "." ? m.id : `${m.dir} · ${m.id}`)) },
-    { key: "kind", label: "Kind", cell: (m) => h("td", {}, h("span", { class: `pill${m.kind === "chat" ? "" : m.listed_only ? ` media-${m.kind}` : " accent"}` }, m.kind),
+    { key: "kind", label: "Kind", cell: (m) => h("td", {}, h("span", { class: `pill${m.kind === "chat" ? "" : m.listed_only ? ` media-${m.kind}` : " accent"}` }, kindLabel(m)),
       m.task ? h("div", { class: "muted mono-sm" }, m.task) : null) },
     { key: "quant", label: "Quant", cell: (m) => (m.quant ? h("span", { class: "chip" }, m.quant) : DASH) },
     { key: "size", label: "Size", num: true, sort: (m) => m.total_size || m.size, cell: (m) => (m.total_size && m.total_size !== m.size
@@ -3381,11 +3383,28 @@ function renderLibrary() {
       const more = h("button", { class: "icon-btn ghost", title: "More: move to a group, delete", "aria-label": "More actions" }, "⋯");
       more.addEventListener("click", () => modelMenu(more, m));
       return m.listed_only
-        ? h("td", { class: "actions" }, h("span", { class: "muted mono-sm", title: "llama-server does not run audio or image models, so there is no profile to edit or launch." }, "listed only"), more)
+        ? h("td", { class: "actions" }, mediaStatus(m), more)
         : h("td", { class: "actions" }, btn("Edit", () => editModel(m), "sm primary", "pencil"), btn("Prefab", () => openPrefab(m), "sm", "sliders"),
           iconBtn("play", "Launch the prefab", () => openPrefab(m, true)), more);
     } },
   ], rows, librarySort, empty, { ...groupOpts, subRows: (m) => (ML.files.has(m.path) ? modelFileRows(m) : []) });
+}
+
+/** What happens to an audio or image model: the runner that serves it, or why none does. llama-server runs
+ * neither, so these have no profile; a runner (Servers -> Others) is what serves them. */
+function mediaStatus(m) {
+  const st = m.runner_status;
+  if (!st) return h("span", { class: "muted mono-sm", title: "llama-server does not run audio or image models. A runner on Servers → Others serves them." }, "listed only");
+  if (st.state === "served") return h("span", { class: "pill ok", title: st.why }, `served by ${st.label}`);
+  const go = () => { show("servers"); const t = document.querySelector(`[data-tabs="servers"] [data-pane="local"]`); if (t) t.click(); };
+  if (st.state === "own_model") return h("span", { class: "muted mono-sm", title: st.why }, `${st.label} uses its own model`);
+  if (st.state === "unusable") return h("span", { class: "row nowrap", style: "gap:6px" },
+    h("span", { class: "pill warn", title: st.why }, `${st.label} can't read it`),
+    st.ggml ? btn(`Get ${st.ggml}`, async () => {
+      try { await api("POST", `/api/runners/${encodeURIComponent(st.runner)}/catalog/download`, { key: st.ggml }); toast(`Downloading ${st.ggml} to your models folder (Models → Downloads). It is served once it lands.`, "ok"); }
+      catch (e) { fail(e); }
+    }, "sm", "download") : null);
+  return h("button", { class: "link-btn muted mono-sm", title: st.why, onclick: go }, st.runner ? `${st.label} is off` : "no runner");
 }
 
 /** An expanded model: its own file, then each add-on with its size. The model's row above is still the one that is

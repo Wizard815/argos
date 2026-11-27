@@ -264,3 +264,37 @@ def test_kokoro_cannot_run_over_ssh_and_stays_here(tmp_path):
     r = Runners(_Store(), _Settings(str(tmp_path)), lambda *a, **k: None, lambda: "", lambda d: [])
     assert r.where({"kind": "kokoro", "opts": {"where": "server", "server": "1"}}) == "here"
     assert r.where({"kind": "whisper", "opts": {"where": "url", "url": ""}}) == "here"
+
+
+def test_media_status_says_what_happens_to_each_audio_model(tmp_path):
+    """The Models list said "listed only" for whisper-large-v3 even with a whisper server connected. It now says
+    which runner serves each file, or why none does."""
+    _touch(str(tmp_path / "whisper" / "bin" / ("whisper-server.exe" if os.name == "nt" else "whisper-server")))
+    media = [{"id": "whisper-large-v3", "name": "whisper-large-v3", "path": "/m/HFCache/hub/models--unsloth--whisper-large-v3/x",
+              "task": "speech-to-text", "format": "safetensors", "size": 10},
+             {"id": "ggml-base.en", "name": "ggml-base.en", "path": "/m/ggml-base.en.bin", "task": "speech-to-text", "format": "ggml", "size": 10},
+             {"id": "sd-thing", "name": "sd-thing", "path": "/m/sd/x", "task": "image", "format": "diffusers", "size": 10}]
+    r = Runners(_Store(), _Settings(str(tmp_path)), lambda *a, **k: None, lambda: "", lambda d: media)
+    st = r.media_status()
+    assert st["ggml-base.en"]["state"] == "served" and st["ggml-base.en"]["runner"] == "whisper"
+    assert st["whisper-large-v3"]["state"] == "unusable" and st["whisper-large-v3"]["ggml"] == "ggml-large-v3.bin"
+    assert st["sd-thing"]["state"] == "none"
+
+    # a whisper service already running loads its own model: the files are not what answers
+    rec = r.records()
+    rec["whisper"]["opts"] = {"where": "url", "url": "http://whisper:8080"}
+    r.save(rec)
+    st = r.media_status()
+    assert st["whisper-large-v3"]["state"] == st["ggml-base.en"]["state"] == "own_model"
+    assert "http://whisper:8080" in st["whisper-large-v3"]["why"] and "whisper-1" in st["whisper-large-v3"]["why"]
+
+
+def test_library_api_tells_each_audio_model_its_runner(client, app, tmp_path):
+    from src.library import forget_scans
+    models = tmp_path / "models"
+    hf = models / "HFCache" / "hub" / "models--unsloth--whisper-large-v3" / "snapshots" / "abc"
+    _touch(str(hf / "model.safetensors"))
+    forget_scans()
+    media = client.get("/api/library").get_json()["media"]
+    w = next(m for m in media if m["name"] == "whisper-large-v3")
+    assert w["runner_status"]["state"] == "unusable" and w["runner_status"]["ggml"] == "ggml-large-v3.bin", w["runner_status"]
