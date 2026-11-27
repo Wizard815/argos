@@ -17,7 +17,8 @@ def sec():
 
 
 def logged_in() -> bool:
-    return bool(session.get("auth")) and session.get("stamp") == sec().password_stamp()
+    # the default password ("admin") never logs a browser in: it only opens the page that replaces it
+    return bool(session.get("auth")) and session.get("stamp") == sec().password_stamp() and not sec().default_password()
 
 
 def _local() -> bool:
@@ -51,6 +52,16 @@ if (location.hash && n.value.indexOf("#") < 0) n.value += location.hash;
 </script></body></html>"""
 
 
+# "admin" is in the README, so it is good for one thing only: choosing the real password.
+CHANGE_PAGE = (LOGIN_PAGE
+               .replace("<p>Enter the password set in Settings &rarr; Security.</p>",
+                        "<p>This Argos still has the password every new install starts with. Choose your own "
+                        "(8 characters or more) to go on.</p>")
+               .replace('action="/login"', 'action="/login/change"')
+               .replace('autocomplete="current-password" placeholder="password"', 'autocomplete="new-password" placeholder="new password"')
+               .replace("Log in</button>", "Save and log in</button>"))
+
+
 def _safe_next(target: str) -> str:
     """Only a path on this site: never send someone on to another one after logging in."""
     target = target or "/"
@@ -67,12 +78,40 @@ def login():
     if request.method == "POST":
         if sec().check_password(request.form.get("password") or "", request.remote_addr or ""):
             session.clear()
+            if sec().default_password():
+                session["must_change"] = sec().password_stamp()
+                return current_app.response_class(
+                    CHANGE_PAGE.replace("{next}", html.escape(nxt, quote=True)).replace("{error}", ""), mimetype="text/html")
             session.permanent = True
             session["auth"], session["stamp"], session["at"] = True, sec().password_stamp(), time.time()
             return redirect(nxt)
         error = '<p class="err">That is not the password.</p>'
     page = LOGIN_PAGE.replace("{next}", html.escape(nxt, quote=True)).replace("{error}", error)
     return current_app.response_class(page, status=401 if error else 200, mimetype="text/html")
+
+
+@bp.post("/login/change")
+def login_change():
+    """The step after logging in with the default password: a browser that just proved it knows "admin" sets
+    the real one, and is logged in with it."""
+    from ..security import DEFAULT_PASSWORD
+    nxt = _safe_next(request.form.get("next") or "/")
+    if not sec().default_password() or session.get("must_change") != sec().password_stamp():
+        return redirect("/login?next=" + urllib.parse.quote(nxt))
+    new = request.form.get("password") or ""
+    try:
+        if new == DEFAULT_PASSWORD or len(new) < 8:
+            raise ValueError("use at least 8 characters")
+        sec().set_password(new, DEFAULT_PASSWORD)
+    except (ValueError, PermissionError) as exc:
+        page = CHANGE_PAGE.replace("{next}", html.escape(nxt, quote=True)).replace(
+            "{error}", f'<p class="err">{html.escape(str(exc))}.</p>')
+        return current_app.response_class(page, status=400, mimetype="text/html")
+    session.clear()
+    session.permanent = True
+    session["auth"], session["stamp"], session["at"] = True, sec().password_stamp(), time.time()
+    current_app.extensions["pb"].event("settings", "web page password set (the default was replaced)")
+    return redirect(nxt)
 
 
 @bp.route("/logout", methods=["GET", "POST"])

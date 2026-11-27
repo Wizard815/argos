@@ -46,6 +46,7 @@ services:
     # Postgres, which is only on this network.
     networks:
       - ai_net
+      - argos_db
 
   # Postgres instead of a SQLite file. The store is written to from several places at
   # once - the telemetry tick, the engine's activity sync, whatever a request is doing -
@@ -73,12 +74,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    # Only Argos talks to the database. It is not on ai_net, where every other
+    # app's container could reach it.
     networks:
-      - ai_net
+      - argos_db
 
 volumes:
   argos-postgres:
 
 networks:
+  argos_db: {}
   ai_net:
     external: true

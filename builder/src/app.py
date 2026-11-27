@@ -517,7 +517,10 @@ def create_app(config: dict | None = None) -> Flask:
         model_api = _is_model_api(path)
         # what this request needs: the page and the engine's admin paths need a login when a password is set;
         # the model API needs a key when keys are required. A logged-in browser or a valid key is enough for either.
-        if model_api and not need_key:
+        # /mcp hands out the tools of every saved MCP server, with the tokens stored for them: unlike the model
+        # API it is never left open once either guard is on. A key, or a logged-in browser, opens it.
+        mcp = path == "/mcp" or path.startswith("/mcp/")
+        if model_api and not need_key and not mcp:
             return None
         if not model_api and not need_login:
             return None
@@ -527,7 +530,8 @@ def create_app(config: dict | None = None) -> Flask:
         if key and (g.api_key if sent else security.check_key(key)):
             return None
         if model_api:
-            msg = ("Argos needs an API key for the model API: send Authorization: Bearer <key> (Settings -> Security makes one)"
+            msg = ("Argos needs an API key for " + ("/mcp" if mcp else "the model API")
+                   + ": send Authorization: Bearer <key> (Settings -> Security makes one)"
                    if not key else "that API key is not valid (revoked, or mistyped)")
             return app.response_class(json.dumps({"error": {"message": msg, "type": "invalid_request_error", "code": "invalid_api_key"}}),
                                       status=401, mimetype="application/json")

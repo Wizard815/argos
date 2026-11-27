@@ -99,10 +99,20 @@ def test_Security_a_new_install_starts_with_admin_unless_told_otherwise(tmp_path
     sec = a.extensions["security"]
     assert sec.password_set() and sec.default_password()
     assert c.get("/api/settings").status_code == 401
-    assert c.post("/login", data={"password": "admin"}).status_code == 302
-    assert c.get("/api/auth/status").get_json()["default_password"] is True, "the page warns"
-    assert c.put("/api/security/password", json={"current": "admin", "new": "my own one"}).status_code == 200
-    assert not sec.default_password()
+    # "admin" does not log a browser in: it only opens the page that replaces it
+    step = c.post("/login", data={"password": "admin", "next": "/#schedule"})
+    assert step.status_code == 200 and b'action="/login/change"' in step.data
+    assert c.get("/api/settings").status_code == 401, "still not logged in"
+    assert c.put("/api/security/password", json={"current": "admin", "new": "my own one"}).status_code == 401
+    assert c.get("/api/auth/status").get_json()["default_password"] is True
+    assert c.post("/login/change", data={"password": "short"}).status_code == 400
+    assert c.post("/login/change", data={"password": "admin"}).status_code == 400
+    done = c.post("/login/change", data={"password": "my own one", "next": "/#schedule"})
+    assert done.status_code == 302 and done.headers["Location"] == "/#schedule"
+    assert not sec.default_password() and c.get("/api/settings").status_code == 200, "logged in with the new one"
+    other = _from(a, OUT)
+    assert other.post("/login", data={"password": "admin"}).status_code == 401, "admin is gone"
+    assert other.post("/login", data={"password": "my own one"}).status_code == 302
     # a restart does not bring "admin" back: only the first start reads ARGOS_UI_PASSWORD
     a2, _ = _fresh(tmp_path, UI_PASSWORD=None)
     assert a2.extensions["security"].password_set() and not a2.extensions["security"].default_password()
@@ -122,3 +132,36 @@ def test_Security_ARGOS_UI_PASSWORD_sets_your_own(tmp_path):
 def test_Security_setup_none_means_no_login(tmp_path):
     a, _ = _fresh(tmp_path, UI_PASSWORD="none")
     assert not a.extensions["security"].password_set()
+
+
+def test_Security_the_change_page_needs_the_default_password_first(tmp_path):
+    a, c = _fresh(tmp_path, UI_PASSWORD=None)
+    r = c.post("/login/change", data={"password": "my own one"})
+    assert r.status_code == 302 and r.headers["Location"].startswith("/login"), "no admin login before it: nothing changes"
+    assert a.extensions["security"].default_password()
+    # and once a real password is set, the page does nothing at all
+    a2, c2 = _fresh(tmp_path / "b", UI_PASSWORD="kettle-orbit-73")
+    assert c2.post("/login/change", data={"password": "another one"}).status_code == 302
+    assert c2.post("/login", data={"password": "kettle-orbit-73"}).status_code == 302
+
+
+def test_Security_a_session_from_the_default_password_no_longer_counts(tmp_path):
+    a, c = _fresh(tmp_path, UI_PASSWORD=None)
+    sec = a.extensions["security"]
+    with c.session_transaction() as s:   # a cookie from before this rule
+        s["auth"], s["stamp"] = True, sec.password_stamp()
+    assert c.get("/api/settings").status_code == 401
+
+
+def test_Security_mcp_is_never_open_once_a_guard_is_on(app, client, outside):
+    assert outside.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code != 401, "nothing set: open"
+    key = client.post("/api/security/keys", json={"name": "Hermes"}).get_json()["key"]["key"]
+    client.put("/api/security/password", json={"new": "hunter22!"})
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    none = outside.post("/mcp", json=ping)
+    assert none.status_code == 401 and "/mcp" in none.get_json()["error"]["message"], "a password alone closes it"
+    assert outside.post("/mcp/github", json=ping).status_code == 401
+    assert outside.post("/v1/chat/completions", json={"model": "m"}).status_code != 401, "the model API stays as it was"
+    assert outside.post("/mcp", json=ping, headers={"Authorization": f"Bearer {key}"}).status_code != 401
+    assert outside.post("/login", data={"password": "hunter22!"}).status_code == 302
+    assert outside.post("/mcp", json=ping).status_code != 401, "a logged-in browser"

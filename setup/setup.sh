@@ -482,7 +482,7 @@ Next steps
   3. grep -hE '^  [a-z0-9]' config.d/models.*.generated.yaml | sort | uniq -d     (must print nothing)
 EOF
 if [[ -z "${UI_PASSWORD-}" ]]; then echo "  -  The web page has no login. Set a password in Settings -> Security if anyone else can reach it."
-elif [[ "$UI_PASSWORD" == admin ]]; then echo "  -  Log in with the password \"admin\", then change it in Settings -> Security."
+elif [[ "$UI_PASSWORD" == admin ]]; then echo "  -  Log in with the password \"admin\": Argos then asks you to choose your own."
 else echo "  -  Log in with the web page password you typed (saved in .env as ARGOS_UI_PASSWORD; change it in Settings -> Security)."
 fi
 if [[ "$SCHED" == pool ]]; then cat <<EOF
