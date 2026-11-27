@@ -6644,16 +6644,21 @@ function cardBars(cards, usage, real = {}) {
     const otherGib = c.other_gib ?? (live != null && c.id !== "pool" ? Math.max(live - c.used_gib, 0) : 0);
     const other = otherGib >= 0.25 ? otherGib : 0;
     const OTHER = "repeating-linear-gradient(45deg, var(--muted, #888) 0 4px, transparent 4px 8px)";
+    const free = c.free_gib ?? Math.max(c.cap_gib - c.used_gib - other, 0);
+    // Say each part by name. "0 / 31 GiB · in use 29" read as a contradiction when another app held the 29.
     return h("div", { class: "gpu-card" },
       h("div", { class: "head" }, h("b", {}, c.id === "pool" ? "Pool" : `GPU ${c.id}`),
-        h("span", { title: "planned by Argos / capacity" }, `${num(c.used_gib)} / ${num(c.cap_gib)} GiB`,
-          live != null ? h("small", { class: "muted", title: "VRAM the GPU reports in use now, by Argos and anything else" }, ` · in use ${num(live)}`) : null)),
-      h("div", { class: "vbar", title: `${num(c.free_gib ?? Math.max(c.cap_gib - c.used_gib, 0))} GiB free for Argos` },
+        h("span", { title: `Argos's models (planned) · other apps · free for Argos, of ${num(c.cap_gib)} GiB the pool may use`
+            + (live != null ? `\nThe card reports ${num(live)} GiB in use now, by Argos and anything else.` : "") },
+          `Argos ${num(c.used_gib)}`, other ? ` · other ${num(other)}` : null, ` · free ${num(free)} of ${num(c.cap_gib)} GiB`)),
+      h("div", { class: "vbar", title: `${num(free)} GiB free for Argos` },
         parts.map((p) => h("i", { style: `width:${Math.min(100, (p.gib / c.cap_gib) * 100)}%; background:${segColor(p.id)}`, title: `${p.id}: ${num(p.gib)} GiB` })),
         other ? h("i", { style: `width:${Math.min(100, (other / c.cap_gib) * 100)}%; background:${OTHER}`,
           title: `other apps: ${num(other)} GiB in use on this card that is not an Argos model (see GPU processes). Argos plans around it.` }) : null),
       parts.length || other ? h("div", { class: "vbar-legend" }, parts.map((p) => h("span", { style: `--c:${segColor(p.id)}` }, `${p.id} ${num(p.gib)}`)),
-        other ? h("span", { style: "--c:var(--muted, #888)", title: "not started by Argos: another container or app" }, `other apps ${num(other)}`) : null)
+        other ? h("span", { style: "--c:var(--muted, #888)", title: "not started by Argos: another container or app" }, `other apps ${num(other)}`) : null,
+        other ? h("button", { class: "link-btn", title: "Open the monitor on rocm-smi --showpids: which processes hold this card",
+          onclick: () => toggleSysmon(true, "rocm-smi") }, "who?") : null)
         : h("div", { class: "hint", style: "margin:8px 0 0" }, "empty"));
   }));
 }
@@ -7515,6 +7520,158 @@ async function addNote() {
     card.querySelector(".note-body").focus();
   } catch (e) { fail(e); }
 }
+// ── System monitor pop-out ───────────────────────────────────
+// Raw rocm-smi, nvidia-smi and a top-style process list in a floating card like the notes. It reads only
+// while it is open and the tab is visible; closing it stops every call. Where it sits is kept per browser.
+const SM = { card: null, tab: "", timer: null, busy: false, paused: false, el: null };
+const SM_TABS = [["top", "top"], ["rocm-smi", "rocm-smi"], ["nvidia-smi", "nvidia-smi"]];
+const SM_EVERY = { top: 2000, "rocm-smi": 3000, "nvidia-smi": 3000 };
+const SM_KEY = "argos.sysmon";
+function smSaved() { try { return JSON.parse(localStorage.getItem(SM_KEY) || "{}") || {}; } catch (e) { return {}; } }
+function smSave(v) { try { localStorage.setItem(SM_KEY, JSON.stringify({ ...smSaved(), ...v })); } catch (e) { /* private window: not kept */ } }
+
+/** Open or close the monitor; tab picks what it shows (the Live tab's "other apps" opens it on rocm-smi). */
+function toggleSysmon(force, tab) {
+  const want = force != null ? force : !SM.card;
+  if (!want) { closeSysmon(); return; }
+  if (tab) { SM.tab = tab; smSave({ tab }); }
+  if (SM.card) { raiseNote(SM.card); smShow(); return; }
+  openSysmon();
+}
+function closeSysmon() {
+  clearTimeout(SM.timer); SM.timer = null;
+  if (SM.card) SM.card.remove();
+  SM.card = null;
+  $("#sysmonBtn").classList.remove("on");
+  smSave({ open: false });
+}
+function openSysmon() {
+  const saved = smSaved();
+  if (!SM_EVERY[SM.tab]) SM.tab = SM_EVERY[saved.tab] ? saved.tab : "top";
+  const layer = noteLayer(), b = layer.getBoundingClientRect();
+  const w = saved.w || Math.min(760, Math.max(320, b.width - 48)), hh = saved.h || 420;
+  const x0 = saved.x != null ? saved.x : Math.max(8, b.width - w - 24), y0 = saved.y != null ? saved.y : 12;
+  const card = h("div", { class: "note note-gray sysmon", role: "dialog", "aria-label": "System monitor" });
+  Object.assign(card.style, { left: `${x0}px`, top: `${y0}px`, width: `${w}px`, height: `${hh}px` });
+  Object.assign(card.dataset, { x: x0, y: y0 });
+  const tabs = h("div", { class: "sysmon-tabs", role: "tablist" }, SM_TABS.map(([id, label]) =>
+    h("button", { class: "sysmon-tab", role: "tab", dataset: { tab: id }, onclick: () => { SM.tab = id; smSave({ tab: id }); smShow(); } }, label)));
+  const pause = iconBtn("square", "Pause reading", () => { SM.paused = !SM.paused; smShow(); }, "ghost");
+  const close = iconBtn("x", "Close: stops reading", closeSysmon, "ghost");
+  const head = h("div", { class: "note-head", title: "Drag to move" }, h("span", { class: "grip" }, "⠿"),
+    h("b", { class: "strong", style: "margin-right:6px" }, "Monitor"), tabs, h("span", { class: "spacer" }), pause, close);
+  const body = h("div", { class: "sysmon-body" });
+  const foot = h("div", { class: "note-foot muted mono-sm" });
+  const grip = h("span", { class: "note-resize", title: "Drag to resize" });
+  fill(card, head, body, foot, grip);
+  SM.el = { body, foot, pause };
+  card.addEventListener("pointerdown", () => raiseNote(card), true);
+  head.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("input, button")) return;
+    e.preventDefault();
+    const bx = layer.getBoundingClientRect(), sx = e.clientX, sy = e.clientY, left = card.offsetLeft, top = card.offsetTop;
+    card.classList.add("moving");
+    head.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      card.style.left = `${Math.min(Math.max(0, left + ev.clientX - sx), bx.width - 80)}px`;
+      card.style.top = `${Math.min(Math.max(0, top + ev.clientY - sy), bx.height - 40)}px`;
+    };
+    const up = () => {
+      head.removeEventListener("pointermove", move); head.removeEventListener("pointerup", up);
+      card.classList.remove("moving");
+      Object.assign(card.dataset, { x: card.offsetLeft, y: card.offsetTop });
+      smSave({ x: card.offsetLeft, y: card.offsetTop });
+    };
+    head.addEventListener("pointermove", move); head.addEventListener("pointerup", up);
+  });
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const from = { x: e.clientX, y: e.clientY, w: card.offsetWidth, h: card.offsetHeight };
+    const move = (ev) => {
+      card.style.width = `${Math.max(320, from.w + (ev.clientX - from.x))}px`;
+      card.style.height = `${Math.max(200, from.h + (ev.clientY - from.y))}px`;
+    };
+    const up = () => {
+      grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up);
+      smSave({ w: card.offsetWidth, h: card.offsetHeight });
+    };
+    grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up);
+  });
+  layer.append(card);
+  raiseNote(card);
+  requestAnimationFrame(() => fitNote(card));
+  SM.card = card; SM.paused = false;
+  $("#sysmonBtn").classList.add("on");
+  smSave({ open: true, tab: SM.tab });
+  smShow();
+}
+/** Switch the tab and read it now. The next reading is set after this one answers, so a slow tool never stacks up. */
+function smShow() {
+  if (!SM.card) return;
+  SM.card.querySelectorAll(".sysmon-tab").forEach((b) => {
+    const on = b.dataset.tab === SM.tab;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  SM.el.pause.title = SM.paused ? "Resume reading" : "Pause reading";
+  SM.el.pause.setAttribute("aria-label", SM.el.pause.title);
+  SM.el.pause.replaceChildren(icon(SM.paused ? "play" : "square"));
+  if (!SM.el.body.firstChild || SM.el.body.dataset.tab !== SM.tab) SM.el.body.replaceChildren(h("div", { class: "empty" }, "Reading…"));
+  SM.el.body.dataset.tab = SM.tab;
+  clearTimeout(SM.timer);
+  SM.timer = null;
+  smTick();
+}
+async function smTick() {
+  SM.timer = null;
+  if (!SM.card) return;
+  const tab = SM.tab;
+  if (!SM.paused && !document.hidden && !SM.busy) {
+    SM.busy = true;
+    const t0 = performance.now();
+    try {
+      const d = await api("GET", `/api/sysmon?tab=${encodeURIComponent(tab)}`);
+      if (SM.card && SM.tab === tab) smRender(d, (performance.now() - t0) / 1000);
+    } catch (e) {
+      if (SM.card && SM.tab === tab) { fill(SM.el.body, h("div", { class: "empty" }, `Could not read ${tab}: ${e.message}`)); SM.el.foot.textContent = ""; }
+    } finally { SM.busy = false; }
+  }
+  // paused or hidden: nothing is read; the timer only notices a resume (visibilitychange also wakes it)
+  if (SM.card && SM.tab === tab && !SM.paused && !document.hidden) SM.timer = setTimeout(smTick, SM_EVERY[tab]);
+}
+function smRender(d, took) {
+  const when = `read ${new Date().toLocaleTimeString()} in ${num(took, 1)} s`;
+  if (d.tab !== "top") {
+    const keep = SM.el.body.querySelector("pre");
+    const top = keep ? keep.scrollTop : 0, left = keep ? keep.scrollLeft : 0;
+    const pre = h("pre", { class: "sysmon-raw" }, d.text || "");
+    fill(SM.el.body, pre);
+    pre.scrollTop = top; pre.scrollLeft = left;
+    SM.el.foot.textContent = `${d.found ? d.path : "not found"} · ${when}`;
+    return;
+  }
+  const pct = (v) => (v == null ? "…" : `${num(v, 0)}%`);
+  const meter = (v) => h("span", { class: "sysmon-meter" }, h("i", { style: `width:${Math.max(0, Math.min(100, v || 0))}%` }));
+  const memPct = d.mem_total_mb ? (d.mem_used_mb / d.mem_total_mb) * 100 : 0;
+  const cores = h("div", { class: "sysmon-cores" }, (d.cores || []).map((v, i) =>
+    h("span", { class: "sysmon-core", title: `CPU ${i}: ${pct(v)}` }, h("small", {}, String(i)), meter(v), h("small", { class: "num" }, pct(v)))));
+  const summary = h("div", { class: "sysmon-summary mono-sm" },
+    h("span", {}, h("b", {}, "CPU "), meter(d.cpu), ` ${pct(d.cpu)}`),
+    h("span", {}, h("b", {}, "Mem "), meter(memPct), ` ${num(d.mem_used_mb / 1024, 1)} / ${num(d.mem_total_mb / 1024, 1)} GiB`),
+    d.swap_total_mb ? h("span", {}, h("b", {}, "Swap "), `${num(d.swap_used_mb / 1024, 1)} / ${num(d.swap_total_mb / 1024, 1)} GiB`) : null,
+    d.load && d.load.length ? h("span", {}, h("b", {}, "Load "), d.load.map((x) => num(x, 2)).join(" ")) : null,
+    h("span", {}, h("b", {}, "Tasks "), `${d.tasks}, ${d.running} running`));
+  const rows = (d.processes || []).map((p) => h("tr", {},
+    h("td", { class: "num" }, String(p.pid)), h("td", { class: "num" }, p.cpu == null ? "…" : num(p.cpu, 1)),
+    h("td", { class: "num" }, num(p.rss_mb, 0)), h("td", {}, p.state), h("td", { class: "num" }, String(p.threads)),
+    h("td", { class: "sysmon-cmd", title: p.cmd }, p.cmd)));
+  const keep = SM.el.body.scrollTop;
+  fill(SM.el.body, summary, cores,
+    h("table", { class: "sysmon-procs mono-sm" },
+      h("thead", {}, h("tr", {}, ["PID", "CPU %", "RES MiB", "S", "THR", "Command"].map((x) => h("th", {}, x)))), h("tbody", {}, rows)));
+  SM.el.body.scrollTop = keep;
+  SM.el.foot.textContent = `${d.first ? "CPU % shows from the next reading · " : ""}busiest ${(d.processes || []).length} of ${d.tasks} · ${when}`;
+}
 // The Notes menu: every note, open or minimized. Open brings one out, Minimize puts one away.
 function toggleNotesMenu(force) {
   const want = force != null ? force : !NOTES.menu;
@@ -7882,6 +8039,9 @@ function boot() {
   $("#addNote").onclick = addNote;
   $("#notesBtn").onclick = () => toggleNotesMenu();
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && NOTES.menu) toggleNotesMenu(false); });
+  $("#sysmonBtn").onclick = () => toggleSysmon();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && SM.card && !SM.timer && !SM.busy) smTick(); });
+  if (smSaved().open) toggleSysmon(true);
   loadNotes();
   loadGpuBars();
   setInterval(loadGpuBars, 8000);

@@ -723,3 +723,30 @@ tr.model-file-row .file-tree { color: var(--muted); margin: 0 8px 0 14px; }
   padding: 6px 8px; font-size: 11px; white-space: nowrap; display: none; z-index: 2; }
 .tchart .tkey { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin-top: 4px; flex-wrap: wrap; }
 .tchart .tkey i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; }
+
+/* ── System monitor pop-out (rides the notes layer) ──────── */
+#sysmonBtn.on { color: var(--red); }
+.note-layer .sysmon { min-width: 320px; min-height: 200px; }
+.sysmon .note-head { gap: 6px; }
+.sysmon-tabs { display: flex; gap: 2px; }
+.sysmon-tab { border: 1px solid transparent; background: none; color: var(--muted); font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer; }
+.sysmon-tab:hover { color: var(--strong); }
+.sysmon-tab.on { color: var(--strong); border-color: color-mix(in srgb, var(--note) 60%, transparent); background: color-mix(in srgb, var(--note) 18%, transparent); }
+.sysmon-tab:focus-visible { outline: 2px solid var(--red); outline-offset: 1px; }
+.sysmon-body { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+.sysmon-raw { margin: 0; flex: 1; font-family: var(--mono, monospace); font-size: 11px; line-height: 1.35; white-space: pre; overflow: auto; color: var(--fg); }
+.sysmon-summary { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.sysmon-summary b { color: var(--strong); }
+.sysmon-meter { display: inline-block; vertical-align: middle; width: 60px; height: 6px; border-radius: 3px; background: var(--hl-bg); border: 1px solid var(--line); overflow: hidden; }
+.sysmon-meter i { display: block; height: 100%; background: var(--green); }
+.sysmon-cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 2px 12px; font-family: var(--mono, monospace); font-size: 10.5px; color: var(--muted); }
+.sysmon-core { display: flex; align-items: center; gap: 4px; }
+.sysmon-core small:first-child { width: 2.2em; text-align: right; }
+.sysmon-core .sysmon-meter { flex: 1; }
+.sysmon-core small.num { width: 3.2em; text-align: right; }
+.sysmon-procs { width: 100%; border-collapse: collapse; }
+.sysmon-procs th { text-align: left; color: var(--muted); font-weight: 600; position: sticky; top: -8px; background: var(--panel); }
+.sysmon-procs th, .sysmon-procs td { padding: 1px 6px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); white-space: nowrap; }
+.sysmon-procs td.num { text-align: right; }
+.sysmon-cmd { max-width: 1px; width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.vbar-legend .link-btn { border: 0; background: none; padding: 0; font: inherit; color: var(--fg); text-decoration: underline; cursor: pointer; }
