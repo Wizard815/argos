@@ -3398,12 +3398,12 @@ function mediaStatus(m) {
   if (st.state === "served") return h("span", { class: "pill ok", title: st.why }, `served by ${st.label}`);
   const go = () => { show("servers"); const t = document.querySelector(`[data-tabs="servers"] [data-pane="local"]`); if (t) t.click(); };
   if (st.state === "own_model") return h("span", { class: "muted mono-sm", title: st.why }, `${st.label} uses its own model`);
-  if (st.state === "unusable") return h("span", { class: "row nowrap", style: "gap:6px" },
+  if (st.state === "unusable") return h("div", { style: "display:flex;flex-direction:column;align-items:flex-end;gap:4px" },
     h("span", { class: "pill warn", title: st.why }, `${st.label} can't read it`),
-    st.ggml ? btn(`Get ${st.ggml}`, async () => {
+    st.ggml ? Object.assign(btn("Get ggml copy", async () => {
       try { await api("POST", `/api/runners/${encodeURIComponent(st.runner)}/catalog/download`, { key: st.ggml }); toast(`Downloading ${st.ggml} to your models folder (Models → Downloads). It is served once it lands.`, "ok"); }
       catch (e) { fail(e); }
-    }, "sm", "download") : null);
+    }, "sm", "download"), { title: `Download ${st.ggml} from ggerganov/whisper.cpp: the same model in the format whisper.cpp reads` }) : null);
   return h("button", { class: "link-btn muted mono-sm", title: st.why, onclick: go }, st.runner ? `${st.label} is off` : "no runner");
 }
 
