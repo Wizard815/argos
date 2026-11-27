@@ -29,7 +29,7 @@ DEFAULT_PASSWORD = "admin"
 SESSION_DAYS = 30
 KEY_PREFIX = "argos-"
 # the paths a browser can reach before it has logged in
-OPEN_PATHS = {"/health", "/login", "/logout", "/favicon.ico", "/api/auth/status"}
+OPEN_PATHS = {"/health", "/login", "/login/change", "/logout", "/favicon.ico", "/api/auth/status"}
 # the model API among the engine's paths (what apps call): it needs a key when keys are required. Every other path
 # passed to the engine runs the engine itself (the pool, unloading, logs, metrics): it needs a login (or a key)
 # once a password is set.

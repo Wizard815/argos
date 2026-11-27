@@ -82,6 +82,11 @@ server; small models do better with fewer.
 An app sends its Argos key; a server the key may not use is left out of
 `/mcp` and its own link answers 403.
 
+`/mcp` hands out the tools of every saved server, with the tokens stored for
+them. So once the web page has a password, or "require a key" is on, `/mcp`
+needs a key (or a logged-in browser), even while the model API is open.
+With neither set it is open to anyone who can reach Argos.
+
 ### MCP tools inside a chat request
 
 ```json
@@ -126,6 +131,9 @@ answer carries `X-Argos-Fallback` and the Logs page says why.
   in the Argos container; run it as its own container and add it by URL.
 - **A budget never stops a cloud model.** Its price is unknown: set it on the
   provider (Settings -> Providers -> Edit -> Prices) or the fallback.
+- **An MCP client gets 401 "Argos needs an API key for /mcp".** The web page
+  has a password, so `/mcp` is closed without a key: make one in Settings ->
+  Security and give it to the app as its bearer token.
 - **Every app behind LiteLLM shows as "OpenAI/Python".** LiteLLM is not
   sending the key alias: set both settings above, and give each app a LiteLLM
   key with an alias.
