@@ -1,5 +1,7 @@
 # Argos
 
+[![License: PolyForm Shield 1.0.0](https://img.shields.io/badge/license-PolyForm%20Shield%201.0.0-blue)](LICENSE)
+
 **Argos replaces llama-swap.** It is one OpenAI-compatible endpoint (`/v1`) for all your local models: ask for a model by name and Argos starts its `llama-server`, shares the GPUs with whatever else is loaded, and unloads what is not needed. Argos started as a fork of llama-swap and grew a web app around it:
 
 - a **launch command builder**, to tune each model's `llama-server` command and keep it as a profile;
@@ -69,4 +71,14 @@ It also asks for the **backend** (ROCm, CUDA or both), the **scheduler** (the GP
 
 **Security:** a new install's web page password is **`admin`** (setup.sh asks: Enter for `admin`, `none` for no login, or your own; without setup.sh, `ARGOS_UI_PASSWORD` in `.env` decides, empty meaning no login). `admin` does not log you in: it opens a page where you choose your own password, and is gone after that. Change it later in **Settings → Security**, which also holds the password for the web page (a browser logs in once, for 30 days) and **API keys** for apps (one per app, sent as the OpenAI API key; switch on "require a key" for the model API; `/mcp` needs a key or a logged-in browser as soon as a password or "require a key" is set). A forgotten password: `docker compose exec argos argos-password clear`. Even logged in, the Playground runs whatever command you give it: only give the password to people you trust.
 
-Argos started as a fork of [llama-swap](https://github.com/mostlygeek/llama-swap) by Benson Wong (MIT, see [LICENSE.md](LICENSE.md)).
+## License
+
+Argos is source-available under the
+[PolyForm Shield License 1.0.0](LICENSE). You can read, run, change and share
+it for free, including at work. You can't sell it or offer it as a competing
+product or hosted service without permission: open an issue titled
+"License request" to ask. [docs/LICENSING.md](docs/LICENSING.md) explains it
+in plain English. Versions published before the switch stay under MIT.
+
+Argos started as a fork of [llama-swap](https://github.com/mostlygeek/llama-swap)
+by Benson Wong; that code is also MIT, see [LICENSE.md](LICENSE.md).
